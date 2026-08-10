@@ -1,0 +1,31 @@
+[project]
+name = "smartops-backend"
+version = "0.1.0"
+description = "SmartOps SOC triage/IR engine: budget, subagents, aggregator"
+requires-python = ">=3.13"
+dependencies = [
+    "smartops-contracts",
+    "pydantic>=2.9",
+    "strands-agents[otel]>=1.0",
+    "strands-agents-tools>=0.8",
+    "opentelemetry-api>=1.20",
+]
+
+[tool.uv.sources]
+smartops-contracts = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smartops"]
