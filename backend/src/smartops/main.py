@@ -38,6 +38,7 @@ from smartops.broker import (
     investigate_vt,
 )
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
+from smartops.subagents import domain_runner
 from smartops.telemetry import configure_telemetry
 from smartops.tools.registry import load_mcp_servers, mcp_clients
 
@@ -128,6 +129,40 @@ def _parse_entity(raw: str) -> Entity:
     return Entity(kind=kind, value=value)
 
 
+def _parse_instant(raw: str) -> datetime:
+    """Parse an ISO 8601 instant, treating a naive value as UTC.
+
+    `Scope` requires timezone-aware datetimes, so a naive string would otherwise
+    fail validation with a message about tzinfo rather than about the argument.
+    `Z` is accepted because it is what people paste, and `fromisoformat` only
+    learned it in 3.11.
+    """
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is not an ISO 8601 instant (e.g. 2018-08-20T00:00:00Z): {exc}"
+        ) from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _resolve_window(args) -> tuple[datetime, datetime]:
+    """The investigation's time window, from either absolute or relative args.
+
+    `--since` wins over `--hours` because it is the more specific statement. With
+    only `--since`, the window runs forward by `--hours` rather than to `now`:
+    for historical data "from 2018-08-20 for 24 hours" is almost always what is
+    meant, and running to now would sweep eight years of empty index.
+    """
+    now = datetime.now(timezone.utc)
+    span = timedelta(hours=args.hours)
+
+    if args.since is not None:
+        return args.since, args.until if args.until is not None else args.since + span
+    end = args.until if args.until is not None else now
+    return end - span, end
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="smartops-broker",
@@ -152,6 +187,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--hours", type=int, default=24, help="how far back the time window reaches (default: 24)"
+    )
+    parser.add_argument(
+        "--since",
+        type=_parse_instant,
+        metavar="ISO8601",
+        help=(
+            "absolute window start, e.g. 2018-08-20T00:00:00Z (naive values are read as UTC). "
+            "Overrides --hours. Needed for any dataset that is not recent: a relative window "
+            "over historical data returns nothing and looks exactly like an empty domain"
+        ),
+    )
+    parser.add_argument(
+        "--until",
+        type=_parse_instant,
+        metavar="ISO8601",
+        help="absolute window end (default: now, or --since plus --hours when --since is given)",
     )
     parser.add_argument(
         "--families",
@@ -251,7 +302,31 @@ def _load_env_file() -> str | None:
     return path
 
 
+def _force_utf8_output() -> None:
+    """Make stdout/stderr able to carry any answer a model produces.
+
+    Windows consoles default to cp1252, which cannot encode a great deal of what
+    an LLM writes -- arrows, dashes, box drawing. Printing such an answer raised
+    `UnicodeEncodeError` from `_print_outcome`, *after* the investigation had run
+    and been billed: the work succeeded and the report threw it away, with a
+    stack trace instead of findings.
+
+    `errors="replace"` as well as UTF-8, because a terminal that still cannot
+    represent a character must degrade it to `?` rather than lose the report.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                # A redirected or already-detached stream. Not worth failing the
+                # run over -- worst case we are back to the old behaviour.
+                logging.getLogger(__name__).debug("could not reconfigure %r", stream)
+
+
 async def _run(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     args = _build_parser().parse_args(argv)
 
     # Before anything reads os.environ.
@@ -282,9 +357,10 @@ async def _run(argv: list[str] | None = None) -> int:
 
     now = datetime.now(timezone.utc)
     try:
-        scope = Scope(entities=args.entities, time_window=(now - timedelta(hours=args.hours), now))
+        scope = Scope(entities=args.entities, time_window=_resolve_window(args))
     except ValidationError as exc:
-        # Most likely `--hours 0` or a negative value, which makes start >= end.
+        # Most likely `--hours 0`, or `--until` at or before `--since`, either of
+        # which makes start >= end.
         print(f"error: invalid scope: {exc.errors()[0]['msg']}", file=sys.stderr)
         return 2
 
@@ -331,8 +407,19 @@ async def _run(argv: list[str] | None = None) -> int:
         print(f"model:    {choice.provider.value}:{choice.model_id}")
 
     budget = Budget.from_usd(args.budget_usd)
+
+    # With a real model, domains get a real subagent; without one there is
+    # nothing to drive a tool loop, so the Broker's stub stands in and reports
+    # what each family *could* have used. `vt` answers either way -- its lookup
+    # needs no model at all.
+    run_subagent = (
+        domain_runner(model=choice, budget=budget) if choice is not None else None
+    )
+
     try:
-        outcome = await broker_task(task, budget, model=model, invoke=invoke)
+        outcome = await broker_task(
+            task, budget, model=model, invoke=invoke, run_subagent=run_subagent
+        )
     except Exception as exc:
         # An investigation failing must not look like the tool crashing. Report
         # it, and report the ledger too: the call may already have been billed,

@@ -1,6 +1,10 @@
+import argparse
 import os
+from datetime import datetime, timezone
 
-from smartops.main import _load_env_file, _parse_entity
+import pytest
+
+from smartops.main import _build_parser, _load_env_file, _parse_entity, _parse_instant, _resolve_window
 
 
 class TestEnvFileLoading:
@@ -85,3 +89,110 @@ class TestEntityParsing:
             assert "empty" in str(exc)
         else:  # pragma: no cover
             raise AssertionError("expected a readable error")
+
+
+class TestTimeWindow:
+    """Absolute windows exist because the data under test is historical.
+
+    `index=botsv3` holds one day in 2018. A relative window -- the only kind the
+    CLI could express before `--since` -- returns zero events, which is
+    indistinguishable from a domain having nothing to say. Every test here guards
+    that distinction.
+    """
+
+    def _args(self, argv):
+        return _build_parser().parse_args(
+            ["--goal", "g", "--entity", "host:h", *argv]
+        )
+
+    def test_naive_values_are_read_as_utc(self):
+        # Scope requires tz-aware datetimes; a naive string would otherwise fail
+        # validation complaining about tzinfo rather than about the argument.
+        assert _parse_instant("2018-08-20T00:00:00").tzinfo is timezone.utc
+
+    def test_trailing_z_is_accepted(self):
+        assert _parse_instant("2018-08-20T00:00:00Z") == datetime(
+            2018, 8, 20, tzinfo=timezone.utc
+        )
+
+    def test_a_non_iso_value_is_rejected_with_an_example(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="2018-08-20"):
+            _parse_instant("last tuesday")
+
+    def test_since_runs_forward_by_hours_rather_than_to_now(self):
+        # "from 2018-08-20 for 24 hours" is what is meant; running to now would
+        # sweep eight years of empty index.
+        start, end = _resolve_window(self._args(["--since", "2018-08-20T00:00:00Z", "--hours", "24"]))
+
+        assert start == datetime(2018, 8, 20, tzinfo=timezone.utc)
+        assert end == datetime(2018, 8, 21, tzinfo=timezone.utc)
+
+    def test_since_and_until_are_used_verbatim(self):
+        start, end = _resolve_window(
+            self._args(["--since", "2018-08-20T06:00:00Z", "--until", "2018-08-20T18:00:00Z"])
+        )
+
+        assert (start.hour, end.hour) == (6, 18)
+
+    def test_hours_alone_still_ends_at_now(self):
+        # The default behaviour has to survive: this is what every existing
+        # invocation relies on.
+        start, end = _resolve_window(self._args(["--hours", "6"]))
+
+        assert (end - start).total_seconds() == 6 * 3600
+        assert (datetime.now(timezone.utc) - end).total_seconds() < 60
+
+    def test_until_alone_walks_back_by_hours(self):
+        start, end = _resolve_window(self._args(["--until", "2018-08-21T00:00:00Z", "--hours", "12"]))
+
+        assert start == datetime(2018, 8, 20, 12, tzinfo=timezone.utc)
+        assert end == datetime(2018, 8, 21, tzinfo=timezone.utc)
+
+
+class TestOutputEncoding:
+    """A finished investigation must not be lost at the print step.
+
+    Windows consoles default to cp1252 and cannot encode much of what a model
+    writes. `_print_outcome` raised UnicodeEncodeError *after* the run had been
+    billed -- the findings existed, were paid for, and were replaced by a stack
+    trace.
+    """
+
+    def test_streams_are_reconfigured_to_utf8_with_replacement(self, monkeypatch):
+        from smartops.main import _force_utf8_output
+
+        calls = []
+
+        class FakeStream:
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr("sys.stdout", FakeStream())
+        monkeypatch.setattr("sys.stderr", FakeStream())
+
+        _force_utf8_output()
+
+        assert len(calls) == 2
+        # `replace` matters as much as utf-8: a terminal that still cannot show a
+        # character must degrade it, not discard the report.
+        assert all(c == {"encoding": "utf-8", "errors": "replace"} for c in calls)
+
+    def test_a_stream_that_refuses_reconfiguration_is_survivable(self, monkeypatch):
+        from smartops.main import _force_utf8_output
+
+        class Detached:
+            def reconfigure(self, **kwargs):
+                raise ValueError("underlying buffer has been detached")
+
+        monkeypatch.setattr("sys.stdout", Detached())
+        monkeypatch.setattr("sys.stderr", Detached())
+
+        _force_utf8_output()  # must not raise
+
+    def test_a_stream_without_reconfigure_is_ignored(self, monkeypatch):
+        from smartops.main import _force_utf8_output
+
+        monkeypatch.setattr("sys.stdout", object())
+        monkeypatch.setattr("sys.stderr", object())
+
+        _force_utf8_output()  # must not raise
