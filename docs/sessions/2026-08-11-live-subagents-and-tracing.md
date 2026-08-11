@@ -1,4 +1,9 @@
-# 2026-08-11 — From "nothing runs" to two live subagents against BOTSv3
+---
+date: 2026-08-11
+title: Live subagents against BOTSv3 — TLS, absolute windows, cumulative token limits, and wiring the tracing
+---
+
+# From "nothing runs" to two live subagents against BOTSv3
 
 ## What was asked
 
