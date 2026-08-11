@@ -37,7 +37,7 @@ from smartops.broker import (
     investigate_siem,
     investigate_vt,
 )
-from smartops.budget import Budget, ModelChoice
+from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.telemetry import configure_telemetry
 from smartops.tools.registry import load_mcp_servers, mcp_clients
 
@@ -51,20 +51,11 @@ _TOOL_BY_FAMILY = {
 _ALL_FAMILIES: tuple[ToolFamily, ...] = ("siem", "edr", "vt", "ndr")
 _ENTITY_KINDS = get_args(EntityKind)
 
-# Aug-13 placeholder pairing. `pricing_key` indexes our own PRICING table;
-# `model_id` is the provider-facing id Strands hands to Bedrock.
-#
-# ⚠️ `model_id` is UNVERIFIED. Strands' `BedrockModel` uses the legacy
-# Converse/InvokeModel path, which wants an ARN-versioned inference-profile id
-# whose date suffix cannot be guessed. Nothing sends it to Bedrock yet, so it is
-# inert -- but resolve it against the target account before the first live call:
-#
-#   aws bedrock list-inference-profiles --region <region> \
-#     --query "inferenceProfileSummaries[?contains(inferenceProfileId,'sonnet')].inferenceProfileId"
-#
-# The `us.` / `eu.` prefix is required for on-demand throughput.
-_DEFAULT_MODEL = ModelChoice(
-    model_id="us.anthropic.claude-sonnet-4-6-PLACEHOLDER-v1:0",
+# Used only on the scripted path, where nothing reaches a provider: `Budget`
+# still needs a `pricing_key` to bill against, and `ModelChoice` still validates
+# the pairing at construction. Never built into a real model.
+_PLACEHOLDER_MODEL = ModelChoice(
+    model_id="scripted-no-model-call",
     pricing_key="claude-sonnet-4-6",
 )
 
@@ -180,6 +171,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help=(
+            "force the scripted invoker even when a provider is configured "
+            "(--families then drives dispatch, and nothing is billed)"
+        ),
+    )
+    parser.add_argument(
         "--console-traces",
         action="store_true",
         help="export OpenTelemetry spans to stdout (off by default: spans can carry SOC data)",
@@ -265,13 +264,43 @@ async def _run(argv: list[str] | None = None) -> int:
         scope=scope,
     )
 
+    # The three-state ladder: a configured provider drives a real Broker agent;
+    # no provider falls back to the scripted invoker, which is a supported state
+    # rather than an error. `--scripted` forces the floor even when credentials
+    # exist, for testing the dispatch path without spending anything.
+    try:
+        choice = None if args.scripted else model_choice_from_env()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if choice is None:
+        model = _PLACEHOLDER_MODEL
+        invoke = _scripted_invoker(families)
+        print(f"model:    (none -- scripted dispatch of {', '.join(families)})")
+    else:
+        # Build eagerly: a Bedrock model resolves AWS credentials at
+        # construction, so a bad region or absent credentials fails here rather
+        # than mid-investigation, after budget has been reserved.
+        try:
+            choice.build()
+        except Exception as exc:
+            print(
+                f"error: provider {choice.provider.value!r} is selected but not usable: {exc}",
+                file=sys.stderr,
+            )
+            print(
+                f"       set {PROVIDER_ENV_VAR} to another provider, fix its credentials, "
+                "or pass --scripted to run without a model.",
+                file=sys.stderr,
+            )
+            return 2
+        model = choice
+        invoke = None  # broker_task builds default_broker_invoker itself
+        print(f"model:    {choice.provider.value}:{choice.model_id}")
+
     budget = Budget.from_usd(args.budget_usd)
-    outcome = await broker_task(
-        task,
-        budget,
-        model=_DEFAULT_MODEL,
-        invoke=_scripted_invoker(families),
-    )
+    outcome = await broker_task(task, budget, model=model, invoke=invoke)
 
     print(f"task:     {task.task_id}")
     print(f"goal:     {task.goal}")

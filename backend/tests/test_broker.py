@@ -442,7 +442,7 @@ class TestDefaultInvoker:
             )
         agent_cls.assert_not_called()
 
-    async def test_default_invoker_builds_an_agent_with_the_four_family_tools(self):
+    async def test_default_invoker_builds_an_agent_with_the_four_family_tools(self, monkeypatch):
         # The real invoker is unexercised in production until credentials exist,
         # so this is the only thing asserting its construction is sane.
         fake_agent = MagicMock()
@@ -454,12 +454,20 @@ class TestDefaultInvoker:
 
         fake_agent.invoke_async = invoke_async
 
+        # Stub build(): a real one constructs a BedrockModel, which resolves AWS
+        # credentials eagerly and fails on a machine with none. Stubbing it also
+        # pins the actual contract -- whatever build() returns is what reaches
+        # Agent(model=...), unchanged -- which is the whole point of the provider
+        # indirection.
+        sentinel = object()
+        monkeypatch.setattr(type(MODEL), "build", lambda self: sentinel)
+
         with patch("strands.Agent", return_value=fake_agent) as agent_cls:
             invoker = default_broker_invoker(MODEL, max_output_tokens=500, turns=6)
             await invoker("prompt", BrokerRequest(task=make_task()))
 
         kwargs = agent_cls.call_args.kwargs
-        assert kwargs["model"] == MODEL.model_id
+        assert kwargs["model"] is sentinel
         assert [t.tool_name for t in kwargs["tools"]] == [
             "investigate_siem",
             "investigate_edr",

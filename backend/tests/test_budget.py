@@ -2,7 +2,19 @@ import asyncio
 
 import pytest
 
-from smartops.budget import PRICING, Budget, ModelPrice, Usage, cost_of, estimate_cost
+from smartops.budget import (
+    PRICING,
+    PROVIDER_ENV_VAR,
+    Budget,
+    ModelChoice,
+    ModelPrice,
+    Provider,
+    Usage,
+    available_provider,
+    cost_of,
+    estimate_cost,
+    model_choice_from_env,
+)
 
 
 def test_cost_of_known_model():
@@ -141,6 +153,160 @@ class TestLedger:
 
         assert budget.spend_by_task() == {}
         assert budget.spend_by_role() == {"critic": 10 * 25}
+
+
+class TestProviderLadder:
+    """Startup resolution from env: Bedrock -> DeepSeek -> nothing.
+
+    No live calls anywhere -- these assert which provider is *selected*, which
+    is a pure function of the environment.
+    """
+
+    PROVIDER_VARS = ("AWS_REGION", "AWS_DEFAULT_REGION", "DEEPSEEK_API_KEY", PROVIDER_ENV_VAR)
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in self.PROVIDER_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    def test_no_credentials_selects_no_provider(self):
+        # A supported state, not an error: the caller falls back to a scripted
+        # invoker and the run still completes.
+        assert available_provider() is None
+        assert model_choice_from_env() is None
+
+    def test_deepseek_is_selected_when_only_it_is_configured(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-fake")
+
+        assert available_provider() is Provider.DEEPSEEK
+
+    def test_bedrock_wins_when_both_are_configured(self, monkeypatch):
+        # Bedrock is the primary; DeepSeek is the cheaper alternative, not the
+        # preference.
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-fake")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        assert available_provider() is Provider.BEDROCK
+
+    def test_explicit_override_beats_detection(self, monkeypatch):
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv(PROVIDER_ENV_VAR, "deepseek")
+
+        assert available_provider() is Provider.DEEPSEEK
+
+    def test_an_unknown_provider_name_names_the_valid_ones(self, monkeypatch):
+        monkeypatch.setenv(PROVIDER_ENV_VAR, "gpt-9")
+
+        with pytest.raises(ValueError, match="bedrock"):
+            available_provider()
+
+    def test_either_aws_region_variable_selects_bedrock(self, monkeypatch):
+        # AWS_DEFAULT_REGION is the older spelling and still common in CI.
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+
+        assert available_provider() is Provider.BEDROCK
+
+    def test_bedrock_choice_carries_the_region_explicitly(self, monkeypatch):
+        # Passing region_name explicitly matters: AWS_REGION loses to a
+        # configured profile, and Strands then falls back to us-west-2 silently.
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+
+        choice = model_choice_from_env()
+
+        assert choice.provider is Provider.BEDROCK
+        assert choice.region == "eu-central-1"
+
+    def test_model_id_and_pricing_key_are_overridable_from_env(self, monkeypatch):
+        # How a real Bedrock inference-profile id gets supplied without a code
+        # edit -- the shipped default is a labelled placeholder.
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("SMARTOPS_MODEL_ID", "us.anthropic.claude-real-v1:0")
+        monkeypatch.setenv("SMARTOPS_PRICING_KEY", "claude-opus-5")
+
+        choice = model_choice_from_env()
+
+        assert choice.model_id == "us.anthropic.claude-real-v1:0"
+        assert choice.pricing_key == "claude-opus-5"
+
+    def test_deepseek_fails_loudly_until_its_rates_are_known(self, monkeypatch):
+        # Deliberate: DeepSeek has no PRICING entry yet, so selecting it raises
+        # at construction naming the gap. Better a startup error than a ledger
+        # reporting the cheap provider as free -- which is the exact bug the
+        # nano-USD change fixed, and this keeps it from returning by the back
+        # door.
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-fake")
+
+        with pytest.raises(ValueError, match="no pricing entry"):
+            model_choice_from_env()
+
+    def test_an_openai_compatible_provider_needs_a_key_env_var(self):
+        choice = ModelChoice(
+            model_id="deepseek-chat",
+            pricing_key="claude-sonnet-4-6",  # stand-in; rates aren't the point here
+            provider=Provider.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+            api_key_env_var=None,
+        )
+
+        with pytest.raises(ValueError, match="api_key_env_var"):
+            choice.build()
+
+    def test_an_openai_compatible_provider_reports_a_missing_key(self, monkeypatch):
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        choice = ModelChoice(
+            model_id="deepseek-chat",
+            pricing_key="claude-sonnet-4-6",
+            provider=Provider.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+            api_key_env_var="DEEPSEEK_API_KEY",
+        )
+
+        with pytest.raises(ValueError, match="DEEPSEEK_API_KEY is not set"):
+            choice.build()
+
+    def test_the_api_key_is_not_stored_on_the_choice(self, monkeypatch):
+        # It is read from the environment at build() time, so a repr of the
+        # choice -- in a log line, a traceback, a span -- cannot leak it.
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-super-secret")
+        choice = ModelChoice(
+            model_id="deepseek-chat",
+            pricing_key="claude-sonnet-4-6",
+            provider=Provider.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+            api_key_env_var="DEEPSEEK_API_KEY",
+        )
+
+        assert "sk-super-secret" not in repr(choice)
+
+    def test_bedrock_build_returns_a_model_not_a_bare_string(self, monkeypatch):
+        # The reason build() exists: Bedrock accepts a bare id, but returning a
+        # string for an OpenAI-compatible provider would be misread as a Bedrock
+        # id. Both paths must return something Agent(model=...) can take.
+        built = {}
+
+        class FakeBedrockModel:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        import strands.models.bedrock as bedrock_module
+
+        monkeypatch.setattr(bedrock_module, "BedrockModel", FakeBedrockModel)
+
+        choice = ModelChoice(
+            model_id="us.anthropic.x-v1:0",
+            pricing_key="claude-sonnet-4-6",
+            provider=Provider.BEDROCK,
+            region="eu-west-2",
+        )
+        result = choice.build()
+
+        assert isinstance(result, FakeBedrockModel)
+        assert built["model_id"] == "us.anthropic.x-v1:0"
+        assert built["region_name"] == "eu-west-2"
+        # Python Bedrock has no default request timeout -- an unset one would
+        # hang a stuck connection forever, and Limits bounds tokens, not clock.
+        assert built["boto_client_config"].connect_timeout == choice.connect_timeout
+        assert built["boto_client_config"].read_timeout == choice.read_timeout
 
 
 class TestSubDollarRates:

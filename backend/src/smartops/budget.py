@@ -20,10 +20,16 @@ records it in the ledger. Nothing else in this module ever touches
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 _NANO_PER_MICRO = 1000
@@ -80,6 +86,7 @@ Bedrock and not an invoice.
 """
 
 
+
 def _nano_to_micro(nano: int) -> int:
     """Round nano-USD to the ledger's micro-USD unit, half-up, in integers.
 
@@ -89,6 +96,18 @@ def _nano_to_micro(nano: int) -> int:
     is thousands of tokens.
     """
     return (nano + _NANO_PER_MICRO // 2) // _NANO_PER_MICRO
+
+
+class Provider(StrEnum):
+    """Which backend serves a model.
+
+    Not cosmetic: it decides what `build()` hands to `Agent(model=...)`. Bedrock
+    takes a bare id string, which Strands turns into a `BedrockModel`; anything
+    OpenAI-compatible needs a constructed `Model` instance instead.
+    """
+
+    BEDROCK = "bedrock"
+    DEEPSEEK = "deepseek"
 
 
 @dataclass(frozen=True)
@@ -115,6 +134,12 @@ class ModelChoice:
 
     model_id: str
     pricing_key: str
+    provider: Provider = Provider.BEDROCK
+    region: str | None = None
+    base_url: str | None = None
+    api_key_env_var: str | None = None
+    connect_timeout: float = 10.0
+    read_timeout: float = 120.0
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
@@ -124,6 +149,140 @@ class ModelChoice:
                 f"no pricing entry for pricing_key {self.pricing_key!r} -- "
                 f"known keys: {sorted(PRICING)}"
             )
+
+    def build(self) -> Any:
+        """What to pass as `Agent(model=...)`.
+
+        Returns a bare id string for Bedrock -- Strands constructs the
+        `BedrockModel` itself -- and a constructed `Model` for anything
+        OpenAI-compatible, since a string would be misread as a Bedrock id.
+
+        Imports the provider lazily so a deployment that never touches DeepSeek
+        needn't have the `openai` extra installed to import this module.
+        """
+        if self.provider is Provider.BEDROCK:
+            return self._build_bedrock()
+        if self.provider is Provider.DEEPSEEK:
+            return self._build_openai_compatible()
+        raise ValueError(f"unsupported provider {self.provider!r}")
+
+    def _build_bedrock(self) -> Any:
+        from botocore.config import Config
+        from strands.models.bedrock import BedrockModel
+
+        # `region_name` explicitly, because AWS_REGION loses to a configured AWS
+        # profile and Strands then falls back to us-west-2 silently -- a wrong
+        # region reads as a missing model. And an explicit request timeout,
+        # because Python Bedrock has no default at all: a stuck connection would
+        # hang the run forever, and `Limits` bounds tokens, not wall clock.
+        return BedrockModel(
+            model_id=self.model_id,
+            region_name=self.region,
+            boto_client_config=Config(
+                connect_timeout=self.connect_timeout,
+                read_timeout=self.read_timeout,
+                retries={"max_attempts": 2, "mode": "standard"},
+            ),
+        )
+
+    def _build_openai_compatible(self) -> Any:
+        from strands.models.openai import OpenAIModel
+
+        if not self.api_key_env_var:
+            raise ValueError(f"provider {self.provider} requires api_key_env_var")
+        api_key = os.environ.get(self.api_key_env_var, "").strip()
+        if not api_key:
+            raise ValueError(f"{self.api_key_env_var} is not set")
+
+        # DeepSeek speaks the OpenAI wire format, so the only difference from
+        # OpenAI proper is base_url. The key is read from the environment here
+        # rather than stored on this object, so it cannot be logged by a repr.
+        return OpenAIModel(
+            client_args={"api_key": api_key, "base_url": self.base_url},
+            model_id=self.model_id,
+        )
+
+
+PROVIDER_ENV_VAR = "SMARTOPS_LLM_PROVIDER"
+
+_PROVIDER_DEFAULTS: dict[Provider, dict[str, Any]] = {
+    Provider.BEDROCK: {
+        # ⚠️ UNVERIFIED. Strands' BedrockModel uses the legacy Converse path,
+        # whose ARN-versioned inference-profile id carries a date suffix that
+        # cannot be guessed. Resolve against the target account before a live
+        # call, and override with SMARTOPS_MODEL_ID:
+        #   aws bedrock list-inference-profiles --region <r> --query \
+        #     "inferenceProfileSummaries[?contains(inferenceProfileId,'sonnet')].inferenceProfileId"
+        "model_id": "us.anthropic.claude-sonnet-4-6-PLACEHOLDER-v1:0",
+        "pricing_key": "claude-sonnet-4-6",
+    },
+    Provider.DEEPSEEK: {
+        "model_id": "deepseek-chat",
+        # ⚠️ No PRICING entry exists for DeepSeek yet -- its published rates are
+        # needed first. Until then this pairing fails at construction, which is
+        # the intended behaviour: better a startup error naming the gap than a
+        # ledger quietly reporting the cheap provider as free.
+        "pricing_key": "deepseek-chat",
+        "base_url": "https://api.deepseek.com",
+        "api_key_env_var": "DEEPSEEK_API_KEY",
+    },
+}
+
+
+def available_provider() -> Provider | None:
+    """Which provider this environment can actually serve, or None.
+
+    Resolution is at **startup, from configuration** -- not failover on error.
+    "Bedrock isn't in the env" is a config question; retrying a failed Bedrock
+    call on DeepSeek is a different feature with different semantics (differing
+    prices, differing capabilities, a partially-billed first attempt), and
+    conflating the two would make an outage silently change which model, and
+    which price, served a request.
+
+    Returning None is a supported outcome, not an error: it means no live model
+    is configured, and the caller falls back to a scripted invoker.
+    """
+    override = os.environ.get(PROVIDER_ENV_VAR, "").strip().lower()
+    if override:
+        try:
+            return Provider(override)
+        except ValueError:
+            raise ValueError(
+                f"{PROVIDER_ENV_VAR}={override!r} is not a known provider -- "
+                f"expected one of {[p.value for p in Provider]}"
+            ) from None
+
+    # Bedrock first: it is the primary, needs no extra dependency, and its
+    # credentials may come from a profile or instance role rather than env vars,
+    # so region is the only reliable env-visible signal.
+    if os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
+        return Provider.BEDROCK
+    if os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        return Provider.DEEPSEEK
+    return None
+
+
+def model_choice_from_env(provider: Provider | None = None) -> ModelChoice | None:
+    """Build the `ModelChoice` this environment implies, or None if no provider.
+
+    `SMARTOPS_MODEL_ID` and `SMARTOPS_PRICING_KEY` override the per-provider
+    defaults, which is how a real Bedrock inference-profile id gets supplied
+    without editing code.
+    """
+    provider = provider or available_provider()
+    if provider is None:
+        return None
+
+    defaults = dict(_PROVIDER_DEFAULTS[provider])
+    if model_id := os.environ.get("SMARTOPS_MODEL_ID", "").strip():
+        defaults["model_id"] = model_id
+    if pricing_key := os.environ.get("SMARTOPS_PRICING_KEY", "").strip():
+        defaults["pricing_key"] = pricing_key
+    if provider is Provider.BEDROCK:
+        defaults["region"] = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+
+    return ModelChoice(provider=provider, **defaults)
+
 
 
 def _price_for(model: str) -> ModelPrice:

@@ -466,7 +466,10 @@ def default_broker_invoker(
         from strands.types.agent import Limits
 
         agent = Agent(
-            model=choice.model_id,
+            # `build()` returns a bare id for Bedrock (Strands constructs the
+            # model) or a constructed Model for an OpenAI-compatible provider
+            # like DeepSeek, where a string would be misread as a Bedrock id.
+            model=choice.build(),
             tools=FAMILY_TOOLS,
             system_prompt=_SYSTEM_PROMPT,
             structured_output_model=TaskClassification,
