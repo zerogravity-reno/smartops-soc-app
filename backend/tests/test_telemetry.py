@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from contracts import Scope, SubagentMission, SubtaskResult, SubtaskStatus
+from contracts import Entity, Scope, SubagentMission, SubtaskResult, SubtaskStatus
 
 from smartops.budget import Reservation
 from smartops.telemetry import record_cost, record_result_status, trace_attributes_for
@@ -13,7 +13,10 @@ def _mission() -> SubagentMission:
         hypothesis_id="hyp-1",
         tool_family="edr",
         goal="check host for persistence mechanisms",
-        scope=Scope(entities=["host-1"], time_window=(now - timedelta(hours=1), now)),
+        scope=Scope(
+            entities=[Entity(kind="host", value="host-1")],
+            time_window=(now - timedelta(hours=1), now),
+        ),
     )
 
 

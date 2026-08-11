@@ -3,12 +3,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from contracts import AnalystTask, Scope, TaskClassification
+from contracts import AnalystTask, Entity, Scope, TaskClassification
 
 
 def make_scope(**overrides):
     now = datetime(2026, 8, 9, tzinfo=timezone.utc)
-    defaults = dict(entities=["host-1"], time_window=(now - timedelta(hours=1), now))
+    defaults = dict(
+        entities=[Entity(kind="host", value="host-1")],
+        time_window=(now - timedelta(hours=1), now),
+    )
     return Scope(**{**defaults, **overrides})
 
 
@@ -26,7 +29,8 @@ class TestAnalystTask:
     def test_valid_task(self):
         task = make_task()
         assert task.goal == "did host-1 execute a malicious binary"
-        assert task.scope.entities == ["host-1"]
+        assert task.scope.entities == [Entity(kind="host", value="host-1")]
+        assert task.schema_version == 1
 
     def test_missing_required_field_rejected(self):
         with pytest.raises(ValidationError):
@@ -39,7 +43,16 @@ class TestAnalystTask:
     def test_no_tool_specific_fields(self):
         # the whole point of this contract: it must never grow a field that
         # names a product, index, or tool -- only what the Analyst can specify.
-        assert set(AnalystTask.model_fields) == {"task_id", "hypothesis_id", "goal", "scope"}
+        # `schema_version` is metadata, not intent: this is the Analyst -> Broker
+        # interface and its producer doesn't exist yet, so extension by the
+        # producer has to be a versioned event rather than a break.
+        assert set(AnalystTask.model_fields) == {
+            "schema_version",
+            "task_id",
+            "hypothesis_id",
+            "goal",
+            "scope",
+        }
 
 
 class TestTaskClassification:

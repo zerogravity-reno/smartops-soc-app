@@ -1,5 +1,7 @@
 from contracts.analyst_task import AnalystTask, TaskClassification
 from contracts.subtask import (
+    Entity,
+    EntityKind,
     Evidence,
     Scope,
     SubagentAnswer,
@@ -11,6 +13,8 @@ from contracts.subtask import (
 
 __all__ = [
     "AnalystTask",
+    "Entity",
+    "EntityKind",
     "Evidence",
     "Scope",
     "SubagentAnswer",

@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# Credentials. Never commit these -- MCP server tokens, model API keys.
+.env
+.env.*
+!.env.example
+*.pem
+mcp_servers.local.json

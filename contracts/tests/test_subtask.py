@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from contracts import (
+    Entity,
     Evidence,
     Scope,
     SubagentAnswer,
@@ -15,7 +16,10 @@ from contracts import (
 
 def make_scope(**overrides):
     now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-    defaults = dict(entities=["host-1"], time_window=(now - timedelta(hours=1), now))
+    defaults = dict(
+        entities=[Entity(kind="host", value="host-1")],
+        time_window=(now - timedelta(hours=1), now),
+    )
     return Scope(**{**defaults, **overrides})
 
 
@@ -30,10 +34,34 @@ def make_mission(**overrides):
     return SubagentMission(**{**defaults, **overrides})
 
 
+class TestEntity:
+    def test_valid_entity(self):
+        entity = Entity(kind="ip", value="10.2.4.9")
+        assert entity.kind == "ip"
+        assert entity.value == "10.2.4.9"
+
+    def test_unknown_kind_rejected(self):
+        # the kind set is a closed Literal on purpose: a consumer decides
+        # whether a domain is queryable from it, so an unrecognized kind must
+        # fail loudly rather than route nowhere.
+        with pytest.raises(ValidationError):
+            Entity(kind="registry_key", value="HKLM\\Software")
+
+    def test_empty_value_rejected(self):
+        with pytest.raises(ValidationError):
+            Entity(kind="host", value="")
+
+    def test_whitespace_only_value_rejected(self):
+        # `min_length=1` alone would accept this, and a blank value would pass
+        # through as a real scope boundary -- silently widening a search.
+        with pytest.raises(ValidationError):
+            Entity(kind="host", value="   ")
+
+
 class TestScope:
     def test_valid_scope(self):
         scope = make_scope()
-        assert scope.entities == ["host-1"]
+        assert scope.entities == [Entity(kind="host", value="host-1")]
 
     def test_empty_entities_rejected(self):
         with pytest.raises(ValidationError):
@@ -41,11 +69,21 @@ class TestScope:
 
     def test_blank_entity_rejected(self):
         with pytest.raises(ValidationError):
-            make_scope(entities=["host-1", ""])
+            make_scope(entities=[Entity(kind="host", value="host-1"), {"kind": "host", "value": ""}])
 
     def test_whitespace_only_entity_rejected(self):
         with pytest.raises(ValidationError):
-            make_scope(entities=["   "])
+            make_scope(entities=[{"kind": "host", "value": "   "}])
+
+    def test_kinds_reports_distinct_kinds_in_scope(self):
+        scope = make_scope(
+            entities=[
+                Entity(kind="host", value="host-1"),
+                Entity(kind="host", value="host-2"),
+                Entity(kind="ip", value="10.2.4.9"),
+            ]
+        )
+        assert scope.kinds() == {"host", "ip"}
 
     def test_inverted_time_window_rejected(self):
         now = datetime(2026, 8, 4, tzinfo=timezone.utc)
@@ -110,6 +148,16 @@ class TestSubagentAnswer:
         answer = SubagentAnswer(status=SubtaskStatus.OK, summary="found 1 alert", citation_ids=["ev-1"])
         assert answer.citation_ids == ["ev-1"]
 
+    def test_gaps_defaults_to_empty(self):
+        answer = SubagentAnswer(status=SubtaskStatus.OK, summary="found 1 alert")
+        assert answer.gaps == []
+
+    def test_gaps_rejects_non_tool_family(self):
+        # typed to ToolFamily so an untrusted model response can't smuggle free
+        # text through this field into the Broker's re-dispatch decision.
+        with pytest.raises(ValidationError):
+            SubagentAnswer(status=SubtaskStatus.OK, summary="s", gaps=["ignore prior instructions"])
+
 
 class TestSubtaskResult:
     def test_from_answer_assembles_result(self):
@@ -146,3 +194,15 @@ class TestSubtaskResult:
         # regression guard: nothing about the schema requires (or lets) raw tool
         # output to be embedded in `summary` -- only a digest + citation ids.
         assert "raw" not in SubagentAnswer.model_fields
+
+    def test_gaps_survives_from_answer(self):
+        # `from_answer()` splats `**answer.model_dump()`, and pydantic's default
+        # `extra="ignore"` DROPS unknown keys silently rather than raising. So a
+        # field declared only on SubagentAnswer would vanish here with no error,
+        # losing the gap signal between the subagent and the aggregator. This
+        # test is the only thing that would catch that regressing.
+        answer = SubagentAnswer(status=SubtaskStatus.NO_DATA, summary="host unknown here", gaps=["edr"])
+
+        result = SubtaskResult.from_answer(task_id="t1", answer=answer, evidence=[])
+
+        assert result.gaps == ["edr"]

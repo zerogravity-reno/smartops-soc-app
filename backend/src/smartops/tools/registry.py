@@ -20,6 +20,7 @@ them directly.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -27,6 +28,8 @@ from contracts import ToolFamily
 from strands.tools.mcp import MCPClient
 
 from smartops.tools.mcp import splunk
+
+logger = logging.getLogger(__name__)
 
 # Clients started so far, one entry per family that's actually been resolved.
 # `MCPClient` requires `.start()` before `list_tools_sync()` will work at all
@@ -70,6 +73,18 @@ FAMILY_REGISTRY: dict[ToolFamily, ToolFamilyConfig] = {
 def _clients_for(family: ToolFamily, cfg: ToolFamilyConfig) -> list[MCPClient]:
     """The started `MCPClient`s for `family`, starting them on first use.
 
+    A client that can't be built or started is logged and skipped, leaving the
+    family with fewer (possibly zero) clients rather than propagating. Callers
+    read "zero clients" as "this family isn't available right now" -- which is
+    the honest current state for every family, since no MCP server is wired up
+    yet. Isolation is per-client and per-family: one unconfigured vendor must
+    never abort resolution for the others.
+
+    The catch is deliberately broad. Today the only failure is Splunk's
+    `NotImplementedError` stub, but real vendors fail with connection errors,
+    timeouts, and auth errors, and a narrowly-typed catch would need revisiting
+    the first time a URL is merely wrong rather than unimplemented.
+
     Not thread-safe against true parallel callers (no lock) -- fine under
     asyncio's single-threaded scheduling, since nothing here awaits mid-check,
     but revisit if `tools_for()` is ever called from more than one OS thread.
@@ -77,8 +92,16 @@ def _clients_for(family: ToolFamily, cfg: ToolFamilyConfig) -> list[MCPClient]:
     if family not in _started_clients:
         clients = []
         for factory in cfg.mcp_client_factories:
-            client = factory()
-            client.start()
+            try:
+                client = factory()
+                client.start()
+            except Exception:
+                logger.warning(
+                    "family=%s | MCP client unavailable, skipping it for this family",
+                    family,
+                    exc_info=True,
+                )
+                continue
             clients.append(client)
         _started_clients[family] = clients
     return _started_clients[family]

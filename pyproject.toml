@@ -4,3 +4,12 @@ members = ["contracts", "backend"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+
+# At the root rather than per-member so a bare `pytest` from the repo root
+# collects both workspace members. It previously lived only in backend/, so
+# running pytest from the root failed every async test with "async def
+# functions are not natively supported". Also covers contracts/ for any future
+# async test there.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["contracts/tests", "backend/tests"]

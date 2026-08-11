@@ -14,23 +14,48 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 ToolFamily = Literal["edr", "ndr", "vt", "siem"]
 
+EntityKind = Literal["host", "user", "ip", "file_hash", "domain", "url", "process"]
+"""What kind of observable an entity is.
+
+Typed rather than a bare string because a `ToolFamily`'s *dispatchability* is a
+fact about the observables in scope, not a judgement: VirusTotal cannot be
+queried without a hash, IP, domain, or URL, no matter what any model decides.
+Consumers derive that from `Entity.kind`; see `smartops.broker`, which owns the
+family -> required-kinds mapping (this module deliberately holds shape only).
+
+Proposed by the Broker as its consumer, pending review against Yousef's
+Context Contract Template. `process` and `url` are the least settled members.
+"""
+
+
+class Entity(BaseModel):
+    """One observable a mission is allowed to look at."""
+
+    kind: EntityKind
+    value: str = Field(min_length=1)
+
+    @field_validator("value")
+    @classmethod
+    def _value_is_not_blank(cls, value: str) -> str:
+        # `min_length=1` bounds length but accepts "   ". A whitespace-only
+        # value would pass through as a real scope boundary -- e.g. into a
+        # subagent's query construction -- and silently widen a search
+        # instead of failing loudly.
+        if not value.strip():
+            raise ValueError("entity value must not be blank")
+        return value
+
 
 class Scope(BaseModel):
     """The slice of the environment a mission is allowed to look at."""
 
-    entities: list[str] = Field(min_length=1)
+    entities: list[Entity] = Field(min_length=1)
     time_window: tuple[datetime, datetime]
 
-    @field_validator("entities")
-    @classmethod
-    def _entities_are_non_empty(cls, entities: list[str]) -> list[str]:
-        # `min_length=1` only bounds the list; an entity of "" or "  " would
-        # otherwise pass through as a real scope boundary -- e.g. into a
-        # subagent's query construction -- and silently widen a search
-        # instead of failing loudly.
-        if any(not entity.strip() for entity in entities):
-            raise ValueError("entities must not contain empty or blank strings")
-        return entities
+    def kinds(self) -> set[EntityKind]:
+        """The distinct observable kinds in scope. Consumers use this to decide
+        whether a domain can be queried at all."""
+        return {entity.kind for entity in self.entities}
 
     @model_validator(mode="after")
     def _window_is_ordered_and_aware(self) -> Self:
@@ -126,6 +151,14 @@ class SubagentAnswer(_StatusErrorContract):
 
     summary: str = Field(min_length=1)
     citation_ids: list[str] = Field(default_factory=list)
+    gaps: list[ToolFamily] = Field(
+        default_factory=list,
+        description=(
+            "Domains that could close a gap this subagent hit. Advisory only -- "
+            "the Broker decides whether to dispatch them. Typed to ToolFamily so "
+            "an untrusted model response can't smuggle free text through this field."
+        ),
+    )
 
 
 class SubtaskResult(_StatusErrorContract):
@@ -135,6 +168,15 @@ class SubtaskResult(_StatusErrorContract):
     summary: str = Field(min_length=1)
     citation_ids: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
+    gaps: list[ToolFamily] = Field(
+        default_factory=list,
+        description=(
+            "Mirrors `SubagentAnswer.gaps`. Declared on BOTH models deliberately: "
+            "`from_answer()` splats `**answer.model_dump()`, and pydantic's default "
+            "`extra='ignore'` would SILENTLY DROP a field present only on the answer, "
+            "losing the signal between the subagent and the aggregator with no error."
+        ),
+    )
 
     @model_validator(mode="after")
     def _evidence_ids_are_unique(self) -> Self:

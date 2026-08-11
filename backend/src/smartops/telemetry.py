@@ -8,12 +8,22 @@ is only responsible for *where those spans go* and for the handful of
 things Strands doesn't already know about: our business-level IDs and our
 own `Budget` ledger.
 
-Zero-config by default: prints spans to the console if no OTLP collector is
-configured, so this works out of the box in local dev with no external
-service. Point `OTEL_EXPORTER_OTLP_ENDPOINT` at a real collector (Langfuse,
-Phoenix, CloudWatch, ...) later and nothing in this module changes -- that
-portability is the whole reason to use Strands' built-in instrumentation
-instead of a hand-rolled one.
+Exports nothing by default. Pass `console=True` for local dev, or point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at a real collector (Langfuse, Phoenix,
+CloudWatch, ...) and nothing in this module changes -- that portability is the
+whole reason to use Strands' built-in instrumentation instead of a hand-rolled
+one. Langfuse is auto-detected by Strands from that endpoint and changes how it
+records span content, with no code on our side.
+
+Silent-by-default is deliberate: Strands' GenAI spans can carry prompt and
+response content, so a console exporter left on would put SOC investigation
+data into plaintext container logs.
+
+Note for when a real model call lands: Strands' span-content redaction is
+opt-in and OFF by default -- set `gen_ai_unredacted_attributes=` (empty value)
+in `OTEL_SEMCONV_STABILITY_OPT_IN` to redact `gen_ai.input.messages`,
+`gen_ai.output.messages`, and `gen_ai.system_instructions`. Not wired up here
+because no model call happens yet, so no span currently carries content.
 """
 
 from __future__ import annotations
@@ -32,19 +42,29 @@ _configured = False
 _configure_lock = threading.Lock()
 
 
-def configure_telemetry() -> None:
+def configure_telemetry(*, console: bool = False) -> None:
     """Call once per process, before the first `Agent` is constructed.
+
     Idempotent -- safe to call from multiple entry points, including
     concurrently: the check-and-set is guarded by a lock, so two threads
     racing to configure telemetry for the first time can't both pass the
-    check and double-initialize `StrandsTelemetry`/its exporters.
+    check and double-initialize `StrandsTelemetry`/its exporters. The guard is
+    load-bearing, not belt-and-braces: `StrandsTelemetry`'s setup methods are
+    idempotent per call, but calling one twice adds a *duplicate* span
+    processor, so every span would be exported twice.
+
+    `console` defaults to False because Strands' GenAI spans can carry prompt
+    and response content, and this is a SOC tool -- investigation data must not
+    land in container stdout just because someone imported us. Opt in
+    explicitly for local debugging.
     """
     global _configured
     with _configure_lock:
         if _configured:
             return
         telemetry = StrandsTelemetry()
-        telemetry.setup_console_exporter()
+        if console:
+            telemetry.setup_console_exporter()
         if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
             telemetry.setup_otlp_exporter()
         _configured = True

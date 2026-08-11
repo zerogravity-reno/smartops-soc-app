@@ -16,8 +16,17 @@ from contracts.subtask import Scope, ToolFamily
 
 class AnalystTask(BaseModel):
     """One hypothesis's worth of investigative intent, before any domain
-    classification has happened."""
+    classification has happened.
 
+    This is the Analyst -> Broker interface. It is versioned because the Analyst
+    that produces it does not exist yet: the Broker (its only consumer) defines
+    the shape it needs, and extension by the producer should be a normal event
+    rather than a break. Deliberately excludes hypothesis prose, prior findings,
+    and round/priority -- each would be a guess about what an unbuilt Analyst
+    wants, and the first two are further attacker-influenceable input to defend.
+    """
+
+    schema_version: int = 1
     task_id: str = Field(min_length=1)
     hypothesis_id: str = Field(min_length=1)
     goal: str = Field(min_length=1)

@@ -45,8 +45,53 @@ class ModelPrice:
 PRICING: dict[str, ModelPrice] = {
     "claude-opus-5": ModelPrice(input_per_mtok=5, output_per_mtok=25),
     "claude-sonnet-5": ModelPrice(input_per_mtok=3, output_per_mtok=15),
+    "claude-sonnet-4-6": ModelPrice(input_per_mtok=3, output_per_mtok=15),
     "claude-haiku-4-5": ModelPrice(input_per_mtok=1, output_per_mtok=5),
 }
+"""Anthropic **first-party** rates, in USD per million tokens.
+
+⚠️ These are NOT Bedrock rates. Amazon Bedrock is partner-operated with its own
+separate price list, so every figure a `ModelChoice` bills through a Bedrock
+`model_id` is an approximation until re-baselined against
+https://aws.amazon.com/bedrock/pricing/. Relative ordering between tiers holds;
+absolute numbers do not. `spend_by_role()` is therefore directionally correct on
+Bedrock and not an invoice.
+"""
+
+
+@dataclass(frozen=True)
+class ModelChoice:
+    """Pairs a provider-facing model id with the `PRICING` key that bills it.
+
+    These are two different namespaces and conflating them is a real bug, not a
+    style question. `Agent(model="claude-sonnet-5")` does not look anything up:
+    Strands turns a bare string straight into `BedrockModel(model_id=...)`, so
+    the value it needs is a Bedrock id like
+    `us.anthropic.claude-sonnet-4-5-20250929-v1:0` -- including the `us.`/`eu.`
+    inference-profile prefix on-demand throughput requires. `PRICING` is keyed
+    by our own short names. One string cannot satisfy both; whichever you pick,
+    the other call fails.
+
+    Validating at construction means a bad pairing fails at startup rather than
+    on the first billed call.
+
+    ⚠️ `PRICING` holds Anthropic **first-party** rates. Bedrock is
+    partner-operated with its own price list, so on Bedrock the ledger is an
+    approximation until re-baselined -- relative ordering between tiers holds,
+    absolute figures don't.
+    """
+
+    model_id: str
+    pricing_key: str
+
+    def __post_init__(self) -> None:
+        if not self.model_id.strip():
+            raise ValueError("model_id must not be blank")
+        if self.pricing_key not in PRICING:
+            raise ValueError(
+                f"no pricing entry for pricing_key {self.pricing_key!r} -- "
+                f"known keys: {sorted(PRICING)}"
+            )
 
 
 def _price_for(model: str) -> ModelPrice:
