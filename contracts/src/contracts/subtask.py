@@ -43,7 +43,13 @@ class Entity(BaseModel):
         # instead of failing loudly.
         if not value.strip():
             raise ValueError("entity value must not be blank")
-        return value
+        # Return the *stripped* value, not the original. Validating `strip()`
+        # while storing the raw string let surrounding whitespace survive into
+        # every downstream query -- a URL path segment, an SPL predicate -- so
+        # `"ip: 10.2.4.9"` looked up a different indicator than was typed, with
+        # no error. Normalising here fixes it for every producer at once rather
+        # than in each caller.
+        return value.strip()
 
 
 class Scope(BaseModel):

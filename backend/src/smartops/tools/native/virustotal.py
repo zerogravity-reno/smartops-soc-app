@@ -31,10 +31,13 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from contracts import Entity, EntityKind, Scope
 from strands import tool
+
+from smartops.errors import NotConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +60,22 @@ _PATH_BY_KIND: dict[EntityKind, str] = {
 
 
 class VirusTotalError(RuntimeError):
-    """A lookup that could not be completed. Carries a message fit to put in a
-    `SubtaskResult`, never the API key."""
+    """A lookup that was attempted and failed. Carries a message fit to put in a
+    `SubtaskResult`, never the API key.
+
+    Attempted-and-failed maps to `SubtaskStatus.ERROR`, which the contract
+    defines as retryable -- as a rate limit or a transport blip should be.
+    """
 
 
-class VirusTotalNotConfigured(VirusTotalError):
+class VirusTotalNotConfigured(NotConfigured):
     """No API key in the environment. Expected, not exceptional -- it is how
-    this runs before credentials exist."""
+    this runs before credentials exist.
+
+    Deliberately **not** a `VirusTotalError`: nothing was attempted, so this maps
+    to `REJECTED` rather than `ERROR`. Inheriting from the broker's `NotConfigured`
+    is what lets `_enrich` distinguish the two without matching on messages.
+    """
 
 
 @dataclass(frozen=True)
@@ -110,10 +122,19 @@ def _identifier(entity: Entity) -> str:
     URLs are addressed by their unpadded base64url encoding rather than the URL
     itself -- VirusTotal's own scheme, and the one part of this that is easy to
     get subtly wrong.
+
+    ⚠️ Everything else is percent-encoded with `safe=""`, so no character in an
+    entity value can be read as path structure. Entity values derive from alert
+    data and are only checked for non-blankness, so an unencoded value like
+    `a/../../users/self` would have httpx normalise the dot segments and send the
+    *authenticated* request to a different API resource entirely -- returning 200
+    with no `last_analysis_stats`, which the caller would then report as a clean
+    verdict for a known-bad indicator, while storing that endpoint's response
+    (which for `/users/{id}` includes the account's own API key) as `Evidence`.
     """
     if entity.kind == "url":
         return base64.urlsafe_b64encode(entity.value.encode()).decode().rstrip("=")
-    return entity.value
+    return quote(entity.value, safe="")
 
 
 async def _lookup(entity: Entity, *, timeout: float = _DEFAULT_TIMEOUT) -> Verdict:
@@ -155,7 +176,16 @@ async def _lookup(entity: Entity, *, timeout: float = _DEFAULT_TIMEOUT) -> Verdi
 
     body = response.json()
     attributes = body.get("data", {}).get("attributes", {})
-    stats = attributes.get("last_analysis_stats", {})
+    if "last_analysis_stats" not in attributes:
+        # Defence in depth behind the encoding fix above: a 200 without analysis
+        # stats is not an indicator verdict, so it must never be reported as a
+        # clean one. Reaching here means we queried something that is not an
+        # indicator object -- refuse to interpret it rather than inventing zeros.
+        raise VirusTotalError(
+            f"unexpected VirusTotal response for {entity.kind}={entity.value!r}: "
+            "no analysis stats in the payload"
+        )
+    stats = attributes["last_analysis_stats"]
     return Verdict(
         entity=entity,
         malicious=int(stats.get("malicious", 0)),
@@ -178,18 +208,57 @@ def queryable_entities(scope: Scope) -> list[Entity]:
     return [entity for entity in scope.entities if entity.kind in _PATH_BY_KIND]
 
 
-async def enrich_scope(scope: Scope, *, timeout: float = _DEFAULT_TIMEOUT) -> list[Verdict]:
+@dataclass(frozen=True)
+class Enrichment:
+    """What a scope-wide lookup produced, including a partial result.
+
+    `failure` set with a non-empty `verdicts` is the important case: some
+    indicators were successfully looked up and then the run stopped. Those
+    verdicts were paid for and may include a confirmed-malicious hit, so they
+    must reach the caller rather than being discarded with the exception.
+    """
+
+    verdicts: list[Verdict]
+    failure: str | None = None
+    attempted: int = 0
+
+    @property
+    def is_partial(self) -> bool:
+        return self.failure is not None and bool(self.verdicts)
+
+
+async def enrich_scope(scope: Scope, *, timeout: float = _DEFAULT_TIMEOUT) -> Enrichment:
     """Look up every queryable entity in `scope`. Model-free.
 
     Sequential rather than concurrent, deliberately: the free tier's ~4
     requests/minute means parallelism buys nothing and just turns one 429 into
-    several. Raises on the first hard failure so the caller reports one clear
-    reason rather than a partial result with a silent hole.
+    several.
+
+    Stops at the first hard failure but **returns what it already has**. An
+    earlier version raised, which threw away every verdict retrieved before the
+    failure -- so a six-indicator scope that hit the rate limit on the fifth
+    lookup reported nothing at all, losing four completed results including any
+    malicious hit among them.
+
+    `VirusTotalNotConfigured` still propagates: no key means nothing was
+    attempted, which is a different condition from a run that stopped partway.
     """
+    entities = queryable_entities(scope)
     verdicts: list[Verdict] = []
-    for entity in queryable_entities(scope):
-        verdicts.append(await _lookup(entity, timeout=timeout))
-    return verdicts
+    for entity in entities:
+        try:
+            verdicts.append(await _lookup(entity, timeout=timeout))
+        except VirusTotalNotConfigured:
+            raise
+        except VirusTotalError as exc:
+            return Enrichment(verdicts=verdicts, failure=str(exc), attempted=len(entities))
+        except Exception as exc:  # transport errors, malformed JSON
+            return Enrichment(
+                verdicts=verdicts,
+                failure=f"{type(exc).__name__}: {exc}",
+                attempted=len(entities),
+            )
+    return Enrichment(verdicts=verdicts, attempted=len(entities))
 
 
 # --- Model-callable surface (for the Aug-27 `vt` subagent) --------------------

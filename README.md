@@ -71,8 +71,13 @@ Now `edr` is the one that cannot help, and `vt` has cleared the gate — it got 
 far as attempting a real lookup and reports the missing credential instead.
 
 Entities are `kind:value`, where kind is one of `host`, `user`, `ip`,
-`file_hash`, `domain`, `url`, `process`. Add `--verbose` for logs, `--scripted`
-to bypass the model even when one is configured.
+`file_hash`, `domain`, `url`, `process`. Add `--verbose` for logs.
+
+`--scripted` bypasses the model even when one is configured, so `--families`
+drives dispatch directly. ⚠️ It governs **the model only** — domain lookups
+still run, so with `VT_API_KEY` set, `--scripted` makes real VirusTotal
+requests. That's usually what you want (it's how you test a domain without
+spending model tokens), but it is not an offline mode.
 
 ## How it works
 
@@ -133,10 +138,21 @@ essentials:
 |---|---|
 | `SPLUNK_MCP_URL`, `SPLUNK_TOKEN` | Connects `siem` |
 | `VT_API_KEY` | Connects `vt` (works with no model) |
-| `AWS_REGION` (+ AWS credentials) | Selects Bedrock |
+| `AWS_BEDROCK_MODEL_ID` + `AWS_REGION` | Selects Bedrock |
 | `DEEPSEEK_API_KEY` | Selects DeepSeek, if Bedrock is absent |
 | `SMARTOPS_LLM_PROVIDER` | Forces `bedrock` or `deepseek` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables span export (off by default) |
+
+**Bedrock is the primary**; a DeepSeek key left in `.env` won't quietly take over
+from it. Activation keys on the *model id*, not `AWS_REGION` — that's set in
+almost any AWS environment, so keying on it would select Bedrock for deployments
+that never intended to use a model. `AWS_REGION` is then **required**, because
+Strands otherwise defaults to us-west-2 silently, which would send investigation
+data to the wrong region with no error.
+
+You don't normally set a pricing key — it's inferred from the model id, and the
+run refuses to start rather than billing an unrecognised model against the wrong
+tier.
 
 **Provider selection is configuration, not failover.** A Bedrock outage does not
 fall through to DeepSeek mid-run — that would silently change which model, and

@@ -25,8 +25,10 @@ them directly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable
 
@@ -239,5 +241,30 @@ async def tools_for(family: ToolFamily) -> list:
     for client in _clients_by_family.get(family, []):
         # `continue_on_error` makes a connection failure yield [] here rather
         # than raise, so one dead vendor cannot abort resolution for the others.
-        tools.extend(await client.load_tools())
+        tools.extend(await _load_tools_off_loop(client))
     return tools
+
+
+async def _load_tools_off_loop(client: MCPClient) -> Sequence[Any]:
+    """`client.load_tools()`, run off the event loop.
+
+    `load_tools()` is declared `async` but its body is synchronous and blocking:
+    it calls `start()` -- which waits on a background thread's init future for up
+    to `startup_timeout` (30s by default) -- and then `list_tools_sync()` per
+    page, with no `await` between them. Awaiting it directly therefore stalls the
+    whole loop.
+
+    That matters because `tools_for()` was made async precisely so concurrent
+    dispatch would not serialise. With an unreachable MCP host, an inline await
+    would block one family's resolution *and* every other family's, plus the
+    VirusTotal HTTP calls and any `asyncio.wait_for` meant to bound the mission --
+    the async signature making the code look non-blocking while doing the
+    opposite. This is the same failure the planner's `asyncio.to_thread` wrapper
+    guarded against, which was removed with `plan_missions()` and never
+    re-established for this path.
+
+    The coroutine is created here and driven by `asyncio.run` in a worker thread.
+    Safe because nothing in `load_tools()` actually suspends, so it has no
+    affinity to the loop it was created on.
+    """
+    return await asyncio.to_thread(asyncio.run, client.load_tools())

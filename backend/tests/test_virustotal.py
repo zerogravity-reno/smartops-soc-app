@@ -131,6 +131,91 @@ class TestAuthAndAddressing:
         assert "=" not in seen["path"].rsplit("/", 1)[1]
 
 
+class TestPathEncoding:
+    """Entity values are alert-derived and only checked for non-blankness, so
+    nothing in one may be readable as URL path structure."""
+
+    async def test_traversal_in_an_entity_value_cannot_redirect_the_request(self, monkeypatch):
+        # The attack: httpx normalises `..` before sending, so an unencoded value
+        # sent the AUTHENTICATED request to /api/v3/users/self -- which returns
+        # 200, was read as a clean verdict for a known-bad domain, and stored a
+        # payload containing the account's own API key as Evidence.
+        seen = {}
+
+        def handler(request):
+            # `raw_path`, not `path`: httpx's `.path` percent-DECODES for
+            # convenience, so it shows `a/../../users/self` even when the wire
+            # bytes are correctly escaped. Asserting on `.path` would fail
+            # against a correct fix and pass against no fix at all.
+            seen["raw"] = request.url.raw_path.decode()
+            return httpx.Response(200, json=stats_response())
+
+        monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(handler))
+        await enrich_scope(make_scope(Entity(kind="domain", value="a/../../users/self")))
+
+        assert seen["raw"] == "/api/v3/domains/a%2F..%2F..%2Fusers%2Fself"
+        # The point: the value cannot escape its own path segment.
+        assert "/users/self" not in seen["raw"]
+        assert "/../" not in seen["raw"]
+
+    async def test_query_and_fragment_characters_are_encoded(self, monkeypatch):
+        # `?` or `#` would otherwise truncate the path and append attacker-chosen
+        # query parameters to an authenticated request.
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=stats_response())
+
+        monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(handler))
+        await enrich_scope(make_scope(Entity(kind="domain", value="evil.test?x=1#frag")))
+
+        assert "?x=1" not in seen["url"]
+        assert "#frag" not in seen["url"]
+        assert "%3F" in seen["url"] and "%23" in seen["url"]
+
+
+class TestPartialResults:
+    """A run that stops partway must still return what it retrieved."""
+
+    async def test_verdicts_retrieved_before_a_failure_survive(self, monkeypatch):
+        # The loss this prevents: six indicators, rate limit on the third, and
+        # the two completed lookups -- one of them a malicious hit -- were
+        # discarded along with the exception.
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return httpx.Response(200, json=stats_response(malicious=9))
+            return httpx.Response(429, json={})
+
+        monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(handler))
+        outcome = await enrich_scope(
+            make_scope(
+                Entity(kind="ip", value="1.1.1.1"),
+                Entity(kind="ip", value="2.2.2.2"),
+                Entity(kind="ip", value="3.3.3.3"),
+                Entity(kind="ip", value="4.4.4.4"),
+            )
+        )
+
+        assert len(outcome.verdicts) == 2
+        assert all(v.is_flagged for v in outcome.verdicts)
+        assert outcome.is_partial
+        assert outcome.attempted == 4
+        assert "rate limit" in outcome.failure
+
+    async def test_a_missing_key_still_propagates(self, monkeypatch):
+        # Nothing was attempted, which is a different condition from stopping
+        # partway -- it must stay distinguishable so the caller can report
+        # REJECTED rather than ERROR.
+        monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
+
+        with pytest.raises(VirusTotalNotConfigured):
+            await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+
+
 class TestFailureModes:
     async def test_missing_key_is_a_distinct_expected_condition(self, monkeypatch):
         monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
@@ -147,11 +232,12 @@ class TestFailureModes:
             fake_transport(lambda request: httpx.Response(404, json={})),
         )
 
-        verdicts = await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+        outcome = await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
 
-        assert verdicts[0].found is False
-        assert verdicts[0].is_flagged is False
-        assert "unknown to VirusTotal" in verdicts[0].summary()
+        assert outcome.failure is None
+        assert outcome.verdicts[0].found is False
+        assert outcome.verdicts[0].is_flagged is False
+        assert "unknown to VirusTotal" in outcome.verdicts[0].summary()
 
     async def test_429_reads_as_the_rate_limit_it_is(self, monkeypatch):
         # The free tier allows ~4 requests/minute, so this is expected traffic,
@@ -162,8 +248,10 @@ class TestFailureModes:
             fake_transport(lambda request: httpx.Response(429, json={})),
         )
 
-        with pytest.raises(VirusTotalError, match="rate limit"):
-            await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+        outcome = await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+
+        assert "rate limit" in outcome.failure
+        assert outcome.verdicts == []
 
     async def test_401_names_the_env_var_to_check(self, monkeypatch):
         monkeypatch.setattr(
@@ -172,8 +260,9 @@ class TestFailureModes:
             fake_transport(lambda request: httpx.Response(401, json={})),
         )
 
-        with pytest.raises(VirusTotalError, match=API_KEY_ENV_VAR):
-            await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+        outcome = await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+
+        assert API_KEY_ENV_VAR in outcome.failure
 
     async def test_error_messages_never_contain_the_key(self, monkeypatch):
         monkeypatch.setenv(API_KEY_ENV_VAR, "super-secret-value")
@@ -183,10 +272,24 @@ class TestFailureModes:
             fake_transport(lambda request: httpx.Response(500, json={})),
         )
 
-        with pytest.raises(VirusTotalError) as exc:
-            await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
+        outcome = await enrich_scope(make_scope(Entity(kind="ip", value="8.8.8.8")))
 
-        assert "super-secret-value" not in str(exc.value)
+        assert "super-secret-value" not in (outcome.failure or "")
+
+    async def test_a_200_without_analysis_stats_is_refused_not_read_as_clean(self, monkeypatch):
+        # Defence in depth behind the path-encoding fix: this is exactly the
+        # shape a request redirected to a non-indicator endpoint returns, and
+        # reporting it as "0 malicious" would call a known-bad indicator clean.
+        monkeypatch.setattr(
+            virustotal.httpx,
+            "AsyncClient",
+            fake_transport(lambda request: httpx.Response(200, json={"data": {"attributes": {}}})),
+        )
+
+        outcome = await enrich_scope(make_scope(Entity(kind="domain", value="evil.example")))
+
+        assert outcome.verdicts == []
+        assert "no analysis stats" in outcome.failure
 
 
 class TestScopeFiltering:
@@ -208,7 +311,11 @@ class TestScopeFiltering:
 
         monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(handler))
 
-        assert await enrich_scope(make_scope(Entity(kind="user", value="someuser"))) == []
+        outcome = await enrich_scope(make_scope(Entity(kind="user", value="someuser")))
+
+        assert outcome.verdicts == []
+        assert outcome.failure is None  # nothing to look up is not a failure
+        assert outcome.attempted == 0
 
 
 class TestVerdict:

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from smartops.budget import (
+    BEDROCK_MODEL_ID_ENV_VAR,
     PRICING,
     PROVIDER_ENV_VAR,
     Budget,
@@ -162,7 +163,16 @@ class TestProviderLadder:
     is a pure function of the environment.
     """
 
-    PROVIDER_VARS = ("AWS_REGION", "AWS_DEFAULT_REGION", "DEEPSEEK_API_KEY", PROVIDER_ENV_VAR)
+    PROVIDER_VARS = (
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "DEEPSEEK_API_KEY",
+        BEDROCK_MODEL_ID_ENV_VAR,
+        "SMARTOPS_MODEL_ID",
+        "SMARTOPS_PRICING_KEY",
+        PROVIDER_ENV_VAR,
+    )
+    BEDROCK_ID = "us.anthropic.claude-sonnet-4-6-20260115-v1:0"
 
     @pytest.fixture(autouse=True)
     def _clean_env(self, monkeypatch):
@@ -184,12 +194,13 @@ class TestProviderLadder:
         # Bedrock is the primary; DeepSeek is the cheaper alternative, not the
         # preference.
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-fake")
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, self.BEDROCK_ID)
         monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         assert available_provider() is Provider.BEDROCK
 
     def test_explicit_override_beats_detection(self, monkeypatch):
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, self.BEDROCK_ID)
         monkeypatch.setenv(PROVIDER_ENV_VAR, "deepseek")
 
         assert available_provider() is Provider.DEEPSEEK
@@ -200,15 +211,19 @@ class TestProviderLadder:
         with pytest.raises(ValueError, match="bedrock"):
             available_provider()
 
-    def test_either_aws_region_variable_selects_bedrock(self, monkeypatch):
-        # AWS_DEFAULT_REGION is the older spelling and still common in CI.
-        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+    def test_aws_region_alone_does_not_select_bedrock(self, monkeypatch):
+        # AWS_REGION is set in almost any AWS environment -- for S3, CloudWatch,
+        # anything. Activating on it would select Bedrock for deployments that
+        # never intended to use a model at all.
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
-        assert available_provider() is Provider.BEDROCK
+        assert available_provider() is None
 
     def test_bedrock_choice_carries_the_region_explicitly(self, monkeypatch):
         # Passing region_name explicitly matters: AWS_REGION loses to a
         # configured profile, and Strands then falls back to us-west-2 silently.
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, self.BEDROCK_ID)
         monkeypatch.setenv("AWS_REGION", "eu-central-1")
 
         choice = model_choice_from_env()
@@ -216,27 +231,49 @@ class TestProviderLadder:
         assert choice.provider is Provider.BEDROCK
         assert choice.region == "eu-central-1"
 
-    def test_model_id_and_pricing_key_are_overridable_from_env(self, monkeypatch):
-        # How a real Bedrock inference-profile id gets supplied without a code
-        # edit -- the shipped default is a labelled placeholder.
+    def test_the_pricing_key_is_inferred_from_the_model_id(self, monkeypatch):
+        # So only one variable has to be configured in the common case. The two
+        # namespaces stay distinct; the second is just derived rather than typed.
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, self.BEDROCK_ID)
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("SMARTOPS_MODEL_ID", "us.anthropic.claude-real-v1:0")
-        monkeypatch.setenv("SMARTOPS_PRICING_KEY", "claude-opus-5")
 
         choice = model_choice_from_env()
 
-        assert choice.model_id == "us.anthropic.claude-real-v1:0"
-        assert choice.pricing_key == "claude-opus-5"
+        assert choice.model_id == self.BEDROCK_ID
+        assert choice.pricing_key == "claude-sonnet-4-6"
+
+    def test_an_explicit_pricing_key_overrides_inference(self, monkeypatch):
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, self.BEDROCK_ID)
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("SMARTOPS_PRICING_KEY", "claude-opus-5")
+
+        assert model_choice_from_env().pricing_key == "claude-opus-5"
+
+    def test_an_unbillable_model_id_raises_rather_than_guessing(self, monkeypatch):
+        # Billing a non-Claude model against a Claude tier silently would be
+        # worse than refusing to start.
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, "meta.llama3-70b-instruct-v1:0")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        with pytest.raises(ValueError, match="SMARTOPS_PRICING_KEY"):
+            model_choice_from_env()
+
+    def test_bedrock_without_a_model_id_names_the_variable_to_set(self, monkeypatch):
+        # No placeholder default: one that looks configured and 404s on the
+        # first call is worse than a startup error naming the fix.
+        monkeypatch.setenv(PROVIDER_ENV_VAR, "bedrock")
+
+        with pytest.raises(ValueError, match=BEDROCK_MODEL_ID_ENV_VAR):
+            model_choice_from_env()
 
     def test_deepseek_fails_loudly_until_its_rates_are_known(self, monkeypatch):
         # Deliberate: DeepSeek has no PRICING entry yet, so selecting it raises
-        # at construction naming the gap. Better a startup error than a ledger
-        # reporting the cheap provider as free -- which is the exact bug the
-        # nano-USD change fixed, and this keeps it from returning by the back
-        # door.
+        # naming the gap. Better a startup error than a ledger reporting the
+        # cheap provider as free -- the exact bug the nano-USD change fixed, and
+        # this keeps it from returning by the back door.
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-fake")
 
-        with pytest.raises(ValueError, match="no pricing entry"):
+        with pytest.raises(ValueError, match="PRICING"):
             model_choice_from_env()
 
     def test_an_openai_compatible_provider_needs_a_key_env_var(self):

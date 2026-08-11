@@ -205,28 +205,49 @@ class ModelChoice:
 
 PROVIDER_ENV_VAR = "SMARTOPS_LLM_PROVIDER"
 
+# The env var that both *activates* Bedrock and supplies its model id. Keyed on
+# the model id rather than AWS_REGION deliberately: AWS_REGION is set in almost
+# any AWS environment (S3, CloudWatch, anything), so activating on it would
+# select Bedrock for deployments that never intended to use it. The model id is
+# Bedrock-specific and is the one value Bedrock cannot run without.
+BEDROCK_MODEL_ID_ENV_VAR = "AWS_BEDROCK_MODEL_ID"
+
 _PROVIDER_DEFAULTS: dict[Provider, dict[str, Any]] = {
     Provider.BEDROCK: {
-        # ⚠️ UNVERIFIED. Strands' BedrockModel uses the legacy Converse path,
-        # whose ARN-versioned inference-profile id carries a date suffix that
-        # cannot be guessed. Resolve against the target account before a live
-        # call, and override with SMARTOPS_MODEL_ID:
+        # No default model id: Strands' BedrockModel uses the legacy Converse
+        # path, whose ARN-versioned inference-profile id carries a date suffix
+        # that cannot be guessed. Requiring it is better than shipping a
+        # placeholder that looks configured and 404s on the first call:
         #   aws bedrock list-inference-profiles --region <r> --query \
         #     "inferenceProfileSummaries[?contains(inferenceProfileId,'sonnet')].inferenceProfileId"
-        "model_id": "us.anthropic.claude-sonnet-4-6-PLACEHOLDER-v1:0",
-        "pricing_key": "claude-sonnet-4-6",
     },
     Provider.DEEPSEEK: {
         "model_id": "deepseek-chat",
-        # ⚠️ No PRICING entry exists for DeepSeek yet -- its published rates are
-        # needed first. Until then this pairing fails at construction, which is
-        # the intended behaviour: better a startup error naming the gap than a
-        # ledger quietly reporting the cheap provider as free.
-        "pricing_key": "deepseek-chat",
         "base_url": "https://api.deepseek.com",
         "api_key_env_var": "DEEPSEEK_API_KEY",
     },
 }
+
+
+def infer_pricing_key(model_id: str) -> str | None:
+    """Which `PRICING` row bills `model_id`, guessed from the id itself.
+
+    A provider model id and a pricing key are different namespaces -- one is
+    `us.anthropic.claude-sonnet-4-6-20260115-v1:0`, the other is
+    `claude-sonnet-4-6` -- but the family name is embedded in the first, so
+    requiring both to be configured is friction rather than information.
+
+    Longest key first, so `claude-sonnet-4-6` is preferred over
+    `claude-sonnet-5` when an id could loosely match both. Returns None rather
+    than guessing when nothing matches, because billing against the wrong tier
+    silently is worse than a startup error.
+    """
+    lowered = model_id.lower()
+    for key in sorted(PRICING, key=len, reverse=True):
+        family = key.removeprefix("claude-")
+        if family in lowered or family.replace("-", ".") in lowered:
+            return key
+    return None
 
 
 def available_provider() -> Provider | None:
@@ -252,10 +273,10 @@ def available_provider() -> Provider | None:
                 f"expected one of {[p.value for p in Provider]}"
             ) from None
 
-    # Bedrock first: it is the primary, needs no extra dependency, and its
-    # credentials may come from a profile or instance role rather than env vars,
-    # so region is the only reliable env-visible signal.
-    if os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
+    # Bedrock is the primary, so it is checked first: setting a Bedrock model id
+    # is an explicit statement of intent, and a DeepSeek key left in the file
+    # should not quietly take over from it.
+    if os.environ.get(BEDROCK_MODEL_ID_ENV_VAR, "").strip():
         return Provider.BEDROCK
     if os.environ.get("DEEPSEEK_API_KEY", "").strip():
         return Provider.DEEPSEEK
@@ -265,21 +286,64 @@ def available_provider() -> Provider | None:
 def model_choice_from_env(provider: Provider | None = None) -> ModelChoice | None:
     """Build the `ModelChoice` this environment implies, or None if no provider.
 
-    `SMARTOPS_MODEL_ID` and `SMARTOPS_PRICING_KEY` override the per-provider
-    defaults, which is how a real Bedrock inference-profile id gets supplied
-    without editing code.
+    Model id comes from `AWS_BEDROCK_MODEL_ID` for Bedrock (or `SMARTOPS_MODEL_ID`
+    for any provider). The pricing key is inferred from the model id, with
+    `SMARTOPS_PRICING_KEY` as an explicit override for when inference can't --
+    a new tier, or a rate that needs re-baselining.
     """
     provider = provider or available_provider()
     if provider is None:
         return None
 
     defaults = dict(_PROVIDER_DEFAULTS[provider])
+
+    if provider is Provider.BEDROCK:
+        if model_id := os.environ.get(BEDROCK_MODEL_ID_ENV_VAR, "").strip():
+            defaults["model_id"] = model_id
     if model_id := os.environ.get("SMARTOPS_MODEL_ID", "").strip():
-        defaults["model_id"] = model_id
+        defaults["model_id"] = model_id  # provider-agnostic override, wins
+
+    # Model id before region: when both are missing, the id is the more
+    # fundamental gap and naming it first is the more useful error.
+    if not defaults.get("model_id"):
+        raise ValueError(
+            f"provider {provider.value!r} needs a model id -- "
+            f"set {BEDROCK_MODEL_ID_ENV_VAR} (or SMARTOPS_MODEL_ID). For Bedrock: "
+            f"aws bedrock list-inference-profiles --region <r>"
+        )
+
+    if provider is Provider.BEDROCK:
+        region = (
+            os.environ.get("AWS_REGION", "").strip()
+            or os.environ.get("AWS_DEFAULT_REGION", "").strip()
+        )
+        if not region:
+            # Activation is keyed on the model id, which is independent of the
+            # region -- so without this check `region=None` reaches
+            # `BedrockModel(region_name=None)` and Strands falls back to
+            # us-west-2 *silently*. A deployment that chose eu-central-1 for data
+            # residency would ship investigation data to a US region with no
+            # error and no log line, which is the exact failure that passing
+            # region_name explicitly was meant to prevent.
+            raise ValueError(
+                "Bedrock is selected but no region is set -- set AWS_REGION "
+                "(or AWS_DEFAULT_REGION). Strands would otherwise default to "
+                "us-west-2 without warning."
+            )
+        defaults["region"] = region
+
     if pricing_key := os.environ.get("SMARTOPS_PRICING_KEY", "").strip():
         defaults["pricing_key"] = pricing_key
-    if provider is Provider.BEDROCK:
-        defaults["region"] = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    elif "pricing_key" not in defaults:
+        inferred = infer_pricing_key(defaults["model_id"])
+        if inferred is None:
+            raise ValueError(
+                f"cannot tell which PRICING entry bills model id "
+                f"{defaults['model_id']!r} -- set SMARTOPS_PRICING_KEY to one of "
+                f"{sorted(PRICING)}. Billing against the wrong tier silently is "
+                f"worse than this error."
+            )
+        defaults["pricing_key"] = inferred
 
     return ModelChoice(provider=provider, **defaults)
 

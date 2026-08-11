@@ -174,8 +174,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scripted",
         action="store_true",
         help=(
-            "force the scripted invoker even when a provider is configured "
-            "(--families then drives dispatch, and nothing is billed)"
+            "force the scripted invoker even when a provider is configured, so "
+            "--families drives dispatch and NO MODEL is called. Note this governs "
+            "the model only -- domain lookups still run, so a configured VT_API_KEY "
+            "means real VirusTotal requests"
         ),
     )
     parser.add_argument(
@@ -329,7 +331,16 @@ async def _run(argv: list[str] | None = None) -> int:
         print(f"model:    {choice.provider.value}:{choice.model_id}")
 
     budget = Budget.from_usd(args.budget_usd)
-    outcome = await broker_task(task, budget, model=model, invoke=invoke)
+    try:
+        outcome = await broker_task(task, budget, model=model, invoke=invoke)
+    except Exception as exc:
+        # An investigation failing must not look like the tool crashing. Report
+        # it, and report the ledger too: the call may already have been billed,
+        # and that is worth seeing.
+        print(f"\nerror: the investigation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        logging.getLogger(__name__).debug("broker_task failed", exc_info=True)
+        print(f"spend by role (micro-USD): {budget.spend_by_role() or '(nothing spent)'}")
+        return 1
 
     print(f"task:     {task.task_id}")
     print(f"goal:     {task.goal}")
