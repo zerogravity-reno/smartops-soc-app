@@ -131,6 +131,16 @@ class BrokerRequest:
     run_subagent: SubagentRunner | None = None
     collected: list[SubtaskResult] = field(default_factory=list)
     dispatched: list[ToolFamily] = field(default_factory=list)
+    refused: dict[ToolFamily, str] = field(default_factory=dict)
+    """Families that returned REJECTED, and why.
+
+    `SubtaskStatus.rejected` is documented as the mission being *unworkable* for
+    the domain -- no tool call attempted, nothing charged, and explicitly
+    not-retryable. Nothing about that can change mid-investigation: the scope is
+    immutable and a server does not appear between dispatches. So a second
+    attempt is guaranteed to produce the identical rejection, and observed runs
+    did exactly that, listing `vt` and `ndr` twice with the same text.
+    """
 
 
 @dataclass(frozen=True)
@@ -387,6 +397,21 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
     # again, and one observed run spent 85% of its budget calling `siem` three
     # times. The budget gate does eventually stop it, but that is a ceiling, not a
     # policy, and it stops the whole investigation rather than the repetition.
+    # A rejection cannot be undone within one investigation, so re-running it
+    # burns a turn to reprint the same sentence. Tell the model *why* rather than
+    # silently returning nothing, or it has no basis for choosing differently.
+    if family in req.refused:
+        logger.info(
+            "task_id=%s family=%s | already rejected, not re-dispatching",
+            req.task.task_id,
+            family,
+        )
+        return (
+            f"status=refused | {family} was already rejected for this investigation "
+            f"and the reason cannot change: {req.refused[family]}. "
+            "Do not call it again; engage a different domain or report what you have."
+        )
+
     if req.dispatched.count(family) >= MAX_DISPATCHES_PER_FAMILY:
         logger.warning(
             "task_id=%s family=%s | refusing dispatch %d, cap is %d",
@@ -426,6 +451,8 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
         )
 
     req.collected.append(result)
+    if result.status is SubtaskStatus.REJECTED:
+        req.refused[family] = result.summary
     return _digest(result)
 
 

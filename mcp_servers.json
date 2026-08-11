@@ -23,7 +23,6 @@
       "headers": {
         "Authorization": "Bearer ${SPLUNK_TOKEN}"
       },
-      "prefix": "splunk_",
       "continue_on_error": true,
       "startup_timeout": 30
     },

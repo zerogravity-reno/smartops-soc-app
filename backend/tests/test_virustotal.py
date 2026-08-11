@@ -397,3 +397,60 @@ class TestBrokerIntegration:
 
         assert outcome.results[0].status == SubtaskStatus.NO_DATA
         assert outcome.results[0].evidence  # still citable, just nothing flagged
+
+
+class TestLookupSerialisation:
+    """The model-callable lookups must not stampede the free tier.
+
+    `enrich_scope()` gets sequencing free from its own `for` loop, and its
+    docstring explains why it needs it: at ~4 requests/minute "parallelism buys
+    nothing and just turns one 429 into several." A subagent's model can request
+    four lookups in a single turn, and Strands may run them concurrently -- the
+    exact stampede that loop avoids.
+    """
+
+    async def test_concurrent_tool_lookups_do_not_overlap(self, monkeypatch):
+        import asyncio
+
+        from smartops.tools.native import virustotal
+
+        overlapping = []
+        active = 0
+
+        async def fake_lookup(entity, **kwargs):
+            nonlocal active
+            active += 1
+            overlapping.append(active)
+            await asyncio.sleep(0)  # yield, so an unlocked version would interleave
+            active -= 1
+            return virustotal.Verdict(
+                entity=entity,
+                malicious=0,
+                suspicious=0,
+                harmless=1,
+                undetected=0,
+                reputation=0,
+                found=True,
+                raw={},
+            )
+
+        monkeypatch.setattr(virustotal, "_lookup", fake_lookup)
+
+        await asyncio.gather(
+            *(virustotal._tool_lookup("domain", f"d{i}.example") for i in range(4))
+        )
+
+        assert max(overlapping) == 1
+
+    async def test_a_failed_lookup_cannot_be_read_as_clean(self, monkeypatch):
+        from smartops.tools.native import virustotal
+
+        async def rate_limited(entity, **kwargs):
+            raise virustotal.VirusTotalError("429 rate limit exceeded")
+
+        monkeypatch.setattr(virustotal, "_lookup", rate_limited)
+
+        message = await virustotal._tool_lookup("domain", "coinhive.com")
+
+        assert "LOOKUP FAILED" in message
+        assert "NOT evidence that the indicator is clean" in message

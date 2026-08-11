@@ -799,3 +799,102 @@ class TestDigestTrimming:
         )
 
         assert outcome.results[0].summary == long_summary
+
+
+class TestRejectionIsTerminal:
+    """A REJECTED family is not asked again.
+
+    `SubtaskStatus.rejected` is documented as the mission being unworkable for the
+    domain -- nothing attempted, nothing charged, explicitly not-retryable. Within
+    one investigation nothing that caused it can change: scope is immutable and a
+    server does not appear between dispatches. Observed runs listed `vt` and `ndr`
+    twice with identical text, burning a broker turn to reprint a sentence.
+    """
+
+    @staticmethod
+    def rejected(mission):
+        return SubtaskResult(
+            task_id=mission.task_id,
+            status=SubtaskStatus.REJECTED,
+            summary="no vt observable in scope: needs one of ['domain', 'ip'], scope has ['host']",
+        )
+
+    async def test_a_rejected_family_runs_only_once(self):
+        run = runner_returning(self.rejected)
+
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(5.0),
+            model=MODEL,
+            run_subagent=run,
+            invoke=fake_invoker(["vt", "vt", "vt"]),
+        )
+
+        assert len(run.missions) == 1
+        assert len(outcome.results) == 1
+
+    async def test_the_refusal_repeats_the_original_reason(self):
+        # The model needs the reason to choose a different domain instead; a bare
+        # "no" gives it nothing to act on.
+        run = runner_returning(self.rejected)
+        request = BrokerRequest(task=make_task(), run_subagent=run)
+
+        first = await investigate_vt(
+            question="check it",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+        second = await investigate_vt(
+            question="check it again",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-2"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert "no vt observable in scope" in first
+        assert "already rejected" in second
+        assert "no vt observable in scope" in second
+        assert len(run.missions) == 1
+
+    async def test_a_successful_family_is_not_blocked_by_another_rejection(self):
+        async def by_family(mission):
+            if mission.tool_family == "vt":
+                return self.rejected(mission)
+            return SubtaskResult(
+                task_id=mission.task_id, status=SubtaskStatus.OK, summary="found logs"
+            )
+
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(5.0),
+            model=MODEL,
+            run_subagent=by_family,
+            invoke=fake_invoker(["vt", "siem", "vt", "siem"]),
+        )
+
+        # vt once (rejected, then refused), siem twice (the re-dispatch cap).
+        statuses = [(r.task_id.split(":")[1], r.status) for r in outcome.results]
+        assert statuses.count(("vt", SubtaskStatus.REJECTED)) == 1
+        assert statuses.count(("siem", SubtaskStatus.OK)) == 2
+
+    async def test_an_error_result_is_still_retryable(self):
+        # ERROR means attempted and failed -- a timeout, a 503. Unlike REJECTED,
+        # a retry can legitimately succeed, so it must not be made terminal.
+        async def erroring(mission):
+            return SubtaskResult(
+                task_id=mission.task_id,
+                status=SubtaskStatus.ERROR,
+                summary="splunk timed out",
+                error="TimeoutError: timed out",
+            )
+
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(5.0),
+            model=MODEL,
+            run_subagent=erroring,
+            invoke=fake_invoker(["siem", "siem"]),
+        )
+
+        assert len(outcome.results) == 2

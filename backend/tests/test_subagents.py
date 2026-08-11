@@ -68,30 +68,43 @@ class TestEntityGate:
         assert "no tools resolved" in result.summary
 
 
-class TestModelFreePath:
-    async def test_a_family_with_an_enricher_never_reaches_a_model(self, monkeypatch):
-        """`vt` answers with no subagent and no model at all -- the whole reason
-        it works before any model call is in scope."""
-        called = []
+class TestEnricherIsNotAShortCircuit:
+    """`vt` gets a real subagent when a model is configured.
 
-        async def fake_enrich(scope):
-            called.append(scope)
-            raise AssertionError("unreachable: return value replaced below")
+    The enricher still exists and still answers with no model at all -- that is
+    what makes `vt` testable without Bedrock -- but it lives on
+    `broker._stub_subagent`, the no-model rung of the ladder. A `domain_runner` is
+    only built when a model *is* configured, and a model turns `vt` from a verdict
+    list into an assessment of which indicators matter.
+    """
 
-        monkeypatch.setattr(subagents, "enricher_for", lambda family: fake_enrich)
+    async def test_vt_reaches_the_model_loop_not_the_enricher(self, monkeypatch):
+        enrich_calls = []
         monkeypatch.setattr(
             subagents,
             "enrich_mission",
-            _async_returning(
-                SubtaskResult(task_id="case-1:vt:u1", status=SubtaskStatus.NO_DATA, summary="clean")
-            ),
+            _async_returning_and_recording(enrich_calls, "should not be called"),
         )
-        # A model call here would blow up: this ModelChoice cannot build.
+        monkeypatch.setattr(subagents, "tools_for", _async_returning(["vt_lookup_ip"]))
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            _async_returning(_Result(SubagentAnswer(status=SubtaskStatus.OK, summary="known bad"))),
+        )
         run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
 
         result = await run(mission("vt", kinds=("ip",)))
 
-        assert result.summary == "clean"
+        assert enrich_calls == []
+        assert result.summary == "known bad"
+
+    async def test_the_entity_gate_still_applies_to_vt(self):
+        # A model does not make an unqueryable observable queryable.
+        run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
+
+        result = await run(mission("vt", kinds=("user",)))
+
+        assert result.status is SubtaskStatus.REJECTED
 
 
 class TestToolResolution:
@@ -200,11 +213,34 @@ class TestPrompt:
         assert str(int(START.timestamp())) in prompt
         assert "2018-08-20T00:00:00+00:00" in prompt
 
-    def test_relative_times_are_explicitly_forbidden(self):
+    def test_relative_times_are_explicitly_forbidden_for_time_scoped_domains(self):
         # The failure this prevents: a relative window over 2018 data returns
         # nothing and is indistinguishable from an empty domain.
-        assert "-24h" in subagents._SYSTEM_PROMPT
-        assert "do NOT use relative times" in subagents._SYSTEM_PROMPT
+        prompt = subagents._system_prompt_for("siem", turns=14)
+
+        assert "-24h" in prompt
+        assert "do NOT use relative times" in prompt
+
+    def test_a_reputation_domain_is_not_told_to_constrain_by_time(self):
+        # VirusTotal answers "is this known-bad", which has no time dimension.
+        # Telling it to respect a 2018 window is an instruction it cannot follow,
+        # so it would have to invent a way to appear to obey.
+        prompt = subagents._system_prompt_for("vt", turns=14)
+
+        assert "-24h" not in prompt
+        assert "rate limited" in prompt
+        assert "one indicator at a time" in prompt
+
+    def test_a_reputation_mission_is_not_handed_an_epoch_window(self):
+        prompt = subagents._prompt_for(mission("vt", kinds=("domain",)))
+
+        assert str(int(START.timestamp())) not in prompt
+        assert "no time dimension" in prompt
+
+    def test_a_failed_tool_call_is_never_a_finding(self):
+        # Guards against the worst reporting error available to this system:
+        # "we could not ask" presented as "the indicator is clean".
+        assert "not a finding" in subagents._system_prompt_for("vt", turns=14)
 
     def test_the_question_cannot_close_its_own_delimiter(self):
         prompt = subagents._prompt_for(
@@ -226,6 +262,25 @@ def _async_returning(value):
         return value
 
     return fake
+
+
+def _async_returning_and_recording(sink, value):
+    async def fake(*args, **kwargs):
+        sink.append((args, kwargs))
+        return value
+
+    return fake
+
+
+class _Result:
+    """The two attributes `investigate()` reads off an `AgentResult`."""
+
+    def __init__(self, structured_output, usage=None):
+        self.structured_output = structured_output
+        self.metrics = type(
+            "M", (), {"accumulated_usage": usage or {"inputTokens": 10, "outputTokens": 5}}
+        )()
+        self.stop_reason = "end_turn"
 
 
 def _async_raising(exc):

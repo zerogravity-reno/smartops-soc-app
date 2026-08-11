@@ -26,6 +26,7 @@ their v3 API as of writing, not verified against a live key.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
@@ -267,11 +268,30 @@ async def enrich_scope(scope: Scope, *, timeout: float = _DEFAULT_TIMEOUT) -> En
 # its own description and the model cannot pass an IP where a hash is expected.
 
 
+# Serialises the model-callable lookups. `enrich_scope()` gets sequencing for
+# free from its own `for` loop, but a subagent's model can request four lookups
+# in one turn and Strands may execute them concurrently -- which is precisely the
+# stampede that loop was written to avoid: "the free tier's ~4 requests/minute
+# means parallelism buys nothing and just turns one 429 into several."
+#
+# A lock rather than a rate limiter because the goal is only to stop *self*-
+# inflicted concurrency. Pacing against VirusTotal's actual quota belongs with a
+# real token bucket, once anything runs at a volume that needs one.
+_LOOKUP_LOCK = asyncio.Lock()
+
+
 async def _tool_lookup(kind: EntityKind, value: str) -> str:
-    try:
-        verdict = await _lookup(Entity(kind=kind, value=value))
-    except VirusTotalError as exc:
-        return f"lookup failed: {exc}"
+    async with _LOOKUP_LOCK:
+        try:
+            verdict = await _lookup(Entity(kind=kind, value=value))
+        except VirusTotalError as exc:
+            # Worded so a model cannot read a failure as a clean verdict. "not
+            # found" and "we could not ask" are opposite conclusions about an
+            # indicator, and only one of them is evidence.
+            return (
+                f"LOOKUP FAILED for {kind} {value} -- no reputation data was retrieved: {exc}. "
+                "This is NOT evidence that the indicator is clean."
+            )
     return verdict.summary()
 
 
