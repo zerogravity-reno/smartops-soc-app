@@ -39,6 +39,7 @@ from smartops.broker import (
 )
 from smartops.budget import Budget, ModelChoice
 from smartops.telemetry import configure_telemetry
+from smartops.tools.registry import load_mcp_servers, mcp_clients
 
 _TOOL_BY_FAMILY = {
     "siem": investigate_siem,
@@ -170,6 +171,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--budget-usd", type=float, default=1.0, help="investigation budget in USD (default: 1.0)"
     )
     parser.add_argument(
+        "--mcp-config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "path to an mcpServers JSON config (default: $SMARTOPS_MCP_CONFIG, "
+            "else mcp_servers.json in the working directory, else no MCP servers)"
+        ),
+    )
+    parser.add_argument(
         "--console-traces",
         action="store_true",
         help="export OpenTelemetry spans to stdout (off by default: spans can carry SOC data)",
@@ -225,6 +235,18 @@ async def _run(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
     configure_telemetry(console=args.console_traces)
+
+    # Build MCP clients once, before any dispatch. A missing config or an unset
+    # ${VAR} credential leaves a family with no server rather than failing --
+    # which is how this runs with no credentials at all.
+    try:
+        load_mcp_servers(args.mcp_config)
+    except Exception as exc:
+        # A malformed config is a deployment error, distinct from an absent one.
+        print(f"error: could not load MCP config: {exc}", file=sys.stderr)
+        return 2
+    if args.verbose:
+        print(f"mcp servers: {len(mcp_clients())} connected")
 
     families = _parse_families(args.families)
 

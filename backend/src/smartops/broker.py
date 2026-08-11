@@ -44,7 +44,7 @@ from contracts import (
 from strands import ToolContext, tool
 
 from smartops.budget import Budget, ModelChoice, Usage
-from smartops.tools.registry import tools_for
+from smartops.tools.registry import server_count, tools_for
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
         )
 
     try:
-        resolved = tools_for(family)
+        resolved = await tools_for(family)
     except Exception as exc:
         return SubtaskResult(
             task_id=mission.task_id,
@@ -206,10 +206,20 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
         )
 
     if not resolved:
+        # Two states that need different fixes: nothing is wired up for this
+        # domain, versus something is wired up and not answering. Reporting both
+        # as "not configured" sends an analyst to the config file when the real
+        # problem is the network or a bad token.
+        reason = (
+            f"{server_count(family)} MCP server(s) configured but returning no tools "
+            "(unreachable, unauthorized, or exposing nothing)"
+            if server_count(family)
+            else "no MCP server configured yet"
+        )
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.REJECTED,
-            summary=f"no tools resolved for {family}: no MCP server configured yet",
+            summary=f"no tools resolved for {family}: {reason}",
         )
 
     return SubtaskResult(

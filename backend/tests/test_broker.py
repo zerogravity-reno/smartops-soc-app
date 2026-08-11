@@ -262,6 +262,32 @@ class TestStubSubagent:
         assert outcome.results[0].status == SubtaskStatus.REJECTED
         assert "no tools resolved" in outcome.results[0].summary
 
+    async def test_configured_but_unreachable_reads_differently_than_unconfigured(self, monkeypatch):
+        # Two states, two fixes: check the config, versus check the network or
+        # the token. Reporting both as "not configured" sends an analyst to the
+        # wrong place, so the summaries must not collapse into one.
+        import smartops.tools.registry as registry
+
+        unconfigured = await broker_task(
+            make_task(), Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["siem"])
+        )
+
+        class _UnreachableClient:
+            async def load_tools(self):
+                return []  # what continue_on_error produces on a dead host
+
+        monkeypatch.setattr(registry, "_clients_by_family", {"siem": [_UnreachableClient()]})
+
+        unreachable = await broker_task(
+            make_task(), Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["siem"])
+        )
+
+        assert "no MCP server configured" in unconfigured.results[0].summary
+        assert "configured but returning no tools" in unreachable.results[0].summary
+        # Both still REJECTED with the reason in `summary`, never in `error`.
+        assert unreachable.results[0].status == SubtaskStatus.REJECTED
+        assert unreachable.results[0].error is None
+
     async def test_siem_never_rejects_on_entity_kind(self):
         # siem indexes logs about everything, so no observable makes it unusable.
         task = make_task(scope=make_scope(entities=[Entity(kind="user", value="someuser")]))
