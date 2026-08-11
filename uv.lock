@@ -924,6 +924,7 @@ name = "smartops-backend"
 version = "0.1.0"
 source = { editable = "backend" }
 dependencies = [
+    { name = "httpx" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "smartops-contracts" },
@@ -938,6 +939,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "smartops-contracts", editable = "contracts" },

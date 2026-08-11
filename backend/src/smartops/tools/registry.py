@@ -33,6 +33,8 @@ from typing import Any, Callable
 from contracts import ToolFamily
 from strands.tools.mcp import MCPClient
 
+from smartops.tools.native import virustotal
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_FILENAME = "mcp_servers.json"
@@ -58,7 +60,21 @@ NATIVE_TOOLS_BY_FAMILY: dict[ToolFamily, list[Callable]] = {
     "siem": [],
     "edr": [],
     "ndr": [],
-    "vt": [],
+    "vt": list(virustotal.TOOLS),
+}
+
+# Families whose work is a *lookup* rather than an investigation, and can
+# therefore run with no model at all: the entity's kind selects the query and
+# its value is the argument, so there is no judgement to delegate.
+#
+# This is what lets a family return real evidence before the Aug-27 subagents
+# exist. Anything requiring a decision about *what* to ask -- which SPL to run,
+# which host to pivot to -- has no entry here and waits for a real subagent.
+ENRICHERS_BY_FAMILY: dict[ToolFamily, Callable[..., Any] | None] = {
+    "siem": None,
+    "edr": None,
+    "ndr": None,
+    "vt": virustotal.enrich_scope,
 }
 
 # Built once per process by `load_mcp_servers()`. Empty until then, and empty
@@ -168,6 +184,15 @@ def _assert_no_shared_servers() -> None:
                     "one server per family, or it opens a connection per family"
                 )
             seen[name] = family
+
+
+def enricher_for(family: ToolFamily) -> Callable[..., Any] | None:
+    """The model-free lookup for `family`, if it has one.
+
+    Returns None for every family whose work needs a decision about what to ask
+    -- those wait for a real subagent.
+    """
+    return ENRICHERS_BY_FAMILY.get(family)
 
 
 def server_count(family: ToolFamily) -> int:

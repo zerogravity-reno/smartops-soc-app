@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Protocol
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Protocol
 
 from contracts import (
     AnalystTask,
     EntityKind,
+    Evidence,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
@@ -44,7 +46,7 @@ from contracts import (
 from strands import ToolContext, tool
 
 from smartops.budget import Budget, ModelChoice, Usage
-from smartops.tools.registry import server_count, tools_for
+from smartops.tools.registry import enricher_for, server_count, tools_for
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +170,59 @@ def _usage_from_accumulated(accumulated: dict) -> Usage:
     )
 
 
+async def _enrich(mission: SubagentMission, enrich: Callable[..., Any]) -> SubtaskResult:
+    """Run a model-free lookup and assemble its result plus raw evidence.
+
+    Status reflects what was found, not merely that the call succeeded:
+    `OK` when something is flagged, `NO_DATA` when every indicator came back
+    clean or unknown -- the distinction an analyst triages on.
+
+    Raw responses become `Evidence`, which is the whole reason this path exists:
+    it produces citable material rather than a summary line. Per the `Evidence`
+    contract they are never shown to a model; only `summary` and `citation_ids`
+    cross that boundary.
+    """
+    family = mission.tool_family
+    try:
+        verdicts = await enrich(mission.scope)
+    except Exception as exc:
+        # Includes the not-configured case: no API key is an expected state
+        # before credentials exist, and reads as "unavailable", not a crash.
+        logger.info("task_id=%s family=%s | enrichment unavailable", mission.task_id, family)
+        return SubtaskResult(
+            task_id=mission.task_id,
+            status=SubtaskStatus.REJECTED,
+            summary=f"{family} lookup unavailable: {exc}",
+        )
+
+    if not verdicts:
+        return SubtaskResult(
+            task_id=mission.task_id,
+            status=SubtaskStatus.NO_DATA,
+            summary=f"no {family}-queryable observable in scope",
+        )
+
+    collected_at = datetime.now(timezone.utc)
+    evidence = [
+        Evidence(
+            id=f"{mission.task_id}:{index}",
+            tool_family=family,
+            raw=verdict.raw,
+            collected_at=collected_at,
+        )
+        for index, verdict in enumerate(verdicts)
+    ]
+    flagged = [v for v in verdicts if v.is_flagged]
+
+    return SubtaskResult(
+        task_id=mission.task_id,
+        status=SubtaskStatus.OK if flagged else SubtaskStatus.NO_DATA,
+        summary=" | ".join(v.summary() for v in verdicts),
+        citation_ids=[e.id for e in evidence],
+        evidence=evidence,
+    )
+
+
 async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
     """Aug-13 stand-in for a real domain subagent: resolves what the family
     *could* use and reports honestly, without calling a model or a tool.
@@ -195,6 +250,13 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
                 f"{sorted(required)}, scope has {sorted(in_scope)}"
             ),
         )
+
+    # A family whose work is a pure lookup needs no model: the entity kinds
+    # already determine the query. Run it and return real evidence rather than
+    # reporting a tool count nobody called.
+    enrich = enricher_for(family)
+    if enrich is not None:
+        return await _enrich(mission, enrich)
 
     try:
         resolved = await tools_for(family)

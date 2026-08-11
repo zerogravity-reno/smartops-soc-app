@@ -252,15 +252,23 @@ class TestStubSubagent:
         # REJECTED must never set `error` -- `_StatusErrorContract` raises if it does.
         assert result.error is None
 
-    async def test_queryable_observable_shifts_rejection_to_missing_server(self):
+    async def test_queryable_observable_shifts_rejection_past_the_entity_gate(self, monkeypatch):
+        # The point of the gate is that clearing it changes the reason. With a
+        # queryable IP, vt no longer rejects on "wrong observable" -- it gets as
+        # far as the lookup and reports the credential as the blocker, which is
+        # the honest state and a different thing to go fix.
+        monkeypatch.delenv("VT_API_KEY", raising=False)
         task = make_task(scope=make_scope(entities=[Entity(kind="ip", value="10.2.4.9")]))
 
         outcome = await broker_task(
             task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"])
         )
 
-        assert outcome.results[0].status == SubtaskStatus.REJECTED
-        assert "no tools resolved" in outcome.results[0].summary
+        result = outcome.results[0]
+        assert result.status == SubtaskStatus.REJECTED
+        assert "no vt observable in scope" not in result.summary
+        assert "VT_API_KEY" in result.summary
+        assert result.error is None
 
     async def test_configured_but_unreachable_reads_differently_than_unconfigured(self, monkeypatch):
         # Two states, two fixes: check the config, versus check the network or
