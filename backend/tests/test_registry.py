@@ -40,6 +40,10 @@ class FakeMCPClient:
 def _clean_registry_state(monkeypatch):
     """Each test starts with no clients loaded and restores the real maps."""
     monkeypatch.setattr(registry_module, "_clients_by_family", {})
+    # An operator with this exported in their shell must not change how the
+    # suite behaves: it would silently route every server in these tests down
+    # the unverified-TLS builder instead of MCPClient.load_servers().
+    monkeypatch.delenv(registry_module.TLS_NO_VERIFY_ENV_VAR, raising=False)
     monkeypatch.setattr(registry_module, "MCP_SERVERS_BY_FAMILY", dict(MCP_SERVERS_BY_FAMILY))
     monkeypatch.setattr(
         registry_module, "NATIVE_TOOLS_BY_FAMILY", {k: list(v) for k, v in NATIVE_TOOLS_BY_FAMILY.items()}
@@ -158,6 +162,152 @@ class TestLoadMcpServers:
         # credential, there is no sensible way to continue.
         with pytest.raises(ValueError):
             load_mcp_servers({"mcpServers": ["not", "a", "mapping"]})
+
+
+class TestTlsNoVerify:
+    """`SMARTOPS_MCP_TLS_NO_VERIFY` routes named servers to a hand-built client
+    whose httpx factory skips certificate verification.
+
+    It exists because `MCPServerConfig` has no TLS fields, so trust cannot be
+    expressed in `mcp_servers.json` at all. Every test here is really guarding
+    one property: the exemption applies to *exactly* the servers named, and
+    nothing else.
+    """
+
+    SPLUNK = {
+        "url": "${SPLUNK_MCP_URL}",
+        "headers": {"Authorization": "Bearer ${SPLUNK_TOKEN}"},
+        "continue_on_error": True,
+    }
+
+    @pytest.fixture(autouse=True)
+    def _credentials(self, monkeypatch):
+        monkeypatch.setenv("SPLUNK_MCP_URL", "https://splunk.invalid:8089/services/mcp")
+        monkeypatch.setenv("SPLUNK_TOKEN", "token-value")
+
+    def _spy(self, monkeypatch):
+        calls = []
+
+        def fake(name, server):
+            calls.append(name)
+            return object()
+
+        monkeypatch.setattr(registry_module, "_build_unverified_client", fake)
+        return calls
+
+    def test_unset_variable_leaves_every_server_verified(self, monkeypatch):
+        # The committed default. Nothing reaches the unverified builder.
+        calls = self._spy(monkeypatch)
+
+        load_mcp_servers({"mcpServers": {"splunk": self.SPLUNK}})
+
+        assert calls == []
+
+    def test_named_server_is_built_unverified(self, monkeypatch):
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+        calls = self._spy(monkeypatch)
+
+        loaded = load_mcp_servers({"mcpServers": {"splunk": self.SPLUNK}})
+
+        assert calls == ["splunk"]
+        assert len(loaded["siem"]) == 1
+
+    def test_exemption_does_not_leak_to_an_unnamed_sibling(self, monkeypatch):
+        # The whole point of naming servers rather than a global flag.
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+        monkeypatch.setenv("EDR_URL", "https://edr.invalid/mcp")
+        calls = self._spy(monkeypatch)
+
+        load_mcp_servers(
+            {
+                "mcpServers": {
+                    "splunk": self.SPLUNK,
+                    "edr": {"url": "${EDR_URL}", "continue_on_error": True},
+                }
+            }
+        )
+
+        assert calls == ["splunk"]
+
+    def test_whitespace_and_empty_entries_are_tolerated(self, monkeypatch):
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, " splunk , ,")
+
+        assert registry_module._tls_no_verify_servers() == frozenset({"splunk"})
+
+    def test_a_name_absent_from_the_config_is_warned_about(self, monkeypatch, caplog):
+        # Fails safe -- the server keeps verifying and stays broken -- so the
+        # symptom is identical to the variable never being set. Hence the warning.
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "spulnk")
+
+        with caplog.at_level("WARNING"):
+            load_mcp_servers({"mcpServers": {"splunk": self.SPLUNK}})
+
+        assert "spulnk" in caplog.text
+
+    def test_tool_filters_are_refused_rather_than_dropped(self, monkeypatch):
+        # Silently ignoring a filter would widen a subagent's toolset beyond
+        # what the config declares: a security regression that looks like a no-op.
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+        config = {"mcpServers": {"splunk": {**self.SPLUNK, "tool_filters": {"allowed": ["^x$"]}}}}
+
+        with pytest.raises(ValueError, match="tool_filters"):
+            registry_module._build_unverified_client("splunk", config["mcpServers"]["splunk"])
+
+    def test_disabled_named_server_produces_no_client(self, monkeypatch):
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+
+        loaded = load_mcp_servers({"mcpServers": {"splunk": {**self.SPLUNK, "disabled": True}}})
+
+        assert loaded["siem"] == []
+
+    def test_missing_credential_skips_when_continue_on_error(self, monkeypatch):
+        # Same contract as the verified path: an unset ${VAR} is an expected
+        # state, not a crash.
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+        monkeypatch.delenv("SPLUNK_TOKEN", raising=False)
+
+        loaded = load_mcp_servers({"mcpServers": {"splunk": self.SPLUNK}})
+
+        assert loaded["siem"] == []
+
+    def test_missing_credential_raises_without_continue_on_error(self, monkeypatch):
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+        monkeypatch.delenv("SPLUNK_TOKEN", raising=False)
+        config = {k: v for k, v in self.SPLUNK.items() if k != "continue_on_error"}
+
+        with pytest.raises(ValueError, match="SPLUNK_TOKEN"):
+            load_mcp_servers({"mcpServers": {"splunk": config}})
+
+    def test_non_streamable_transport_is_rejected(self, monkeypatch):
+        # The factory seam only exists for streamable-http; claiming to cover
+        # sse or stdio would disable nothing while implying it had.
+        monkeypatch.setenv(registry_module.TLS_NO_VERIFY_ENV_VAR, "splunk")
+
+        with pytest.raises(ValueError, match="streamable-http"):
+            registry_module._build_unverified_client(
+                "splunk", {**self.SPLUNK, "transport": "sse"}
+            )
+
+    def test_factory_disables_verification_and_keeps_mcp_defaults(self, monkeypatch):
+        # `follow_redirects` and the read timeout are load-bearing for
+        # streamablehttp_client, so they must survive alongside verify=False.
+        import httpx
+
+        captured = {}
+
+        def fake_client(**kwargs):
+            captured.update(kwargs)
+            return "client"
+
+        monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+        result = registry_module._insecure_httpx_client(headers={"Authorization": "Bearer t"})
+
+        assert result == "client"
+        assert captured["verify"] is False
+        assert captured["follow_redirects"] is True
+        assert captured["headers"] == {"Authorization": "Bearer t"}
+        assert captured["timeout"].read == 300.0
 
 
 class TestShippedConfig:

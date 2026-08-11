@@ -42,6 +42,33 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_FILENAME = "mcp_servers.json"
 CONFIG_PATH_ENV_VAR = "SMARTOPS_MCP_CONFIG"
 
+# Comma-separated MCP server names whose TLS certificate must NOT be verified.
+# Empty (the default) means every server is verified, so the committed repo is
+# secure by default and the insecure setting lives only in an operator's
+# environment -- a `.env`, which is gitignored, or a deployment's own config.
+#
+# This exists because `MCPServerConfig` has no TLS fields at all: there is no
+# `verify`, `ca_cert`, or `httpx_client_factory` key, so trust cannot be
+# expressed in `mcp_servers.json`. Naming servers here rather than flipping a
+# global switch keeps the exemption scoped to the one host that needs it.
+TLS_NO_VERIFY_ENV_VAR = "SMARTOPS_MCP_TLS_NO_VERIFY"
+
+# Config keys `_build_unverified_client()` understands. Anything else on a
+# no-verify server is rejected rather than ignored -- see that function.
+_SUPPORTED_NO_VERIFY_KEYS = frozenset(
+    {
+        "url",
+        "headers",
+        "transport",
+        "prefix",
+        "continue_on_error",
+        "startup_timeout",
+        "application_name",
+        "application_version",
+        "disabled",
+    }
+)
+
 # Which MCP servers (by their name in the config) serve which family. This is
 # the domain mapping Strands has no notion of -- it sees a flat list of servers.
 #
@@ -141,12 +168,42 @@ def load_mcp_servers(config: str | Path | dict[str, Any] | None = None) -> dict[
     # once and correlating its flat return by position. Slicing is exact: each
     # family gets clients for exactly the servers named for it, and a server
     # skipped for an unset credential simply doesn't appear.
+    no_verify = _tls_no_verify_servers()
+    unknown_no_verify = sorted(no_verify - servers.keys())
+    if unknown_no_verify:
+        # A typo here fails *safe* (the server keeps verifying and stays broken),
+        # which is exactly why it needs saying out loud -- the symptom is
+        # indistinguishable from the variable not being set at all.
+        logger.warning(
+            "%s names server(s) not present in the config: %s",
+            TLS_NO_VERIFY_ENV_VAR,
+            ", ".join(unknown_no_verify),
+        )
+
     _clients_by_family = {}
     for family, names in MCP_SERVERS_BY_FAMILY.items():
         subset = {name: servers[name] for name in names if name in servers}
-        _clients_by_family[family] = (
-            MCPClient.load_servers({"mcpServers": subset}) if subset else []
-        )
+        verified = {name: cfg for name, cfg in subset.items() if name not in no_verify}
+        clients = MCPClient.load_servers({"mcpServers": verified}) if verified else []
+        for name, cfg in subset.items():
+            if name not in no_verify:
+                continue
+            try:
+                client = _build_unverified_client(name, cfg)
+            except Exception:
+                # Mirror load_servers(): a per-server build failure is fatal
+                # unless that server opted into being skipped.
+                if not cfg.get("continue_on_error", False):
+                    raise
+                logger.warning(
+                    "server_name=<%s> | failed to build unverified client, skipping",
+                    name,
+                    exc_info=True,
+                )
+                continue
+            if client is not None:
+                clients.append(client)
+        _clients_by_family[family] = clients
         logger.info(
             "family=%s | %d of %d configured MCP server(s) available",
             family,
@@ -186,6 +243,122 @@ def _assert_no_shared_servers() -> None:
                     "one server per family, or it opens a connection per family"
                 )
             seen[name] = family
+
+
+def _tls_no_verify_servers() -> frozenset[str]:
+    """Server names exempted from TLS verification, from the environment."""
+    raw = os.environ.get(TLS_NO_VERIFY_ENV_VAR, "")
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
+def _build_unverified_client(name: str, server: dict[str, Any]) -> MCPClient | None:
+    """Build one streamable-http `MCPClient` that does not verify its server's
+    TLS certificate. Returns None when the server is disabled.
+
+    ⚠️ **This removes the only protection against an impostor server.** The
+    Authorization header -- a bearer token -- is sent to whatever answers on that
+    address, and every tool result it returns is trusted as SOC evidence. It is
+    opt-in per server via `SMARTOPS_MCP_TLS_NO_VERIFY` for exactly that reason,
+    and it logs a warning on every build so an unverified connection is never
+    silent in the logs.
+
+    Why this cannot be a config key: `MCPServerConfig` has no TLS fields, and
+    `_config_transport_callable()` calls `streamablehttp_client(url=..., headers=
+    ...)` without forwarding an `httpx_client_factory`. The factory *is* an
+    accepted parameter of `streamablehttp_client`, and `MCPClient` takes a
+    transport callable directly, so supplying our own is the supported seam --
+    no patching of Strands required.
+
+    Unsupported keys raise rather than being dropped. `tool_filters` is the case
+    that matters: silently ignoring it would widen a subagent's toolset beyond
+    what the config says, which is a security regression disguised as a
+    no-op. Strands' own parser for it is private, so rather than reimplement it
+    we refuse the combination.
+    """
+    unsupported = sorted(server.keys() - _SUPPORTED_NO_VERIFY_KEYS)
+    if unsupported:
+        raise ValueError(
+            f"MCP server {name!r} is listed in {TLS_NO_VERIFY_ENV_VAR} but declares "
+            f"{', '.join(unsupported)}, which the unverified-TLS builder does not "
+            "support. Remove the key, or remove the server from that variable so it "
+            "is built by MCPClient.load_servers() with full config support."
+        )
+
+    if server.get("disabled", False):
+        logger.debug("server_name=<%s> | skipping disabled MCP server", name)
+        return None
+
+    # Strands' own interpolation, so `${VAR}` behaves identically on this path:
+    # same syntax, same "unset variable raises" rule that `continue_on_error`
+    # then turns into a skip. Reimplementing it would be a second dialect of the
+    # same feature, and would drift.
+    from strands.tools.mcp.mcp_client import _interpolate_env_vars
+
+    server = _interpolate_env_vars(server)
+
+    transport = server.get("transport", "streamable-http")
+    if transport != "streamable-http":
+        raise ValueError(
+            f"MCP server {name!r}: {TLS_NO_VERIFY_ENV_VAR} only applies to "
+            f"streamable-http servers, got {transport!r}"
+        )
+    url = server.get("url")
+    if not url:
+        raise ValueError(f"MCP server {name!r}: streamable-http transport requires 'url'")
+
+    logger.warning(
+        "server_name=<%s>, url=<%s> | TLS VERIFICATION DISABLED for this MCP server "
+        "(listed in %s); its identity is unverified and its bearer token is exposed "
+        "to any host answering on that address",
+        name,
+        url,
+        TLS_NO_VERIFY_ENV_VAR,
+    )
+
+    return MCPClient(
+        lambda: _unverified_streamable_http(url, server.get("headers")),
+        startup_timeout=server.get("startup_timeout", 30),
+        prefix=server.get("prefix"),
+        application_name=server.get("application_name", name),
+        application_version=server.get("application_version"),
+        continue_on_error=server.get("continue_on_error", False),
+    )
+
+
+def _insecure_httpx_client(
+    headers: dict[str, str] | None = None,
+    timeout: Any = None,
+    auth: Any = None,
+) -> Any:
+    """An httpx client that does not verify TLS certificates.
+
+    Mirrors `mcp.shared._httpx_utils.create_mcp_http_client` -- the MCP SDK's own
+    default factory -- because `streamablehttp_client` depends on its
+    `follow_redirects=True` and timeout defaults; the only difference is
+    `verify=False`. A thin copy rather than a call into that helper, which
+    exposes no way to pass `verify` through.
+    """
+    import httpx
+
+    kwargs: dict[str, Any] = {
+        "follow_redirects": True,
+        "verify": False,
+        "timeout": timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+    }
+    if headers is not None:
+        kwargs["headers"] = headers
+    if auth is not None:
+        kwargs["auth"] = auth
+    return httpx.AsyncClient(**kwargs)
+
+
+def _unverified_streamable_http(url: str, headers: dict[str, str] | None):
+    """`streamablehttp_client` wired to the non-verifying httpx factory."""
+    from mcp.client.streamable_http import streamablehttp_client
+
+    return streamablehttp_client(
+        url=url, headers=headers, httpx_client_factory=_insecure_httpx_client
+    )
 
 
 def enricher_for(family: ToolFamily) -> Callable[..., Any] | None:
