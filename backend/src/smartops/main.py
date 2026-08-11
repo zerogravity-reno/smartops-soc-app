@@ -226,8 +226,34 @@ def _print_outcome(outcome, budget: Budget) -> None:
     print(f"budget remaining: {budget.remaining} micro-USD")
 
 
+def _load_env_file() -> str | None:
+    """Load `.env` into the environment, if there is one. Returns its path.
+
+    Every setting in this project is read from `os.environ`, so without this a
+    `.env` file is inert and `cp .env.example .env` -- what the template tells
+    you to do -- would appear to do nothing.
+
+    `override=False` on purpose: a variable already set in the shell, CI, or a
+    container's environment wins over the file. A stale local `.env` silently
+    overriding a deployment's real credentials is the worse failure.
+
+    Searches upward from the working directory, so it works whether you run from
+    the repo root or from `backend/`.
+    """
+    from dotenv import find_dotenv, load_dotenv
+
+    path = find_dotenv(usecwd=True)
+    if not path:
+        return None
+    load_dotenv(path, override=False)
+    return path
+
+
 async def _run(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+
+    # Before anything reads os.environ.
+    env_file = _load_env_file()
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.ERROR,
@@ -245,6 +271,9 @@ async def _run(argv: list[str] | None = None) -> int:
         print(f"error: could not load MCP config: {exc}", file=sys.stderr)
         return 2
     if args.verbose:
+        # Which file supplied the settings is the first thing you want when a
+        # credential "isn't being picked up".
+        print(f"env file:    {env_file or '(none found)'}")
         print(f"mcp servers: {len(mcp_clients())} connected")
 
     families = _parse_families(args.families)

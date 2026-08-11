@@ -32,6 +32,12 @@ uv run smartops-broker --goal "unusual auth activity for someuser" \
                        --entity user:someuser --hours 24
 ```
 
+`.env` goes in the **repo root**, next to `.env.example`. It's loaded
+automatically (searching upward from the working directory, so running from
+`backend/` works too), and anything already set in your shell, CI, or a
+container **wins over the file** — a stale local `.env` must never override a
+deployment's real credentials. `--verbose` prints which file was loaded.
+
 With nothing configured you get four honest rejections and exit 0:
 
 ```
