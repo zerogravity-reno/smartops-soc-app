@@ -74,7 +74,7 @@ class VirusTotalNotConfigured(NotConfigured):
 
     Deliberately **not** a `VirusTotalError`: nothing was attempted, so this maps
     to `REJECTED` rather than `ERROR`. Inheriting from the broker's `NotConfigured`
-    is what lets `_enrich` distinguish the two without matching on messages.
+    is what lets `enrich_mission` distinguish the two without matching on messages.
     """
 
 

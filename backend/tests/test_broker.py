@@ -14,8 +14,10 @@ from contracts import (
 )
 
 from smartops.broker import (
+    MAX_DISPATCHES_PER_FAMILY,
     BrokerRequest,
     ModelChoice,
+    _digest,
     broker_task,
     default_broker_invoker,
     investigate_edr,
@@ -676,3 +678,124 @@ class TestPrompt:
         # scope travels in the prompt for the model's awareness, but as fixed context
         assert "host=host-1" in prompt
         assert "not modifiable" in prompt
+
+
+class TestRedispatchCap:
+    """A family may be consulted twice, not indefinitely.
+
+    Observed on a live run: a subagent returned an unsatisfying answer, the
+    Broker simply asked again, and `siem` consumed 85% of the investigation's
+    budget across three calls. The budget gate stops that eventually, but it is a
+    ceiling rather than a policy -- and it ends the whole investigation rather
+    than the repetition.
+    """
+
+    async def test_a_family_runs_at_most_twice(self):
+        run = runner_returning(ok_result)
+
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(5.0),
+            model=MODEL,
+            run_subagent=run,
+            invoke=fake_invoker(["siem", "siem", "siem", "siem"]),
+        )
+
+        assert len(run.missions) == MAX_DISPATCHES_PER_FAMILY
+        assert len(outcome.results) == MAX_DISPATCHES_PER_FAMILY
+
+    async def test_a_refused_dispatch_says_so_rather_than_failing_silently(self):
+        # The Broker has to be able to tell "this returned nothing" from "this was
+        # not run", or it cannot choose a different domain instead.
+        run = runner_returning(ok_result)
+        request = BrokerRequest(task=make_task(), run_subagent=run)
+        request.dispatched.extend(["siem"] * MAX_DISPATCHES_PER_FAMILY)
+
+        digest = await investigate_siem(
+            question="again please",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-x"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert "already been consulted" in digest
+        assert run.missions == []
+
+    async def test_a_refusal_is_not_recorded_as_a_dispatch(self):
+        # `dispatched` is observed ground truth for what ran. A refused call did
+        # not run, so counting it would corrupt the divergence check.
+        run = runner_returning(ok_result)
+        request = BrokerRequest(task=make_task(), run_subagent=run)
+        request.dispatched.extend(["siem"] * MAX_DISPATCHES_PER_FAMILY)
+
+        await investigate_siem(
+            question="again",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-y"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert request.dispatched.count("siem") == MAX_DISPATCHES_PER_FAMILY
+
+    async def test_distinct_families_are_unaffected_by_each_others_counts(self):
+        run = runner_returning(ok_result)
+
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(5.0),
+            model=MODEL,
+            run_subagent=run,
+            invoke=fake_invoker(["siem", "siem", "vt", "vt"]),
+        )
+
+        assert len(outcome.results) == 4
+
+
+class TestDigestTrimming:
+    """The Broker sees a digest, not a dissertation.
+
+    A real subagent answer runs to a multi-hundred-word markdown table. Passed
+    through untrimmed it crowded the Broker's own output ceiling and the run
+    ended before emitting a `TaskClassification` at all.
+    """
+
+    def test_a_long_summary_is_trimmed_and_says_it_was(self):
+        long_summary = "x" * 2000
+        digest = _digest(
+            SubtaskResult(task_id="t", status=SubtaskStatus.OK, summary=long_summary)
+        )
+
+        assert len(digest) < len(long_summary)
+        # Silent truncation would have the Broker decide against evidence it
+        # cannot see, believing it saw everything.
+        assert "trimmed" in digest
+        assert "2000" in digest
+
+    def test_a_short_summary_is_passed_through_untouched(self):
+        digest = _digest(
+            SubtaskResult(task_id="t", status=SubtaskStatus.OK, summary="brief finding")
+        )
+
+        assert "brief finding" in digest
+        assert "trimmed" not in digest
+
+    async def test_the_full_answer_still_reaches_the_aggregator(self):
+        # Trimming is safe only because nothing is lost: the untouched
+        # SubtaskResult goes to `collected` for the case file. If that stopped
+        # being true, trimming would start destroying evidence.
+        long_summary = "y" * 2000
+
+        async def run(mission):
+            return SubtaskResult(
+                task_id=mission.task_id, status=SubtaskStatus.OK, summary=long_summary
+            )
+
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=run,
+            invoke=fake_invoker(["siem"]),
+        )
+
+        assert outcome.results[0].summary == long_summary

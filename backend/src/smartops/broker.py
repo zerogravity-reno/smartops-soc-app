@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 
 BROKER_ROLE = "broker"
 
+# How many times one family may be dispatched in a single investigation. Two, so
+# a subagent's reported `gaps` can justify one better-aimed follow-up, and no
+# more. See `_dispatch()` for what this prevents.
+MAX_DISPATCHES_PER_FAMILY = 2
+
 # Floor for the fixed input every turn carries regardless of the task: the system
 # prompt below plus the four tool schemas. Measured generously -- see
 # `_estimated_input_tokens` for why over-estimating is the safe direction.
@@ -68,7 +73,7 @@ _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
 # true regardless of what any model decides. It lives here rather than in
 # `contracts` because that module holds shape only -- dispatchability is
 # dispatch logic.
-_FAMILY_REQUIRED_KINDS: dict[ToolFamily, frozenset[EntityKind] | None] = {
+FAMILY_REQUIRED_KINDS: dict[ToolFamily, frozenset[EntityKind] | None] = {
     "siem": None,
     "edr": frozenset({"host", "process", "user"}),
     "ndr": frozenset({"ip", "domain", "url"}),
@@ -163,7 +168,7 @@ def _usage_from_accumulated(accumulated: dict) -> Usage:
     )
 
 
-async def _enrich(mission: SubagentMission, enrich: Callable[..., Any]) -> SubtaskResult:
+async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -> SubtaskResult:
     """Run a model-free lookup and assemble its result plus raw evidence.
 
     Status reflects what was found, not merely that the call succeeded:
@@ -273,7 +278,7 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
     construction.
     """
     family = mission.tool_family
-    required = _FAMILY_REQUIRED_KINDS[family]
+    required = FAMILY_REQUIRED_KINDS[family]
     in_scope = mission.scope.kinds()
 
     if required is not None and not (required & in_scope):
@@ -291,7 +296,7 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
     # reporting a tool count nobody called.
     enrich = enricher_for(family)
     if enrich is not None:
-        return await _enrich(mission, enrich)
+        return await enrich_mission(mission, enrich)
 
     try:
         resolved = await tools_for(family)
@@ -333,6 +338,15 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
     )
 
 
+# How much of a subagent's summary reaches the Broker. A real subagent answer can
+# run to a multi-hundred-word markdown table, and the Broker only needs enough to
+# decide whether another domain is warranted -- the full text is preserved on the
+# `SubtaskResult` in `BrokerRequest.collected` for the aggregator, so nothing is
+# lost by trimming here. Left untrimmed, one verbose domain crowds the Broker's
+# own output ceiling and it stops before emitting its `TaskClassification`.
+_DIGEST_SUMMARY_LIMIT = 600
+
+
 def _digest(result: SubtaskResult) -> str:
     """What the Broker's context actually receives back from a dispatch.
 
@@ -342,7 +356,15 @@ def _digest(result: SubtaskResult) -> str:
     rendered explicitly so a re-dispatch decision rests on a typed field rather
     than on the model parsing prose.
     """
-    parts = [f"status={result.status.value}", result.summary]
+    summary = result.summary
+    if len(summary) > _DIGEST_SUMMARY_LIMIT:
+        # Say it was trimmed. A silently truncated finding reads as a complete
+        # one, and the Broker would decide against evidence it cannot see.
+        summary = (
+            f"{summary[:_DIGEST_SUMMARY_LIMIT]}... [trimmed for the broker; "
+            f"the full {len(summary)}-character answer is retained in the case file]"
+        )
+    parts = [f"status={result.status.value}", summary]
     if result.gaps:
         parts.append(f"gaps={','.join(result.gaps)}")
     return " | ".join(parts)
@@ -358,6 +380,26 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
     """
     req: BrokerRequest = ctx.invocation_state["smartops"]
     run = req.run_subagent or _stub_subagent
+
+    # Re-dispatching a family is legitimate once -- a subagent's `gaps` can make a
+    # second, better-targeted question worthwhile. Unbounded, it is a cost bug: a
+    # subagent that returns an unsatisfying answer invites the Broker to just ask
+    # again, and one observed run spent 85% of its budget calling `siem` three
+    # times. The budget gate does eventually stop it, but that is a ceiling, not a
+    # policy, and it stops the whole investigation rather than the repetition.
+    if req.dispatched.count(family) >= MAX_DISPATCHES_PER_FAMILY:
+        logger.warning(
+            "task_id=%s family=%s | refusing dispatch %d, cap is %d",
+            req.task.task_id,
+            family,
+            req.dispatched.count(family) + 1,
+            MAX_DISPATCHES_PER_FAMILY,
+        )
+        return (
+            f"status=refused | {family} has already been consulted "
+            f"{MAX_DISPATCHES_PER_FAMILY} time(s), which is the limit for one "
+            "investigation. Use what it already returned, or engage a different domain."
+        )
 
     mission = SubagentMission(
         # `toolUseId` is minted per tool call by the framework, so the Broker
@@ -637,18 +679,26 @@ async def broker_task(
         # The missing classification costs us the model's stated rationale. It
         # does not cost us what actually ran -- `dispatched` is observed
         # independently, which is exactly why the two are tracked separately.
+        # `stop_reason` is the difference between "the model misbehaved" and "we
+        # capped it": Strands ends a limited run with `limit_turns` /
+        # `limit_output_tokens` and raises nothing, so without this the cause is
+        # indistinguishable from a model fault. Read defensively -- the
+        # `BrokerInvokerResult` protocol does not require it, and test fakes omit it.
+        stop_reason = getattr(result, "stop_reason", None) or "unreported"
         logger.error(
-            "task_id=%s | broker returned no structured_output; keeping %d collected result(s) "
-            "and synthesizing a classification from what was observed",
+            "task_id=%s | broker returned no structured_output (stop_reason=%s); keeping %d "
+            "collected result(s) and synthesizing a classification from what was observed",
             task.task_id,
+            stop_reason,
             len(request.collected),
         )
         classification = TaskClassification(
             tool_families=list(dict.fromkeys(request.dispatched)),
             rationale=(
-                "SYNTHESIZED: the broker produced no structured output, so this records "
-                "the families observed to have been dispatched rather than the model's "
-                "own account of why. Treat the rationale as unavailable, not as reasoning."
+                f"SYNTHESIZED (stop_reason={stop_reason}): the broker produced no structured "
+                "output, so this records the families observed to have been dispatched rather "
+                "than the model's own account of why. Treat the rationale as unavailable, not "
+                "as reasoning."
             ),
         )
 
