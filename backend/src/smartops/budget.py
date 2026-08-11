@@ -26,29 +26,50 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 
+_NANO_PER_MICRO = 1000
+
+
 @dataclass(frozen=True)
 class ModelPrice:
-    """USD per million tokens -- which is, not by coincidence, also
-    micro-USD per token. Every amount in this module is an integer number
-    of micro-USD (1e-6 USD), so money is never a float.
+    """**nano-USD per token** (equivalently: USD per *billion* tokens).
 
-    Cache multipliers are relative to `input_per_mtok`: a 5-minute-TTL
-    cache write costs ~1.25x normal input price, a cache read ~0.1x.
+    Integers, because every amount in this module is an integer -- money is
+    never a float.
+
+    An earlier version stored USD per *million* tokens, leaning on the tidy
+    coincidence that USD/Mtok equals micro-USD/token. That only holds for
+    whole-dollar rates. Every Claude tier is $1-$25/Mtok so it never bit us,
+    but a sub-dollar model (DeepSeek is ~$0.27/Mtok) truncated to `0` -- which
+    did not merely under-report cost: `estimate_cost()` feeds `reserve()`, so a
+    zero input rate made the admission check wave everything through and budget
+    gating silently stopped working on the cheapest provider.
+
+    nano resolution spans $0.014/Mtok (14) to $25/Mtok (25_000) exactly, so one
+    table prices every provider and `cost_of()` never learns which one ran.
+
+    Cache multipliers are ratios on `input_per_token_nano`: a 5-minute-TTL cache
+    write costs ~1.25x normal input price, a cache read ~0.1x. ⚠️ Ratios are an
+    Anthropic-shaped abstraction -- Anthropic prices caching as a multiple of the
+    base input rate, while some providers (DeepSeek) publish an absolute
+    cache-hit price. Where the two aren't a clean ratio this is an
+    approximation. Nothing in this codebase sets `cache_control` yet, so
+    absolute cache rates would be precision for an unused feature.
     """
 
-    input_per_mtok: int
-    output_per_mtok: int
+    input_per_token_nano: int
+    output_per_token_nano: int
     cache_write_multiplier: float = 1.25
     cache_read_multiplier: float = 0.1
 
 
 PRICING: dict[str, ModelPrice] = {
-    "claude-opus-5": ModelPrice(input_per_mtok=5, output_per_mtok=25),
-    "claude-sonnet-5": ModelPrice(input_per_mtok=3, output_per_mtok=15),
-    "claude-sonnet-4-6": ModelPrice(input_per_mtok=3, output_per_mtok=15),
-    "claude-haiku-4-5": ModelPrice(input_per_mtok=1, output_per_mtok=5),
+    # nano-USD per token: $5.00/Mtok -> 5_000.
+    "claude-opus-5": ModelPrice(input_per_token_nano=5_000, output_per_token_nano=25_000),
+    "claude-sonnet-5": ModelPrice(input_per_token_nano=3_000, output_per_token_nano=15_000),
+    "claude-sonnet-4-6": ModelPrice(input_per_token_nano=3_000, output_per_token_nano=15_000),
+    "claude-haiku-4-5": ModelPrice(input_per_token_nano=1_000, output_per_token_nano=5_000),
 }
-"""Anthropic **first-party** rates, in USD per million tokens.
+"""Anthropic **first-party** rates.
 
 ⚠️ These are NOT Bedrock rates. Amazon Bedrock is partner-operated with its own
 separate price list, so every figure a `ModelChoice` bills through a Bedrock
@@ -57,6 +78,17 @@ https://aws.amazon.com/bedrock/pricing/. Relative ordering between tiers holds;
 absolute numbers do not. `spend_by_role()` is therefore directionally correct on
 Bedrock and not an invoice.
 """
+
+
+def _nano_to_micro(nano: int) -> int:
+    """Round nano-USD to the ledger's micro-USD unit, half-up, in integers.
+
+    One rounding, applied to a whole call's total -- never per token, which
+    would compound. A call of only a handful of tokens on a very cheap model
+    can still round to 0; micro-USD is the ledger's resolution and a real call
+    is thousands of tokens.
+    """
+    return (nano + _NANO_PER_MICRO // 2) // _NANO_PER_MICRO
 
 
 @dataclass(frozen=True)
@@ -111,14 +143,19 @@ class Usage(BaseModel):
 
 
 def cost_of(model: str, usage: Usage) -> int:
-    """Real cost of a completed call, in micro-USD."""
+    """Real cost of a completed call, in micro-USD.
+
+    Accumulates in nano-USD and converts once at the end, so a sub-dollar rate
+    survives the arithmetic instead of truncating to zero on the way in.
+    """
     price = _price_for(model)
-    return (
-        usage.input_tokens * price.input_per_mtok
-        + usage.output_tokens * price.output_per_mtok
-        + round(usage.cache_creation_input_tokens * price.input_per_mtok * price.cache_write_multiplier)
-        + round(usage.cache_read_input_tokens * price.input_per_mtok * price.cache_read_multiplier)
+    nano = (
+        usage.input_tokens * price.input_per_token_nano
+        + usage.output_tokens * price.output_per_token_nano
+        + round(usage.cache_creation_input_tokens * price.input_per_token_nano * price.cache_write_multiplier)
+        + round(usage.cache_read_input_tokens * price.input_per_token_nano * price.cache_read_multiplier)
     )
+    return _nano_to_micro(nano)
 
 
 def estimate_cost(model: str, max_output_tokens: int, estimated_input_tokens: int = 0) -> int:
@@ -126,11 +163,20 @@ def estimate_cost(model: str, max_output_tokens: int, estimated_input_tokens: in
 
     Treats `max_output_tokens` as fully spent -- the real call will almost
     always cost less. This is a reservation ceiling, not a bill.
+
+    This is the function whose zero-rate bug disabled budget gating: `reserve()`
+    admits a call when this estimate fits in what's left, so an input rate that
+    truncated to 0 made input-heavy calls look free and the ceiling stopped
+    being a ceiling.
     """
     if max_output_tokens < 0 or estimated_input_tokens < 0:
         raise ValueError("token counts must be non-negative")
     price = _price_for(model)
-    return estimated_input_tokens * price.input_per_mtok + max_output_tokens * price.output_per_mtok
+    nano = (
+        estimated_input_tokens * price.input_per_token_nano
+        + max_output_tokens * price.output_per_token_nano
+    )
+    return _nano_to_micro(nano)
 
 
 @dataclass(frozen=True)

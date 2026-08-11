@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from smartops.budget import Budget, Usage, cost_of, estimate_cost
+from smartops.budget import PRICING, Budget, ModelPrice, Usage, cost_of, estimate_cost
 
 
 def test_cost_of_known_model():
@@ -141,3 +141,82 @@ class TestLedger:
 
         assert budget.spend_by_task() == {}
         assert budget.spend_by_role() == {"critic": 10 * 25}
+
+
+class TestSubDollarRates:
+    """Regression guard for the bug that made cheap providers unbillable.
+
+    Rates used to be stored as integer USD-per-million-tokens, which equals
+    micro-USD-per-token only for whole-dollar prices. Every Claude tier is
+    $1-$25/Mtok so it never showed; a sub-dollar provider truncated to zero.
+    These tests pin both halves of the damage.
+    """
+
+    # ~$0.27 in / ~$1.10 out per Mtok -- illustrative sub-dollar rates, in the
+    # range a cheap provider actually charges. Not a claim about any vendor's
+    # published prices.
+    CHEAP = ModelPrice(input_per_token_nano=270, output_per_token_nano=1_100)
+
+    @pytest.fixture(autouse=True)
+    def _register_cheap_model(self):
+        PRICING["test-cheap-model"] = self.CHEAP
+        yield
+        del PRICING["test-cheap-model"]
+
+    def test_sub_dollar_input_rate_is_not_priced_as_free(self):
+        # The core bug: input_per_mtok=int(0.27) was 0, so input tokens cost
+        # nothing no matter how many there were.
+        usage = Usage(input_tokens=1_000_000)
+
+        assert cost_of("test-cheap-model", usage) == 270_000  # $0.27, not $0
+
+    def test_sub_dollar_rates_price_a_realistic_call_exactly(self):
+        usage = Usage(input_tokens=100_000, output_tokens=20_000)
+
+        # (100_000*270 + 20_000*1_100) nano = 49_000_000 nano = 49_000 micro
+        assert cost_of("test-cheap-model", usage) == 49_000
+
+    def test_cheap_model_is_priced_below_an_expensive_one_not_equal_to_zero(self):
+        usage = Usage(input_tokens=100_000, output_tokens=20_000)
+
+        cheap = cost_of("test-cheap-model", usage)
+        pricey = cost_of("claude-sonnet-4-6", usage)
+
+        # The comparison the provider decision rests on: strictly cheaper, and
+        # strictly positive. Truncation used to make this 0 vs 600_000.
+        assert 0 < cheap < pricey
+
+    async def test_budget_gating_still_bites_on_a_sub_dollar_model(self):
+        # The consequential half: estimate_cost() feeds reserve(), so a zero
+        # input rate made the admission check admit everything.
+        estimate = estimate_cost(
+            "test-cheap-model", max_output_tokens=10_000, estimated_input_tokens=100_000
+        )
+        assert estimate > 0
+
+        budget = Budget(total_micro_usd=estimate - 1)
+        assert await budget.reserve(
+            role="broker",
+            model="test-cheap-model",
+            max_output_tokens=10_000,
+            estimated_input_tokens=100_000,
+        ) is None
+        assert budget.remaining == estimate - 1
+
+    async def test_input_tokens_count_toward_the_reservation_ceiling(self):
+        # Guards the specific failure mode: with input priced at 0, these two
+        # estimates were identical and an input-heavy call reserved nothing for
+        # its input.
+        without_input = estimate_cost("test-cheap-model", max_output_tokens=1_000)
+        with_input = estimate_cost(
+            "test-cheap-model", max_output_tokens=1_000, estimated_input_tokens=500_000
+        )
+
+        assert with_input > without_input
+
+    def test_rounding_to_the_ledger_unit_is_half_up_on_the_total(self):
+        # One rounding, on the whole call -- not per token, which would compound.
+        # 5 tokens * 270 nano = 1350 nano = 1.35 micro -> 1
+        assert cost_of("test-cheap-model", Usage(input_tokens=5)) == 1
+        # 6 tokens * 270 nano = 1620 nano = 1.62 micro -> 2
+        assert cost_of("test-cheap-model", Usage(input_tokens=6)) == 2
