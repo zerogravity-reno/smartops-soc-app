@@ -40,6 +40,7 @@ from contracts import (
 
 from smartops.broker import FAMILY_REQUIRED_KINDS, SubagentRunner, enrich_mission
 from smartops.budget import Budget, ModelChoice, Usage
+from smartops.telemetry import record_cost, trace_attributes_for
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
 logger = logging.getLogger(__name__)
@@ -298,7 +299,7 @@ async def investigate(
     try:
         result = await _build_agent_and_invoke(
             prompt,
-            family=family,
+            mission=mission,
             model=model,
             tools=tools,
             turns=turns,
@@ -312,7 +313,10 @@ async def investigate(
         await budget.release(reservation)
         raise
 
-    await budget.settle(reservation, _usage_of(result))
+    # Mirror the settled charge onto the current span. We are still inside the
+    # Broker's tool-invocation span here, so cost shows up inline in the trace
+    # rather than only in the Budget ledger.
+    record_cost(reservation, await budget.settle(reservation, _usage_of(result)))
 
     collected_at = datetime.now(timezone.utc)
     evidence = collector.evidence(mission.task_id, family, collected_at)
@@ -373,7 +377,7 @@ async def investigate(
 async def _build_agent_and_invoke(
     prompt: str,
     *,
-    family: str,
+    mission: SubagentMission,
     model: ModelChoice,
     tools: list,
     turns: int,
@@ -397,10 +401,15 @@ async def _build_agent_and_invoke(
     agent = Agent(
         model=model.build(),
         tools=tools,
-        system_prompt=_system_prompt_for(family, turns=turns),
+        system_prompt=_system_prompt_for(mission.tool_family, turns=turns),
         structured_output_model=SubagentAnswer,
         callback_handler=None,
         hooks=[collector],
+        # Stamps task_id/hypothesis_id/tool_family onto every span this agent
+        # produces, so a trace correlates back to the investigation with no
+        # separate correlation system. Without it, a subagent's model and tool
+        # spans carry only Strands' generic GenAI attributes.
+        trace_attributes=trace_attributes_for(mission),
         retry_strategy=ModelRetryStrategy(max_attempts=2),
         conversation_manager=SlidingWindowConversationManager(should_truncate_results=False),
     )

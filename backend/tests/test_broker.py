@@ -972,3 +972,83 @@ class TestBrokerLimits:
         four = _estimated_input_tokens("prompt", turns=4)
 
         assert four > one * 4
+
+
+class TestTelemetryIsActuallyWired:
+    """Guards against the failure these tests exist because of.
+
+    `telemetry.py` was written with care, unit-tested in isolation, and called
+    from nowhere -- so traces carried Strands' generic GenAI spans with no
+    task_id, no cost, and no subtask status, while every test passed. Testing a
+    helper in isolation cannot catch that; only asserting the call site can.
+    """
+
+    async def test_every_result_gets_its_status_recorded(self, monkeypatch):
+        # _dispatch is the single funnel for all family results -- gate
+        # rejections, enricher lookups, and full subagent runs alike.
+        seen = []
+        monkeypatch.setattr("smartops.broker.record_result_status", seen.append)
+
+        await broker_task(
+            make_task(),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(ok_result),
+            invoke=fake_invoker(["siem", "vt"]),
+        )
+
+        assert [r.task_id.split(":")[1] for r in seen] == ["siem", "vt"]
+
+    async def test_the_broker_charge_is_mirrored_onto_the_span(self, monkeypatch):
+        # broker_task settles after invoke() returns, so it sits outside every
+        # Strands span; without investigation_span() this cost had nowhere to land.
+        charges = []
+        monkeypatch.setattr(
+            "smartops.broker.record_cost", lambda res, actual: charges.append((res, actual))
+        )
+
+        await broker_task(
+            make_task(),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(ok_result),
+            invoke=fake_invoker(["siem"], usage={"inputTokens": 1000, "outputTokens": 500}),
+        )
+
+        assert len(charges) == 1
+        reservation, actual = charges[0]
+        assert reservation.role == "broker"
+        # The settled amount, not the reservation -- mirroring the estimate would
+        # make the trace disagree with the ledger.
+        assert actual > 0
+        assert actual <= reservation.reserved_micro_usd
+
+    async def test_the_investigation_span_wraps_the_whole_run(self, monkeypatch):
+        # If the span closed before dispatch, subagent spans would be orphans
+        # again and the cost mirror would no-op.
+        events = []
+        real = __import__("smartops.telemetry", fromlist=["investigation_span"]).investigation_span
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def spy(task):
+            events.append("enter")
+            with real(task) as span:
+                yield span
+            events.append("exit")
+
+        monkeypatch.setattr("smartops.broker.investigation_span", spy)
+        monkeypatch.setattr(
+            "smartops.broker.record_result_status", lambda r: events.append("result")
+        )
+
+        await broker_task(
+            make_task(),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(ok_result),
+            invoke=fake_invoker(["siem"]),
+        )
+
+        assert events == ["enter", "result", "exit"]

@@ -47,6 +47,7 @@ from strands import ToolContext, tool
 
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.errors import NotConfigured
+from smartops.telemetry import investigation_span, record_cost, record_result_status
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
 logger = logging.getLogger(__name__)
@@ -479,6 +480,11 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
     req.collected.append(result)
     if result.status is SubtaskStatus.REJECTED:
         req.refused[family] = result.summary
+    # Every family result funnels through here -- gate rejections, enricher
+    # lookups, and full subagent runs alike -- so this is the one place that sees
+    # all of them. We are inside the Broker's tool-invocation span, so the status
+    # lands on the span for this dispatch.
+    record_result_status(result)
     return _digest(result)
 
 
@@ -674,8 +680,37 @@ async def broker_task(
     run_subagent: SubagentRunner | None = None,
     invoke: BrokerInvoker | None = None,
 ) -> BrokerOutcome:
-    """Run the Broker over one `AnalystTask`. Charges at most one LLM call
-    against `budget` under `role="broker"`.
+    """Run the Broker over one `AnalystTask` inside a single root trace span.
+
+    A thin wrapper so every span the investigation produces -- the Broker's own
+    model call, each dispatch, each subagent's model and tool calls -- shares one
+    parent. Without it they were sibling roots with nothing tying them together,
+    and the Broker's settled cost had no span to land on, since it settles after
+    `invoke()` returns and is therefore outside every Strands span.
+    """
+    with investigation_span(task):
+        return await _run_broker_task(
+            task,
+            budget,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            turns=turns,
+            run_subagent=run_subagent,
+            invoke=invoke,
+        )
+
+
+async def _run_broker_task(
+    task: AnalystTask,
+    budget: Budget,
+    *,
+    model: ModelChoice,
+    max_output_tokens: int,
+    turns: int,
+    run_subagent: SubagentRunner | None,
+    invoke: BrokerInvoker | None,
+) -> BrokerOutcome:
+    """Charges at most one LLM call against `budget` under `role="broker"`.
 
     Returns an empty outcome without invoking anything if the budget can't cover
     the reservation -- the Broker stops immediately; it does not retry or
@@ -717,7 +752,10 @@ async def broker_task(
         await budget.release(reservation)
         raise
 
-    await budget.settle(reservation, _usage_from_accumulated(result.metrics.accumulated_usage))
+    record_cost(
+        reservation,
+        await budget.settle(reservation, _usage_from_accumulated(result.metrics.accumulated_usage)),
+    )
 
     classification = result.structured_output
     if classification is None:

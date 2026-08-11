@@ -30,13 +30,17 @@ from __future__ import annotations
 
 import os
 import threading
+from contextlib import contextmanager
+from typing import Iterator
 
-from contracts import SubagentMission, SubtaskResult, SubtaskStatus
+from contracts import AnalystTask, SubagentMission, SubtaskResult, SubtaskStatus
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from strands.telemetry import StrandsTelemetry
 
 from smartops.budget import Reservation
+
+TRACER_NAME = "smartops"
 
 _configured = False
 _configure_lock = threading.Lock()
@@ -68,6 +72,36 @@ def configure_telemetry(*, console: bool = False) -> None:
         if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
             telemetry.setup_otlp_exporter()
         _configured = True
+
+
+@contextmanager
+def investigation_span(task: AnalystTask) -> Iterator[trace.Span]:
+    """Root span for one investigation.
+
+    Strands auto-instruments each `Agent` and tool call, but those spans are
+    siblings with no common parent -- so a trace showed the Broker's model call
+    and each subagent's model call as unrelated roots, with nothing tying them to
+    one investigation. This is that parent.
+
+    It also gives `record_cost()` somewhere to land for the Broker's own charge:
+    `broker_task()` settles after `invoke()` has returned, so it is outside every
+    Strands span, and without a span of our own the cost attribute was silently
+    dropped.
+
+    A no-op when telemetry was never configured -- `get_tracer()` then returns a
+    non-recording tracer, so this costs nothing in tests or credential-less runs.
+    """
+    tracer = trace.get_tracer(TRACER_NAME)
+    with tracer.start_as_current_span(
+        "smartops.investigation",
+        attributes={
+            "task_id": task.task_id,
+            "hypothesis_id": task.hypothesis_id,
+            "scope.entity_kinds": sorted(task.scope.kinds()),
+            "scope.entity_count": len(task.scope.entities),
+        },
+    ) as span:
+        yield span
 
 
 def trace_attributes_for(mission: SubagentMission) -> dict[str, str]:
