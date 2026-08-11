@@ -19,11 +19,11 @@ Two things deliberately stay out of the model's reach:
 - **Raw `Evidence`** never enters any prompt. A tool wrapper returns only a
   short digest; the full `SubtaskResult` is collected by code.
 
-What is NOT here yet: real domain subagents (Aug-27 -- `_stub_subagent` holds
-their place behind the `SubagentRunner` seam), and any live model call. The real
-`Agent` is constructed by `default_broker_invoker()` and is correct, but nothing
-exercises it until Bedrock credentials exist; today's callers inject a fake
-`BrokerInvoker` of the same shape, exactly as tests already fake `Classifier`.
+Real domain subagents now exist in `smartops.subagents`; `broker_task()` takes
+one via `run_subagent`, and `_stub_subagent` is the fallback for when no model is
+configured, where it reports what each family *could* have used. The `Agent` built
+by `default_broker_invoker()` is exercised against Bedrock, so both rungs of that
+ladder are live; tests still inject a fake `BrokerInvoker` of the same shape.
 """
 
 from __future__ import annotations
@@ -57,6 +57,30 @@ BROKER_ROLE = "broker"
 # a subagent's reported `gaps` can justify one better-aimed follow-up, and no
 # more. See `_dispatch()` for what this prevents.
 MAX_DISPATCHES_PER_FAMILY = 2
+
+# Bounds on one Broker run.
+#
+# `Limits(output_tokens=...)` is CUMULATIVE across every model call in the loop,
+# not per call -- so this is the budget for all of the Broker's tool-call
+# arguments *plus* its final `TaskClassification`. At 1000 it ran dry on the tool
+# calls and the run ended before the classification was emitted, twice, on real
+# runs; because Strands ends a capped run with a `stop_reason` and raises nothing,
+# that arrived as a successful run with no structured output. Sized for the worst
+# case the re-dispatch cap allows -- 8 dispatches -- plus a detailed rationale.
+#
+# This is NOT the context window. That is a property of the model (1M tokens on
+# claude-sonnet-4-6) and is not something a caller sets; observed Broker runs use
+# ~15k input tokens, around 1.5% of it, so input headroom is not a constraint
+# here and raising anything on that axis would be solving a problem we don't have.
+#
+# Raising this costs nothing when unused: `Budget.reserve()` treats it as a
+# ceiling and `settle()` credits back the difference.
+DEFAULT_BROKER_OUTPUT_TOKENS = 4000
+
+# One turn is one model call plus any tool execution that follows. Six covers
+# dispatching every family and still leaves turns to report; the observed
+# four-family run finished well inside it.
+DEFAULT_BROKER_TURNS = 6
 
 # Floor for the fixed input every turn carries regardless of the task: the system
 # prompt below plus the four tool schemas. Measured generously -- see
@@ -106,9 +130,11 @@ SECURITY CONSTRAINTS:
 
 
 class SubagentRunner(Protocol):
-    """Runs one mission and returns its result. Aug-27 replaces the body of
-    `_stub_subagent` with a real `Agent`; this signature is what makes that a
-    body swap rather than a rewrite."""
+    """Runs one mission and returns its result.
+
+    `smartops.subagents.domain_runner()` implements this; `_stub_subagent` is the
+    no-model fallback. Keeping the seam this narrow is what made adding the real
+    runner one argument to `broker_task()` rather than a rewrite."""
 
     async def __call__(self, mission: SubagentMission) -> SubtaskResult: ...
 
@@ -580,15 +606,14 @@ def _estimated_input_tokens(prompt: str, *, turns: int) -> int:
 def default_broker_invoker(
     choice: ModelChoice,
     *,
-    max_output_tokens: int = 1000,
-    turns: int = 6,
+    max_output_tokens: int = DEFAULT_BROKER_OUTPUT_TOKENS,
+    turns: int = DEFAULT_BROKER_TURNS,
 ) -> BrokerInvoker:
     """The real Broker: a Strands `Agent` whose tools are the four domains.
 
-    ⚠️ **Unexercised today.** Nothing calls this until Bedrock credentials and a
-    region exist; Aug-13's CLI and tests inject a fake of the same shape. It is
-    written now anyway so that enabling a live model is a one-line change to
-    which invoker is passed, rather than building this abstraction later.
+    Live: `main.py` uses this whenever a provider is configured, and it has been
+    exercised against Bedrock. Tests still inject a fake of the same shape, which
+    is what keeps the suite free of credentials and network calls.
 
     Non-obvious argument choices, all deliberate:
 
@@ -644,8 +669,8 @@ async def broker_task(
     budget: Budget,
     *,
     model: ModelChoice,
-    max_output_tokens: int = 1000,
-    turns: int = 6,
+    max_output_tokens: int = DEFAULT_BROKER_OUTPUT_TOKENS,
+    turns: int = DEFAULT_BROKER_TURNS,
     run_subagent: SubagentRunner | None = None,
     invoke: BrokerInvoker | None = None,
 ) -> BrokerOutcome:

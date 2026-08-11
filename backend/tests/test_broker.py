@@ -14,10 +14,14 @@ from contracts import (
 )
 
 from smartops.broker import (
+    DEFAULT_BROKER_OUTPUT_TOKENS,
+    DEFAULT_BROKER_TURNS,
+    FAMILY_REQUIRED_KINDS,
     MAX_DISPATCHES_PER_FAMILY,
     BrokerRequest,
     ModelChoice,
     _digest,
+    _estimated_input_tokens,
     broker_task,
     default_broker_invoker,
     investigate_edr,
@@ -621,8 +625,8 @@ class TestDefaultInvoker:
         agent_cls.assert_not_called()
 
     async def test_default_invoker_builds_an_agent_with_the_four_family_tools(self, monkeypatch):
-        # The real invoker is unexercised in production until credentials exist,
-        # so this is the only thing asserting its construction is sane.
+        # The real invoker runs against Bedrock in production, but never in the
+        # suite, so this is the only thing asserting its construction is sane.
         fake_agent = MagicMock()
 
         async def invoke_async(prompt, **kwargs):
@@ -898,3 +902,73 @@ class TestRejectionIsTerminal:
         )
 
         assert len(outcome.results) == 2
+
+
+class TestBrokerLimits:
+    """The Broker's own bounds reach the agent, and are large enough to finish.
+
+    `Limits(output_tokens=...)` is cumulative across every model call in the loop,
+    so it pays for all of the Broker's tool-call arguments *and* its final
+    `TaskClassification`. At 1000 it ran dry on the tool calls on real runs and the
+    turn ended with no structured output -- and since Strands ends a capped run
+    with a `stop_reason` rather than raising, that looked like success.
+    """
+
+    @staticmethod
+    async def _captured_limits(monkeypatch, **invoker_kwargs):
+        captured = {}
+        fake_agent = MagicMock()
+
+        async def invoke_async(prompt, **kwargs):
+            captured.update(kwargs)
+            return FakeInvokerResult(
+                structured_output=TaskClassification(tool_families=[], rationale="none")
+            )
+
+        fake_agent.invoke_async = invoke_async
+        monkeypatch.setattr(type(MODEL), "build", lambda self: object())
+
+        with patch("strands.Agent", return_value=fake_agent):
+            invoker = default_broker_invoker(MODEL, **invoker_kwargs)
+            await invoker("prompt", BrokerRequest(task=make_task()))
+
+        return captured
+
+    async def test_limits_are_passed_to_the_agent(self, monkeypatch):
+        captured = await self._captured_limits(monkeypatch)
+
+        limits = captured["limits"]
+        assert limits["turns"] == DEFAULT_BROKER_TURNS
+        assert limits["output_tokens"] == DEFAULT_BROKER_OUTPUT_TOKENS
+
+    async def test_overrides_reach_the_agent(self, monkeypatch):
+        captured = await self._captured_limits(
+            monkeypatch, max_output_tokens=123, turns=2
+        )
+
+        assert captured["limits"] == {"turns": 2, "output_tokens": 123}
+
+    async def test_the_request_is_handed_over_as_invocation_state(self, monkeypatch):
+        # `smartops=request` is what becomes `invocation_state` inside every tool
+        # call; without it the family wrappers cannot read scope.
+        captured = await self._captured_limits(monkeypatch)
+
+        assert isinstance(captured["smartops"], BrokerRequest)
+
+    def test_the_output_budget_covers_the_worst_case_dispatch_count(self):
+        # The re-dispatch cap allows MAX_DISPATCHES_PER_FAMILY per family, and each
+        # dispatch costs the model a tool-call block; the classification rationale
+        # then has to fit alongside them. Rough floor, generously estimated: if
+        # someone lowers the constant below this, the failure mode is a silently
+        # missing classification rather than an error.
+        families = len(FAMILY_REQUIRED_KINDS)
+        worst_case_tool_calls = families * MAX_DISPATCHES_PER_FAMILY
+        assert DEFAULT_BROKER_OUTPUT_TOKENS >= worst_case_tool_calls * 150 + 500
+
+    def test_input_estimate_grows_with_the_square_of_the_turn_count(self):
+        # Turn N re-sends turns 1..N-1, so a linear reservation under-reserves and
+        # lets a run settle above its ceiling -- which silently disables the gate.
+        one = _estimated_input_tokens("prompt", turns=1)
+        four = _estimated_input_tokens("prompt", turns=4)
+
+        assert four > one * 4
