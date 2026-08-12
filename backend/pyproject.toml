@@ -6,13 +6,16 @@ requires-python = ">=3.13"
 dependencies = [
     "smartops-contracts",
     "pydantic>=2.9",
-    # Pinned exactly: several APIs this package relies on are real in 1.50.2 but
-    # absent from strandsagents.com, which documents an older surface. A minor
-    # bump could move them without notice, so the tests are the contract.
+    # Pinned exactly: several APIs this package relies on are real in 1.51.0 but
+    # absent from strandsagents.com, which documents an older surface (and whose
+    # source repo is archived). A minor bump could move them without notice, so
+    # the tests are the contract -- see backend/tests/test_strands_compliance.py,
+    # which fails the suite on a Strands deprecation or on the private helper
+    # registry.py imports changing shape.
     # [openai] is for DeepSeek, not OpenAI: DeepSeek is OpenAI-API-compatible,
     # so it is reached via OpenAIModel with base_url overridden. Without this
     # extra, `bedrock` is the only importable model provider.
-    "strands-agents[otel,openai]==1.50.2",
+    "strands-agents[otel,openai]==1.51.0",
     "opentelemetry-api>=1.20",
     # Direct, not transitive: VirusTotal lookups need an async HTTP client, and
     # a blocking one would serialize the Broker's concurrent dispatch. httpx
