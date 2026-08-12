@@ -29,27 +29,13 @@ from typing import get_args
 from contracts import AnalystTask, Entity, EntityKind, Scope, TaskClassification, ToolFamily
 from pydantic import ValidationError
 
-from smartops.broker import (
-    BrokerRequest,
-    broker_task,
-    investigate_edr,
-    investigate_ndr,
-    investigate_siem,
-    investigate_vt,
-)
+from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
+from smartops.domains import ALL_FAMILIES
 from smartops.subagents import domain_runner
 from smartops.telemetry import configure_telemetry
 from smartops.tools.registry import load_mcp_servers, mcp_clients
 
-_TOOL_BY_FAMILY = {
-    "siem": investigate_siem,
-    "edr": investigate_edr,
-    "vt": investigate_vt,
-    "ndr": investigate_ndr,
-}
-
-_ALL_FAMILIES: tuple[ToolFamily, ...] = ("siem", "edr", "vt", "ndr")
 _ENTITY_KINDS = get_args(EntityKind)
 
 # Used only on the scripted path, where nothing reaches a provider: `Budget`
@@ -88,7 +74,7 @@ def _scripted_invoker(families: list[ToolFamily]):
                 tool_use={"toolUseId": f"cli-{index}"},
                 invocation_state={"smartops": request},
             )
-            await _TOOL_BY_FAMILY[family](question=request.task.goal, tool_context=context)
+            await TOOL_BY_FAMILY[family](question=request.task.goal, tool_context=context)
         return _ScriptedResult(
             structured_output=TaskClassification(
                 tool_families=list(families),
@@ -206,8 +192,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--families",
-        default=",".join(_ALL_FAMILIES),
-        help=f"comma-separated families to dispatch (default: all of {','.join(_ALL_FAMILIES)})",
+        default=",".join(ALL_FAMILIES),
+        help=f"comma-separated families to dispatch (default: all of {','.join(ALL_FAMILIES)})",
     )
     parser.add_argument(
         "--budget-usd", type=float, default=1.0, help="investigation budget in USD (default: 1.0)"
@@ -242,11 +228,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _parse_families(raw: str) -> list[ToolFamily]:
     families = [part.strip() for part in raw.split(",") if part.strip()]
-    unknown = [f for f in families if f not in _ALL_FAMILIES]
+    unknown = [f for f in families if f not in ALL_FAMILIES]
     if unknown:
         raise SystemExit(
             f"error: unknown tool famil{'y' if len(unknown) == 1 else 'ies'} "
-            f"{', '.join(unknown)} -- expected from {','.join(_ALL_FAMILIES)}"
+            f"{', '.join(unknown)} -- expected from {','.join(ALL_FAMILIES)}"
         )
     # Preserve order, drop duplicates.
     return list(dict.fromkeys(families))
