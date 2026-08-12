@@ -1,11 +1,11 @@
+import dataclasses
 import json
 
 import pytest
 
 import smartops.tools.registry as registry_module
+from smartops.domains import DOMAINS
 from smartops.tools.registry import (
-    MCP_SERVERS_BY_FAMILY,
-    NATIVE_TOOLS_BY_FAMILY,
     load_mcp_servers,
     mcp_clients,
     tools_for,
@@ -44,10 +44,6 @@ def _clean_registry_state(monkeypatch):
     # suite behaves: it would silently route every server in these tests down
     # the unverified-TLS builder instead of MCPClient.load_servers().
     monkeypatch.delenv(registry_module.TLS_NO_VERIFY_ENV_VAR, raising=False)
-    monkeypatch.setattr(registry_module, "MCP_SERVERS_BY_FAMILY", dict(MCP_SERVERS_BY_FAMILY))
-    monkeypatch.setattr(
-        registry_module, "NATIVE_TOOLS_BY_FAMILY", {k: list(v) for k, v in NATIVE_TOOLS_BY_FAMILY.items()}
-    )
     yield
 
 
@@ -62,12 +58,12 @@ class TestToolsFor:
         assert await tools_for("siem") == []
 
     async def test_native_tools_resolve_without_any_mcp_server(self, monkeypatch):
-        monkeypatch.setitem(registry_module.NATIVE_TOOLS_BY_FAMILY, "vt", ["vt_lookup_ip"])
+        monkeypatch.setitem(DOMAINS, "vt", dataclasses.replace(DOMAINS["vt"], native_tools=["vt_lookup_ip"]))
 
         assert await tools_for("vt") == ["vt_lookup_ip"]
 
     async def test_mcp_tools_are_appended_to_native_tools(self, monkeypatch):
-        monkeypatch.setitem(registry_module.NATIVE_TOOLS_BY_FAMILY, "siem", ["native"])
+        monkeypatch.setitem(DOMAINS, "siem", dataclasses.replace(DOMAINS["siem"], native_tools=["native"]))
         _install_clients(monkeypatch, siem=[FakeMCPClient(tools=["splunk_search"])])
 
         assert await tools_for("siem") == ["native", "splunk_search"]
@@ -148,11 +144,10 @@ class TestLoadMcpServers:
 
     def test_a_server_mapped_to_two_families_is_rejected(self, monkeypatch):
         # Would silently open one connection per family.
-        monkeypatch.setattr(
-            registry_module,
-            "MCP_SERVERS_BY_FAMILY",
-            {"siem": ("shared",), "edr": ("shared",), "ndr": (), "vt": ()},
-        )
+        monkeypatch.setitem(DOMAINS, "siem", dataclasses.replace(DOMAINS["siem"], mcp_servers=("shared",)))
+        monkeypatch.setitem(DOMAINS, "edr", dataclasses.replace(DOMAINS["edr"], mcp_servers=("shared",)))
+        monkeypatch.setitem(DOMAINS, "ndr", dataclasses.replace(DOMAINS["ndr"], mcp_servers=()))
+        monkeypatch.setitem(DOMAINS, "vt", dataclasses.replace(DOMAINS["vt"], mcp_servers=()))
 
         with pytest.raises(ValueError, match="mapped to both"):
             load_mcp_servers({"mcpServers": {"shared": {"disabled": True}}})
@@ -345,8 +340,8 @@ class TestShippedConfig:
 
         servers = json.loads(Path(self.CONFIG).read_text(encoding="utf-8"))["mcpServers"]
 
-        for family, names in MCP_SERVERS_BY_FAMILY.items():
-            for name in names:
+        for family, spec in DOMAINS.items():
+            for name in spec.mcp_servers:
                 assert name in servers, (
                     f"family {family!r} maps to MCP server {name!r}, which the config does not define"
                 )

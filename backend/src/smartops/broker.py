@@ -35,7 +35,6 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from contracts import (
     AnalystTask,
-    EntityKind,
     Evidence,
     SubagentMission,
     SubtaskResult,
@@ -88,13 +87,6 @@ DEFAULT_BROKER_TURNS = 6
 # prompt below plus the four tool schemas. Measured generously -- see
 # `_estimated_input_tokens` for why over-estimating is the safe direction.
 _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
-
-# Kept as a derived view during the DomainSpec migration so existing callers and
-# tests keep working. It cannot drift from the registry because it is computed
-# from it. Deleted once every consumer reads `DOMAINS` directly.
-FAMILY_REQUIRED_KINDS: dict[ToolFamily, frozenset[EntityKind] | None] = {
-    family: spec.required_kinds for family, spec in DOMAINS.items()
-}
 
 _SYSTEM_PROMPT = """\
 You are the Task Broker for a security operations investigation. You receive one
@@ -306,7 +298,7 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
     construction.
     """
     family = mission.tool_family
-    required = FAMILY_REQUIRED_KINDS[family]
+    required = DOMAINS[family].required_kinds
     in_scope = mission.scope.kinds()
 
     if required is not None and not (required & in_scope):
@@ -513,13 +505,6 @@ TOOL_BY_FAMILY = {spec.family: make_investigate_tool(spec) for spec in DOMAINS.v
 
 # A list, because that is what `Agent(tools=...)` takes.
 FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
-
-# Module-level aliases, so existing importers keep working during the migration.
-# Deleted in the final task of this refactor.
-investigate_siem = TOOL_BY_FAMILY["siem"]
-investigate_edr = TOOL_BY_FAMILY["edr"]
-investigate_vt = TOOL_BY_FAMILY["vt"]
-investigate_ndr = TOOL_BY_FAMILY["ndr"]
 
 
 def _neutralize_delimiter(text: str) -> str:

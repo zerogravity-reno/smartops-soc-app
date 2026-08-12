@@ -16,19 +16,17 @@ from contracts import (
 from smartops.broker import (
     DEFAULT_BROKER_OUTPUT_TOKENS,
     DEFAULT_BROKER_TURNS,
-    FAMILY_REQUIRED_KINDS,
     MAX_DISPATCHES_PER_FAMILY,
+    TOOL_BY_FAMILY,
     BrokerRequest,
     ModelChoice,
     _digest,
     _estimated_input_tokens,
     broker_task,
     default_broker_invoker,
-    investigate_edr,
-    investigate_siem,
-    investigate_vt,
 )
 from smartops.budget import Budget
+from smartops.domains import DOMAINS
 
 MODEL = ModelChoice(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", pricing_key="claude-sonnet-4-6")
 
@@ -76,7 +74,7 @@ class FakeInvokerResult:
             self.metrics = FakeMetrics(accumulated_usage={"inputTokens": 0, "outputTokens": 0})
 
 
-_TOOL_BY_FAMILY = {"siem": investigate_siem, "edr": investigate_edr, "vt": investigate_vt}
+_TOOL_BY_FAMILY = {family: TOOL_BY_FAMILY[family] for family in ("siem", "edr", "vt")}
 
 
 def fake_invoker(
@@ -204,8 +202,8 @@ class TestDispatch:
         )
 
         assert run.missions[0].scope == task.scope
-        assert "question" in investigate_siem.tool_spec["inputSchema"]["json"]["properties"]
-        assert set(investigate_siem.tool_spec["inputSchema"]["json"]["properties"]) == {"question"}
+        assert "question" in TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]
+        assert set(TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]) == {"question"}
 
     async def test_one_family_failing_leaves_the_others_dispatched(self):
         def result_for(mission):
@@ -400,12 +398,12 @@ class TestStatusSemantics:
     for the whole investigation over a transient blip."""
 
     async def test_a_failed_attempt_is_error_with_the_cause_attached(self, monkeypatch):
-        import smartops.tools.registry as registry
+        import dataclasses
 
         async def exploding_enricher(scope):
             raise RuntimeError("connection reset by peer")
 
-        monkeypatch.setitem(registry.ENRICHERS_BY_FAMILY, "vt", exploding_enricher)
+        monkeypatch.setitem(DOMAINS, "vt", dataclasses.replace(DOMAINS["vt"], enricher=exploding_enricher))
 
         outcome = await broker_task(
             make_task(scope=make_scope(entities=[Entity(kind="ip", value="1.2.3.4")])),
@@ -421,13 +419,14 @@ class TestStatusSemantics:
     async def test_a_missing_credential_is_rejected_because_nothing_was_attempted(
         self, monkeypatch
     ):
-        import smartops.tools.registry as registry
+        import dataclasses
+
         from smartops.errors import NotConfigured
 
         async def unconfigured_enricher(scope):
             raise NotConfigured("SOME_KEY is not set")
 
-        monkeypatch.setitem(registry.ENRICHERS_BY_FAMILY, "vt", unconfigured_enricher)
+        monkeypatch.setitem(DOMAINS, "vt", dataclasses.replace(DOMAINS["vt"], enricher=unconfigured_enricher))
 
         outcome = await broker_task(
             make_task(scope=make_scope(entities=[Entity(kind="ip", value="1.2.3.4")])),
@@ -441,7 +440,8 @@ class TestStatusSemantics:
         assert result.error is None  # the contract forbids error on non-ERROR
 
     async def test_a_partial_result_ships_its_evidence_and_states_the_gap(self, monkeypatch):
-        import smartops.tools.registry as registry
+        import dataclasses
+
         from smartops.tools.native.virustotal import Enrichment, Verdict
 
         def verdict(value, malicious):
@@ -463,7 +463,7 @@ class TestStatusSemantics:
                 attempted=4,
             )
 
-        monkeypatch.setitem(registry.ENRICHERS_BY_FAMILY, "vt", partial_enricher)
+        monkeypatch.setitem(DOMAINS, "vt", dataclasses.replace(DOMAINS["vt"], enricher=partial_enricher))
 
         outcome = await broker_task(
             make_task(scope=make_scope(entities=[Entity(kind="ip", value="1.1.1.1")])),
@@ -715,7 +715,7 @@ class TestRedispatchCap:
         request = BrokerRequest(task=make_task(), run_subagent=run)
         request.dispatched.extend(["siem"] * MAX_DISPATCHES_PER_FAMILY)
 
-        digest = await investigate_siem(
+        digest = await TOOL_BY_FAMILY["siem"](
             question="again please",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-x"}, invocation_state={"smartops": request}
@@ -732,7 +732,7 @@ class TestRedispatchCap:
         request = BrokerRequest(task=make_task(), run_subagent=run)
         request.dispatched.extend(["siem"] * MAX_DISPATCHES_PER_FAMILY)
 
-        await investigate_siem(
+        await TOOL_BY_FAMILY["siem"](
             question="again",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-y"}, invocation_state={"smartops": request}
@@ -843,13 +843,13 @@ class TestRejectionIsTerminal:
         run = runner_returning(self.rejected)
         request = BrokerRequest(task=make_task(), run_subagent=run)
 
-        first = await investigate_vt(
+        first = await TOOL_BY_FAMILY["vt"](
             question="check it",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
             ),
         )
-        second = await investigate_vt(
+        second = await TOOL_BY_FAMILY["vt"](
             question="check it again",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-2"}, invocation_state={"smartops": request}
@@ -961,7 +961,7 @@ class TestBrokerLimits:
         # then has to fit alongside them. Rough floor, generously estimated: if
         # someone lowers the constant below this, the failure mode is a silently
         # missing classification rather than an error.
-        families = len(FAMILY_REQUIRED_KINDS)
+        families = len(DOMAINS)
         worst_case_tool_calls = families * MAX_DISPATCHES_PER_FAMILY
         assert DEFAULT_BROKER_OUTPUT_TOKENS >= worst_case_tool_calls * 150 + 500
 

@@ -70,19 +70,6 @@ _SUPPORTED_NO_VERIFY_KEYS = frozenset(
 )
 
 
-# Derived views over the domain registry, kept during the DomainSpec migration
-# because the tests monkeypatch them. They cannot drift from `DOMAINS` because
-# they are computed from it. Deleted in the final task of this refactor.
-MCP_SERVERS_BY_FAMILY: dict[ToolFamily, tuple[str, ...]] = {
-    family: spec.mcp_servers for family, spec in DOMAINS.items()
-}
-NATIVE_TOOLS_BY_FAMILY: dict[ToolFamily, list[Callable]] = {
-    family: list(spec.native_tools) for family, spec in DOMAINS.items()
-}
-ENRICHERS_BY_FAMILY: dict[ToolFamily, Callable[..., Any] | None] = {
-    family: spec.enricher for family, spec in DOMAINS.items()
-}
-
 # Built once per process by `load_mcp_servers()`. Empty until then, and empty
 # stays a valid state -- no config and no credentials is how this runs today.
 _clients_by_family: dict[ToolFamily, list[MCPClient]] = {}
@@ -158,8 +145,8 @@ def load_mcp_servers(config: str | Path | dict[str, Any] | None = None) -> dict[
         )
 
     _clients_by_family = {}
-    for family, names in MCP_SERVERS_BY_FAMILY.items():
-        subset = {name: servers[name] for name in names if name in servers}
+    for family, spec in DOMAINS.items():
+        subset = {name: servers[name] for name in spec.mcp_servers if name in servers}
         verified = {name: cfg for name, cfg in subset.items() if name not in no_verify}
         clients = MCPClient.load_servers({"mcpServers": verified}) if verified else []
         for name, cfg in subset.items():
@@ -212,8 +199,8 @@ def _assert_no_shared_servers() -> None:
     Cheap to check at startup; confusing to diagnose at runtime.
     """
     seen: dict[str, ToolFamily] = {}
-    for family, names in MCP_SERVERS_BY_FAMILY.items():
-        for name in names:
+    for family, spec in DOMAINS.items():
+        for name in spec.mcp_servers:
             if name in seen:
                 raise ValueError(
                     f"MCP server {name!r} is mapped to both {seen[name]!r} and {family!r}; "
@@ -344,7 +331,7 @@ def enricher_for(family: ToolFamily) -> Callable[..., Any] | None:
     Returns None for every family whose work needs a decision about what to ask
     -- those wait for a real subagent.
     """
-    return ENRICHERS_BY_FAMILY.get(family)
+    return DOMAINS[family].enricher
 
 
 def server_count(family: ToolFamily) -> int:
@@ -387,7 +374,7 @@ async def tools_for(family: ToolFamily) -> list:
     the current state of every family until credentials exist. Callers treat
     that as "this domain isn't available", not as an error.
     """
-    tools: list = list(NATIVE_TOOLS_BY_FAMILY.get(family, []))
+    tools: list = list(DOMAINS[family].native_tools)
     for client in _clients_by_family.get(family, []):
         # `continue_on_error` makes a connection failure yield [] here rather
         # than raise, so one dead vendor cannot abort resolution for the others.
