@@ -559,7 +559,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `smartops.domains.DOMAINS`
-- Produces: `enricher_for()`, `server_count()`, `tools_for()` — signatures unchanged. `MCP_SERVERS_BY_FAMILY`, `NATIVE_TOOLS_BY_FAMILY`, `ENRICHERS_BY_FAMILY` are **deleted**.
+- Produces: `enricher_for()`, `server_count()`, `tools_for()` — signatures unchanged. `MCP_SERVERS_BY_FAMILY`, `NATIVE_TOOLS_BY_FAMILY`, `ENRICHERS_BY_FAMILY` survive as **eagerly-derived views** over `DOMAINS`; Task 6 deletes them.
 
 - [ ] **Step 1: Confirm the safety net passes first**
 
@@ -632,46 +632,22 @@ with:
 from smartops.domains import DOMAINS
 ```
 
-- [ ] **Step 3: Update the four readers**
+- [ ] **Step 3: Leave the readers pointing at the derived dicts**
 
-In `load_mcp_servers()`, around line 184:
+`load_mcp_servers()`, `_assert_no_shared_servers()`, `enricher_for()` and
+`tools_for()` keep reading the three module-level dicts. Do **not** switch them
+to `DOMAINS[family]` lookups in this task: `test_registry.py:47-49,65,70,153,348`
+monkeypatches the dicts and expects the readers to observe the patch, so a direct
+`DOMAINS` read would silently ignore it and break tests that must stay
+unmodified.
 
-```python
-    for family, spec in DOMAINS.items():
-        subset = {name: servers[name] for name in spec.mcp_servers if name in servers}
-```
+The dicts are derived from `DOMAINS` at import, so `DOMAINS` is already the
+single source of truth — the indirection is what preserves the test seam until
+Task 6 retargets those monkeypatches and deletes the dicts.
 
-In `_assert_no_shared_servers()`, around line 237:
-
-```python
-    seen: dict[str, ToolFamily] = {}
-    for family, spec in DOMAINS.items():
-        for name in spec.mcp_servers:
-            if name in seen:
-                raise ValueError(
-                    f"MCP server {name!r} is mapped to both {seen[name]!r} and {family!r}; "
-                    "one server per family, or it opens a connection per family"
-                )
-            seen[name] = family
-```
-
-In `enricher_for()`, around line 364:
-
-```python
-def enricher_for(family: ToolFamily) -> Callable[..., Any] | None:
-    """The model-free lookup for `family`, if it has one.
-
-    Returns None for every family whose work needs a decision about what to ask
-    -- those wait for a real subagent.
-    """
-    return DOMAINS[family].enricher
-```
-
-In `tools_for()`, around line 413:
-
-```python
-    tools: list = list(DOMAINS[family].native_tools)
-```
+This means the only reader change in this task is none. Step 2's replacement of
+the dict definitions, plus Step 1b's removal of the re-export, is the whole
+source change.
 
 - [ ] **Step 4: Run the full suite**
 
@@ -722,16 +698,25 @@ from smartops.domains import DOMAINS
 
 Delete the `_TIME_SCOPED_FAMILIES` block at lines 76–78.
 
-Rewrite `_system_prompt_for()` (line 195) to take the flag rather than look it up:
+Rewrite `_system_prompt_for()` (line 195). `time_scoped` is an **optional
+override**, not a required argument: `test_subagents.py:219,228,243` calls this
+as `_system_prompt_for("siem", turns=14)`, and those calls must keep working
+unmodified. Defaulting to the registry lookup serves them, while the override
+lets a caller pass a spec that is not registered yet (Task 7 relies on this).
 
 ```python
-def _system_prompt_for(family: str, *, turns: int, time_scoped: bool) -> str:
+def _system_prompt_for(family: str, *, turns: int, time_scoped: bool | None = None) -> str:
     """The system prompt for one family.
 
     One prompt with a conditional clause rather than a prompt per family: the
     instructions are the same job, and a registry of near-identical prompts drifts
     apart. Only the time-window rule genuinely does not apply to every domain.
+
+    `time_scoped` defaults to the registered spec's value. Pass it explicitly only
+    for a `DomainSpec` that is not in `DOMAINS` yet.
     """
+    if time_scoped is None:
+        time_scoped = DOMAINS[family].time_scoped
     return _SYSTEM_PROMPT.format(
         family=family,
         turns=turns,
@@ -746,15 +731,9 @@ In `_prompt_for()` at line 224, replace the membership test:
     if DOMAINS[mission.tool_family].time_scoped:
 ```
 
-In `_build_agent_and_invoke()` at line 404:
-
-```python
-        system_prompt=_system_prompt_for(
-            mission.tool_family,
-            turns=turns,
-            time_scoped=DOMAINS[mission.tool_family].time_scoped,
-        ),
-```
+`_build_agent_and_invoke()` at line 404 needs **no change** — it already calls
+`_system_prompt_for(mission.tool_family, turns=turns)`, and the registry lookup
+now happens inside.
 
 In `domain_runner()`'s inner `run()` at line 449:
 
