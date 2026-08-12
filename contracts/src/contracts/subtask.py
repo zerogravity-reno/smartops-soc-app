@@ -10,7 +10,16 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializeAsAny,
+    create_model,
+    field_validator,
+    model_validator,
+)
+
+from contracts.findings import Assessment, CimCategory, Findings
 
 ToolFamily = Literal["edr", "ndr", "vt", "siem"]
 
@@ -146,16 +155,50 @@ class _StatusErrorContract(BaseModel):
         return self
 
 
+class QueryRun(BaseModel):
+    """One query a subagent chose to run, and what it was after.
+
+    `category` is the model classifying *its own action* -- something it knows
+    without inspecting a single row -- which is what lets code bucket the result
+    sets in `findings.SiemFindings` with no per-sourcetype parser.
+
+    Reporting the query text also makes index scoping a visible, checkable fact on
+    every result. The 2026-08-11 run issued every SPL as `index=*` and nothing
+    short of a raw span dump revealed it.
+    """
+
+    query: str = Field(min_length=1)
+    category: CimCategory | None = Field(
+        default=None,
+        description=(
+            "Which CIM category this query was retrieving. Null for domains with "
+            "no CIM taxonomy, such as a reputation lookup."
+        ),
+    )
+
+
 class SubagentAnswer(_StatusErrorContract):
     """The shape a subagent's LLM is forced into via structured output.
 
     Deliberately excludes `task_id` (the mission already knows it) and `evidence`
     (raw tool output is assembled by code from what the tool calls actually
-    returned, never authored by the model) -- the model only ever sees and produces
-    a short digest plus the citation ids it collected along the way.
+    returned, never authored by the model).
+
+    **There is no `summary` field, and that is the point.** It used to be the only
+    place findings could go, so prose was the only available shape -- prose becomes
+    narrative, and narrative wants a conclusion, which is the Analyst's job and not
+    this one's. Findings now travel as typed rows assembled by code; what the model
+    contributes is `queries_run` and a small `assessment`.
+
+    This class is a **base**: each family's concrete answer model adds a typed
+    `assessment` field, built by `make_answer_model()`. It is not handed to Strands
+    directly -- see that factory for why a parameterized generic cannot be.
     """
 
-    summary: str = Field(min_length=1)
+    queries_run: list[QueryRun] = Field(
+        default_factory=list,
+        description="Every query this subagent ran, in the order it ran them.",
+    )
     citation_ids: list[str] = Field(default_factory=list)
     gaps: list[ToolFamily] = Field(
         default_factory=list,
@@ -167,11 +210,59 @@ class SubagentAnswer(_StatusErrorContract):
     )
 
 
+def make_answer_model(family: ToolFamily, assessment_model: type[Assessment]) -> type[SubagentAnswer]:
+    """Build the concrete answer model a family's subagent is forced into.
+
+    **Why a factory and not `SubagentAnswer[P]`.** Strands derives the structured
+    output tool's name from `model.__name__` with no sanitisation
+    (`strands/tools/structured_output/structured_output_utils.py`), and a
+    parameterized pydantic generic is named `SubagentAnswer[SiemAssessment]` --
+    brackets included. Bedrock requires tool names to match
+    `^[a-zA-Z0-9_-]{1,64}$`, so that call fails at the provider. A concrete model
+    with a plain name is what has to reach Strands.
+
+    Mirrors `smartops.broker.make_investigate_tool()`: one factory over the
+    registry rather than a hand-written class per family.
+    """
+    return create_model(
+        f"{family.capitalize()}Answer",
+        __base__=SubagentAnswer,
+        assessment=(assessment_model, ...),
+    )
+
+
 class SubtaskResult(_StatusErrorContract):
     """Full result returned by a subagent, consumed only by the aggregator."""
 
     task_id: str = Field(min_length=1)
-    summary: str = Field(min_length=1)
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Why this status, in plain language. **Written by code, never by a "
+            "model** -- it is not a summary of findings and must not become one. "
+            "It exists because `_StatusErrorContract` forbids `error` unless "
+            "status=error, which left a rejection with nowhere to say why it was "
+            "rejected. Required for `rejected`, since an unexplained rejection is "
+            "indistinguishable from a bug."
+        ),
+    )
+    findings: SerializeAsAny[Findings] | None = Field(
+        default=None,
+        description=(
+            "The per-family typed payload, projected from `evidence` by code. "
+            "`SerializeAsAny` is load-bearing: with a plain `Findings` annotation "
+            "pydantic dumps only the base class's fields, so every subclass field "
+            "would serialise away to `{}` -- silently, and only visibly once the "
+            "report reached the Analyst."
+        ),
+    )
+    queries_run: list[QueryRun] = Field(
+        default_factory=list,
+        description=(
+            "Mirrors `SubagentAnswer.queries_run`, and declared on BOTH models for "
+            "the same reason as `gaps` below."
+        ),
+    )
     citation_ids: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     gaps: list[ToolFamily] = Field(
@@ -200,8 +291,43 @@ class SubtaskResult(_StatusErrorContract):
             raise ValueError(f"citation_ids reference unknown evidence: {sorted(dangling)}")
         return self
 
+    @model_validator(mode="after")
+    def _rejection_says_why(self) -> Self:
+        if self.status == SubtaskStatus.REJECTED and not (self.reason and self.reason.strip()):
+            raise ValueError("status=rejected requires a non-empty `reason`")
+        return self
+
     @classmethod
-    def from_answer(cls, *, task_id: str, answer: SubagentAnswer, evidence: list[Evidence]) -> Self:
+    def from_answer(
+        cls,
+        *,
+        task_id: str,
+        answer: SubagentAnswer,
+        evidence: list[Evidence],
+        findings: Findings | None = None,
+        reason: str | None = None,
+    ) -> Self:
         """Assemble the aggregator-facing result from a model's forced answer plus
-        the evidence the subagent's own tool-call loop collected."""
-        return cls(task_id=task_id, evidence=evidence, **answer.model_dump())
+        the evidence the subagent's own tool-call loop collected.
+
+        **Fields are mapped explicitly rather than splatted.** This used to be
+        `cls(..., **answer.model_dump())`, which worked only while both models
+        carried the same field names. The answer now carries `assessment` and the
+        result carries `findings`, and pydantic's default `extra="ignore"` would
+        drop the mismatch **silently** -- the same failure the `gaps` docstring
+        below documents, which is why `gaps` is declared on both models.
+
+        `findings` is passed in rather than read off the answer because it is
+        assembled by code from `evidence`; a model never authors it.
+        """
+        return cls(
+            task_id=task_id,
+            status=answer.status,
+            error=answer.error,
+            reason=reason,
+            findings=findings,
+            queries_run=list(answer.queries_run),
+            citation_ids=list(answer.citation_ids),
+            gaps=list(answer.gaps),
+            evidence=evidence,
+        )

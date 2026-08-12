@@ -53,7 +53,7 @@ class TestEntityGate:
         result = await run(mission("ndr", kinds=("host",)))
 
         assert result.status is SubtaskStatus.REJECTED
-        assert "needs one of" in result.summary
+        assert "needs one of" in result.reason
         # REJECTED means nothing was attempted, so nothing may be billed.
         assert result.error is None
 
@@ -65,7 +65,7 @@ class TestEntityGate:
         result = await run(mission("siem", kinds=("file_hash",)))
 
         # Rejected for having no server, NOT for the observable kind.
-        assert "no tools resolved" in result.summary
+        assert "no tools resolved" in result.reason
 
 
 class TestEnricherIsNotAShortCircuit:
@@ -89,14 +89,14 @@ class TestEnricherIsNotAShortCircuit:
         monkeypatch.setattr(
             subagents,
             "_build_agent_and_invoke",
-            _async_returning(_Result(SubagentAnswer(status=SubtaskStatus.OK, summary="known bad"))),
+            _async_returning(_Result(SubagentAnswer(status=SubtaskStatus.OK))),
         )
         run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
 
         result = await run(mission("vt", kinds=("ip",)))
 
         assert enrich_calls == []
-        assert result.summary == "known bad"
+        assert result.status == SubtaskStatus.OK
 
     async def test_the_entity_gate_still_applies_to_vt(self):
         # A model does not make an unqueryable observable queryable.
@@ -119,7 +119,7 @@ class TestToolResolution:
 
         assert result.status is SubtaskStatus.REJECTED
         # "configured but not answering" needs a different fix from "nothing configured".
-        assert "returning no tools" in result.summary
+        assert "returning no tools" in result.reason
 
     async def test_a_resolution_failure_is_error_not_rejected(self, monkeypatch):
         # REJECTED is documented as not-retryable; a timeout must not make an
@@ -164,7 +164,10 @@ class TestBudget:
 class TestEvidenceAssembly:
     def test_tool_results_become_evidence_with_unique_ids(self):
         collector = subagents._EvidenceCollector()
-        collector.calls = [("splunk_run_query", {"results": [1]}), ("splunk_get_indexes", {"x": 2})]
+        collector.calls = [
+            subagents._ToolCall("splunk_run_query", "index=botsv3 | head 1", {"results": [1]}),
+            subagents._ToolCall("splunk_get_indexes", None, {"x": 2}),
+        ]
 
         evidence = collector.evidence("case-1:siem:u1", "siem", datetime.now(timezone.utc))
 
@@ -206,7 +209,7 @@ class TestEvidenceAssembly:
             )
         )
 
-        assert [name for name, _ in collector.calls] == ["splunk_run_query"]
+        assert [call.tool for call in collector.calls] == ["splunk_run_query"]
 
     def test_unserialisable_results_degrade_to_repr_rather_than_being_lost(self):
         class Opaque:
@@ -219,7 +222,7 @@ class TestEvidenceAssembly:
         """The contract validates citation_ids against evidence, and the model
         cannot know ids minted in code -- so citations are assembled, not asked for."""
         collector = subagents._EvidenceCollector()
-        collector.calls = [("t", {"ok": True})]
+        collector.calls = [subagents._ToolCall("t", None, {"ok": True})]
         evidence = collector.evidence("case-1:siem:u1", "siem", datetime.now(timezone.utc))
 
         # Constructing this at all is the assertion: SubtaskResult raises on a
@@ -227,7 +230,6 @@ class TestEvidenceAssembly:
         result = SubtaskResult(
             task_id="case-1:siem:u1",
             status=SubtaskStatus.OK,
-            summary="found it",
             citation_ids=[e.id for e in evidence],
             evidence=evidence,
         )

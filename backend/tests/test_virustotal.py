@@ -368,7 +368,8 @@ class TestBrokerIntegration:
 
         result = outcome.results[0]
         assert result.status == SubtaskStatus.OK
-        assert "7 malicious" in result.summary
+        # Projected by code from the parsed response, not retyped by a model.
+        assert [v.malicious for v in result.findings.verdicts] == [7]
         # Evidence is the point: a citable record, and citations that resolve.
         assert len(result.evidence) == 1
         assert result.citation_ids == [result.evidence[0].id]

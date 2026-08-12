@@ -6,7 +6,10 @@ import pytest
 from contracts import (
     AnalystTask,
     Entity,
+    QueryRun,
+    ResultSet,
     Scope,
+    SiemFindings,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
@@ -131,7 +134,7 @@ def runner_returning(result_for):
 
 def ok_result(mission, **overrides):
     defaults = dict(
-        task_id=mission.task_id, status=SubtaskStatus.NO_DATA, summary=f"stub for {mission.tool_family}"
+        task_id=mission.task_id, status=SubtaskStatus.NO_DATA, reason=f"stub for {mission.tool_family}"
     )
     return SubtaskResult(**{**defaults, **overrides})
 
@@ -251,7 +254,7 @@ class TestStubSubagent:
 
         result = outcome.results[0]
         assert result.status == SubtaskStatus.REJECTED
-        assert "no vt observable in scope" in result.summary
+        assert "no vt observable in scope" in result.reason
         # REJECTED must never set `error` -- `_StatusErrorContract` raises if it does.
         assert result.error is None
 
@@ -269,14 +272,14 @@ class TestStubSubagent:
 
         result = outcome.results[0]
         assert result.status == SubtaskStatus.REJECTED
-        assert "no vt observable in scope" not in result.summary
-        assert "VT_API_KEY" in result.summary
+        assert "no vt observable in scope" not in result.reason
+        assert "VT_API_KEY" in result.reason
         assert result.error is None
 
     async def test_configured_but_unreachable_reads_differently_than_unconfigured(self, monkeypatch):
         # Two states, two fixes: check the config, versus check the network or
         # the token. Reporting both as "not configured" sends an analyst to the
-        # wrong place, so the summaries must not collapse into one.
+        # wrong place, so the two reasons must not collapse into one.
         import smartops.tools.registry as registry
 
         unconfigured = await broker_task(
@@ -293,9 +296,9 @@ class TestStubSubagent:
             make_task(), Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["siem"])
         )
 
-        assert "no MCP server configured" in unconfigured.results[0].summary
-        assert "configured but returning no tools" in unreachable.results[0].summary
-        # Both still REJECTED with the reason in `summary`, never in `error`.
+        assert "no MCP server configured" in unconfigured.results[0].reason
+        assert "configured but returning no tools" in unreachable.results[0].reason
+        # Both still REJECTED with the explanation in `reason`, never in `error`.
         assert unreachable.results[0].status == SubtaskStatus.REJECTED
         assert unreachable.results[0].error is None
 
@@ -307,7 +310,7 @@ class TestStubSubagent:
             task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["siem"])
         )
 
-        assert "no tools resolved" in outcome.results[0].summary
+        assert "no tools resolved" in outcome.results[0].reason
 
 
 class TestClassificationAndDispatchAreIndependent:
@@ -358,7 +361,7 @@ class TestClassificationAndDispatchAreIndependent:
         # already run and the call is already settled, so raising threw away real
         # Evidence and killed the process. The rationale is lost; the results and
         # the observed dispatch list are not.
-        run = runner_returning(lambda m: ok_result(m, summary="found something real"))
+        run = runner_returning(lambda m: ok_result(m, reason="found something real"))
         dispatching_invoker = fake_invoker(["siem", "vt"])
 
         async def invoke(prompt, request):
@@ -370,7 +373,7 @@ class TestClassificationAndDispatchAreIndependent:
         )
 
         assert len(outcome.results) == 2
-        assert [r.summary for r in outcome.results] == ["found something real"] * 2
+        assert [r.reason for r in outcome.results] == ["found something real"] * 2
         assert outcome.dispatched == ["siem", "vt"]
         # The classification is synthesized and says so, rather than passing
         # itself off as the model's reasoning.
@@ -476,11 +479,11 @@ class TestStatusSemantics:
         # The malicious hit was retrieved and paid for -- it must not be lost to
         # the later failure.
         assert result.status == SubtaskStatus.OK
-        assert "8 malicious" in result.summary
+        assert [v.malicious for v in result.findings.verdicts] == [8]
         assert result.evidence and result.citation_ids == [result.evidence[0].id]
         # ...and the gap is stated rather than hidden.
-        assert "PARTIAL: 1 of 4" in result.summary
-        assert "rate limit" in result.summary
+        assert "PARTIAL: 1 of 4" in result.reason
+        assert "rate limit" in result.reason
 
 
 class TestPromptHardening:
@@ -755,43 +758,91 @@ class TestRedispatchCap:
         assert len(outcome.results) == 4
 
 
-class TestDigestTrimming:
-    """The Broker sees a digest, not a dissertation.
+class TestDigest:
+    """The Broker sees counts, not content.
 
-    A real subagent answer runs to a multi-hundred-word markdown table. Passed
-    through untrimmed it crowded the Broker's own output ceiling and the run
-    ended before emitting a `TaskClassification` at all.
+    Two separate protections live here. The digest must stay small, because a
+    verbose one crowded the Broker's cumulative output ceiling until a run ended
+    before emitting its `TaskClassification` at all. And it must carry no
+    retrieved rows, because putting data back into a model's context is how the
+    2026-08-11 run ended up narrating findings it should only have routed.
     """
 
-    def test_a_long_summary_is_trimmed_and_says_it_was(self):
-        long_summary = "x" * 2000
+    @staticmethod
+    def _siem_result(**overrides):
+        defaults = dict(
+            task_id="t",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(
+                processes=[
+                    ResultSet(query="index=botsv3 | head 2", row_count=2, rows=[{"p": "a"}, {"p": "b"}])
+                ]
+            ),
+            queries_run=[QueryRun(query="index=botsv3 | head 2", category="processes")],
+        )
+        return SubtaskResult(**{**defaults, **overrides})
+
+    def test_the_digest_reports_row_counts(self):
+        digest = _digest(self._siem_result())
+
+        assert "processes:2" in digest
+        assert "queries=1" in digest
+
+    def test_no_retrieved_row_reaches_the_digest(self):
+        """The point of the two-layer payload. Rows are cited, never quoted."""
+        secret_row = "AzureAD-BudStoll-chrome-9752"
         digest = _digest(
-            SubtaskResult(task_id="t", status=SubtaskStatus.OK, summary=long_summary)
+            self._siem_result(
+                findings=SiemFindings(
+                    processes=[
+                        ResultSet(query="q", row_count=1, rows=[{"user": secret_row}])
+                    ]
+                )
+            )
         )
 
-        assert len(digest) < len(long_summary)
+        assert secret_row not in digest
+
+    def test_an_empty_result_says_so_rather_than_inventing_categories(self):
+        digest = _digest(SubtaskResult(task_id="t", status=SubtaskStatus.NO_DATA))
+
+        assert "rows=none" in digest
+
+    def test_a_long_reason_is_trimmed_and_says_it_was(self):
+        # `reason` is the one free-text field left on this path, and it is
+        # code-authored -- but a stack trace or a long server error can still
+        # arrive here, so the bound stays.
+        long_reason = "x" * 2000
+        digest = _digest(
+            SubtaskResult(task_id="t", status=SubtaskStatus.NO_DATA, reason=long_reason)
+        )
+
+        assert len(digest) < len(long_reason)
         # Silent truncation would have the Broker decide against evidence it
         # cannot see, believing it saw everything.
         assert "trimmed" in digest
-        assert "2000" in digest
 
-    def test_a_short_summary_is_passed_through_untouched(self):
+    def test_a_short_reason_is_passed_through_untouched(self):
         digest = _digest(
-            SubtaskResult(task_id="t", status=SubtaskStatus.OK, summary="brief finding")
+            SubtaskResult(task_id="t", status=SubtaskStatus.NO_DATA, reason="splunk timed out")
         )
 
-        assert "brief finding" in digest
+        assert "splunk timed out" in digest
         assert "trimmed" not in digest
 
-    async def test_the_full_answer_still_reaches_the_aggregator(self):
-        # Trimming is safe only because nothing is lost: the untouched
+    async def test_the_full_findings_still_reach_the_aggregator(self):
+        # Digesting is safe only because nothing is lost: the untouched
         # SubtaskResult goes to `collected` for the case file. If that stopped
-        # being true, trimming would start destroying evidence.
-        long_summary = "y" * 2000
+        # being true, digesting would start destroying evidence.
+        rows = [{"user": f"u{i}"} for i in range(50)]
 
         async def run(mission):
             return SubtaskResult(
-                task_id=mission.task_id, status=SubtaskStatus.OK, summary=long_summary
+                task_id=mission.task_id,
+                status=SubtaskStatus.OK,
+                findings=SiemFindings(
+                    processes=[ResultSet(query="q", row_count=len(rows), rows=rows)]
+                ),
             )
 
         outcome = await broker_task(
@@ -802,7 +853,7 @@ class TestDigestTrimming:
             invoke=fake_invoker(["siem"]),
         )
 
-        assert outcome.results[0].summary == long_summary
+        assert outcome.results[0].findings.processes[0].rows == rows
 
 
 class TestRejectionIsTerminal:
@@ -820,7 +871,7 @@ class TestRejectionIsTerminal:
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.REJECTED,
-            summary="no vt observable in scope: needs one of ['domain', 'ip'], scope has ['host']",
+            reason="no vt observable in scope: needs one of ['domain', 'ip'], scope has ['host']",
         )
 
     async def test_a_rejected_family_runs_only_once(self):
@@ -866,7 +917,7 @@ class TestRejectionIsTerminal:
             if mission.tool_family == "vt":
                 return self.rejected(mission)
             return SubtaskResult(
-                task_id=mission.task_id, status=SubtaskStatus.OK, summary="found logs"
+                task_id=mission.task_id, status=SubtaskStatus.OK, reason="found logs"
             )
 
         outcome = await broker_task(
@@ -889,7 +940,7 @@ class TestRejectionIsTerminal:
             return SubtaskResult(
                 task_id=mission.task_id,
                 status=SubtaskStatus.ERROR,
-                summary="splunk timed out",
+                reason="splunk timed out",
                 error="TimeoutError: timed out",
             )
 

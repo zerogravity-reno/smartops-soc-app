@@ -26,7 +26,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import get_args
 
-from contracts import AnalystTask, Entity, EntityKind, Scope, TaskClassification, ToolFamily
+from contracts import (
+    AnalystTask,
+    Entity,
+    EntityKind,
+    Scope,
+    SubtaskResult,
+    TaskClassification,
+    ToolFamily,
+)
 from pydantic import ValidationError
 
 from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task
@@ -93,6 +101,34 @@ class _ScriptedToolContext:
 
     tool_use: dict
     invocation_state: dict
+
+
+def _result_line(result: SubtaskResult) -> str:
+    """One line describing a result, composed entirely by code.
+
+    There is no `summary` to print any more, deliberately -- it was the field
+    that made prose the only shape a finding could take. What an operator needs
+    at a glance is how much came back and why, so this renders row counts per
+    category plus the code-authored `reason`.
+    """
+    parts: list[str] = []
+
+    if result.findings is not None:
+        counts = [
+            f"{name}:{sum(rs.row_count for rs in value)}"
+            for name, value in result.findings
+            if isinstance(value, list) and value
+        ]
+        if counts:
+            parts.append(" ".join(counts))
+
+    if result.queries_run:
+        parts.append(f"({len(result.queries_run)} quer{'y' if len(result.queries_run) == 1 else 'ies'})")
+
+    if result.reason:
+        parts.append(result.reason)
+
+    return " ".join(parts) if parts else "no rows"
 
 
 def _parse_entity(raw: str) -> Entity:
@@ -254,7 +290,7 @@ def _print_outcome(outcome, budget: Budget) -> None:
     print(f"\n{len(outcome.results)} result(s):")
     for result in outcome.results:
         family = result.task_id.split(":")[1] if ":" in result.task_id else "?"
-        print(f"  [{result.status.value:<8}] {family:<5} {result.summary}")
+        print(f"  [{result.status.value:<8}] {family:<5} {_result_line(result)}")
         if result.gaps:
             print(f"             gaps: {', '.join(result.gaps)}")
         if result.error:

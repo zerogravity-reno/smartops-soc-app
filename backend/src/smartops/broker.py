@@ -36,12 +36,14 @@ from typing import Any, Awaitable, Callable, Protocol
 from contracts import (
     AnalystTask,
     Evidence,
+    QueryRun,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
     TaskClassification,
     ToolFamily,
 )
+from contracts.findings import VtFindings, VtVerdict
 from strands import ToolContext, tool
 
 from smartops.budget import Budget, ModelChoice, Usage
@@ -197,8 +199,11 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
 
     Raw responses become `Evidence`, which is the whole reason this path exists:
     it produces citable material rather than a summary line. Per the `Evidence`
-    contract they are never shown to a model; only `summary` and `citation_ids`
+    contract they are never shown to a model; only the digest and `citation_ids`
     cross that boundary.
+
+    Every field this function sets is code-authored -- there is no model on this
+    path at all, which is what makes it perfectly reproducible.
     """
     family = mission.tool_family
     try:
@@ -211,7 +216,7 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.REJECTED,
-            summary=f"{family} lookup unavailable: {exc}",
+            reason=f"{family} lookup unavailable: {exc}",
         )
     except Exception as exc:
         # A call was attempted and failed. That is ERROR, not REJECTED: the enum
@@ -224,7 +229,7 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
-            summary=f"{family} lookup failed",
+            reason=f"{family} lookup failed",
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -232,7 +237,7 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.NO_DATA,
-            summary=f"no {family}-queryable observable in scope",
+            reason=f"no {family}-queryable observable in scope",
         )
 
     if not outcome.verdicts:
@@ -240,13 +245,13 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
-            summary=f"{family} lookup failed before returning any result",
+            reason=f"{family} lookup failed before returning any result",
             error=outcome.failure,
         )
 
     # Verdicts exist. They were retrieved and paid for, so they ship even if the
     # run stopped early -- a partial result with a stated gap beats reporting
-    # nothing. Status reflects the findings; the gap goes in `summary`, because
+    # nothing. Status reflects the findings; the gap goes in `reason`, because
     # the contract forbids `error` on any non-ERROR status.
     collected_at = datetime.now(timezone.utc)
     evidence = [
@@ -260,7 +265,23 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
     ]
     flagged = [v for v in outcome.verdicts if v.is_flagged]
 
-    summary = " | ".join(v.summary() for v in outcome.verdicts)
+    findings = VtFindings(
+        verdicts=[
+            VtVerdict(
+                kind=v.entity.kind,
+                value=v.entity.value,
+                found=v.found,
+                malicious=v.malicious,
+                suspicious=v.suspicious,
+                harmless=v.harmless,
+                undetected=v.undetected,
+                reputation=v.reputation,
+            )
+            for v in outcome.verdicts
+        ]
+    )
+
+    reason = None
     if outcome.failure:
         logger.warning(
             "task_id=%s family=%s | partial result: %d of %d looked up before failing",
@@ -269,15 +290,19 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
             len(outcome.verdicts),
             outcome.attempted,
         )
-        summary += (
-            f" | PARTIAL: {len(outcome.verdicts)} of {outcome.attempted} looked up, "
+        reason = (
+            f"PARTIAL: {len(outcome.verdicts)} of {outcome.attempted} looked up, "
             f"then stopped ({outcome.failure})"
         )
 
     return SubtaskResult(
         task_id=mission.task_id,
         status=SubtaskStatus.OK if flagged else SubtaskStatus.NO_DATA,
-        summary=summary,
+        reason=reason,
+        findings=findings,
+        queries_run=[
+            QueryRun(query=f"{v.entity.kind}={v.entity.value}") for v in outcome.verdicts
+        ],
         citation_ids=[e.id for e in evidence],
         evidence=evidence,
     )
@@ -292,10 +317,11 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
     answer questions about the observables you gave me" versus "this domain
     could help but isn't connected yet".
 
-    ⚠️ The reason goes in `summary`, never in `error`. `_StatusErrorContract`
+    ⚠️ The explanation goes in `reason`, never in `error`. `_StatusErrorContract`
     raises if `error` is set on any status other than `ERROR`, so
     `SubtaskResult(status=REJECTED, error=...)` is a `ValidationError` at
-    construction.
+    construction -- and `reason` is now required for `REJECTED`, so an
+    unexplained rejection is a `ValidationError` too.
     """
     family = mission.tool_family
     required = DOMAINS[family].required_kinds
@@ -305,7 +331,7 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.REJECTED,
-            summary=(
+            reason=(
                 f"no {family} observable in scope: needs one of "
                 f"{sorted(required)}, scope has {sorted(in_scope)}"
             ),
@@ -330,7 +356,7 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
-            summary=f"tool resolution failed for {family}",
+            reason=f"tool resolution failed for {family}",
             error=f"{type(exc).__name__}: {exc}",
         )
 
@@ -348,23 +374,21 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.REJECTED,
-            summary=f"no tools resolved for {family}: {reason}",
+            reason=f"no tools resolved for {family}: {reason}",
         )
 
     return SubtaskResult(
         task_id=mission.task_id,
         status=SubtaskStatus.NO_DATA,
-        summary=f"stub subagent: {len(resolved)} tool(s) available for {family}, none executed",
+        reason=f"stub subagent: {len(resolved)} tool(s) available for {family}, none executed",
     )
 
 
-# How much of a subagent's summary reaches the Broker. A real subagent answer can
-# run to a multi-hundred-word markdown table, and the Broker only needs enough to
-# decide whether another domain is warranted -- the full text is preserved on the
-# `SubtaskResult` in `BrokerRequest.collected` for the aggregator, so nothing is
-# lost by trimming here. Left untrimmed, one verbose domain crowds the Broker's
-# own output ceiling and it stops before emitting its `TaskClassification`.
-_DIGEST_SUMMARY_LIMIT = 600
+# How much of a code-authored `reason` reaches the Broker. Bounded because it is
+# the one free-text field left on the digest path, and an unbounded string here
+# crowds the Broker's own cumulative output ceiling until it stops before emitting
+# its `TaskClassification` -- which happened twice on real runs.
+_DIGEST_REASON_LIMIT = 300
 
 
 def _digest(result: SubtaskResult) -> str:
@@ -372,22 +396,58 @@ def _digest(result: SubtaskResult) -> str:
 
     A digest, never raw `Evidence` -- the `Evidence` contract says raw tool
     output is "never shown to an LLM directly", and the full `SubtaskResult`
-    goes to `BrokerRequest.collected` for the aggregator instead. `gaps` is
-    rendered explicitly so a re-dispatch decision rests on a typed field rather
-    than on the model parsing prose.
+    goes to `BrokerRequest.collected` for the aggregator instead.
+
+    **Counts, not content.** The Broker's remaining decision is whether another
+    domain is warranted, and row counts per category answer that. Sending rows
+    would put retrieved data back into a model's context, which is exactly what
+    the two-layer payload exists to avoid -- and it is how the 2026-08-11 run
+    ended up narrating findings it should only have routed.
+
+    Everything rendered here is code-authored: a status, counts derived from
+    `findings`, the queries actually run, and typed `gaps`. No model prose
+    crosses this boundary any more, because there is none left to cross it.
     """
-    summary = result.summary
-    if len(summary) > _DIGEST_SUMMARY_LIMIT:
-        # Say it was trimmed. A silently truncated finding reads as a complete
-        # one, and the Broker would decide against evidence it cannot see.
-        summary = (
-            f"{summary[:_DIGEST_SUMMARY_LIMIT]}... [trimmed for the broker; "
-            f"the full {len(summary)}-character answer is retained in the case file]"
-        )
-    parts = [f"status={result.status.value}", summary]
+    parts = [f"status={result.status.value}"]
+
+    counts = _finding_counts(result.findings)
+    parts.append(
+        "rows=" + (", ".join(f"{name}:{n}" for name, n in counts) if counts else "none")
+    )
+
+    if result.queries_run:
+        parts.append(f"queries={len(result.queries_run)}")
+
+    if result.reason:
+        reason = result.reason
+        if len(reason) > _DIGEST_REASON_LIMIT:
+            # Say it was trimmed. A silently truncated reason reads as complete.
+            reason = f"{reason[:_DIGEST_REASON_LIMIT]}... [trimmed]"
+        parts.append(reason)
+
     if result.gaps:
         parts.append(f"gaps={','.join(result.gaps)}")
+
     return " | ".join(parts)
+
+
+def _finding_counts(findings: Any) -> list[tuple[str, int]]:
+    """Per-category row counts, for the digest.
+
+    Reads whatever list-of-rows fields the family's `Findings` subclass declares,
+    so a new domain's payload needs no change here. A category with nothing in it
+    is omitted rather than reported as zero -- the Broker only acts on what exists.
+    """
+    if findings is None:
+        return []
+
+    counts: list[tuple[str, int]] = []
+    for name, value in findings:
+        if not isinstance(value, list) or not value:
+            continue
+        total = sum(getattr(item, "row_count", 1) for item in value)
+        counts.append((name, total))
+    return counts
 
 
 async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
@@ -456,13 +516,13 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
         result = SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
-            summary=f"{family} subagent failed",
+            reason=f"{family} subagent failed",
             error=f"{type(exc).__name__}: {exc}",
         )
 
     req.collected.append(result)
     if result.status is SubtaskStatus.REJECTED:
-        req.refused[family] = result.summary
+        req.refused[family] = result.reason or "rejected without a stated reason"
     # Every family result funnels through here -- gate rejections, enricher
     # lookups, and full subagent runs alike -- so this is the one place that sees
     # all of them. We are inside the Broker's tool-invocation span, so the status
