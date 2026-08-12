@@ -13,3 +13,28 @@ target-version = "py313"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["contracts/tests", "backend/tests"]
+
+# Strands deprecations must fail the suite, not scroll past it. The Broker spent
+# an unknown number of runs passing `smartops=request` through the `**kwargs`
+# channel Strands warns is deprecating; it fired on every invocation and nothing
+# was configured to surface it.
+#
+# Both categories, deliberately. Strands is inconsistent about which it uses:
+# most calls pass DeprecationWarning, `models/bedrock.py` passes UserWarning, and
+# the two `**kwargs` deprecations (`agent/agent.py`, `multiagent/base.py`) pass no
+# category at all -- which defaults to UserWarning. A DeprecationWarning-only
+# filter would have missed the exact warning that motivated this.
+#
+# Not scoped to a module: Strands warns with `stacklevel=2`, so the warning is
+# attributed to *our* calling module, and a `:strands.*` filter would match
+# nothing while reading as protection.
+#
+# The baseline is zero warnings across the suite, so this is not currently
+# suppressing anything. If a third-party dependency starts warning, add a
+# targeted `"ignore:<message regex>:<Category>"` line above rather than weakening
+# these -- the point is that a new warning is a decision, not a scroll-by.
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    "error::UserWarning",
+]
