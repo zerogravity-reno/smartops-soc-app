@@ -29,12 +29,19 @@ concurrent invocation), `strands-agents-tools` (cannot send VirusTotal's
 
 ## Tests
 
-Run scoped to each package. The workspace root has no
-`[tool.pytest.ini_options]`, so `asyncio_mode = "auto"` is not picked up from
-there and every async test fails:
+`[tool.pytest.ini_options]` lives at the workspace root (`pyproject.toml:13-15`)
+with `asyncio_mode = "auto"` and `testpaths` covering both members, so a bare run
+from the root collects everything:
 
-    cd backend && uv run pytest tests
-    cd contracts && uv run pytest tests
+    uv run pytest
+
+PROJECT_DOCS.md (2026-08-09) says root runs fail every async test and that you
+must `cd` into each package. That was true when the config lived only in
+`backend/`; it was moved to the root afterwards. Prefer this file for the test
+command.
+
+No `filterwarnings` is configured anywhere, so `DeprecationWarning`s from the SDK
+pass silently — they will not surface as test failures.
 
 ## Scope discipline
 
