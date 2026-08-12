@@ -1145,10 +1145,68 @@ a decision the tool call already makes.
   (commits `fd0304f`, `e6f5945`). Nine work items plus a tuning section.
 - **Plan A (in progress):** `docs/superpowers/plans/2026-08-12-domainspec-refactor.md`
   (commit `a4eaa7a`, since amended — **amendments are uncommitted**).
-- **Plans B and C: not written yet.** B covers spec §2–§6 (typed payload, fetch
-  plan, prompts, `BrokerReport`, temperature); C covers §7–§8 (flat arm, bench
-  runner, the A/B). They were deliberately deferred until Plan A lands, because
-  B's task boundaries depend on the final shape of `DomainSpec`.
+- **Plans B and C: not written yet** — deliberately, because B's task boundaries
+  depend on the final shape of `DomainSpec` and C depends on B's schema. The
+  full design for both is in the spec; what follows is what they have to build.
+
+## Plan B — the fetch contract (spec §2–§6)
+
+This is the work that actually fixes the defect. Plan A only made room for it.
+
+| § | Deliverable |
+|---|---|
+| §2 | **Typed payload, two layers.** `SubagentAnswer[P]` is model-authored and small — `status`, `queries_run: list[str]`, a per-family `assessment`, `gaps`. `SubtaskResult[F]` is code-assembled and carries `findings`, projected from `Evidence`. `summary: str` stops being the payload. |
+| §3 | **The fetch plan.** `FetchStep` / `CompletionRule` / `FetchPlan`, authored via a `plan_fetch` tool *before* dispatch so code can validate it; each step becomes one narrow `SubagentMission`. **Code** evaluates completion, the model never ticks its own boxes. |
+| §4 | **Rewrite both system prompts** — `broker.py` and `subagents/__init__.py` — to fetch rather than investigate. Keep the `SECURITY CONSTRAINTS:` blocks and delimiter defanging verbatim. |
+| §5 | **`BrokerReport`** — the versioned return contract to the Analyst, carrying the plan with each step's evaluated outcome, per-family results, cost and the `queries_run` rollup. Written to a per-run directory, which also lands the first half of evidence persistence. |
+| §6 | **`temperature=0.3`** on `ModelChoice`, `top_p` unset. |
+| — | **`index_allowlist` on `DomainSpec`**, enforced by a `BeforeToolCallEvent` hook (`cancel_tool` / writable `tool_use`), not by a prompt instruction. |
+
+`DomainSpec` gains `assessment_model`, `findings_model` and `index_allowlist` —
+deliberately omitted in Plan A so they would not sit there as dead fields.
+
+**Do this first:** read `strands-agents/agent-sop` before inventing `FetchPlan`.
+It describes "natural language workflows for complex, multi-step tasks with
+consistency and reliability", which is close enough that hand-rolling without
+looking would repeat the mistake described at the end of this entry.
+
+**Two open decisions gate it:** where the fetch plan is stored (in memory on
+`BrokerRequest` versus a run-directory file — note a file the model *reads back*
+is an injection laundering path, since goal-derived text returns to context
+outside the `<goal>` fence), and whether `CompletionRule`'s vocabulary is
+sufficient.
+
+**Fold in the parallel session's findings while rewriting the prompts** — §4
+touches exactly the code its entity-sanitization and `_neutralize_delimiter`
+findings live in, so doing them separately means editing the same prompt builder
+twice.
+
+## Plan C — the A/B that decides the topology (spec §7–§8)
+
+Cannot start until B lands: both arms must return the **identical** schema or the
+comparison is meaningless.
+
+- **§7 Arm F** — one flat Broker holding every domain's tools directly. Roughly
+  thirty lines because `DomainSpec` exists; family attribution still works from
+  the tool-name prefix (`splunk_*` → siem), so code assembles per-family findings
+  from `Evidence` exactly as in Arm S.
+- **§8 `smartops-bench`** — a separate entry point, never the default `pytest`
+  run, since each case costs real money and hits live Splunk. Metrics: wall
+  clock, cost by role, input/output tokens, **sequential model turns** (the real
+  latency driver), `queries_run` and whether the index was scoped, findings
+  completeness, routing correctness, failure mode.
+- **Method: 3 runs per arm, interleaved** (S, F, S, F, S, F) so provider drift
+  hits both equally. Report median and spread, not a mean. If the arms differ by
+  less than the within-arm spread, the honest answer is "no measurable
+  difference" — which points at the cheaper topology. Budget ~$6.
+
+**Do this first:** evaluate `strands-agents/evals` — it is the live repo behind
+`strands-agents-evals`. If it covers interleaved runs and per-arm spread, most of
+§8 disappears.
+
+**Only after the A/B decides** does spec §9 run: the `superman-splunk` skill pack
+with lazy loading, and prompt caching. Neither should be built on a layer the
+experiment might delete.
 
 ## Plan A status — 6 of 7 tasks
 
