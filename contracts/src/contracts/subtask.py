@@ -256,6 +256,21 @@ class SubtaskResult(_StatusErrorContract):
             "report reached the Analyst."
         ),
     )
+    assessment: SerializeAsAny[Assessment] | None = Field(
+        default=None,
+        description=(
+            "The model's own small judgement, carried over from the concrete "
+            "per-family answer model `make_answer_model()` built. Same "
+            "`SerializeAsAny` trap as `findings` above -- a plain `Assessment` "
+            "annotation would dump only the (empty) base class, silently losing "
+            "every subclass field such as `SiemAssessment.covered`. Not "
+            "decorative: a fetch plan's completion rules read `covered` / "
+            "`not_covered` to judge whether a step retrieved what was asked for, "
+            "and `BrokerReport` is assembled from `SubtaskResult`s, so anything "
+            "not carried here never reaches the Analyst. `None` for a rejected or "
+            "errored subtask, where no model ever ran."
+        ),
+    )
     queries_run: list[QueryRun] = Field(
         default_factory=list,
         description=(
@@ -319,6 +334,13 @@ class SubtaskResult(_StatusErrorContract):
 
         `findings` is passed in rather than read off the answer because it is
         assembled by code from `evidence`; a model never authors it.
+
+        `assessment` is read off `answer` with `getattr`, not attribute access,
+        because it exists only on the concrete per-family model
+        `make_answer_model()` builds -- the `SubagentAnswer` base this method is
+        typed against has no such field, and a bare `answer.assessment` would
+        raise `AttributeError` for any caller that (legitimately, per tests)
+        constructs a plain `SubagentAnswer`.
         """
         return cls(
             task_id=task_id,
@@ -326,6 +348,7 @@ class SubtaskResult(_StatusErrorContract):
             error=answer.error,
             reason=reason,
             findings=findings,
+            assessment=getattr(answer, "assessment", None),
             queries_run=list(answer.queries_run),
             citation_ids=list(answer.citation_ids),
             gaps=list(answer.gaps),

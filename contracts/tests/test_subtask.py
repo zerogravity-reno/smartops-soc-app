@@ -8,10 +8,12 @@ from contracts import (
     Evidence,
     QueryRun,
     Scope,
+    SiemAssessment,
     SubagentAnswer,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
+    make_answer_model,
 )
 
 
@@ -233,6 +235,41 @@ class TestSubtaskResult:
         # Rows are assembled by code from evidence and passed in. A model has no
         # channel to author them, which is the whole point of the two layers.
         assert "findings" not in SubagentAnswer.model_fields
+
+    def test_assessment_subclass_survives_a_model_dump_round_trip(self):
+        # SerializeAsAny is what prevents this: a plain `Assessment` annotation
+        # would dump only the (empty) base class's fields, so `covered` /
+        # `not_covered` would silently vanish -- invisible without this assertion.
+        assessment = SiemAssessment(covered=["auth_events"], not_covered=["processes"])
+        result = SubtaskResult(task_id="t1", status=SubtaskStatus.OK, assessment=assessment)
+
+        dumped = result.model_dump()
+
+        assert dumped["assessment"]["covered"] == ["auth_events"]
+        assert dumped["assessment"]["not_covered"] == ["processes"]
+
+    def test_from_answer_carries_the_assessment_through(self):
+        # `assessment` only exists on the concrete per-family model
+        # `make_answer_model()` builds, never on the bare `SubagentAnswer` base.
+        SiemAnswer = make_answer_model("siem", SiemAssessment)
+        answer = SiemAnswer(
+            status=SubtaskStatus.OK, assessment=SiemAssessment(covered=["auth_events"])
+        )
+
+        result = SubtaskResult.from_answer(task_id="t1", answer=answer, evidence=[])
+
+        assert isinstance(result.assessment, SiemAssessment)
+        assert result.assessment.covered == ["auth_events"]
+
+    def test_from_answer_tolerates_the_base_answer_having_no_assessment(self):
+        # Regression guard for the `getattr` in `from_answer()`: a plain
+        # `SubagentAnswer` (as several existing tests construct) has no
+        # `assessment` field at all, and this must not raise for it.
+        answer = SubagentAnswer(status=SubtaskStatus.OK)
+
+        result = SubtaskResult.from_answer(task_id="t1", answer=answer, evidence=[])
+
+        assert result.assessment is None
 
     def test_a_rejection_must_say_why(self):
         # `_StatusErrorContract` forbids `error` unless status=error, which left
