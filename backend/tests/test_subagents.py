@@ -6,6 +6,7 @@ import pytest
 from contracts import (
     Entity,
     Scope,
+    SiemAssessment,
     SubagentAnswer,
     SubagentMission,
     SubtaskResult,
@@ -288,6 +289,45 @@ class TestPrompt:
 
         assert "value-host" in prompt and "value-ip" in prompt
         assert "do not investigate anything outside" in prompt
+
+
+class TestStructuredOutputModel:
+    """`_build_agent_and_invoke` must force the model into the family's
+    *concrete* answer model, not the bare `SubagentAnswer` base -- the base has
+    no `assessment` field, so passing it would never actually ask for one."""
+
+    async def test_the_agent_is_built_with_the_familys_concrete_answer_model(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def invoke_async(self, *args, **kwargs):
+                return _Result(None)
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        # `model.build()` would otherwise resolve real AWS credentials to
+        # construct a `BedrockModel` client -- irrelevant to what this test
+        # checks, which is purely which answer model reaches `Agent(...)`.
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        answer_model = captured["structured_output_model"]
+        assert answer_model is not SubagentAnswer
+        assert issubclass(answer_model, SubagentAnswer)
+        assert answer_model.model_fields["assessment"].annotation is SiemAssessment
 
 
 def _async_returning(value):

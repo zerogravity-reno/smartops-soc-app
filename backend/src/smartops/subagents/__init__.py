@@ -33,10 +33,10 @@ from typing import Any
 
 from contracts import (
     Evidence,
-    SubagentAnswer,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
+    make_answer_model,
 )
 
 from smartops.broker import SubagentRunner, enrich_mission
@@ -470,13 +470,21 @@ async def _build_agent_and_invoke(
     from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands.types.agent import Limits
 
+    family = mission.tool_family
+    # The bare `SubagentAnswer` base has no `assessment` field, so forcing the
+    # model into it would never actually ask for one -- the concrete per-family
+    # model is what makes the two-layer payload real. Built here rather than
+    # cached on `DomainSpec` because `create_model()` is cheap and this keeps
+    # `DomainSpec` pure data, per this module's own docstring.
+    answer_model = make_answer_model(family, DOMAINS[family].assessment_model)
+
     agent = Agent(
         model=model.build(),
         tools=tools,
-        system_prompt=_system_prompt_for(mission.tool_family, turns=turns),
-        structured_output_model=SubagentAnswer,
+        system_prompt=_system_prompt_for(family, turns=turns),
+        structured_output_model=answer_model,
         callback_handler=None,
-        hooks=_hooks_for(mission.tool_family, collector),
+        hooks=_hooks_for(family, collector),
         # Stamps task_id/hypothesis_id/tool_family onto every span this agent
         # produces, so a trace correlates back to the investigation with no
         # separate correlation system. Without it, a subagent's model and tool

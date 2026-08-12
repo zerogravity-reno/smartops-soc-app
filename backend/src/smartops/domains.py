@@ -20,7 +20,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from contracts import EntityKind, ToolFamily
+from contracts import (
+    Assessment,
+    EntityKind,
+    Findings,
+    SiemAssessment,
+    SiemFindings,
+    ToolFamily,
+    VtAssessment,
+    VtFindings,
+)
 
 from smartops.tools.native import virustotal
 
@@ -91,6 +100,28 @@ class DomainSpec:
     distinct from an empty tuple, which would forbid every query.
     """
 
+    assessment_model: type[Assessment] = Assessment
+    """The model-authored judgement `make_answer_model()` embeds in this family's
+    concrete answer model, as the `assessment` field's type.
+
+    Defaults to the bare `Assessment` base -- an empty model with no fields -- for
+    a domain that has not earned a real one yet. `edr` and `ndr` are disabled (no
+    MCP server reachable, no vendor picked), so there is no retrieval shape to
+    describe judgement over; inventing fields for it now would be a shape neither
+    domain's real subagent is likely to keep once one is chosen.
+    """
+
+    findings_model: type[Findings] | None = None
+    """The code-assembled payload type `SubtaskResult.findings` holds for this
+    family, or `None` where no projector exists yet.
+
+    Unlike `assessment_model`, this has no safe non-`None` default: `Findings`
+    itself carries no fields, and a caller checking `findings_model is not None`
+    to decide whether to expect a payload would be lied to by an empty stand-in.
+    `siem` and `vt` are the only families with a working `projection.py` path
+    today; `edr` and `ndr` stay `None` for the same reason as `assessment_model`.
+    """
+
     turns: int = 14
     max_output_tokens: int = 12_000
 
@@ -110,6 +141,8 @@ SIEM = DomainSpec(
     time_scoped=True,
     mcp_servers=("splunk",),
     index_allowlist=("botsv3",),
+    assessment_model=SiemAssessment,
+    findings_model=SiemFindings,
 )
 
 EDR = DomainSpec(
@@ -142,6 +175,8 @@ VT = DomainSpec(
     mcp_servers=(),
     native_tools=tuple(virustotal.TOOLS),
     enricher=virustotal.enrich_scope,
+    assessment_model=VtAssessment,
+    findings_model=VtFindings,
 )
 
 NDR = DomainSpec(

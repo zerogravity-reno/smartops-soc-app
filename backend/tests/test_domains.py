@@ -6,10 +6,20 @@ constants cannot silently drop one.
 """
 
 import dataclasses
+import re
 from typing import get_args
 
 import pytest
-from contracts import ToolFamily
+from contracts import (
+    Assessment,
+    Findings,
+    SiemAssessment,
+    SiemFindings,
+    ToolFamily,
+    VtAssessment,
+    VtFindings,
+    make_answer_model,
+)
 from smartops.domains import ALL_FAMILIES, DOMAINS, DomainSpec, spec_for
 from smartops.tools.native import virustotal
 
@@ -88,6 +98,62 @@ class TestEnricherParity:
     def test_domains_needing_a_decision_have_no_enricher(self):
         for family in ("siem", "edr", "ndr"):
             assert DOMAINS[family].enricher is None
+
+
+class TestPayloadModelParity:
+    """`assessment_model` / `findings_model` are what make the two-layer payload
+    (contracts.findings) reachable per family -- these pin which family gets a
+    real one versus the disabled-domain default."""
+
+    def test_siem_uses_its_cim_shaped_models(self):
+        assert DOMAINS["siem"].assessment_model is SiemAssessment
+        assert DOMAINS["siem"].findings_model is SiemFindings
+
+    def test_vt_uses_its_verdict_shaped_models(self):
+        assert DOMAINS["vt"].assessment_model is VtAssessment
+        assert DOMAINS["vt"].findings_model is VtFindings
+
+    def test_disabled_domains_fall_back_to_the_minimal_default(self):
+        # edr and ndr have no reachable server and no vendor picked, so there is
+        # no retrieval shape yet to model a judgement over.
+        for family in ("edr", "ndr"):
+            assert DOMAINS[family].assessment_model is Assessment
+            assert DOMAINS[family].findings_model is None
+
+    def test_every_family_declares_an_assessment_model(self):
+        # Unlike findings_model, this one must never be None: it is what
+        # make_answer_model() forces the subagent's model to answer with.
+        for spec in DOMAINS.values():
+            assert spec.assessment_model is not None
+            assert issubclass(spec.assessment_model, Assessment)
+
+    def test_a_declared_findings_model_is_a_real_findings_subclass(self):
+        for spec in DOMAINS.values():
+            if spec.findings_model is not None:
+                assert issubclass(spec.findings_model, Findings)
+
+
+class TestAnswerModelFactory:
+    """`make_answer_model()` is exported but does nothing until something calls
+    it -- these are the two properties `subagents._build_agent_and_invoke` relies
+    on when it does."""
+
+    _BEDROCK_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+    def test_every_familys_answer_model_has_a_bedrock_valid_tool_name(self):
+        from strands.tools.structured_output import convert_pydantic_to_tool_spec
+
+        for family, spec in DOMAINS.items():
+            answer_model = make_answer_model(family, spec.assessment_model)
+            tool_spec = convert_pydantic_to_tool_spec(answer_model)
+            assert self._BEDROCK_TOOL_NAME.match(tool_spec["name"]), (
+                f"{family}: {tool_spec['name']!r} is not a valid Bedrock tool name"
+            )
+
+    def test_every_familys_answer_model_carries_its_own_assessment_type(self):
+        for family, spec in DOMAINS.items():
+            answer_model = make_answer_model(family, spec.assessment_model)
+            assert answer_model.model_fields["assessment"].annotation is spec.assessment_model
 
 
 class TestDescriptions:
