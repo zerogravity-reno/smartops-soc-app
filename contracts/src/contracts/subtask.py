@@ -47,7 +47,8 @@ this is a judgement rather than a fact.
 """
 
 _FORBIDDEN_IN_ENTITY_VALUE = frozenset("<>")
-"""Characters an entity value may not contain, because a prompt is built from it.
+"""The two characters checked first, for a message more specific than "not
+ASCII printable": a prompt fence uses them as structure.
 
 Prompt builders quote untrusted prose inside a named fence and escape it on the
 way in. Entity *values* deliberately are not escaped: the model has to retype
@@ -55,6 +56,12 @@ them verbatim into an SPL predicate or a reputation lookup, and mutating one
 changes which indicator gets queried -- the exact silent failure
 `_value_is_not_blank` below already records once. So the structure is refused
 here instead, where it fails loudly and once for every producer.
+
+`<` and `>` are also members of the ASCII-printable allowlist
+`_value_carries_no_structure` enforces below -- they are excluded from it, and
+this set is why. Checking them first, ahead of the broader range test, is what
+lets the raised message say "prompt fence" rather than the less actionable
+"outside the ASCII-printable range."
 
 No legitimate observable needs these: RFC 3986 excludes raw `<` and `>` from a
 URI, and they cannot appear in a hostname, DNS name, address, or hex digest. The
@@ -97,9 +104,37 @@ class Entity(BaseModel):
         and an interior newline is still caught while a trailing one is not an
         error.
 
-        Each message names the offending class rather than saying "invalid".
-        These values arrive by hand -- an analyst who pasted a URL with a stray
-        newline needs to know which rule bit them.
+        **This is an allowlist, not a blocklist -- an earlier version was a
+        blocklist and it was wrong.** That version rejected only C0/C1 controls
+        plus ASCII `<` / `>`, behind a comment claiming "an entity is a
+        single-line observable." False as implemented: seven bypass classes
+        measured surviving it and rendering byte-identical into the
+        `<entities>` fence -- U+2028/U+2029 (line/paragraph separator, forges a
+        line break), U+FF1C/U+FF1E and U+3008/U+3009 (fullwidth and CJK angle
+        brackets, a homoglyph pseudo-tag), U+202E (right-to-left override,
+        display spoofing), U+200B (zero-width space), U+00A0 (no-break space).
+        NFKC normalisation was evaluated as a fix and rejected on evidence: it
+        catches exactly one of those seven, the fullwidth pair. A blocklist
+        only ever enumerates the bypasses someone already thought of; the
+        allowlist below is closed by construction instead.
+
+        So: every character of the stripped value must be ASCII printable,
+        `0x20`-`0x7E`, minus `<` and `>` (checked first, in
+        `_FORBIDDEN_IN_ENTITY_VALUE`, so that rejection can say "prompt fence"
+        instead of the less actionable "outside the ASCII-printable range").
+        Each message names the offending class rather than saying "invalid" --
+        these values arrive by hand, and an analyst who pasted a URL with a
+        stray newline needs to know which rule bit them. The offending
+        character is reported as `U+XXXX` rather than printed literally,
+        because by definition it may not be printable or may not render in
+        whatever is reading the message.
+
+        **The cost, recorded rather than hidden:** an internationalized domain
+        in its Unicode form is now refused -- `domain:münchen.de` fails
+        this check where `domain:xn--mnchen-3ya.de` (its punycode form)
+        passes. Arguably not a compromise: punycode is the canonical ASCII
+        form a SIEM or DNS query actually resolves against, so ASCII-only is
+        the more correct shape for an observable, not merely the safer one.
         """
         if len(value) > MAX_ENTITY_VALUE_LENGTH:
             raise ValueError(
@@ -107,23 +142,36 @@ class Entity(BaseModel):
                 f"{MAX_ENTITY_VALUE_LENGTH}-character limit -- an observable this "
                 f"long is far more likely to be pasted junk than an indicator"
             )
-        # Every C0 and C1 control character, not just the newline. A prompt is
-        # line-structured, so `\n` and `\r` are what forge a line -- but `\t`
-        # forges a column, and a C1 control is simply never part of an
-        # observable, so there is nothing to gain by admitting any of them.
-        control = next((c for c in value if ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F), None)
-        if control is not None:
-            raise ValueError(
-                f"entity value contains the control character U+{ord(control):04X}; "
-                f"an entity is a single-line observable, so newlines, tabs, and "
-                f"control characters are not accepted"
-            )
         forbidden = next((c for c in value if c in _FORBIDDEN_IN_ENTITY_VALUE), None)
         if forbidden is not None:
             raise ValueError(
-                f"entity value contains {forbidden!r}, which a prompt fence uses as "
-                f"structure. Percent-encode it (%3C / %3E) if it is genuinely part "
-                f"of the observable"
+                f"entity value contains {forbidden!r} (U+{ord(forbidden):04X}), which "
+                f"a prompt fence uses as structure. Percent-encode it (%3C / %3E) if "
+                f"it is genuinely part of the observable"
+            )
+        # The allowlist. Every C0/C1 control (`\n`, `\r`, `\t`, and the rest)
+        # falls outside 0x20-0x7E already, so this replaces that check as well
+        # as catching what it always missed: line/paragraph separators,
+        # homoglyph brackets, bidi overrides, and invisible/no-break
+        # whitespace -- see the seven codepoints in the docstring above, all
+        # of which render byte-identical to a real observable in the fence a
+        # blocklist cannot see past.
+        bad = next((c for c in value if not (0x20 <= ord(c) <= 0x7E)), None)
+        if bad is not None:
+            if ord(bad) < 0x20 or 0x7F <= ord(bad) <= 0x9F:
+                raise ValueError(
+                    f"entity value contains the control character U+{ord(bad):04X}; "
+                    f"an entity is a single-line observable, so newlines, tabs, and "
+                    f"control characters are not accepted"
+                )
+            raise ValueError(
+                f"entity value contains U+{ord(bad):04X}, outside the ASCII-printable "
+                f"range (U+0020-U+007E) this contract allows. Look-alike characters "
+                f"and invisible or bidi-control codepoints render byte-identical to a "
+                f"real observable inside a prompt fence, so this is an allowlist "
+                f"rather than a blocklist of what someone already thought to forbid. "
+                f"If this is an internationalized domain, use its ASCII punycode form "
+                f"(xn--...), which is what a SIEM or DNS query actually resolves"
             )
         return value
 

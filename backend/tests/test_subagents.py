@@ -280,6 +280,22 @@ class TestPrompt:
         # "we could not ask" presented as "the indicator is clean".
         assert "not a finding" in subagents._system_prompt_for("vt", turns=14)
 
+    def test_family_prompt_specializations(self):
+        siem_prompt = subagents._system_prompt_for("siem", turns=14)
+        assert "SIEM SPECIALIZATION (Splunk)" in siem_prompt
+        assert "stats, top, and timechart" in siem_prompt
+
+        edr_prompt = subagents._system_prompt_for("edr", turns=14)
+        assert "EDR SPECIALIZATION (Endpoint Telemetry)" in edr_prompt
+        assert "process trees" in edr_prompt
+
+        ndr_prompt = subagents._system_prompt_for("ndr", turns=14)
+        assert "NDR SPECIALIZATION (Network Telemetry)" in ndr_prompt
+        assert "network flow records" in ndr_prompt
+
+        vt_prompt = subagents._system_prompt_for("vt", turns=14)
+        assert "REPUTATION SPECIALIZATION (VirusTotal)" in vt_prompt
+
     def test_the_question_cannot_break_out_of_its_fence_by_any_tag(self):
         """Was a single literal `replace("</question>", ...)`, so `</QUESTION>`,
         `</ question>`, and opening a new tag all got through. Escaping `<`

@@ -455,3 +455,29 @@ class TestLookupSerialisation:
 
         assert "LOOKUP FAILED" in message
         assert "NOT evidence that the indicator is clean" in message
+
+    async def test_a_value_the_contract_refuses_cannot_be_read_as_clean(self, monkeypatch):
+        # This argument is model-authored, so `Entity`'s allowlist is a producer
+        # boundary here, not an internal assertion. Uncaught, Strands would hand
+        # the model `Error: ValidationError - 1 validation error for Entity...`,
+        # which carries no statement that nothing was asked -- the one thing this
+        # file guarantees about every failure path.
+        from smartops.tools.native import virustotal
+
+        called = False
+
+        async def must_not_run(entity, **kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(virustotal, "_lookup", must_not_run)
+
+        message = await virustotal._tool_lookup("domain", "m\u00fcnchen.de")
+
+        assert not called, "a refused value must not reach the network"
+        assert "REJECTED" in message
+        assert "NOT evidence that the indicator is clean" in message
+        # The contract's own wording survives, because that is the part that
+        # tells the model what to send instead.
+        assert "punycode" in message
+        assert "ValidationError" not in message and "validation error for" not in message

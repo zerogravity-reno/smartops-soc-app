@@ -36,6 +36,7 @@ from urllib.parse import quote
 
 import httpx
 from contracts import Entity, EntityKind, Scope
+from pydantic import ValidationError
 from strands import tool
 
 from smartops.errors import NotConfigured
@@ -283,7 +284,28 @@ _LOOKUP_LOCK = asyncio.Lock()
 async def _tool_lookup(kind: EntityKind, value: str) -> str:
     async with _LOOKUP_LOCK:
         try:
-            verdict = await _lookup(Entity(kind=kind, value=value))
+            entity = Entity(kind=kind, value=value)
+        except ValidationError as exc:
+            # `value` is model-authored, so `Entity`'s allowlist rejects it here
+            # rather than at a trusted producer -- an IDN in Unicode form, a
+            # look-alike bracket, a value with structure in it. Caught for two
+            # reasons. Strands turns an uncaught exception into a tool result of
+            # `status: "error"` with the text `Error: ValidationError - 1
+            # validation error for Entity...` (`tools/decorator.py:657-668`);
+            # that is not a crash, but it reaches the model wrapped in pydantic's
+            # shape and *without* this file's one invariant -- that no failure
+            # may read as a clean verdict. So it is restated in the house wording
+            # below, with the contract's own message kept because that is the
+            # part telling the model what to send instead (punycode, or a
+            # percent-encoded `<`).
+            reason = "; ".join(err["msg"].removeprefix("Value error, ") for err in exc.errors())
+            return (
+                f"REJECTED: {value!r} is not a valid {kind} to look up -- {reason}. "
+                "No lookup was attempted, so this is NOT evidence that the indicator "
+                "is clean. Correct the value and call this tool again."
+            )
+        try:
+            verdict = await _lookup(entity)
         except VirusTotalError as exc:
             # Worded so a model cannot read a failure as a clean verdict. "not
             # found" and "we could not ask" are opposite conclusions about an

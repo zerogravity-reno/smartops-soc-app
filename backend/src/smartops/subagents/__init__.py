@@ -89,6 +89,29 @@ _LOOKUP_GUIDANCE = """\
   suspicious and say which ones you did not get to.
 """
 
+_FAMILY_SPECIALIZATIONS: dict[str, str] = {
+    "siem": (
+        "SIEM SPECIALIZATION (Splunk):\n"
+        "- First discover available indexes and sourcetypes if unfamiliar.\n"
+        "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
+        "- Filter early using index and sourcetype predicates before searching free-text fields.\n"
+    ),
+    "edr": (
+        "EDR SPECIALIZATION (Endpoint Telemetry):\n"
+        "- Focus on host process trees (parent/child relationships), command-line arguments, and file modifications.\n"
+        "- Correlate process executions with user logon sessions and persistence mechanisms (registry, services, launch items).\n"
+    ),
+    "ndr": (
+        "NDR SPECIALIZATION (Network Telemetry):\n"
+        "- Focus on network flow records, IP source/destination sessions, DNS query logs, and protocol analysis.\n"
+        "- Identify unusual outbound traffic volumes, beaconing patterns, or suspicious domain resolution.\n"
+    ),
+    "vt": (
+        "REPUTATION SPECIALIZATION (VirusTotal):\n"
+        "- Focus on threat verdicts, detection ratios, malicious tags, and known indicator relationships.\n"
+    ),
+}
+
 _SYSTEM_PROMPT = """\
 You are a {family} domain specialist in a security operations investigation. You
 receive one narrow question and answer it using only your domain's tools.
@@ -112,7 +135,7 @@ HOW TO WORK:
   widening the search until something matches.
 - A tool call that FAILS is not a finding. Never report a failed lookup as though
   it showed the subject to be clean, absent, or benign.
-
+{family_specialization}
 WHEN YOU ARE DONE, report:
 - queries_run: every query you ran, each tagged with the category it was
   retrieving. Do NOT restate the rows -- they are captured for you.
@@ -245,20 +268,24 @@ def _plain(value: Any) -> Any:
 def _system_prompt_for(family: str, *, turns: int, time_scoped: bool | None = None) -> str:
     """The system prompt for one family.
 
-    One prompt with a conditional clause rather than a prompt per family: the
-    instructions are the same job, and a registry of near-identical prompts drifts
-    apart. Only the time-window rule genuinely does not apply to every domain.
+    One prompt with a conditional clause and family-specific instructions:
+    the overall job and safety rules are shared, while domain-specific guidelines
+    (SPL optimization, process lineage, flow analysis, reputation) guide each
+    family.
 
     `time_scoped` defaults to the registered spec's value. Pass it explicitly only
     for a `DomainSpec` that is not in `DOMAINS` yet.
     """
     if time_scoped is None:
         time_scoped = DOMAINS[family].time_scoped
+    spec_text = _FAMILY_SPECIALIZATIONS.get(family, "")
+    specialization = f"\n{spec_text}\n" if spec_text else "\n"
     return _SYSTEM_PROMPT.format(
         family=family,
         turns=turns,
         last_query_turn=max(1, turns - 1),
         time_guidance=_TIME_GUIDANCE if time_scoped else _LOOKUP_GUIDANCE,
+        family_specialization=specialization,
     )
 
 
