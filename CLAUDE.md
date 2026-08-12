@@ -17,7 +17,7 @@ Open cross-team questions live in `docs/open-questions-for-team.md`.
 
 ## Strands
 
-Pinned to `strands-agents==1.50.2` exactly (`backend/pyproject.toml`). The
+Pinned to `strands-agents==1.51.0` exactly (`backend/pyproject.toml:18`). The
 installed source at `.venv/Lib/site-packages/strands/` is ground truth over any
 documentation — verify APIs there and cite `file:line`.
 
