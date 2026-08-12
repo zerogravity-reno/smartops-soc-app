@@ -11,6 +11,7 @@ from contracts.findings import (
     VtVerdict,
 )
 from contracts.subtask import (
+    MAX_ENTITY_VALUE_LENGTH,
     Entity,
     EntityKind,
     Evidence,
@@ -25,6 +26,7 @@ from contracts.subtask import (
 )
 
 __all__ = [
+    "MAX_ENTITY_VALUE_LENGTH",
     "AnalystTask",
     "Assessment",
     "CimCategory",

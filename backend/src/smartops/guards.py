@@ -26,6 +26,46 @@ _LOOKS_LIKE_SEARCH = re.compile(
 )
 
 
+def escape_untrusted(text: str) -> str:
+    """Make attacker-influenced prose unable to carry markup into a prompt.
+
+    Prompt framing is the only injection defence on this path, and a fence the
+    quoted content can reproduce is not a fence. The previous approach defanged
+    one literal closing tag per call site (`text.replace("</goal>", ...)`), which
+    missed `</GOAL>`, `</ goal>`, and -- unfixably -- an attacker who *opens* a
+    new tag instead of closing this one. Tags cannot be enumerated; `<` can.
+
+    So escape the three characters that make markup, which closes all of those at
+    once and needs to know nothing about the surrounding tag. A goal that
+    legitimately mentions `<` reads fine as `&lt;` and the tampering stays
+    visible, which is why this escapes rather than strips.
+
+    `&` goes first: escaping `<` to `&lt;` and *then* escaping `&` would turn it
+    into `&amp;lt;`.
+
+    Strands ships no public equivalent. It has `_escape_xml_text` /
+    `_escape_xml_attr` (`strands/injection/_xml.py:12,26`), whose module names
+    this same threat, but `strands/injection/__init__.py` exports only the
+    `Injection*` config types -- the escapers are private and reachable only
+    through `ContextInjector` / `MemoryManager`, neither of which is on this path.
+    Verified against installed 1.51.0.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def fenced(tag: str, body: str) -> str:
+    """Wrap `body` in a named region a prompt can point at as data.
+
+    Deliberately separate from `escape_untrusted`, and deliberately does not
+    escape: a fence's *body* is not always untrusted prose. The entity block is
+    assembled by code from values `contracts.Entity` has already refused
+    structure in, and escaping it would mutate indicators the model must retype
+    verbatim. Composing the two at the call site keeps "was this escaped?" a
+    visible decision instead of a hidden default.
+    """
+    return f"<{tag}>\n{body}\n</{tag}>"
+
+
 class IndexScopeGuard:
     """Rejects a domain's queries that target an index outside its allowlist.
 

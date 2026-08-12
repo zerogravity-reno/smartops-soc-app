@@ -37,6 +37,33 @@ Context Contract Template. `process` and `url` are the least settled members.
 """
 
 
+MAX_ENTITY_VALUE_LENGTH = 512
+"""Upper bound on an `Entity.value`. An observable is not a payload.
+
+Comfortably above every kind's realistic maximum -- SHA-512 hex is 128
+characters, IPv6 with an embedded IPv4 is 45, a DNS name caps at 253 -- and far
+below the room an injected instruction wants. `url` is the only kind for which
+this is a judgement rather than a fact.
+"""
+
+_FORBIDDEN_IN_ENTITY_VALUE = frozenset("<>")
+"""Characters an entity value may not contain, because a prompt is built from it.
+
+Prompt builders quote untrusted prose inside a named fence and escape it on the
+way in. Entity *values* deliberately are not escaped: the model has to retype
+them verbatim into an SPL predicate or a reputation lookup, and mutating one
+changes which indicator gets queried -- the exact silent failure
+`_value_is_not_blank` below already records once. So the structure is refused
+here instead, where it fails loudly and once for every producer.
+
+No legitimate observable needs these: RFC 3986 excludes raw `<` and `>` from a
+URI, and they cannot appear in a hostname, DNS name, address, or hex digest. The
+one real casualty is a `process` value carrying shell redirection -- and
+`EntityKind` above already records `process` as one of its least settled members,
+so this is revisitable rather than free.
+"""
+
+
 class Entity(BaseModel):
     """One observable a mission is allowed to look at."""
 
@@ -59,6 +86,46 @@ class Entity(BaseModel):
         # no error. Normalising here fixes it for every producer at once rather
         # than in each caller.
         return value.strip()
+
+    @field_validator("value")
+    @classmethod
+    def _value_carries_no_structure(cls, value: str) -> str:
+        """Refuse anything that could carry structure into a prompt.
+
+        Runs after `_value_is_not_blank`, on the stripped value: validators for
+        one field fire in definition order, so this sees the normalised string
+        and an interior newline is still caught while a trailing one is not an
+        error.
+
+        Each message names the offending class rather than saying "invalid".
+        These values arrive by hand -- an analyst who pasted a URL with a stray
+        newline needs to know which rule bit them.
+        """
+        if len(value) > MAX_ENTITY_VALUE_LENGTH:
+            raise ValueError(
+                f"entity value is {len(value)} characters, over the "
+                f"{MAX_ENTITY_VALUE_LENGTH}-character limit -- an observable this "
+                f"long is far more likely to be pasted junk than an indicator"
+            )
+        # Every C0 and C1 control character, not just the newline. A prompt is
+        # line-structured, so `\n` and `\r` are what forge a line -- but `\t`
+        # forges a column, and a C1 control is simply never part of an
+        # observable, so there is nothing to gain by admitting any of them.
+        control = next((c for c in value if ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F), None)
+        if control is not None:
+            raise ValueError(
+                f"entity value contains the control character U+{ord(control):04X}; "
+                f"an entity is a single-line observable, so newlines, tabs, and "
+                f"control characters are not accepted"
+            )
+        forbidden = next((c for c in value if c in _FORBIDDEN_IN_ENTITY_VALUE), None)
+        if forbidden is not None:
+            raise ValueError(
+                f"entity value contains {forbidden!r}, which a prompt fence uses as "
+                f"structure. Percent-encode it (%3C / %3E) if it is genuinely part "
+                f"of the observable"
+            )
+        return value
 
 
 class Scope(BaseModel):
