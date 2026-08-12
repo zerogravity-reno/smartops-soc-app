@@ -38,7 +38,8 @@ from contracts import (
     SubtaskStatus,
 )
 
-from smartops.broker import FAMILY_REQUIRED_KINDS, SubagentRunner, enrich_mission
+from smartops.broker import SubagentRunner, enrich_mission
+from smartops.domains import DOMAINS
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.telemetry import record_cost, trace_attributes_for
 from smartops.tools.registry import enricher_for, server_count, tools_for
@@ -70,12 +71,6 @@ DEFAULT_MAX_OUTPUT_TOKENS = 12000
 # free while under-estimating disables the gate.
 _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
 
-# Families whose data is indexed over time, and which therefore have to be told
-# to respect the mission's window. Reputation lookups do not: VirusTotal answers
-# "is this indicator known-bad", a question with no time dimension, so telling a
-# `vt` subagent to constrain queries to a 2018 window is an instruction it cannot
-# follow and would have to invent a way to obey.
-_TIME_SCOPED_FAMILIES = frozenset({"siem", "edr", "ndr"})
 
 _TIME_GUIDANCE = """\
 - Constrain every query to the time window given below. Pass the exact epoch
@@ -192,20 +187,23 @@ def _plain(value: Any) -> Any:
         return repr(value)
 
 
-def _system_prompt_for(family: str, *, turns: int) -> str:
+def _system_prompt_for(family: str, *, turns: int, time_scoped: bool | None = None) -> str:
     """The system prompt for one family.
 
     One prompt with a conditional clause rather than a prompt per family: the
     instructions are the same job, and a registry of near-identical prompts drifts
     apart. Only the time-window rule genuinely does not apply to every domain.
+
+    `time_scoped` defaults to the registered spec's value. Pass it explicitly only
+    for a `DomainSpec` that is not in `DOMAINS` yet.
     """
+    if time_scoped is None:
+        time_scoped = DOMAINS[family].time_scoped
     return _SYSTEM_PROMPT.format(
         family=family,
         turns=turns,
         last_query_turn=max(1, turns - 1),
-        time_guidance=(
-            _TIME_GUIDANCE if family in _TIME_SCOPED_FAMILIES else _LOOKUP_GUIDANCE
-        ),
+        time_guidance=_TIME_GUIDANCE if time_scoped else _LOOKUP_GUIDANCE,
     )
 
 
@@ -221,7 +219,7 @@ def _prompt_for(mission: SubagentMission) -> str:
     start, end = mission.scope.time_window
     entities = "\n".join(f"  - {e.kind}: {e.value}" for e in mission.scope.entities)
 
-    if mission.tool_family in _TIME_SCOPED_FAMILIES:
+    if DOMAINS[mission.tool_family].time_scoped:
         window = (
             f"Time window (use these exact values in every query):\n"
             f"  earliest_time: {int(start.timestamp())}   # {start.isoformat()}\n"
@@ -446,7 +444,7 @@ def domain_runner(
 
     async def run(mission: SubagentMission) -> SubtaskResult:
         family = mission.tool_family
-        required = FAMILY_REQUIRED_KINDS[family]
+        required = DOMAINS[family].required_kinds
         in_scope = mission.scope.kinds()
 
         # Precondition, not judgement: VirusTotal cannot be queried without a
