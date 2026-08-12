@@ -106,3 +106,64 @@ class TestImmutability:
     def test_a_spec_cannot_be_mutated_after_construction(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             DOMAINS["siem"].time_scoped = False  # type: ignore[misc]
+
+
+class TestGeneratedTools:
+    """The four investigate_* wrappers are generated from DOMAINS.
+
+    They used to be hand-written and identical apart from one string, which is
+    exactly the kind of duplication that drifts -- and since the description
+    drives routing, drift there is a silent behaviour change.
+    """
+
+    def test_one_tool_is_generated_per_domain(self):
+        from smartops.broker import FAMILY_TOOLS
+
+        assert len(FAMILY_TOOLS) == len(DOMAINS)
+
+    def test_each_tool_is_named_for_its_family(self):
+        from smartops.broker import TOOL_BY_FAMILY
+
+        for family, tool in TOOL_BY_FAMILY.items():
+            assert tool.tool_name == f"investigate_{family}"
+
+    def test_the_model_facing_description_comes_from_the_spec(self):
+        from smartops.broker import TOOL_BY_FAMILY
+
+        for family, tool in TOOL_BY_FAMILY.items():
+            described = tool.tool_spec["description"]
+            assert "Do NOT use" in described
+            assert described.splitlines()[0] in DOMAINS[family].description
+
+    def test_question_is_the_models_only_parameter(self):
+        from smartops.broker import TOOL_BY_FAMILY
+
+        for tool in TOOL_BY_FAMILY.values():
+            # tool_context is injected by the framework, never by the model.
+            properties = tool.tool_spec["inputSchema"]["json"]["properties"]
+            assert set(properties) == {"question"}
+
+    def test_the_question_parameter_is_described_for_the_model(self):
+        from smartops.broker import TOOL_BY_FAMILY
+
+        for tool in TOOL_BY_FAMILY.values():
+            question = tool.tool_spec["inputSchema"]["json"]["properties"]["question"]
+            assert question["description"].strip()
+
+    async def test_a_generated_tool_dispatches_its_own_family(self, monkeypatch):
+        """Each closure carries its own family. Closing over a loop variable
+        would make every generated tool dispatch the last one."""
+        import smartops.broker as broker
+
+        seen: list[str] = []
+
+        async def fake_dispatch(family, question, ctx):
+            seen.append(family)
+            return "ok"
+
+        monkeypatch.setattr(broker, "_dispatch", fake_dispatch)
+
+        for tool in broker.TOOL_BY_FAMILY.values():
+            await tool(question="q", tool_context=object())
+
+        assert seen == list(broker.TOOL_BY_FAMILY)

@@ -46,6 +46,7 @@ from contracts import (
 from strands import ToolContext, tool
 
 from smartops.budget import Budget, ModelChoice, Usage
+from smartops.domains import DOMAINS, DomainSpec
 from smartops.errors import NotConfigured
 from smartops.telemetry import investigation_span, record_cost, record_result_status
 from smartops.tools.registry import enricher_for, server_count, tools_for
@@ -88,21 +89,11 @@ DEFAULT_BROKER_TURNS = 6
 # `_estimated_input_tokens` for why over-estimating is the safe direction.
 _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
 
-# Which observable kinds each domain can actually be queried with. `None` means
-# "anything" -- a SIEM indexes logs about everything, so no observable makes it
-# unusable.
-#
-# This is a *precondition*, not a second classifier. `plan_missions()` was
-# retired because it duplicated a judgement the Broker's tool choice already
-# makes; "VirusTotal cannot be queried without a hash, IP, domain, or URL" is
-# true regardless of what any model decides. It lives here rather than in
-# `contracts` because that module holds shape only -- dispatchability is
-# dispatch logic.
+# Kept as a derived view during the DomainSpec migration so existing callers and
+# tests keep working. It cannot drift from the registry because it is computed
+# from it. Deleted once every consumer reads `DOMAINS` directly.
 FAMILY_REQUIRED_KINDS: dict[ToolFamily, frozenset[EntityKind] | None] = {
-    "siem": None,
-    "edr": frozenset({"host", "process", "user"}),
-    "ndr": frozenset({"ip", "domain", "url"}),
-    "vt": frozenset({"file_hash", "ip", "domain", "url"}),
+    family: spec.required_kinds for family, spec in DOMAINS.items()
 }
 
 _SYSTEM_PROMPT = """\
@@ -488,68 +479,47 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
     return _digest(result)
 
 
-@tool(context=True)
-async def investigate_siem(question: str, tool_context: ToolContext) -> str:
-    """Search SIEM logs for historical evidence across the whole estate:
-    authentication events, process and network log records, index metadata.
+def make_investigate_tool(spec: DomainSpec):
+    """Build the `@tool` wrapper the Broker calls to engage one domain.
 
-    Use for anything needing log history or correlation over time, and as the
-    starting point when you do not yet know which host or address matters.
-    Works with any observable. Do NOT use for file or domain reputation (use
-    investigate_vt) or for live host process detail (use investigate_edr).
+    The four wrappers were hand-written and identical apart from a single
+    string. That string is model-facing text driving the routing decision, so
+    duplicated copies drifting apart is a behaviour change nobody sees.
 
-    Args:
-        question: What this domain should find out, in plain language.
+    `description=` overrides the docstring, but the *parameter* description
+    still comes from the docstring's `Args:` section, which is why the inner
+    function keeps one. `context=True` requires the parameter to be named
+    exactly `tool_context` (`strands/tools/decorator.py:767`).
+
+    `spec` is a function parameter rather than a loop variable on purpose: each
+    call gets its own closure, so the four tools dispatch four different
+    families. Closing over a loop variable would make all of them dispatch the
+    last one.
     """
-    return await _dispatch("siem", question, tool_context)
+
+    @tool(name=f"investigate_{spec.family}", description=spec.description, context=True)
+    async def investigate(question: str, tool_context: ToolContext) -> str:
+        """Engage this domain specialist.
+
+        Args:
+            question: What this domain should find out, in plain language.
+        """
+        return await _dispatch(spec.family, question, tool_context)
+
+    return investigate
 
 
-@tool(context=True)
-async def investigate_edr(question: str, tool_context: ToolContext) -> str:
-    """Query endpoint detection and response for host-level detail: running and
-    historical processes, persistence mechanisms, file activity, local accounts.
+TOOL_BY_FAMILY = {spec.family: make_investigate_tool(spec) for spec in DOMAINS.values()}
 
-    Use when the question is about what happened *on a machine*. Needs a host,
-    process, or user observable in scope. Do NOT use for network flow analysis
-    (use investigate_ndr) or reputation lookups (use investigate_vt).
+# A list, because that is what `Agent(tools=...)` takes.
+FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
 
-    Args:
-        question: What this domain should find out, in plain language.
-    """
-    return await _dispatch("edr", question, tool_context)
-
-
-@tool(context=True)
-async def investigate_vt(question: str, tool_context: ToolContext) -> str:
-    """Look up third-party reputation and threat intelligence for an indicator:
-    whether a file hash, IP, domain, or URL is known-malicious externally.
-
-    Use to establish whether an indicator is known-bad. Needs a file_hash, ip,
-    domain, or url observable in scope. Do NOT use to find out what happened in
-    our own environment -- it knows nothing about our estate.
-
-    Args:
-        question: What this domain should find out, in plain language.
-    """
-    return await _dispatch("vt", question, tool_context)
-
-
-@tool(context=True)
-async def investigate_ndr(question: str, tool_context: ToolContext) -> str:
-    """Analyse network detection and response telemetry: connections, flows,
-    protocol anomalies, and traffic to or from an address.
-
-    Use when the question is about traffic and communication patterns. Needs an
-    ip, domain, or url observable in scope. Do NOT use for host-local process
-    detail (use investigate_edr).
-
-    Args:
-        question: What this domain should find out, in plain language.
-    """
-    return await _dispatch("ndr", question, tool_context)
-
-
-FAMILY_TOOLS = [investigate_siem, investigate_edr, investigate_vt, investigate_ndr]
+# Module-level aliases, so existing importers keep working during the migration.
+# Deleted in the final task of this refactor.
+investigate_siem = TOOL_BY_FAMILY["siem"]
+investigate_edr = TOOL_BY_FAMILY["edr"]
+investigate_vt = TOOL_BY_FAMILY["vt"]
+investigate_ndr = TOOL_BY_FAMILY["ndr"]
 
 
 def _neutralize_delimiter(text: str) -> str:
