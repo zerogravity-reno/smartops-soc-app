@@ -167,3 +167,44 @@ class TestGeneratedTools:
             await tool(question="q", tool_context=object())
 
         assert seen == list(broker.TOOL_BY_FAMILY)
+
+
+class TestAddingADomainIsOneEntry:
+    """The claim this refactor is for, made executable.
+
+    A new domain should need a DomainSpec and nothing else in code. This builds
+    one that is not in DOMAINS and drives it through the machinery that used to
+    require nine other edits.
+    """
+
+    def _spec(self):
+        return DomainSpec(
+            family="edr",  # a real ToolFamily member; the values below are not EDR's
+            description=(
+                "Fictional domain used only by this test.\n"
+                "\n"
+                "Do NOT use it for anything real."
+            ),
+            required_kinds=frozenset({"user"}),
+            time_scoped=False,
+            mcp_servers=("fictional",),
+        )
+
+    def test_a_new_spec_produces_a_working_tool_with_no_other_code_change(self):
+        from smartops.broker import make_investigate_tool
+
+        tool = make_investigate_tool(self._spec())
+
+        assert tool.tool_name == "investigate_edr"
+        assert "Fictional domain" in tool.tool_spec["description"]
+        assert set(tool.tool_spec["inputSchema"]["json"]["properties"]) == {"question"}
+
+    def test_a_new_spec_carries_its_own_prompt_shape(self):
+        from smartops.subagents import _system_prompt_for
+
+        spec = self._spec()
+        prompt = _system_prompt_for(spec.family, turns=4, time_scoped=spec.time_scoped)
+
+        # time_scoped=False must select the lookup guidance, not the time rule.
+        assert "rate limited" in prompt
+        assert "do NOT use relative times" not in prompt
