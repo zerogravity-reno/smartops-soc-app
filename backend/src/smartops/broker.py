@@ -617,9 +617,11 @@ def default_broker_invoker(
         )
         return await agent.invoke_async(
             prompt,
+            # Becomes `invocation_state` inside every tool call. Passing this as
+            # a bare `smartops=` kwarg still works, but lands in the `**kwargs`
+            # channel Strands warns is deprecating (`strands/agent/agent.py`).
+            invocation_state={"smartops": request},
             limits=Limits(turns=turns, output_tokens=max_output_tokens),
-            # Becomes `invocation_state` inside every tool call.
-            smartops=request,
         )
 
     return invoke

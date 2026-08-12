@@ -949,11 +949,14 @@ class TestBrokerLimits:
         assert captured["limits"] == {"turns": 2, "output_tokens": 123}
 
     async def test_the_request_is_handed_over_as_invocation_state(self, monkeypatch):
-        # `smartops=request` is what becomes `invocation_state` inside every tool
-        # call; without it the family wrappers cannot read scope.
+        # What the family wrappers read is `ctx.invocation_state["smartops"]`;
+        # without it they cannot read scope. It must travel through the
+        # `invocation_state=` parameter -- a bare `smartops=` kwarg lands in the
+        # `**kwargs` channel Strands warns is deprecating.
         captured = await self._captured_limits(monkeypatch)
 
-        assert isinstance(captured["smartops"], BrokerRequest)
+        assert isinstance(captured["invocation_state"]["smartops"], BrokerRequest)
+        assert "smartops" not in captured
 
     def test_the_output_budget_covers_the_worst_case_dispatch_count(self):
         # The re-dispatch cap allows MAX_DISPATCHES_PER_FAMILY per family, and each

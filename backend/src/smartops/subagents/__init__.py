@@ -142,14 +142,27 @@ class _EvidenceCollector:
         self.calls: list[tuple[str, Any]] = []
 
     def register_hooks(self, registry: Any, **kwargs: Any) -> None:
-        from strands.hooks import AfterToolCallEvent
+        from strands.hooks import AfterToolCallEvent, HookOrder
 
-        registry.add_callback(AfterToolCallEvent, self._record)
+        # `AfterToolCallEvent.result` is writable, and plugins that rewrite it
+        # (`ContextOffloader` replaces oversized results with a preview) register
+        # after `hooks=[...]` and fire first, since the event reverses callbacks.
+        # Evidence must be the raw tool output, so claim the lowest priority --
+        # for reversed events, priority still applies lowest-first and only ties
+        # are reversed, so this runs before any such plugin.
+        registry.add_callback(AfterToolCallEvent, self._record, order=HookOrder.SDK_FIRST)
 
     def _record(self, event: Any) -> None:
         name = (event.tool_use or {}).get("name", "unknown")
         result = event.result
-        if isinstance(result, BaseException):
+        # Failure arrives two ways: an exception the tool raised, or -- the case
+        # every MCP tool takes, since `isError` maps to a status rather than
+        # raising -- an error-status `ToolResult`. `result` itself is always a
+        # `ToolResult`, never an exception, so testing its type catches neither.
+        failed = getattr(event, "exception", None) is not None or (
+            isinstance(result, dict) and result.get("status") == "error"
+        )
+        if failed:
             # A failed call is not evidence of anything about the estate, and
             # the model already sees the error in its own loop.
             logger.info("tool=%s | call failed, not recorded as evidence", name)

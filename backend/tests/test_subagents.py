@@ -171,11 +171,42 @@ class TestEvidenceAssembly:
         assert [e.id for e in evidence] == ["case-1:siem:u1:0", "case-1:siem:u1:1"]
         assert evidence[0].raw["tool"] == "splunk_run_query"
 
-    def test_a_failed_tool_call_is_not_recorded_as_evidence(self):
+    def test_a_tool_that_raised_is_not_recorded_as_evidence(self):
         collector = subagents._EvidenceCollector()
-        collector._record(_Event({"name": "splunk_run_query"}, ValueError("bad SPL")))
+        collector._record(
+            _Event(
+                {"name": "splunk_run_query"},
+                {"status": "error", "content": [{"text": "bad SPL"}]},
+                exception=ValueError("bad SPL"),
+            )
+        )
 
         assert collector.calls == []
+
+    def test_an_mcp_error_result_is_not_recorded_as_evidence(self):
+        """The case every failed Splunk/VT call actually takes: `isError` maps to
+        an error-status `ToolResult` and nothing is raised, so a check against
+        `exception` alone would let the error through as a finding."""
+        collector = subagents._EvidenceCollector()
+        collector._record(
+            _Event(
+                {"name": "splunk_run_query"},
+                {"status": "error", "content": [{"text": "search failed"}]},
+            )
+        )
+
+        assert collector.calls == []
+
+    def test_a_successful_tool_call_is_recorded(self):
+        collector = subagents._EvidenceCollector()
+        collector._record(
+            _Event(
+                {"name": "splunk_run_query"},
+                {"status": "success", "content": [{"json": {"results": [1]}}]},
+            )
+        )
+
+        assert [name for name, _ in collector.calls] == ["splunk_run_query"]
 
     def test_unserialisable_results_degrade_to_repr_rather_than_being_lost(self):
         class Opaque:
@@ -291,6 +322,14 @@ def _async_raising(exc):
 
 
 class _Event:
-    def __init__(self, tool_use, result):
+    """Mirrors `strands.hooks.AfterToolCallEvent`.
+
+    `result` is always a `ToolResult` -- never an exception. A tool that raised
+    is reported through the separate `exception` field, while an MCP tool that
+    failed reports `status="error"` and raises nothing at all.
+    """
+
+    def __init__(self, tool_use, result, exception=None):
         self.tool_use = tool_use
         self.result = result
+        self.exception = exception
