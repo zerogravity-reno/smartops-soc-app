@@ -8,7 +8,7 @@ and `scope` and never a pre-authored query -- see `contracts.subtask`.
 wiring it in is one argument to `broker_task()`. It handles all four families
 through one body, because the differences between them are already data:
 
-- the entity gate is `broker.FAMILY_REQUIRED_KINDS`,
+- the entity gate is `DomainSpec.required_kinds`,
 - a model-free lookup is `registry.enricher_for()` (which is how `vt` answers
   with no model and no subagent at all),
 - and the toolset is `registry.tools_for()`.
@@ -41,6 +41,7 @@ from contracts import (
 from smartops.broker import SubagentRunner, enrich_mission
 from smartops.domains import DOMAINS
 from smartops.budget import Budget, ModelChoice, Usage
+from smartops.guards import IndexScopeGuard
 from smartops.telemetry import record_cost, trace_attributes_for
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
@@ -385,6 +386,22 @@ async def investigate(
     )
 
 
+def _hooks_for(family: str, collector: _EvidenceCollector) -> list:
+    """The hook providers a subagent of this family runs with.
+
+    `IndexScopeGuard` is only attached where the domain declares an allowlist.
+    A domain with `index_allowlist=None` has no index concept -- attaching a
+    guard with nothing to allow would reject every search it ever makes.
+    """
+    hooks: list = [collector]
+
+    allowlist = DOMAINS[family].index_allowlist
+    if allowlist is not None:
+        hooks.append(IndexScopeGuard(family, allowlist))
+
+    return hooks
+
+
 async def _build_agent_and_invoke(
     prompt: str,
     *,
@@ -415,7 +432,7 @@ async def _build_agent_and_invoke(
         system_prompt=_system_prompt_for(mission.tool_family, turns=turns),
         structured_output_model=SubagentAnswer,
         callback_handler=None,
-        hooks=[collector],
+        hooks=_hooks_for(mission.tool_family, collector),
         # Stamps task_id/hypothesis_id/tool_family onto every span this agent
         # produces, so a trace correlates back to the investigation with no
         # separate correlation system. Without it, a subagent's model and tool

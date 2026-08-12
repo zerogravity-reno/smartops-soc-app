@@ -78,6 +78,19 @@ class DomainSpec:
     argument, so there is no judgement to delegate. `None` for any domain that
     needs a decision about what to ask."""
 
+    index_allowlist: tuple[str, ...] | None = None
+    """Indexes this domain's queries may target, enforced by `guards.IndexScopeGuard`.
+
+    A *deployment* fact, which is why it lives here and not on `Scope`. Which
+    index holds the data is a property of the estate; `Scope` is the
+    authorization boundary, and mixing infrastructure into it muddies a
+    security-relevant type. The Analyst should not have to know that BOTSv3
+    lives in `index=botsv3`.
+
+    `None` means the domain has no index concept and the guard does not apply --
+    distinct from an empty tuple, which would forbid every query.
+    """
+
     turns: int = 14
     max_output_tokens: int = 12_000
 
@@ -96,6 +109,7 @@ SIEM = DomainSpec(
     required_kinds=None,
     time_scoped=True,
     mcp_servers=("splunk",),
+    index_allowlist=("botsv3",),
 )
 
 EDR = DomainSpec(

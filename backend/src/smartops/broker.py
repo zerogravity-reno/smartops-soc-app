@@ -524,8 +524,14 @@ def _neutralize_delimiter(text: str) -> str:
 
 def _prompt_for(task: AnalystTask) -> str:
     """The user-turn prompt. The goal is delimited as untrusted data, matching
-    the `SECURITY CONSTRAINTS:` block in the system prompt -- Strands ships no
-    input-sanitisation helper, so this framing is ours to do."""
+    the `SECURITY CONSTRAINTS:` block in the system prompt.
+
+    Strands ships no *public* input-sanitisation helper, so this framing is ours
+    to do. It does have `_escape_xml_text`/`_escape_xml_attr`
+    (`strands/injection/_xml.py`), whose module docstring names this same threat,
+    but they are private and reachable only through `ContextInjector` /
+    `MemoryManager` -- neither of which is on this path.
+    """
     start, end = task.scope.time_window
     entities = ", ".join(f"{e.kind}={e.value}" for e in task.scope.entities)
     return (
