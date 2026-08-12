@@ -242,8 +242,13 @@ so everything runs at Bedrock's default of 1.0. `BedrockModel` accepts both
 is **no seed** — Anthropic on Bedrock offers none, so bit-identical reproduction is
 unavailable at any price.
 
-Add both to `ModelChoice` and thread them through. Set explicitly for the A/B so
-both arms match.
+**Set `temperature=0.3` and leave `top_p` unset** — providers advise tuning one or
+the other, not both, and temperature is the one that matters for a fetch job. 1.0
+is far too creative for retrieval. Add both fields to `ModelChoice` so a sweep is
+possible later, but only set temperature now.
+
+A temperature sweep is deferred to the bench harness (§8): it is an ordinary grid
+search, not something DSPy does. See §10 for the tuning sequence.
 
 ### 7. Arm F — the flat Broker
 
@@ -292,23 +297,84 @@ Sequenced last so neither is built on a layer the experiment might delete.
   was 0 on every span. Check `SlidingWindowConversationManager` first — a rewritten
   history breaks the cached prefix.
 
+### 10. Prompt and parameter tuning (later)
+
+Sequenced after §8, because every option below needs a metric and a labelled dev
+set, which is what the bench harness plus ground truth provides.
+
+1. **Temperature sweep.** A plain grid search over the bench. No new dependency.
+2. **Record / replay.** Capture MCP responses once and replay them offline.
+   `_EvidenceCollector` already captures exactly this data. This is the unlock:
+   at ~$1 per live run, a 4-value sweep at 3 runs each is ~$12 and DSPy
+   optimisation is many multiples of that. Replay makes tuning free *and*
+   deterministic, which removes the variance problem entirely for prompt work.
+3. **DSPy**, if prompt tuning is still the bottleneck after the above. Note what
+   it does and does not do: it optimises prompts and few-shot demonstrations
+   (MIPROv2, BootstrapFewShot); it does **not** tune temperature. There is no
+   DSPy/Strands integration — DSPy drives models through its own LM clients, so
+   optimisation runs against a DSPy-side copy of the prompt and the winner is
+   ported back. Budget for that port.
+
+## Decisions taken
+
+**SIEM findings taxonomy — adopt Splunk CIM names.** Do not invent a taxonomy.
+The four proposed categories map almost 1:1 onto CIM data models, so this is a
+renaming rather than a restructure:
+
+| Proposed | CIM data model |
+|---|---|
+| `dns_resolutions` | Network Resolution |
+| `connections` | Network Traffic |
+| `processes` | Endpoint → Processes |
+| `auth_events` | Authentication |
+
+This inherits a vocabulary analysts already use, a predictable extension path
+(Web, Malware, Filesystem, Registry, Intrusion Detection), and a shape that still
+holds when EDR arrives — an EDR process event and a SIEM process event land in one
+model. OCSF is the broader cross-vendor direction of travel; CIM is the pragmatic
+pick while the query target is Splunk.
+
+*Not* derived from `EntityKind`: the two are orthogonal, not hierarchical. A `host`
+yields Authentication *and* Processes *and* Network Traffic; a `domain` yields
+Network Resolution *and* Network Traffic. Deriving would need a many-to-many table
+anyway, and would lose the ability to fetch a category the entity did not imply.
+That mapping is still useful — as **input to `plan_fetch`** (§3), suggesting which
+categories a step should cover. It shapes the plan, not the schema.
+
+**Index scoping — deployment config, enforced in code.** The index belongs on
+`DomainSpec`, not on `Scope` and not on `AnalystTask`: which index holds the data
+is a deployment fact, and the Analyst should not know that BOTSv3 lives in
+`index=botsv3`. `Scope` is the authorization boundary (entities, time); putting
+infrastructure in it muddies a security-relevant type.
+
+Enforcement is a `BeforeToolCallEvent` hook, not a prompt instruction — matching
+the existing principle that "domain gating is a precondition, not a judgement,
+which is why it lives in code rather than in a prompt". The event exposes
+`cancel_tool: bool | str`, which cancels the call and returns the message as an
+error tool result the model can react to, and permits writing `tool_use`, so a
+query can be rejected or rewritten (`strands/hooks/events.py:137-161`). This is
+the same hook system `_EvidenceCollector` already uses on the After side.
+
+Limitation, stated plainly: validating "this SPL targets an allowed index" by
+inspection is not bulletproof — subsearches, macros and `tstats` complicate it.
+Rejecting `index=*` and requiring a literal allowlisted `index=` catches the
+observed failure. Treat it as a correctness guardrail, not a security control.
+**The stronger fix costs no code: scope the Splunk token to `botsv3`**, and
+`index=*` returns only botsv3 regardless of what the model writes, enforced
+server-side. Worth doing independently of the hook.
+
 ## Open decisions
 
-1. **SIEM findings taxonomy.** Proposed: `dns_resolutions`, `connections`,
-   `processes`, `auth_events`. These fit BOTSv3's Windows + `stream:*` data and may
-   be too narrow for a SIEM generally. Alternative: derive the categories from
-   `EntityKind`, mirroring `FAMILY_REQUIRED_KINDS`. **Mohammed's call.**
-2. **Index scoping.** `queries_run` makes `index=*` *visible*; it does not prevent
-   it. Whether `DomainSpec` carries a default index, or `Scope` gains a data-source
-   field, remains open and still blocks trustworthy benchmarking.
-3. **Where the plan is stored.** §3 keeps it on `BrokerRequest` and serialises it
+1. **Where the plan is stored.** §3 keeps it on `BrokerRequest` and serialises it
    into `BrokerReport`. A run-directory file would also work and would pair with
    evidence persistence — but a scratchpad the model *reads back* is an injection
    laundering path: goal-derived text returns to context outside the `<goal>` fence,
    in the agent's own voice. If the plan becomes a file the model re-reads, code
    must write it and re-fence model text on read-back.
-4. **Completion vocabulary.** `CompletionRule` starts deliberately small. Whether
+2. **Completion vocabulary.** `CompletionRule` starts deliberately small. Whether
    it is sufficient is the kind of thing the A/B will expose.
+3. **Splunk token scoping.** Restricting the lab token to `botsv3` is a
+   deployment change, not a code one — needs someone with Splunk admin access.
 
 ## Verification
 
