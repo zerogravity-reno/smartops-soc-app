@@ -1496,7 +1496,7 @@ controller and are open to being overridden:
 | Task | Work |
 |---|---|
 | 3 | **B3** — `FetchPlan`/`FetchStep`/`CompletionRule`, `plan_fetch` tool, code-evaluated completion |
-| 4 | **B4** — both prompts to fetch semantics; entity escaping **and** moving entities out of the system-vouched block |
+| 4 | **B4** — both prompts to fetch semantics; entity escaping **and** moving entities out of the system-vouched block. See the scope note below: this is far more lopsided than it reads. |
 | 5 | **B5** — `BrokerReport`, written to a per-run directory |
 | 6 | **B6** — `temperature=0.3`, `top_p` unset |
 | 7 | **C1** — Arm F, the flat Broker |
@@ -1521,6 +1521,56 @@ requires raising `DEFAULT_BROKER_TURNS = 6` since planning costs a turn.
 - Report **median and spread, not a mean of three**. If the arms differ by less
   than the within-arm spread, "no measurable difference" is the honest answer and
   points at the cheaper topology.
+
+## Added by a state-review pass over the branch
+
+Three things verified directly against the tree at `ac03a64` (38 commits, 294
+green), none of them recorded elsewhere.
+
+### `CLAUDE.md` is stale on the Strands pin — fix this first
+
+`CLAUDE.md:20` still reads *"Pinned to `strands-agents==1.50.2` exactly"*, while
+`backend/pyproject.toml:18` and the installed dist-info are both **1.51.0**. That
+file is the first thing an agent reads for ground truth, and it now names a
+version that is neither pinned nor installed. Anything reasoning from it will
+verify APIs against the wrong tree. One-line fix, disproportionate cost if missed.
+
+### Task 4's two halves are not the same size
+
+The **subagent** prompt has already been converted to fetch semantics as a side
+effect of Tasks 1–2. `subagents/__init__.py` now asks for `queries_run` and
+`assessment` and states *"Do NOT restate the rows — they are captured for you."*
+No `summary` request remains.
+
+The **Broker** prompt is untouched. `broker.py` still opens *"You are the Task
+Broker… decide which domain specialists to engage by calling their tools"* and
+never mentions fetching, a schema, or what it returns to the Analyst. That prompt
+is the reason the 2026-08-11 run behaved as it did — the contract made prose
+possible, but the prompt is what asked for an investigation.
+
+So Task 4 is mostly a Broker-side job plus the entity-sanitization work, not a
+symmetric rewrite of two prompts.
+
+### Budget the review policy for Tasks 3–9 before starting
+
+Plan A ran under subagent-driven development at **13 subagents / ~694k tokens for
+7 tasks**, because the skill mandates one implementer *plus* one reviewer per
+task — roughly double the naive cost. One task cost triple the rest on its own,
+from a fix round caused by a defect in the plan text rather than the code.
+
+Tasks 3–9 are seven more tasks. The owner interrupted Plan A over exactly this,
+so decide the policy up front rather than mid-run: full reviews throughout, or
+reviews only for the tasks where a green suite is not the real gate. Task 3
+(`FetchPlan`) and Task 9 (the live A/B) are the two where a review earns its cost;
+Task 6 (`temperature=0.3`) is a two-line change that does not.
+
+Related, and cheap to apply when authoring the remaining tasks: **before mandating
+that a symbol be deleted, grep the tests for it.** Plan A carried three defects of
+one shape — asserting a property after checking the specific thing I had thought
+of rather than the thing that was actually true (an import cycle traced through
+one file but not the package `__init__`; two deletions mandated while test edits
+were forbidden, where the tests monkeypatched the very symbols). Two of the three
+cost a fix round; the third was caught pre-dispatch by one grep.
 
 ## Gotchas carried forward
 
