@@ -566,9 +566,61 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 Run: `uv run pytest backend/tests/test_registry.py -q`
 Expected: PASS. These tests are what prove this task changed nothing.
 
-- [ ] **Step 2: Delete the three parallel dicts**
+- [ ] **Step 1b: Break the import cycle at its actual source**
 
-In `backend/src/smartops/tools/registry.py`, delete `MCP_SERVERS_BY_FAMILY` (lines 72–84), `NATIVE_TOOLS_BY_FAMILY` (86–93) and `ENRICHERS_BY_FAMILY` (95–107) with their comment blocks. Replace the import:
+`backend/src/smartops/tools/__init__.py` eagerly re-exports `tools_for`, so
+`registry → domains → smartops.tools.native.virustotal` re-enters
+`smartops.tools.__init__` → `registry` while that module is still initialising.
+Nothing in the repo imports `from smartops.tools import ...` (verified with
+`grep -rn "from smartops.tools import" backend/ contracts/`), so the re-export is
+dead weight. Replace the file's contents with a docstring only:
+
+```python
+"""Tool resolution. Import from `smartops.tools.registry` directly.
+
+Deliberately re-exports nothing: an eager `from .registry import tools_for` here
+made `registry -> domains -> tools.native.virustotal` re-enter this module while
+`registry` was still initialising, which is a circular import.
+"""
+```
+
+With the cycle gone, `registry.py` can import `DOMAINS` normally at module level.
+Do **not** use a lazy or function-local import to paper over the cycle.
+
+- [ ] **Step 2: Replace the three parallel dicts with derived views**
+
+`test_registry.py:7,8,47,49,65,70,153,348` imports and monkeypatches these dicts,
+and `test_broker.py:408,430,466` monkeypatches `ENRICHERS_BY_FAMILY`. They
+therefore cannot be deleted while tests must stay unmodified. Keep them as
+**eagerly-derived module-level views**, exactly as Task 2 did for
+`FAMILY_REQUIRED_KINDS`, and let Task 6 delete them with the other aliases.
+
+In `backend/src/smartops/tools/registry.py`, replace `MCP_SERVERS_BY_FAMILY`
+(lines 72–84), `NATIVE_TOOLS_BY_FAMILY` (86–93) and `ENRICHERS_BY_FAMILY`
+(95–107), comment blocks included, with:
+
+```python
+# Derived views over the domain registry, kept during the DomainSpec migration
+# because the tests monkeypatch them. They cannot drift from `DOMAINS` because
+# they are computed from it. Deleted in the final task of this refactor.
+MCP_SERVERS_BY_FAMILY: dict[ToolFamily, tuple[str, ...]] = {
+    family: spec.mcp_servers for family, spec in DOMAINS.items()
+}
+NATIVE_TOOLS_BY_FAMILY: dict[ToolFamily, list[Callable]] = {
+    family: list(spec.native_tools) for family, spec in DOMAINS.items()
+}
+ENRICHERS_BY_FAMILY: dict[ToolFamily, Callable[..., Any] | None] = {
+    family: spec.enricher for family, spec in DOMAINS.items()
+}
+```
+
+Built once at import. No lazy initialisation, no `global`, no
+`_ensure_dicts_initialized()` — a mutable module global re-initialised on a
+"looks empty" check breaks the moment a dict is legitimately empty, and defeats
+the monkeypatching the tests rely on.
+
+Readers keep using these dicts so monkeypatching still works; the single source
+of truth is `DOMAINS`, which they are derived from. Replace the import:
 
 ```python
 from smartops.tools.native import virustotal
@@ -800,21 +852,40 @@ This is the **only** task permitted to modify an existing test file, and only it
 
 **Files:**
 - Modify: `backend/src/smartops/broker.py` (delete `FAMILY_REQUIRED_KINDS` and the four aliases)
-- Modify: `backend/tests/test_broker.py:19`, `:27-29`, `:79`, `:207-208`, `:718`, `:735`, `:846`, `:852`, `:964`
+- Modify: `backend/src/smartops/tools/registry.py` (delete the three derived dicts from Task 3)
+- Modify: `backend/tests/test_broker.py:19`, `:27-29`, `:79`, `:207-208`, `:408`, `:430`, `:466`, `:718`, `:735`, `:846`, `:852`, `:964`
+- Modify: `backend/tests/test_registry.py:7-8`, `:47`, `:49`, `:65`, `:70`, `:153`, `:348`
 
 **Interfaces:**
 - Consumes: `smartops.broker.TOOL_BY_FAMILY`, `smartops.domains.DOMAINS`
-- Produces: `broker.FAMILY_REQUIRED_KINDS` and `broker.investigate_*` no longer exist.
+- Produces: `broker.FAMILY_REQUIRED_KINDS`, `broker.investigate_*`, `registry.MCP_SERVERS_BY_FAMILY`, `registry.NATIVE_TOOLS_BY_FAMILY` and `registry.ENRICHERS_BY_FAMILY` no longer exist.
 
-- [ ] **Step 1: Delete the aliases from `broker.py`**
+- [ ] **Step 1: Delete the aliases from `broker.py` and `registry.py`**
 
-Delete the `FAMILY_REQUIRED_KINDS` derived dict and the four `investigate_* = TOOL_BY_FAMILY[...]` lines added in Task 2. Then update `_stub_subagent()` (around line 318), which was the last reader:
+In `broker.py`, delete the `FAMILY_REQUIRED_KINDS` derived dict and the four `investigate_* = TOOL_BY_FAMILY[...]` lines added in Task 2. Then update `_stub_subagent()` (around line 318), which was the last reader:
 
 ```python
     family = mission.tool_family
     required = DOMAINS[family].required_kinds
     in_scope = mission.scope.kinds()
 ```
+
+In `registry.py`, delete the three derived dicts added in Task 3 and point their readers straight at `DOMAINS`:
+
+```python
+    for family, spec in DOMAINS.items():                      # load_mcp_servers
+        subset = {name: servers[name] for name in spec.mcp_servers if name in servers}
+
+    for family, spec in DOMAINS.items():                      # _assert_no_shared_servers
+        for name in spec.mcp_servers:
+            ...
+
+    return DOMAINS[family].enricher                           # enricher_for
+
+    tools: list = list(DOMAINS[family].native_tools)          # tools_for
+```
+
+Tests monkeypatch `registry.MCP_SERVERS_BY_FAMILY`, `registry.NATIVE_TOOLS_BY_FAMILY` and `registry.ENRICHERS_BY_FAMILY` to control the family mapping. With the dicts gone they must monkeypatch `smartops.domains.DOMAINS` instead — replacing a spec with `dataclasses.replace(spec, mcp_servers=...)`, since `DomainSpec` is frozen. Adjusting a monkeypatch target is a reference change, not an assertion change.
 
 - [ ] **Step 2: Run the suite to see exactly what breaks**
 

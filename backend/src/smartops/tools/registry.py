@@ -35,7 +35,7 @@ from typing import Any, Callable
 from contracts import ToolFamily
 from strands.tools.mcp import MCPClient
 
-from smartops.tools.native import virustotal
+from smartops.domains import DOMAINS
 
 logger = logging.getLogger(__name__)
 
@@ -69,41 +69,18 @@ _SUPPORTED_NO_VERIFY_KEYS = frozenset(
     }
 )
 
-# Which MCP servers (by their name in the config) serve which family. This is
-# the domain mapping Strands has no notion of -- it sees a flat list of servers.
-#
-# A name listed here that is absent, disabled, or unresolvable in the config
-# simply yields no client for that family, which callers read as "this domain
-# isn't reachable right now". That is the honest state for every family whose
-# vendor hasn't been picked.
+
+# Derived views over the domain registry, kept during the DomainSpec migration
+# because the tests monkeypatch them. They cannot drift from `DOMAINS` because
+# they are computed from it. Deleted in the final task of this refactor.
 MCP_SERVERS_BY_FAMILY: dict[ToolFamily, tuple[str, ...]] = {
-    "siem": ("splunk",),
-    "edr": ("edr",),
-    "ndr": ("ndr",),
-    "vt": (),  # VirusTotal is a REST API, reached by a native tool, not MCP.
+    family: spec.mcp_servers for family, spec in DOMAINS.items()
 }
-
-# Model-callable `@tool` functions per family, for domains reached directly
-# rather than through an MCP server.
 NATIVE_TOOLS_BY_FAMILY: dict[ToolFamily, list[Callable]] = {
-    "siem": [],
-    "edr": [],
-    "ndr": [],
-    "vt": list(virustotal.TOOLS),
+    family: list(spec.native_tools) for family, spec in DOMAINS.items()
 }
-
-# Families whose work is a *lookup* rather than an investigation, and can
-# therefore run with no model at all: the entity's kind selects the query and
-# its value is the argument, so there is no judgement to delegate.
-#
-# This is what lets a family return real evidence before the Aug-27 subagents
-# exist. Anything requiring a decision about *what* to ask -- which SPL to run,
-# which host to pivot to -- has no entry here and waits for a real subagent.
 ENRICHERS_BY_FAMILY: dict[ToolFamily, Callable[..., Any] | None] = {
-    "siem": None,
-    "edr": None,
-    "ndr": None,
-    "vt": virustotal.enrich_scope,
+    family: spec.enricher for family, spec in DOMAINS.items()
 }
 
 # Built once per process by `load_mcp_servers()`. Empty until then, and empty
