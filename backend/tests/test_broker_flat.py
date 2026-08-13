@@ -57,6 +57,7 @@ from smartops.broker_flat import (
     DEFAULT_FLAT_STEP_OUTPUT_TOKENS,
     DEFAULT_FLAT_STEP_TURNS,
     DEFAULT_FLAT_TURNS,
+    EXECUTIONS_PER_PLANNED_STEP,
     _FlatToolContext,
     _flat_prompt_for,
     _mission_for,
@@ -450,7 +451,9 @@ def rows_findings(n: int) -> SiemFindings:
     )
 
 
-def fake_step_executor(*, rows: int = 1, on_step=None, record: list | None = None):
+def fake_step_executor(
+    *, rows: int = 1, on_step=None, record: list | None = None, usage: Usage | None = None
+):
     """A step executor that runs no model. `on_step` is awaited inside the step's
     execution window, which is how overlap and ordering are observed."""
 
@@ -466,7 +469,7 @@ def fake_step_executor(*, rows: int = 1, on_step=None, record: list | None = Non
                 findings=rows_findings(rows),
                 queries_run=[QueryRun(query=f"search {step.step_id}")],
             ),
-            Usage(input_tokens=10, output_tokens=5),
+            usage or Usage(input_tokens=10, output_tokens=5),
         )
 
     return execute
@@ -806,7 +809,11 @@ class TestFlatCompletionRuleIsCodeEvaluated:
         assert outcome.report is not None
         (so,) = outcome.report.step_outcomes
         assert outcome.results[0].status == SubtaskStatus.OK
-        assert so.rows_retrieved == 2
+        # Two rows a go, and the step spends its one retry trying to reach the
+        # floor, so `rows_retrieved` accumulates across both attempts -- and is
+        # still short of five, which is the point.
+        assert so.dispatches == 2
+        assert so.rows_retrieved == 4
         assert so.completed is False
         assert so.evaluated is True
         assert so.refused_for_budget is False
@@ -829,6 +836,126 @@ class TestFlatCompletionRuleIsCodeEvaluated:
 
         assert outcome.report is not None
         assert outcome.report.step_outcomes[0].completed is True
+
+
+class TestFlatRetriesAnUnmetStepOnce:
+    """Fix 1: retry policy must not be a second variable in the A/B.
+
+    Arm S may re-dispatch a step whose `StepOutcome` came back unmet, bounded by
+    `DISPATCHES_PER_PLANNED_STEP`. Arm F executed each step exactly once, so on
+    any plan longer than a few steps "Arm F retrieved less" would have read as a
+    topology result when it was a retry-policy result.
+    """
+
+    @staticmethod
+    def _unmet_step() -> FetchStep:
+        return make_step(
+            "s1", "siem", completion=CompletionRule(requires="rows_required", min_rows=5)
+        )
+
+    async def test_an_unmet_step_is_retried(self):
+        executions: list = []
+        with tools_available(siem=SIEM_TOOLS):
+            outcome = await broker_flat_task(
+                make_task(),
+                Budget.from_usd(50.0),
+                model=MODEL,
+                invoke=planning_invoker([self._unmet_step()]),
+                execute_step=fake_step_executor(rows=1, record=executions),
+                families=["siem"],
+            )
+
+        assert [step_id for step_id, _ in executions] == ["s1", "s1"]
+        assert outcome.report is not None
+        (so,) = outcome.report.step_outcomes
+        assert so.dispatches == 2
+        assert so.completed is False
+        # Both attempts' results are kept, as Arm S keeps both dispatches'.
+        assert len(outcome.results) == 2
+        assert len(outcome.report.queries_run) == 2
+
+    async def test_the_allowance_is_spent_not_unbounded(self):
+        """A step that can never satisfy its rule stops at the allowance rather
+        than looping until the budget refuses it."""
+        executions: list = []
+        with tools_available(siem=SIEM_TOOLS):
+            await broker_flat_task(
+                make_task(),
+                Budget.from_usd(500.0),
+                model=MODEL,
+                invoke=planning_invoker([self._unmet_step()]),
+                execute_step=fake_step_executor(rows=1, record=executions),
+                families=["siem"],
+            )
+
+        assert len(executions) == EXECUTIONS_PER_PLANNED_STEP == 2
+
+    async def test_a_completed_step_is_not_retried(self):
+        executions: list = []
+        with tools_available(siem=SIEM_TOOLS):
+            outcome = await broker_flat_task(
+                make_task(),
+                Budget.from_usd(50.0),
+                model=MODEL,
+                invoke=planning_invoker([make_step("s1", "siem")]),
+                execute_step=fake_step_executor(rows=1, record=executions),
+                families=["siem"],
+            )
+
+        assert [step_id for step_id, _ in executions] == ["s1"]
+        assert outcome.report is not None
+        (so,) = outcome.report.step_outcomes
+        assert so.completed is True
+        assert so.dispatches == 1
+
+    async def test_a_retry_is_reserved_and_settled_like_a_first_execution(self):
+        """The retry is a second model call and is charged as one -- not slipped
+        in under the first execution's reservation."""
+        budget = Budget.from_usd(50.0)
+        with tools_available(siem=SIEM_TOOLS):
+            await broker_flat_task(
+                make_task(),
+                budget,
+                model=MODEL,
+                invoke=planning_invoker([self._unmet_step()], usage={"inputTokens": 1, "outputTokens": 1}),
+                execute_step=fake_step_executor(rows=1),
+                families=["siem"],
+            )
+
+        step_entries = [e for e in budget.ledger if e.task_id == "t1:siem:s1"]
+        assert len(step_entries) == 2
+        assert all(e.role == BROKER_FLAT_ROLE for e in step_entries)
+
+    async def test_an_unaffordable_retry_leaves_the_first_attempts_outcome_standing(self):
+        """A retry the budget cannot cover must not overwrite a real fetch result
+        with a budget refusal -- the step did run, and fell short."""
+        task = make_task()
+        step = self._unmet_step()
+        ceiling = TestFlatBudgetRefusalIsDeterministic._ceiling_for(
+            task, step, steps_affordable=1
+        )
+        executions: list = []
+        with tools_available(siem=SIEM_TOOLS):
+            outcome = await broker_flat_task(
+                task,
+                Budget(total_micro_usd=ceiling),
+                model=MODEL,
+                invoke=planning_invoker([step]),
+                # The first execution settles far above its estimate, so nothing
+                # is left to reserve a retry against.
+                execute_step=fake_step_executor(
+                    rows=1, record=executions, usage=Usage(input_tokens=50_000_000, output_tokens=0)
+                ),
+                families=["siem"],
+            )
+
+        assert len(executions) == 1
+        assert outcome.report is not None
+        (so,) = outcome.report.step_outcomes
+        assert so.dispatches == 1
+        assert so.completed is False
+        assert so.refused_for_budget is False
+        assert outcome.results[0].status == SubtaskStatus.OK
 
 
 class TestBothArmsAgreeOnStepOutcomes:

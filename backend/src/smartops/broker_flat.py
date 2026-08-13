@@ -7,7 +7,8 @@ a planned step.**
       -> per step: mint a SubagentMission FROM THE STEP
       -> execute
       -> evaluate that step's CompletionRule (`broker.evaluate_step`)
-      -> StepOutcome
+      -> StepOutcome, and one retry if it came back unmet
+         (`EXECUTIONS_PER_PLANNED_STEP`, which is Arm S's allowance)
 
 Arm S hands each mission to a domain subagent with its own system prompt, its
 own conversation and its own model, and only a digest crosses back. Arm F runs
@@ -66,6 +67,7 @@ from contracts.subtask import make_answer_model
 
 from smartops.broker import (
     BUDGET_REFUSAL_ERROR,
+    DISPATCHES_PER_PLANNED_STEP,
     BrokerInvoker,
     BrokerInvokerResult,
     BrokerOutcome,
@@ -108,6 +110,18 @@ DEFAULT_FLAT_TURNS = 10
 # rather than from the topology under test.
 DEFAULT_FLAT_STEP_TURNS = _SUBAGENT_TURNS
 DEFAULT_FLAT_STEP_OUTPUT_TOKENS = _SUBAGENT_OUTPUT_TOKENS
+
+# How many executions ONE planned step earns here: `broker.DISPATCHES_PER_PLANNED_STEP`,
+# imported rather than re-typed for the same reason the two constants above are
+# aliased. Arm S may re-dispatch a step whose `StepOutcome` came back unmet, once,
+# charged against that step's own allowance. Arm F executed every step exactly
+# once, which made retry policy a *second* live variable in the A/B: on a plan
+# longer than a few steps "Arm F retrieved less" would read as a topology result
+# when it was a retry-policy result. Same allowance, driven off the same
+# `StepOutcome.completed` that `evaluate_step()` sets, and charged the same way --
+# one `evaluate_step()` call per execution with the prior outcome passed in, so a
+# retried step reads `dispatches=2` in both arms.
+EXECUTIONS_PER_PLANNED_STEP = DISPATCHES_PER_PLANNED_STEP
 
 _PREFIX_TO_FAMILY: tuple[tuple[tuple[str, ...], ToolFamily], ...] = (
     (("splunk", "siem"), "siem"),
@@ -618,6 +632,32 @@ def step_input_estimate(
     )
 
 
+async def _reserve_step(
+    step: FetchStep,
+    *,
+    budget: Budget,
+    task: AnalystTask,
+    model: ModelChoice,
+    tools: list[Any],
+    step_max_output_tokens: int,
+    step_turns: int,
+) -> Any:
+    """Reserve one execution of one step. Returns the reservation, or `None`.
+
+    One execution, not one step: a step's retry is a second model call and is
+    reserved through here too, on the same figures, so the two executions cost
+    the same to reserve and neither is free.
+    """
+    mission = _mission_for(task, step)
+    return await budget.reserve(
+        role=BROKER_FLAT_ROLE,
+        model=model.pricing_key,
+        task_id=mission.task_id,
+        max_output_tokens=step_max_output_tokens,
+        estimated_input_tokens=step_input_estimate(mission, tools, turns=step_turns),
+    )
+
+
 async def _reserve_steps(
     plan: FetchPlan,
     *,
@@ -649,19 +689,25 @@ async def _reserve_steps(
     Returns `step_id -> Reservation | None`; `None` is a refusal. Steps whose
     family never became active are absent: nothing was ever going to run them,
     and reserving for them would refuse a later step that could have run.
+
+    **First executions only.** A step's one retry is reserved when it is needed,
+    not here: reserving both attempts up front would double what every step holds
+    and so move the refusal boundary for steps that were never going to retry.
+    Which *retry* loses under a tight ceiling is therefore not deterministic --
+    exactly as in Arm S, where a re-dispatch reserves at dispatch time too.
     """
     reservations: dict[str, Any] = {}
     for step in plan.steps:
         if step.family in gate_results or step.family not in tools_by_family:
             continue
-        mission = _mission_for(task, step)
-        tools = tools_by_family[step.family]
-        reservations[step.step_id] = await budget.reserve(
-            role=BROKER_FLAT_ROLE,
-            model=model.pricing_key,
-            task_id=mission.task_id,
-            max_output_tokens=step_max_output_tokens,
-            estimated_input_tokens=step_input_estimate(mission, tools, turns=step_turns),
+        reservations[step.step_id] = await _reserve_step(
+            step,
+            budget=budget,
+            task=task,
+            model=model,
+            tools=tools_by_family[step.family],
+            step_max_output_tokens=step_max_output_tokens,
+            step_turns=step_turns,
         )
         if reservations[step.step_id] is None:
             logger.warning(
@@ -940,42 +986,95 @@ async def _run_broker_flat_task(
         else {}
     )
 
-    results_by_step: dict[str, SubtaskResult] = {}
+    # One entry per *execution*, not per step: a step that spent its retry
+    # allowance produced two results, and both are kept. Arm S keeps both too
+    # (`BrokerRequest.collected` is appended per dispatch), and dropping the
+    # first would have Arm F under-report the very rows and queries the A/B
+    # compares whenever a step needed two attempts.
+    results_by_step: dict[str, list[SubtaskResult]] = {}
     executed_steps: set[str] = set()
+    evaluated_steps: set[str] = set()
 
     async def run_step(step: FetchStep) -> None:
         mission = _mission_for(task, step)
         gated = gate_results.get(step.family)
         if gated is not None:
-            results_by_step[step.step_id] = gated.model_copy(
-                update={"task_id": mission.task_id}
-            )
+            results_by_step[step.step_id] = [
+                gated.model_copy(update={"task_id": mission.task_id})
+            ]
             return
         if step.family not in tools_by_family:
-            results_by_step[step.step_id] = SubtaskResult(
-                task_id=mission.task_id,
-                status=SubtaskStatus.REJECTED,
-                reason=f"{step.family} was planned but is not among this run's families",
-            )
+            results_by_step[step.step_id] = [
+                SubtaskResult(
+                    task_id=mission.task_id,
+                    status=SubtaskStatus.REJECTED,
+                    reason=f"{step.family} was planned but is not among this run's families",
+                )
+            ]
             return
 
         step_reservation = reservations.get(step.step_id)
         if charges_budget and step_reservation is None:
-            results_by_step[step.step_id] = _budget_refusal(mission)
+            results_by_step[step.step_id] = [_budget_refusal(mission)]
             return
 
-        try:
-            result, usage = await execute_step(mission, step, tools_by_family[step.family])
-        except BaseException:
-            # Release, not settle: settling would record a call that never
-            # completed as a zero-cost one that did.
+        tools = tools_by_family[step.family]
+        attempts = results_by_step.setdefault(step.step_id, [])
+        while True:
+            try:
+                result, usage = await execute_step(mission, step, tools)
+            except BaseException:
+                # Release, not settle: settling would record a call that never
+                # completed as a zero-cost one that did.
+                if step_reservation is not None:
+                    await budget.release(step_reservation)
+                raise
             if step_reservation is not None:
-                await budget.release(step_reservation)
-            raise
-        if step_reservation is not None:
-            record_cost(step_reservation, await budget.settle(step_reservation, usage))
-        results_by_step[step.step_id] = result
-        executed_steps.add(step.step_id)
+                record_cost(step_reservation, await budget.settle(step_reservation, usage))
+            attempts.append(result)
+            executed_steps.add(step.step_id)
+
+            # Evaluated here rather than only in assembly, because the retry
+            # decision *is* the completion rule's answer. `prior` is passed the
+            # same way `broker._dispatch()` passes it, so `dispatches`,
+            # `rows_retrieved` and `confirmed_empty` accumulate across attempts
+            # identically in both arms.
+            outcome = evaluate_step(step, result, prior=request.step_outcomes.get(step.step_id))
+            request.step_outcomes[step.step_id] = outcome
+            evaluated_steps.add(step.step_id)
+
+            if outcome.completed or outcome.dispatches >= EXECUTIONS_PER_PLANNED_STEP:
+                return
+
+            step_reservation = None
+            if charges_budget:
+                step_reservation = await _reserve_step(
+                    step,
+                    budget=budget,
+                    task=task,
+                    model=model,
+                    tools=tools,
+                    step_max_output_tokens=step_max_output_tokens,
+                    step_turns=step_turns,
+                )
+                if step_reservation is None:
+                    # The step ran and fell short; it just cannot afford another
+                    # go. Its first attempt's outcome stands -- overwriting it
+                    # with a budget refusal would erase a real fetch result.
+                    logger.warning(
+                        "task_id=%s step_id=%s family=%s | budget cannot cover a retry",
+                        task.task_id,
+                        step.step_id,
+                        step.family,
+                    )
+                    return
+            logger.info(
+                "task_id=%s step_id=%s family=%s | step unmet after %d execution(s), retrying",
+                task.task_id,
+                step.step_id,
+                step.family,
+                outcome.dispatches,
+            )
 
     async def guarded(step: FetchStep) -> None:
         """One step's failure must not abort the whole plan -- same containment
@@ -990,11 +1089,13 @@ async def _run_broker_flat_task(
                 step.step_id,
                 exc_info=True,
             )
-            results_by_step[step.step_id] = SubtaskResult(
-                task_id=_mission_for(task, step).task_id,
-                status=SubtaskStatus.ERROR,
-                reason=f"{step.family} step failed",
-                error=f"{type(exc).__name__}: {exc}",
+            results_by_step.setdefault(step.step_id, []).append(
+                SubtaskResult(
+                    task_id=_mission_for(task, step).task_id,
+                    status=SubtaskStatus.ERROR,
+                    reason=f"{step.family} step failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             )
 
     for layer in execution_layers(plan):
@@ -1005,10 +1106,17 @@ async def _run_broker_flat_task(
     step_outcomes: list[StepOutcome] = []
     dispatched_families: list[ToolFamily] = []
     for step in plan.steps:
-        result = results_by_step[step.step_id]
-        results.append(result)
-        outcome = evaluate_step(step, result, prior=request.step_outcomes.get(step.step_id))
-        request.step_outcomes[step.step_id] = outcome
+        attempts = results_by_step[step.step_id]
+        results.extend(attempts)
+        if step.step_id in evaluated_steps:
+            # Already judged, once per execution, inside `run_step` -- re-judging
+            # here would charge the step a second `dispatches` for one run.
+            outcome = request.step_outcomes[step.step_id]
+        else:
+            outcome = evaluate_step(
+                step, attempts[-1], prior=request.step_outcomes.get(step.step_id)
+            )
+            request.step_outcomes[step.step_id] = outcome
         step_outcomes.append(outcome)
         if step.step_id in executed_steps:
             dispatched_families.append(step.family)
