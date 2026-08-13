@@ -1030,6 +1030,86 @@ class TestFlatRetriesAnUnmetStepOnce:
         assert outcome.results[0].status == SubtaskStatus.OK
 
 
+class TestFlatReleasesAReservationOnAMidFlightRaise:
+    """Fix 5: the one path where a bug silently loses money.
+
+    A step holds its reservation while it runs. If the executor raises, that
+    reservation must be *released* -- not settled, which would append a ledger
+    entry recording a call that never happened as a zero-cost one that did, and
+    not simply dropped, which would leak the money for the rest of the run.
+    """
+
+    @staticmethod
+    def _raising(exc: Exception):
+        async def boom(mission, step, tools):
+            raise exc
+
+        return boom
+
+    async def test_the_budget_is_restored_and_the_step_reads_as_error(self):
+        budget = Budget.from_usd(50.0)
+        before = budget.remaining
+        steps = [make_step("s1", "siem"), make_step("s2", "siem")]
+
+        with tools_available(siem=SIEM_TOOLS):
+            outcome = await broker_flat_task(
+                make_task(),
+                budget,
+                model=MODEL,
+                invoke=planning_invoker(steps),
+                execute_step=self._raising(RuntimeError("the step blew up mid-flight")),
+                families=["siem"],
+            )
+
+        # Every step's reservation came back; only the (zero-cost) planning call
+        # is on the ledger, because nothing else completed.
+        assert budget.remaining == before
+        assert [e.task_id for e in budget.ledger] == ["t1"]
+
+        assert outcome.report is not None
+        for so in outcome.report.step_outcomes:
+            assert so.status == SubtaskStatus.ERROR
+            assert so.evaluated is True
+            assert so.completed is False
+            # The error is not the budget sentinel, so a step that blew up must
+            # not read as a step nobody could afford -- one is a bug, the other
+            # is a cost problem, and they need different responses.
+            assert so.refused_for_budget is False
+        for res in outcome.results:
+            assert res.status == SubtaskStatus.ERROR
+            assert "RuntimeError" in res.error
+        assert outcome.dispatched == []
+
+    async def test_one_step_raising_does_not_take_the_others_money_or_result(self):
+        budget = Budget.from_usd(50.0)
+        steps = [make_step("s1", "siem"), make_step("s2", "edr")]
+        ok = fake_step_executor(rows=1)
+        boom = self._raising(ValueError("edr exploded"))
+
+        async def execute(mission, step, tools):
+            return await (boom if step.family == "edr" else ok)(mission, step, tools)
+
+        with tools_available(siem=SIEM_TOOLS, edr=EDR_TOOLS):
+            outcome = await broker_flat_task(
+                make_task(),
+                budget,
+                model=MODEL,
+                invoke=planning_invoker(steps),
+                execute_step=execute,
+                families=["siem", "edr"],
+            )
+
+        # Planning plus the one step that actually completed; the raiser's
+        # reservation was released, so it left no entry behind.
+        assert [e.task_id for e in budget.ledger] == ["t1", "t1:siem:s1"]
+        assert outcome.report is not None
+        by_id = {so.step.step_id: so for so in outcome.report.step_outcomes}
+        assert by_id["s1"].completed is True
+        assert by_id["s2"].status == SubtaskStatus.ERROR
+        assert by_id["s2"].refused_for_budget is False
+        assert outcome.dispatched == ["siem"]
+
+
 class TestBothArmsAgreeOnStepOutcomes:
     async def test_same_plan_same_step_outcome_fields(self):
         """The comparability assertion, and the reason Task 12c exists.
