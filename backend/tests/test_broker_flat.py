@@ -1,8 +1,15 @@
-"""Test suite for Arm F (Flat Broker Baseline, Task C7 / §7).
+"""Test suite for Arm F (Flat Broker Baseline).
 
 Verifies tool family attribution, flat tool resolution, evidence collection,
-per-family findings projection, contract equivalence with Arm S, CLI integration,
-and budget accounting under role="broker_flat".
+findings projection, contract equivalence with Arm S, CLI integration, and
+budget accounting under role="broker_flat".
+
+The `TestFlat*` classes at the end cover Arm F's plan-then-execute spine: that it
+plans before it fetches, walks the plan one execution per step with only that
+step's family tools, overlaps independent steps, refuses the same step under the
+same ceiling every run, evaluates each step's `CompletionRule` in code even when
+the step reports success, and emits `StepOutcome`s field-for-field comparable
+with Arm S's.
 """
 
 import asyncio
@@ -26,7 +33,6 @@ from contracts import (
     ResultSet,
     Scope,
     SiemFindings,
-    StepOutcome,
     SubtaskResult,
     SubtaskStatus,
     TaskClassification,
@@ -397,11 +403,11 @@ class TestFlatExecutionAndContractEquivalence:
 
 
 def make_step(step_id: str, family: ToolFamily, **overrides) -> FetchStep:
-    defaults = dict(
-        step_id=step_id,
-        family=family,
-        objective=f"Retrieve {family} evidence, {step_id}",
-    )
+    defaults = {
+        "step_id": step_id,
+        "family": family,
+        "objective": f"Retrieve {family} evidence, {step_id}",
+    }
     return FetchStep(**{**defaults, **overrides})
 
 
@@ -521,11 +527,13 @@ class TestFlatPlansBeforeFetching:
             async def invoke_async(self, *args, **kwargs):
                 return FakeInvokerResult(structured_output=None)
 
-        with patch.object(ModelChoice, "build", lambda self: "built-model"):
-            with patch("smartops.broker_flat.plan_fetch", "PLAN_FETCH_SENTINEL"):
-                with patch("strands.Agent", FakeAgent):
-                    invoker = default_flat_broker_invoker(MODEL)
-                    await invoker("prompt", BrokerRequest(task=make_task()))
+        with (
+            patch.object(ModelChoice, "build", lambda self: "built-model"),
+            patch("smartops.broker_flat.plan_fetch", "PLAN_FETCH_SENTINEL"),
+            patch("strands.Agent", FakeAgent),
+        ):
+            invoker = default_flat_broker_invoker(MODEL)
+            await invoker("prompt", BrokerRequest(task=make_task()))
 
         assert captured["tools"] == ["PLAN_FETCH_SENTINEL"]
 
@@ -885,8 +893,8 @@ class TestBothArmsAgreeOnStepOutcomes:
         f_outcomes = {so.step.step_id: so for so in arm_f.report.step_outcomes}
         assert s_outcomes.keys() == f_outcomes.keys()
 
-        for step_id in s_outcomes:
-            s, f = s_outcomes[step_id], f_outcomes[step_id]
+        for step_id, s in s_outcomes.items():
+            f = f_outcomes[step_id]
             assert s.model_dump().keys() == f.model_dump().keys()
             # Same fields *populated*, not merely present: a field one arm can
             # never set is exactly the asymmetry this asserts against.
@@ -948,10 +956,12 @@ class TestFlatStepAuthorsAnAssessment:
                 return FakeInvokerResult(structured_output=None)
 
         mission = _mission_for(make_task(), make_step("s1", "siem"))
-        with patch.object(ModelChoice, "build", lambda self: "built-model"):
-            with patch("strands.Agent", FakeAgent):
-                execute = default_flat_step_executor(MODEL)
-                result, usage = await execute(mission, make_step("s1", "siem"), SIEM_TOOLS)
+        with (
+            patch.object(ModelChoice, "build", lambda self: "built-model"),
+            patch("strands.Agent", FakeAgent),
+        ):
+            execute = default_flat_step_executor(MODEL)
+            result, usage = await execute(mission, make_step("s1", "siem"), SIEM_TOOLS)
 
         assert captured["structured_output_model"].__name__ == "SiemAnswer"
         assert "EXECUTION PHASE" in captured["system_prompt"]
