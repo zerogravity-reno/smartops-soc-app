@@ -1030,6 +1030,19 @@ class TestFlatRetriesAnUnmetStepOnce:
         assert outcome.results[0].status == SubtaskStatus.OK
 
 
+class TestFlatTakesNoSubagentRunner:
+    async def test_run_subagent_is_not_a_parameter(self):
+        """Fix 6: it was accepted and did nothing. `main.py` builds a
+        `domain_runner` immediately above the arm branch, so anyone wiring it to
+        Arm F got a silent no-op; now it is a TypeError at the call site."""
+        assert "run_subagent" not in inspect.signature(broker_flat_task).parameters
+
+        with pytest.raises(TypeError, match="run_subagent"):
+            await broker_flat_task(
+                make_task(), Budget.from_usd(1.0), model=MODEL, scripted=True, run_subagent=object()
+            )
+
+
 class TestFlatReleasesAReservationOnAMidFlightRaise:
     """Fix 5: the one path where a bug silently loses money.
 

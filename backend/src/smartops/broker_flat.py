@@ -763,13 +763,20 @@ async def broker_flat_task(
     turns: int = DEFAULT_FLAT_TURNS,
     step_max_output_tokens: int = DEFAULT_FLAT_STEP_OUTPUT_TOKENS,
     step_turns: int = DEFAULT_FLAT_STEP_TURNS,
-    run_subagent: Any = None,
     invoke: BrokerInvoker | None = None,
     execute_step: FlatStepExecutor | None = None,
     scripted: bool = False,
     families: Sequence[ToolFamily] | None = None,
 ) -> BrokerOutcome:
-    """Run Arm F over one AnalystTask inside a single trace span."""
+    """Run Arm F over one AnalystTask inside a single trace span.
+
+    There is deliberately no `run_subagent` here. Arm F *is* the executor -- the
+    whole distinction under test -- so a subagent runner has nothing to plug
+    into. The parameter used to be accepted and silently ignored, and `main.py`
+    builds a `domain_runner` immediately above the arm branch, so wiring the
+    obvious thing to Arm F got a no-op with no warning. Pass `execute_step` to
+    substitute a step executor.
+    """
     with investigation_span(task):
         return await _run_broker_flat_task(
             task,
