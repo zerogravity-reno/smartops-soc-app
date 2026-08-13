@@ -352,6 +352,80 @@ class TestProviderLadder:
         assert built["boto_client_config"].read_timeout == choice.read_timeout
 
 
+class TestCacheablePrefix:
+    """Both halves of the cached prefix, and the provider boundary around them.
+
+    Bedrock has no automatic caching, so a cache point is the only way to get
+    one -- meaning the difference between "caching is on" and "caching silently
+    never happened" is entirely these two call shapes. That is worth pinning:
+    the failure mode is not an error, it is a full-price bill that looks normal.
+    """
+
+    def _bedrock(self, **overrides):
+        return ModelChoice(
+            model_id="us.anthropic.x-v1:0",
+            pricing_key="claude-sonnet-4-6",
+            provider=Provider.BEDROCK,
+            **overrides,
+        )
+
+    def test_tool_schemas_are_marked_cacheable(self, monkeypatch):
+        built = {}
+
+        class FakeBedrockModel:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        import strands.models.bedrock as bedrock_module
+
+        monkeypatch.setattr(bedrock_module, "BedrockModel", FakeBedrockModel)
+        self._bedrock().build()
+
+        # `cache_tools`, not the deprecated `cache_prompt` -- the latter warns
+        # and this suite turns SDK deprecation warnings into errors.
+        assert built["cache_tools"] == "default"
+        assert "cache_prompt" not in built
+
+    def test_the_system_prompt_carries_a_cache_point_after_its_text(self):
+        blocks = self._bedrock().system_prompt_blocks("SYSTEM TEXT")
+
+        # Order is load-bearing: everything BEFORE the cache point is what gets
+        # cached, so a cache point placed first would cache nothing at all.
+        assert blocks == [{"text": "SYSTEM TEXT"}, {"cachePoint": {"type": "default"}}]
+
+    def test_a_non_bedrock_provider_gets_a_plain_string(self):
+        # `cachePoint` is Bedrock's wire format. Handing it to an
+        # OpenAI-compatible provider sends a content block it cannot parse.
+        choice = ModelChoice(
+            model_id="deepseek-chat",
+            pricing_key="claude-haiku-4-5",
+            provider=Provider.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+            api_key_env_var="DEEPSEEK_API_KEY",
+        )
+
+        assert choice.system_prompt_blocks("SYSTEM TEXT") == "SYSTEM TEXT"
+
+    def test_caching_can_be_turned_off_on_both_halves_together(self, monkeypatch):
+        # One switch governs tools and system prompt, because a run with one
+        # cached and the other not is a configuration nobody can name afterwards
+        # when reading the cost ledger.
+        built = {}
+
+        class FakeBedrockModel:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        import strands.models.bedrock as bedrock_module
+
+        monkeypatch.setattr(bedrock_module, "BedrockModel", FakeBedrockModel)
+        choice = self._bedrock(cache_prefix=False)
+        choice.build()
+
+        assert "cache_tools" not in built
+        assert choice.system_prompt_blocks("SYSTEM TEXT") == "SYSTEM TEXT"
+
+
 class TestSubDollarRates:
     """Regression guard for the bug that made cheap providers unbillable.
 

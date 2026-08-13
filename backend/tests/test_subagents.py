@@ -407,6 +407,43 @@ class TestStructuredOutputModel:
         assert issubclass(answer_model, SubagentAnswer)
         assert answer_model.model_fields["assessment"].annotation is SiemAssessment
 
+    async def test_the_system_prompt_reaches_the_agent_in_cacheable_form(
+        self, monkeypatch
+    ):
+        # `ModelChoice.system_prompt_blocks()` producing the right shape proves
+        # nothing on its own -- the subagent has to actually call it. This is the
+        # seam where "caching is configured" and "caching is wired" diverge, and
+        # the difference is invisible at runtime: an uncached run does not error,
+        # it just bills every turn at full input price.
+        captured = {}
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def invoke_async(self, *args, **kwargs):
+                return _Result(None)
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        blocks = captured["system_prompt"]
+        assert isinstance(blocks, list), "system prompt was passed as a bare string"
+        assert blocks[-1] == {"cachePoint": {"type": "default"}}
+        # The prompt itself must still be in there, ahead of the cache point --
+        # caching an empty prefix would be a silent no-op that still looks wired.
+        assert "domain specialist" in blocks[0]["text"]
+
 
 class TestNoStructuredAnswerStillReportsItsQueries:
     """Fix 2: the no-answer path must not be asymmetric between the arms.

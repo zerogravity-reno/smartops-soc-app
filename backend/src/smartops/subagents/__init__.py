@@ -563,7 +563,7 @@ async def _build_agent_and_invoke(
     agent = Agent(
         model=model.build(),
         tools=tools,
-        system_prompt=_system_prompt_for(family, turns=turns),
+        system_prompt=model.system_prompt_blocks(_system_prompt_for(family, turns=turns)),
         structured_output_model=answer_model,
         callback_handler=None,
         hooks=_hooks_for(family, collector),

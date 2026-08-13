@@ -58,8 +58,14 @@ class ModelPrice:
     Anthropic-shaped abstraction -- Anthropic prices caching as a multiple of the
     base input rate, while some providers (DeepSeek) publish an absolute
     cache-hit price. Where the two aren't a clean ratio this is an
-    approximation. Nothing in this codebase sets `cache_control` yet, so
-    absolute cache rates would be precision for an unused feature.
+    approximation.
+
+    These multipliers are now live rather than theoretical: `ModelChoice.
+    cache_prefix` marks the tool schemas and system prompt as a cacheable
+    prefix, so a multi-turn agent loop bills most of its input at the read rate.
+    On Bedrock the ratios stay an approximation for the same reason every other
+    figure here does -- `PRICING` holds Anthropic first-party rates and Bedrock
+    is partner-operated.
     """
 
     input_per_token_nano: int
@@ -142,6 +148,29 @@ class ModelChoice:
     read_timeout: float = 120.0
     temperature: float = 0.3
     top_p: float | None = None
+    cache_prefix: bool = True
+    """Whether to mark the tool schemas and system prompt as a cacheable prefix.
+
+    Bedrock-only, and it has to be explicit: unlike the first-party Anthropic
+    API, Bedrock has no automatic caching, so a `cachePoint` block is the only
+    way to get one. What it buys is bounded but real -- the tool schemas and
+    system prompt are byte-identical on every turn of an agent loop, so from the
+    second turn on that prefix bills at the cache-read rate instead of full
+    input price.
+
+    On by default because the arithmetic favours it for anything multi-turn: a
+    write costs ~1.25x input and a read ~0.1x, so two turns already come out
+    ahead of paying full price twice (1.35x vs 2.0x) and the margin widens from
+    there. The one configuration it loses on is a single-turn run, which pays
+    the 1.25x write and never reads it back -- worth knowing, not worth gating,
+    since neither the Broker nor a subagent finishes in one turn.
+
+    Below the provider's minimum cacheable prefix the cache point is ignored
+    rather than charged, so a short prompt costs nothing extra -- it just does
+    not cache. `Usage` already carries both counters, so a run that silently
+    fails to cache is visible as `cache_read_input_tokens == 0` rather than
+    invisible.
+    """
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
@@ -189,7 +218,29 @@ class ModelChoice:
         }
         if self.top_p is not None:
             kwargs["top_p"] = self.top_p
+        if self.cache_prefix:
+            # Appends a cache point after `toolConfig.tools`. The tool schemas
+            # are the larger and more stable half of the prefix -- they are
+            # identical on every turn -- so this is where most of the saving is.
+            # `cache_prompt` would be the system-prompt equivalent but is
+            # deprecated (bedrock.py:285); that half is done with an explicit
+            # `cachePoint` block instead, via `system_prompt_blocks()`.
+            kwargs["cache_tools"] = "default"
         return BedrockModel(**kwargs)
+
+    def system_prompt_blocks(self, text: str) -> Any:
+        """The system prompt in whatever form lets this provider cache it.
+
+        Bedrock takes a list of `SystemContentBlock`s and caches everything
+        before a `cachePoint`; `Agent` accepts either that list or a bare string
+        (`agent.py:171`). Every other provider takes the string, so the
+        provider-specific shape is decided here rather than at each of the three
+        Agent construction sites -- otherwise adding a provider means finding
+        all three again.
+        """
+        if self.provider is Provider.BEDROCK and self.cache_prefix:
+            return [{"text": text}, {"cachePoint": {"type": "default"}}]
+        return text
 
     def _build_openai_compatible(self) -> Any:
         from strands.models.openai import OpenAIModel

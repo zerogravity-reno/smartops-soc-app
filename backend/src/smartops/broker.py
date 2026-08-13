@@ -920,7 +920,7 @@ def default_broker_invoker(
         agent = Agent(
             model=choice.build(),
             tools=BROKER_TOOLS,
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=choice.system_prompt_blocks(_SYSTEM_PROMPT),
             structured_output_model=TaskClassification,
             callback_handler=None,
             hooks=[MissingStepIdGuard()],
