@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import sys
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -41,8 +44,37 @@ from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES, spec_for
 from smartops.guards import IndexScopeGuard
 from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
+from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
 
 logger = logging.getLogger(__name__)
+
+
+# The benchmark's own answer to "was the skill pack in play?", forced onto both
+# arms. Arm S is the only arm that can receive the pack, so leaving it to the
+# ambient environment would let a stray `SMARTOPS_SKILLS_ENABLED=1` in a shell
+# hand Arm S a routing table and an extra tool that Arm F cannot have -- and the
+# tool-count, token-cost and turn-count comparisons would silently be measuring
+# that instead of topology. The bench pins it rather than trusting the default.
+BENCH_SKILLS_ENABLED = False
+
+
+@contextlib.contextmanager
+def _pinned_skills(enabled: bool) -> Iterator[bool]:
+    """Pin `SMARTOPS_SKILLS_ENABLED` for the duration of a benchmark, then
+    restore whatever the caller had (including "unset").
+
+    Yields the value that `skills_enabled()` actually reports inside the block,
+    so the report records what the runs saw rather than what was intended.
+    """
+    previous = os.environ.get(SKILLS_ENABLED_ENV_VAR)
+    os.environ[SKILLS_ENABLED_ENV_VAR] = "1" if enabled else "0"
+    try:
+        yield skills_enabled()
+    finally:
+        if previous is None:
+            os.environ.pop(SKILLS_ENABLED_ENV_VAR, None)
+        else:
+            os.environ[SKILLS_ENABLED_ENV_VAR] = previous
 
 
 # Standard benchmark test cases
@@ -85,6 +117,12 @@ class RunMetrics(BaseModel):
     routing_correctness: bool
     stop_reason: str
     dispatched: list[str]
+    skills_enabled: bool = False
+    """Whether the skill pack was live *for this run*, read at execution time.
+
+    Recorded per run, not only per report: a run whose configuration is not in
+    its own record cannot be compared against a later one.
+    """
 
 
 class MetricStats(BaseModel):
@@ -134,6 +172,8 @@ class BenchmarkReport(BaseModel):
     arms: list[str]
     runs_per_arm: int
     scripted: bool
+    skills_enabled: bool = False
+    """The skill-pack setting this benchmark pinned onto *every* arm."""
     raw_runs: list[RunMetrics]
     arm_summaries: dict[str, ArmSummary]
     comparisons: list[ComparisonDetail]
@@ -147,6 +187,7 @@ class BenchmarkReport(BaseModel):
             f"- **Arms:** {', '.join(self.arms)}",
             f"- **Runs per arm:** {self.runs_per_arm}",
             f"- **Scripted Mode:** {self.scripted}",
+            f"- **Skill Pack ({SKILLS_ENABLED_ENV_VAR}):** {self.skills_enabled}",
             "",
             "## Summary Comparison",
             "",
@@ -346,6 +387,7 @@ async def _execute_single_run(
         routing_correctness=routing_correct,
         stop_reason=stop_reason,
         dispatched=[str(d) for d in outcome.dispatched],
+        skills_enabled=skills_enabled(),
     )
 
 
@@ -497,45 +539,51 @@ async def run_interleaved_benchmark(
 
     raw_runs: list[RunMetrics] = []
 
-    for case_name in cases:
-        if case_name in BENCHMARK_CASES:
-            task, expected_families = BENCHMARK_CASES[case_name]
-        else:
-            task = AnalystTask(
-                task_id=case_name,
-                hypothesis_id=f"hypothesis-{case_name}",
-                goal=f"Benchmark investigation for case {case_name}",
-                scope=Scope(
-                    entities=[Entity(kind="domain", value="coinhive.com")],
-                    time_window=(
-                        datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-                        datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+    # Pinned across every case, arm and run, so the two arms are compared under
+    # one skill-pack configuration -- and so the value put in the report below is
+    # the value the runs actually executed under.
+    with _pinned_skills(BENCH_SKILLS_ENABLED) as effective_skills_enabled:
+        for case_name in cases:
+            if case_name in BENCHMARK_CASES:
+                task, expected_families = BENCHMARK_CASES[case_name]
+            else:
+                task = AnalystTask(
+                    task_id=case_name,
+                    hypothesis_id=f"hypothesis-{case_name}",
+                    goal=f"Benchmark investigation for case {case_name}",
+                    scope=Scope(
+                        entities=[Entity(kind="domain", value="coinhive.com")],
+                        time_window=(
+                            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+                            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+                        ),
                     ),
-                ),
-            )
-            expected_families = ["siem", "vt"]
+                )
+                expected_families = ["siem", "vt"]
 
-        # Interleaved execution: run 0 (S, F), run 1 (S, F), run 2 (S, F)
-        for run_idx in range(runs_per_arm):
-            for arm in arms:
-                logger.info(
-                    "Executing benchmark case=%s arm=%s run=%d/%d (scripted=%s)",
-                    case_name,
-                    arm,
-                    run_idx + 1,
-                    runs_per_arm,
-                    scripted,
-                )
-                metrics = await _execute_single_run(
-                    task,
-                    arm,
-                    run_idx,
-                    expected_families,
-                    model=model_choice,
-                    budget_usd=budget_usd,
-                    scripted=scripted,
-                )
-                raw_runs.append(metrics)
+            # Interleaved execution: run 0 (S, F), run 1 (S, F), run 2 (S, F)
+            for run_idx in range(runs_per_arm):
+                for arm in arms:
+                    logger.info(
+                        "Executing benchmark case=%s arm=%s run=%d/%d "
+                        "(scripted=%s skills=%s)",
+                        case_name,
+                        arm,
+                        run_idx + 1,
+                        runs_per_arm,
+                        scripted,
+                        effective_skills_enabled,
+                    )
+                    metrics = await _execute_single_run(
+                        task,
+                        arm,
+                        run_idx,
+                        expected_families,
+                        model=model_choice,
+                        budget_usd=budget_usd,
+                        scripted=scripted,
+                    )
+                    raw_runs.append(metrics)
 
     arm_summaries: dict[str, ArmSummary] = {}
     for arm in arms:
@@ -551,6 +599,7 @@ async def run_interleaved_benchmark(
         arms=arms,
         runs_per_arm=runs_per_arm,
         scripted=scripted,
+        skills_enabled=effective_skills_enabled,
         raw_runs=raw_runs,
         arm_summaries=arm_summaries,
         comparisons=comparisons,

@@ -297,8 +297,9 @@ def _system_prompt_for(family: str, *, turns: int, time_scoped: bool | None = No
     )
     if family == "siem":
         try:
-            from smartops.skills import inject_skill_routing_table
-            prompt = inject_skill_routing_table(prompt)
+            from smartops.skills import inject_skill_routing_table, skills_enabled
+            if skills_enabled():
+                prompt = inject_skill_routing_table(prompt)
         except ImportError:
             pass
     return prompt
@@ -637,10 +638,12 @@ def domain_runner(
                 reason=f"no tools resolved for {family}: {reason}",
             )
 
+        # Same switch as the routing table in `_system_prompt_for` -- the tool and
+        # the prompt that advertises it are attached together or not at all.
         if family == "siem":
             try:
-                from smartops.skills import read_reference
-                if read_reference not in tools:
+                from smartops.skills import read_reference, skills_enabled
+                if skills_enabled() and read_reference not in tools:
                     tools = list(tools) + [read_reference]
             except ImportError:
                 pass

@@ -2,11 +2,15 @@
 
 Implements lazy-loading reference skill packs (e.g. `superman-splunk`),
 system prompt routing table injection, and the `read_reference` `@tool`.
+
+The whole pack is behind one off-by-default switch, `SMARTOPS_SKILLS_ENABLED`
+-- see `skills_enabled()` for why.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +20,31 @@ from strands import tool
 logger = logging.getLogger(__name__)
 
 VENDED_DIR = Path(__file__).parent / "vended"
+
+SKILLS_ENABLED_ENV_VAR = "SMARTOPS_SKILLS_ENABLED"
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def skills_enabled() -> bool:
+    """Whether the skill pack is attached to a domain subagent at all.
+
+    Off unless `SMARTOPS_SKILLS_ENABLED` is explicitly truthy. Two things ride
+    on this single answer -- the routing table injected into the `siem` system
+    prompt, and the `read_reference` tool appended to the `siem` toolset. They
+    are one switch on purpose: a run with the table but not the tool (or the
+    reverse) is a configuration nobody can name afterwards.
+
+    Off is the default because the A/B experiment between the hierarchical
+    Broker (Arm S) and the flat Broker (Arm F) compares tool count, token cost,
+    and sequential turns -- and only Arm S ever got this pack. Leaving it on by
+    default meant every comparison measured topology *plus* a skill pack *plus*
+    an extra tool, with no way to attribute a difference to any one of them. So
+    the confounded configuration is the one you have to ask for; a run that sets
+    nothing is a clean run. The code stays, to be evaluated on its own once a
+    topology has won.
+    """
+    return os.environ.get(SKILLS_ENABLED_ENV_VAR, "").strip().lower() in _TRUTHY
 
 
 @dataclass

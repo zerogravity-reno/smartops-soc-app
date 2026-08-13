@@ -1,13 +1,29 @@
 """Unit tests for Requirement R3 Skill Pack Integration (backend/src/smartops/skills)."""
 
+from datetime import UTC, datetime
+
 import pytest
+from smartops import subagents
+from smartops.budget import Budget, ModelChoice
 from smartops.skills import (
+    SKILLS_ENABLED_ENV_VAR,
     SkillPack,
     get_skill_pack,
     inject_skill_routing_table,
     read_reference,
+    skills_enabled,
 )
-from smartops.subagents import _system_prompt_for
+from smartops.subagents import _system_prompt_for, domain_runner
+
+from contracts import (
+    Entity,
+    Scope,
+    SubagentMission,
+    SubtaskResult,
+    SubtaskStatus,
+)
+
+MODEL = ModelChoice(model_id="test-model", pricing_key="claude-sonnet-4-6")
 
 
 class TestSupermanSplunkSkillPack:
@@ -87,8 +103,105 @@ class TestSystemPromptRoutingTableInjection:
 
         assert injected_once == injected_twice
 
-    def test_siem_system_prompt_automatically_includes_routing_table(self):
+
+class TestSkillPackGate:
+    """The pack is one switch, `SMARTOPS_SKILLS_ENABLED`, governing both halves.
+
+    The load-bearing assertions here are the negative ones. Arm S of the A/B is
+    the only arm that can receive this pack, so while the A/B is running, an
+    unset environment must produce a `siem` subagent with no routing table in its
+    system prompt *and* no `read_reference` in its toolset -- otherwise the
+    comparison of tool count, token cost and turns is measuring the pack rather
+    than the topology.
+
+    The positive cases are here so the gate is provably a gate and not a
+    deletion: flip the flag and both halves come back.
+    """
+
+    @staticmethod
+    async def _siem_tools(monkeypatch, base_tools):
+        """The toolset `domain_runner` hands to `investigate` for `siem`."""
+        captured: dict[str, list] = {}
+
+        async def fake_investigate(mission, **kwargs):
+            captured["tools"] = list(kwargs["tools"])
+            return SubtaskResult(task_id=mission.task_id, status=SubtaskStatus.OK)
+
+        monkeypatch.setattr(subagents, "tools_for", _async_returning(list(base_tools)))
+        monkeypatch.setattr(subagents, "investigate", fake_investigate)
+
+        run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
+        await run(_siem_mission())
+        return captured["tools"]
+
+    def test_disabled_unless_explicitly_enabled(self, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+        assert skills_enabled() is False
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
+    def test_non_truthy_values_leave_it_disabled(self, monkeypatch, value):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, value)
+        assert skills_enabled() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+    def test_truthy_values_enable_it(self, monkeypatch, value):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, value)
+        assert skills_enabled() is True
+
+    def test_siem_prompt_has_no_routing_table_when_disabled(self, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+
         prompt = _system_prompt_for("siem", turns=14)
+
+        assert "SKILL PACK ROUTING TABLE" not in prompt
+        assert "read_reference" not in prompt
+        assert "spl_syntax" not in prompt
+        # The prompt is otherwise untouched -- gated, not gutted.
+        assert "siem domain specialist" in prompt
+
+    async def test_siem_toolset_has_no_read_reference_when_disabled(self, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+
+        tools = await self._siem_tools(monkeypatch, ["splunk__splunk_search"])
+
+        assert read_reference not in tools
+        assert tools == ["splunk__splunk_search"]
+
+    def test_siem_prompt_has_routing_table_when_enabled(self, monkeypatch):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        prompt = _system_prompt_for("siem", turns=14)
+
         assert "SKILL PACK ROUTING TABLE" in prompt
         assert "read_reference" in prompt
         assert "spl_syntax" in prompt
+
+    async def test_siem_toolset_has_read_reference_when_enabled(self, monkeypatch):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        tools = await self._siem_tools(monkeypatch, ["splunk__splunk_search"])
+
+        assert read_reference in tools
+
+
+def _siem_mission() -> SubagentMission:
+    return SubagentMission(
+        task_id="case-1:siem:u1",
+        hypothesis_id="h1",
+        tool_family="siem",
+        goal="what happened",
+        scope=Scope(
+            entities=[Entity(kind="host", value="BSTOLL-L")],
+            time_window=(
+                datetime(2018, 8, 20, tzinfo=UTC),
+                datetime(2018, 8, 21, tzinfo=UTC),
+            ),
+        ),
+    )
+
+
+def _async_returning(value):
+    async def fake(*args, **kwargs):
+        return value
+
+    return fake

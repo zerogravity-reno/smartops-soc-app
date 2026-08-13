@@ -8,6 +8,7 @@ Verifies:
 """
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -44,6 +45,7 @@ from smartops.bench import (
     run_interleaved_benchmark,
 )
 from smartops.main import _PLACEHOLDER_MODEL
+from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
 
 
 class TestBenchRunnerInterleaving:
@@ -367,3 +369,53 @@ class TestBenchCLIEntrypoint:
         with pytest.raises(SystemExit) as exc_info:
             run(["--scripted", "--runs", "1"])
         assert exc_info.value.code == 0
+
+
+class TestBenchDisablesTheSkillPack:
+    """The A/B compares topologies, so the skill pack -- which only Arm S can
+    receive -- is pinned off for every arm, and the pin is written into the
+    artifact. A run whose configuration is not recorded in its own output cannot
+    be compared against a later run.
+    """
+
+    async def test_pack_is_off_for_both_arms_even_if_the_environment_enables_it(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        report = await run_interleaved_benchmark(
+            cases=["botsv3_coinhive"], arms=["S", "F"], runs_per_arm=1, scripted=True
+        )
+
+        assert report.skills_enabled is False
+        assert {r.arm for r in report.raw_runs} == {"S", "F"}
+        assert all(r.skills_enabled is False for r in report.raw_runs)
+
+    async def test_the_ambient_setting_is_restored_afterwards(self, monkeypatch):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+        await run_interleaved_benchmark(
+            cases=["botsv3_coinhive"], arms=["S"], runs_per_arm=1, scripted=True
+        )
+        assert skills_enabled() is True
+
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+        await run_interleaved_benchmark(
+            cases=["botsv3_coinhive"], arms=["S"], runs_per_arm=1, scripted=True
+        )
+        assert SKILLS_ENABLED_ENV_VAR not in os.environ
+
+    async def test_json_artifact_records_the_setting(self, tmp_path: Path):
+        json_out = tmp_path / "bench_report.json"
+        assert await _run(["--scripted", "--runs", "1", "--out", str(json_out)]) == 0
+
+        data = json.loads(json_out.read_text(encoding="utf-8"))
+        assert data["skills_enabled"] is False
+        assert all(r["skills_enabled"] is False for r in data["raw_runs"])
+
+    async def test_markdown_artifact_records_the_setting(self, tmp_path: Path):
+        md_out = tmp_path / "bench_report.md"
+        assert await _run(["--scripted", "--runs", "1", "--out", str(md_out)]) == 0
+
+        assert f"- **Skill Pack ({SKILLS_ENABLED_ENV_VAR}):** False" in md_out.read_text(
+            encoding="utf-8"
+        )
