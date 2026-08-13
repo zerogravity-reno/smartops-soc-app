@@ -30,6 +30,7 @@ from contracts import (
     AnalystTask,
     Entity,
     EntityKind,
+    FetchStep,
     Scope,
     SubtaskResult,
     TaskClassification,
@@ -37,7 +38,7 @@ from contracts import (
 )
 from pydantic import ValidationError
 
-from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task
+from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task, plan_fetch
 from smartops.broker_flat import broker_flat_task
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
@@ -70,20 +71,44 @@ class _ScriptedResult:
 def _scripted_invoker(families: list[ToolFamily]):
     """Stands in for the Broker's model until credentials exist.
 
-    Dispatches exactly `families`, in order, by calling the real `@tool`
+    Authors a one-step-per-family fetch plan through the real `plan_fetch` tool,
+    then dispatches exactly `families`, in order, by calling the real `@tool`
     wrappers -- a decorated tool stays directly callable, so this exercises the
-    genuine dispatch path rather than a parallel copy of it. Then reports the
-    same families as its classification, so a normal run shows no divergence;
+    genuine dispatch path rather than a parallel copy of it. The plan is not
+    decoration: a dispatch that names no planned step is refused now, so a
+    scripted run that skipped planning would fetch nothing at all. Then reports
+    the same families as its classification, so a normal run shows no divergence;
     `test_broker.py` covers the case where the two disagree.
     """
+    step_ids = {family: f"step-{index + 1}" for index, family in enumerate(families)}
 
     async def invoke(prompt: str, request: BrokerRequest) -> _ScriptedResult:
+        if families:
+            # `FetchPlan` requires at least one step, and `--families ""` asks for
+            # no dispatch at all -- there is nothing to plan, so skip it.
+            await plan_fetch(
+                steps=[
+                    FetchStep(
+                        step_id=step_ids[family],
+                        family=family,
+                        objective=f"Retrieve {family} evidence for the goal",
+                    )
+                    for family in families
+                ],
+                rationale="scripted fetch plan, one step per requested family (no model call)",
+                tool_context=_ScriptedToolContext(
+                    tool_use={"toolUseId": "cli-plan"},
+                    invocation_state={"smartops": request},
+                ),
+            )
         for index, family in enumerate(families):
             context = _ScriptedToolContext(
                 tool_use={"toolUseId": f"cli-{index}"},
                 invocation_state={"smartops": request},
             )
-            await TOOL_BY_FAMILY[family](question=request.task.goal, tool_context=context)
+            await TOOL_BY_FAMILY[family](
+                question=request.task.goal, step_id=step_ids[family], tool_context=context
+            )
         return _ScriptedResult(
             structured_output=TaskClassification(
                 tool_families=list(families),

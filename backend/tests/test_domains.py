@@ -201,20 +201,24 @@ class TestGeneratedTools:
             assert "Do NOT use" in described
             assert described.splitlines()[0] in DOMAINS[family].description
 
-    def test_question_is_the_models_only_parameter(self):
+    def test_question_and_step_id_are_the_models_only_parameters(self):
         from smartops.broker import TOOL_BY_FAMILY
 
         for tool in TOOL_BY_FAMILY.values():
             # tool_context is injected by the framework, never by the model.
             properties = tool.tool_spec["inputSchema"]["json"]["properties"]
-            assert set(properties) == {"question"}
+            assert set(properties) == {"question", "step_id"}
 
-    def test_the_question_parameter_is_described_for_the_model(self):
+    def test_both_model_facing_parameters_are_described_and_required(self):
         from smartops.broker import TOOL_BY_FAMILY
 
         for tool in TOOL_BY_FAMILY.values():
-            question = tool.tool_spec["inputSchema"]["json"]["properties"]["question"]
-            assert question["description"].strip()
+            schema = tool.tool_spec["inputSchema"]["json"]
+            for name in ("question", "step_id"):
+                assert schema["properties"][name]["description"].strip()
+            # `step_id` is not optional: an unbound dispatch is the failure this
+            # argument exists to remove, so the schema must not permit one.
+            assert set(schema["required"]) == {"question", "step_id"}
 
     async def test_a_generated_tool_dispatches_its_own_family(self, monkeypatch):
         """Each closure carries its own family. Closing over a loop variable
@@ -223,14 +227,14 @@ class TestGeneratedTools:
 
         seen: list[str] = []
 
-        async def fake_dispatch(family, question, ctx):
+        async def fake_dispatch(family, question, step_id, ctx):
             seen.append(family)
             return "ok"
 
         monkeypatch.setattr(broker, "_dispatch", fake_dispatch)
 
         for tool in broker.TOOL_BY_FAMILY.values():
-            await tool(question="q", tool_context=object())
+            await tool(question="q", step_id="step-1", tool_context=object())
 
         assert seen == list(broker.TOOL_BY_FAMILY)
 
@@ -263,7 +267,7 @@ class TestAddingADomainIsOneEntry:
 
         assert tool.tool_name == "investigate_edr"
         assert "Fictional domain" in tool.tool_spec["description"]
-        assert set(tool.tool_spec["inputSchema"]["json"]["properties"]) == {"question"}
+        assert set(tool.tool_spec["inputSchema"]["json"]["properties"]) == {"question", "step_id"}
 
     def test_a_new_spec_carries_its_own_prompt_shape(self):
         from smartops.subagents import _system_prompt_for

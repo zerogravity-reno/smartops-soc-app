@@ -67,11 +67,14 @@ logger = logging.getLogger(__name__)
 
 BROKER_ROLE = "broker"
 
-# How many times one family may be dispatched when the fetch plan named it no
-# steps at all -- the Broker never called `plan_fetch`, or called it but planned
-# nothing for this family. Two, so a subagent's reported `gaps` can still
-# justify one better-aimed follow-up, and no more. See `_dispatch()` for what
-# this prevents.
+# How many dispatches one planned step earns: the step itself, plus one
+# re-dispatch, so a subagent's reported `gaps` can still justify one
+# better-aimed follow-up and no more. This used to be the ceiling for a family
+# the fetch plan named no steps for -- the Broker never called `plan_fetch`, or
+# called it and planned nothing for this family. `_dispatch()` refuses both of
+# those outright now, so that case can no longer arise, and the value survives
+# as the single-planned-step allowance, which is numerically what it always
+# granted. See `_dispatch()` for what this prevents.
 MAX_DISPATCHES_PER_FAMILY = 2
 
 # Hard ceiling on dispatches for a family the fetch plan DID name steps for.
@@ -113,6 +116,11 @@ its domain contains relevant evidence for the specified scope.
 
 Before dispatching domain specialists, you MUST call the `plan_fetch` tool to decompose the
 goal into bounded retrieval steps with completion criteria.
+
+`plan_fetch` returns the step ids it recorded. Every dispatch must name one of them: call a
+specialist's tool with the `step_id` of the planned step that dispatch carries out. A dispatch
+made before `plan_fetch`, or naming a step id that is not in the plan or belongs to another
+family, is refused and retrieves nothing.
 
 Available specialists and when to use them are described in each tool's own description.
 Dispatch every specialist whose domain can retrieve relevant evidence for the entities and
@@ -458,8 +466,15 @@ def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     return counts
 
 
-async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
+async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolContext) -> str:
     """Shared body of all four family tools: build a mission, run it, record it.
+
+    Every dispatch is bound to one planned `FetchStep`, named by `step_id`. Three
+    things are refused before anything is fetched: a dispatch with no plan behind
+    it at all, one naming a step id the plan does not contain, and one naming a
+    step belonging to a different family than the tool called. Each refusal is a
+    *returned tool result*, never a raised exception -- see the containment note
+    below -- so the model reads why and can correct itself on the next turn.
 
     Failures are contained here. One family's blow-up must never abort the
     Broker's whole run, so an exception becomes that mission's `ERROR` result
@@ -468,6 +483,53 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
     """
     req: BrokerRequest = ctx.invocation_state["smartops"]
     run = req.run_subagent or _stub_subagent
+
+    # Planning is mandatory, and this is where that is actually true. The prose
+    # said so from the start while the code fetched happily without a plan, which
+    # is why every run artifact on disk took the synthesized-plan fallback in
+    # `_run_broker_task()` and the code-evaluated completion guarantee never once
+    # ran end to end. Naming the missing plan and the tool that fixes it, rather
+    # than returning a generic error, is what lets the model recover in one turn.
+    if req.plan is None:
+        logger.warning(
+            "task_id=%s family=%s | dispatch attempted with no fetch plan", req.task.task_id, family
+        )
+        return (
+            f"status=refused | there is no fetch plan for this investigation yet, so "
+            f"{family} cannot be dispatched for step {step_id!r}. Call plan_fetch first "
+            "to author the plan, then dispatch each step by the step_id it hands back."
+        )
+
+    step = next((s for s in req.plan.steps if s.step_id == step_id), None)
+    family_step_ids = [s.step_id for s in req.plan.steps if s.family == family]
+    if step is None:
+        logger.warning(
+            "task_id=%s family=%s | dispatch named unplanned step_id=%r",
+            req.task.task_id,
+            family,
+            step_id,
+        )
+        return (
+            f"status=refused | step_id {step_id!r} is not in this investigation's fetch "
+            f"plan, so nothing was dispatched. The plan's {family} step ids are: "
+            f"{', '.join(family_step_ids) or 'none -- it planned no ' + family + ' step'}. "
+            "Name one of those, or call plan_fetch to plan the step you need."
+        )
+
+    if step.family != family:
+        logger.warning(
+            "task_id=%s family=%s | dispatch named step_id=%r planned for %s",
+            req.task.task_id,
+            family,
+            step_id,
+            step.family,
+        )
+        return (
+            f"status=refused | step {step_id!r} is planned for {step.family}, not {family}, "
+            f"so investigate_{family} cannot carry it out. Call investigate_{step.family} "
+            f"for that step. The plan's {family} step ids are: "
+            f"{', '.join(family_step_ids) or 'none -- it planned no ' + family + ' step'}."
+        )
 
     # Re-dispatching a family is legitimate once -- a subagent's `gaps` can make a
     # second, better-targeted question worthwhile. Unbounded, it is a cost bug: a
@@ -490,15 +552,14 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
             "Do not call it again; engage a different domain or report what you have."
         )
 
-    planned_steps = [s for s in req.plan.steps if s.family == family] if req.plan is not None else []
-    if planned_steps:
-        # Per-plan: see MAX_PLANNED_DISPATCHES_PER_FAMILY for the arithmetic and
-        # why this is capped rather than left to grow with the plan's size.
-        allowed_dispatches = min(MAX_PLANNED_DISPATCHES_PER_FAMILY, len(planned_steps) * 2)
-    else:
-        # No plan named this family -- either no plan_fetch call was made, or it
-        # was and this family simply is not in it. The no-plan ceiling applies.
-        allowed_dispatches = MAX_DISPATCHES_PER_FAMILY
+    # Per-plan: see MAX_PLANNED_DISPATCHES_PER_FAMILY for the arithmetic and why
+    # this is capped rather than left to grow with the plan's size. The guards
+    # above mean `family_step_ids` is never empty here, so the no-plan ceiling is
+    # no longer reachable through a tool call -- it survives as the value of the
+    # single-planned-step case, which is exactly what it always granted.
+    allowed_dispatches = min(
+        MAX_PLANNED_DISPATCHES_PER_FAMILY, len(family_step_ids) * MAX_DISPATCHES_PER_FAMILY
+    )
 
     if req.dispatched.count(family) >= allowed_dispatches:
         logger.warning(
@@ -538,33 +599,32 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
     if result.status is SubtaskStatus.REJECTED:
         req.refused[family] = result.reason or "rejected without a stated reason"
 
-    if req.plan is not None:
-        matching_steps = [s for s in req.plan.steps if s.family == family]
-        target_step = next(
-            (s for s in matching_steps if not req.step_outcomes.get(s.step_id, StepOutcome(step=s)).completed),
-            matching_steps[-1] if matching_steps else None,
-        )
-        if target_step:
-            outcome = req.step_outcomes.get(target_step.step_id, StepOutcome(step=target_step))
-            outcome.dispatches += 1
-            counts = _finding_counts(result.findings)
-            rows_retrieved = sum(n for _, n in counts)
-            outcome.rows_retrieved += rows_retrieved
-            confirmed_empty = (rows_retrieved == 0 and len(result.queries_run) > 0) or result.status == SubtaskStatus.NO_DATA
-            outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
-            if target_step.completion.requires == "rows_or_confirmed_empty":
-                completed = outcome.rows_retrieved >= max(1, target_step.completion.min_rows) or outcome.confirmed_empty
-            else:
-                completed = outcome.rows_retrieved >= max(1, target_step.completion.min_rows)
-            outcome.completed = completed
-            outcome.status = result.status
-            outcome.reason = result.reason
-            # R3: a step this dispatch never actually attempted because the
-            # shared Budget refused it must not read the same as one that ran
-            # and legitimately found nothing -- both leave `completed=False`,
-            # but only one of them is a cost problem rather than a fetch one.
-            outcome.refused_for_budget = result.error == BUDGET_REFUSAL_ERROR
-            req.step_outcomes[target_step.step_id] = outcome
+    # The result lands on the step the *handoff* named, not on one guessed after
+    # the fact. What stood here picked "first not-yet-completed step of this
+    # family, else the last one", so a re-dispatch retrying step 1 was credited
+    # to step 2 the moment step 1 flipped complete, and a dispatch matching no
+    # planned step at all still landed somewhere. Per-step completion is a
+    # headline A/B metric; it must be measured off the binding, not a heuristic.
+    outcome = req.step_outcomes.get(step.step_id, StepOutcome(step=step))
+    outcome.dispatches += 1
+    counts = _finding_counts(result.findings)
+    rows_retrieved = sum(n for _, n in counts)
+    outcome.rows_retrieved += rows_retrieved
+    confirmed_empty = (rows_retrieved == 0 and len(result.queries_run) > 0) or result.status == SubtaskStatus.NO_DATA
+    outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
+    if step.completion.requires == "rows_or_confirmed_empty":
+        completed = outcome.rows_retrieved >= max(1, step.completion.min_rows) or outcome.confirmed_empty
+    else:
+        completed = outcome.rows_retrieved >= max(1, step.completion.min_rows)
+    outcome.completed = completed
+    outcome.status = result.status
+    outcome.reason = result.reason
+    # R3: a step this dispatch never actually attempted because the shared Budget
+    # refused it must not read the same as one that ran and legitimately found
+    # nothing -- both leave `completed=False`, but only one of them is a cost
+    # problem rather than a fetch one.
+    outcome.refused_for_budget = result.error == BUDGET_REFUSAL_ERROR
+    req.step_outcomes[step.step_id] = outcome
 
     record_result_status(result)
     return _digest(result)
@@ -588,16 +648,30 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     for step in steps:
         req.step_outcomes[step.step_id] = StepOutcome(step=step, completed=False)
 
+    # The step ids go back to the model because it now has to cite one on every
+    # dispatch, and it cannot cite an id it was never told. Reporting only a
+    # count -- which is all this returned before -- left the binding in change 3
+    # unusable from the model's side.
+    minted = "; ".join(f"{s.step_id} ({s.family}): {s.objective}" for s in steps)
     return (
         f"Fetch plan recorded with {len(steps)} step(s). Rationale: {rationale}. "
-        "You may now dispatch domain specialists for the planned steps."
+        f"Step ids: {minted}. Dispatch a step by calling its family's tool with "
+        "that step's step_id."
     )
 
 
 def make_investigate_tool(spec: DomainSpec):
     @tool(name=f"investigate_{spec.family}", description=spec.description, context=True)
-    async def investigate(question: str, tool_context: ToolContext) -> str:
-        return await _dispatch(spec.family, question, tool_context)
+    async def investigate(question: str, step_id: str, tool_context: ToolContext) -> str:
+        """Dispatch one planned fetch step to this domain's specialist.
+
+        Args:
+            question: The retrieval question for the specialist, in your own words.
+            step_id: The step_id of the fetch-plan step this dispatch carries out,
+                exactly as plan_fetch reported it. It must name a step planned for
+                this family; anything else is refused and retrieves nothing.
+        """
+        return await _dispatch(spec.family, question, step_id, tool_context)
 
     return investigate
 

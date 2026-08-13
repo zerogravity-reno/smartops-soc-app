@@ -5,8 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from contracts import (
     AnalystTask,
+    CompletionRule,
     Entity,
     FetchPlan,
+    FetchStep,
     QueryRun,
     ResultSet,
     Scope,
@@ -31,6 +33,7 @@ from smartops.broker import (
     _estimated_input_tokens,
     broker_task,
     default_broker_invoker,
+    plan_fetch,
 )
 from smartops.budget import Budget
 from smartops.domains import DOMAINS
@@ -90,22 +93,44 @@ def fake_invoker(
     claims: list[str] | None = None,
     usage: dict | None = None,
     questions: dict[str, str] | None = None,
+    plan: bool = True,
 ):
     """A `BrokerInvoker` stub standing in for the Broker's model.
 
-    Dispatches `dispatch` by calling the real `@tool` wrappers -- a decorated
-    tool stays directly callable, so this drives the genuine dispatch path.
+    Plans first, then dispatches `dispatch` by calling the real `@tool` wrappers
+    -- a decorated tool stays directly callable, so this drives the genuine
+    dispatch path. The plan is one step per distinct family, which is what a
+    minimally-compliant Broker would author, and each dispatch names its family's
+    step. `plan=False` drives the pre-plan path deliberately: every such dispatch
+    is refused and nothing is fetched.
+
     `claims` lets a test make the self-reported classification disagree with what
     was actually dispatched, which is the whole point of tracking both.
     """
     calls: list[str] = []
+    step_ids = {
+        family: f"step-{index + 1}" for index, family in enumerate(dict.fromkeys(dispatch))
+    }
 
     async def invoke(prompt: str, request: BrokerRequest) -> FakeInvokerResult:
         calls.append(prompt)
+        if plan and step_ids:
+            await plan_fetch(
+                steps=[
+                    FetchStep(step_id=step_id, family=family, objective=f"retrieve {family}")
+                    for family, step_id in step_ids.items()
+                ],
+                rationale="fake invoker plan",
+                tool_context=FakeToolContext(
+                    tool_use={"toolUseId": "tu-plan"},
+                    invocation_state={"smartops": request},
+                ),
+            )
         for index, family in enumerate(dispatch):
             question = (questions or {}).get(family, request.task.goal)
             await _TOOL_BY_FAMILY[family](
                 question=question,
+                step_id=step_ids[family],
                 tool_context=FakeToolContext(
                     tool_use={"toolUseId": f"tu-{index}"},
                     invocation_state={"smartops": request},
@@ -134,6 +159,18 @@ def runner_returning(result_for):
 
     run.missions = missions
     return run
+
+
+def with_plan(request, *steps):
+    """Record `steps` on `request` exactly as a `plan_fetch` call would.
+
+    Every dispatch now has to name a planned step, so a test driving the family
+    tools directly needs a plan on the request before it can fetch anything.
+    """
+    request.plan = FetchPlan(steps=list(steps), rationale="test plan")
+    for step in steps:
+        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+    return steps
 
 
 def ok_result(mission, **overrides):
@@ -210,7 +247,12 @@ class TestDispatch:
 
         assert run.missions[0].scope == task.scope
         assert "question" in TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]
-        assert set(TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]) == {"question"}
+        # `step_id` joined `question` when dispatch became bound to a planned
+        # step. Both are model-authored; neither can widen scope.
+        assert set(TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]) == {
+            "question",
+            "step_id",
+        }
 
     async def test_one_family_failing_leaves_the_others_dispatched(self):
         def result_for(mission):
@@ -772,10 +814,12 @@ class TestRedispatchCap:
         # not run", or it cannot choose a different domain instead.
         run = runner_returning(ok_result)
         request = BrokerRequest(task=make_task(), run_subagent=run)
+        with_plan(request, FetchStep(step_id="step-1", family="siem", objective="auth events"))
         request.dispatched.extend(["siem"] * MAX_DISPATCHES_PER_FAMILY)
 
         digest = await TOOL_BY_FAMILY["siem"](
             question="again please",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-x"}, invocation_state={"smartops": request}
             ),
@@ -789,10 +833,12 @@ class TestRedispatchCap:
         # not run, so counting it would corrupt the divergence check.
         run = runner_returning(ok_result)
         request = BrokerRequest(task=make_task(), run_subagent=run)
+        with_plan(request, FetchStep(step_id="step-1", family="siem", objective="auth events"))
         request.dispatched.extend(["siem"] * MAX_DISPATCHES_PER_FAMILY)
 
         await TOOL_BY_FAMILY["siem"](
             question="again",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-y"}, invocation_state={"smartops": request}
             ),
@@ -949,15 +995,18 @@ class TestRejectionIsTerminal:
         # "no" gives it nothing to act on.
         run = runner_returning(self.rejected)
         request = BrokerRequest(task=make_task(), run_subagent=run)
+        with_plan(request, FetchStep(step_id="step-1", family="vt", objective="reputation"))
 
         first = await TOOL_BY_FAMILY["vt"](
             question="check it",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
             ),
         )
         second = await TOOL_BY_FAMILY["vt"](
             question="check it again",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-2"}, invocation_state={"smartops": request}
             ),
@@ -1210,11 +1259,16 @@ class TestFetchPlanAndReport:
     async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
         """The regression test for the failure this task exists to remove.
 
-        No `plan_fetch` call means `broker_task()` reconstructs a plan from
-        `dispatched` purely to have something to report. `ok_result` below
-        returns `NO_DATA` with nothing collected -- exactly the shape the old
+        No `plan_fetch` call means `broker_task()` reconstructs a plan purely to
+        have something to report. `ok_result` below returns `NO_DATA` with
+        nothing collected -- exactly the shape the old
         `completed=len(request.collected) > 0` fallback would have called
         "complete" just because a result existed at all.
+
+        `plan=False` is now the only way to reach this: the un-planned dispatch
+        it makes is refused, so the reconstruction is built from the families the
+        model *claimed* rather than any that ran. Which is the point -- a step
+        nobody evaluated must report as unknown, not as done.
         """
         monkeypatch.chdir(tmp_path)
         outcome = await broker_task(
@@ -1222,7 +1276,7 @@ class TestFetchPlanAndReport:
             Budget.from_usd(1.0),
             model=MODEL,
             run_subagent=runner_returning(ok_result),
-            invoke=fake_invoker(["siem"]),
+            invoke=fake_invoker(["siem"], plan=False),
         )
 
         assert outcome.report.plan.rationale == "Synthesized fetch plan from dispatched families"
@@ -1241,8 +1295,6 @@ class TestCompletionIsCodeEvaluated:
     """
 
     async def test_a_step_below_its_min_rows_stays_incomplete_despite_a_success_status(self):
-        from contracts import CompletionRule, FetchStep
-
         step = FetchStep(
             step_id="step-1",
             family="siem",
@@ -1250,8 +1302,7 @@ class TestCompletionIsCodeEvaluated:
             completion=CompletionRule(requires="rows_required", min_rows=5),
         )
         request = BrokerRequest(task=make_task())
-        request.plan = FetchPlan(steps=[step], rationale="test plan")
-        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+        with_plan(request, step)
 
         def claims_success_with_one_row(mission):
             # status=OK and a reason that reads as satisfied -- what a model
@@ -1271,6 +1322,7 @@ class TestCompletionIsCodeEvaluated:
 
         await TOOL_BY_FAMILY["siem"](
             question="go",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
             ),
@@ -1282,8 +1334,6 @@ class TestCompletionIsCodeEvaluated:
         assert outcome.evaluated is True
 
     async def test_a_step_at_or_above_its_min_rows_is_completed(self):
-        from contracts import CompletionRule, FetchStep
-
         step = FetchStep(
             step_id="step-1",
             family="siem",
@@ -1291,8 +1341,7 @@ class TestCompletionIsCodeEvaluated:
             completion=CompletionRule(requires="rows_required", min_rows=2),
         )
         request = BrokerRequest(task=make_task())
-        request.plan = FetchPlan(steps=[step], rationale="test plan")
-        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+        with_plan(request, step)
 
         def two_rows(mission):
             return SubtaskResult(
@@ -1310,6 +1359,7 @@ class TestCompletionIsCodeEvaluated:
 
         await TOOL_BY_FAMILY["siem"](
             question="go",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
             ),
@@ -1322,12 +1372,9 @@ class TestBudgetRefusalIsDistinguishableFromEmpty:
     """R3: a step refused for budget must not read as an unmet fetch criterion."""
 
     async def test_a_budget_refusal_sets_the_flag(self):
-        from contracts import FetchStep
-
         step = FetchStep(step_id="step-1", family="siem", objective="Retrieve auth events")
         request = BrokerRequest(task=make_task())
-        request.plan = FetchPlan(steps=[step], rationale="test plan")
-        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+        with_plan(request, step)
 
         def budget_refused(mission):
             # Exactly what smartops.subagents.investigate() returns when
@@ -1343,6 +1390,7 @@ class TestBudgetRefusalIsDistinguishableFromEmpty:
 
         await TOOL_BY_FAMILY["siem"](
             question="go",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
             ),
@@ -1353,12 +1401,9 @@ class TestBudgetRefusalIsDistinguishableFromEmpty:
         assert outcome.refused_for_budget is True
 
     async def test_a_step_that_ran_and_found_nothing_is_not_flagged_as_budget_refused(self):
-        from contracts import FetchStep
-
         step = FetchStep(step_id="step-1", family="siem", objective="Retrieve auth events")
         request = BrokerRequest(task=make_task())
-        request.plan = FetchPlan(steps=[step], rationale="test plan")
-        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+        with_plan(request, step)
 
         def ran_and_found_nothing(mission):
             return SubtaskResult(
@@ -1372,6 +1417,7 @@ class TestBudgetRefusalIsDistinguishableFromEmpty:
 
         await TOOL_BY_FAMILY["siem"](
             question="go",
+            step_id="step-1",
             tool_context=FakeToolContext(
                 tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
             ),
@@ -1393,16 +1439,13 @@ class TestPerPlanDispatchCap:
 
     @staticmethod
     def _three_step_siem_plan(request):
-        from contracts import FetchStep
-
-        steps = [
-            FetchStep(step_id=f"step-{i}", family="siem", objective=f"objective {i}")
-            for i in range(3)
-        ]
-        request.plan = FetchPlan(steps=steps, rationale="three legitimate siem steps")
-        for s in steps:
-            request.step_outcomes[s.step_id] = StepOutcome(step=s)
-        return steps
+        return with_plan(
+            request,
+            *[
+                FetchStep(step_id=f"step-{i}", family="siem", objective=f"objective {i}")
+                for i in range(3)
+            ],
+        )
 
     async def test_three_planned_siem_steps_are_all_dispatchable(self):
         request = BrokerRequest(task=make_task(), run_subagent=runner_returning(ok_result))
@@ -1411,6 +1454,7 @@ class TestPerPlanDispatchCap:
         for i in range(3):
             digest = await TOOL_BY_FAMILY["siem"](
                 question=f"q{i}",
+                step_id=f"step-{i}",
                 tool_context=FakeToolContext(
                     tool_use={"toolUseId": f"tu-{i}"}, invocation_state={"smartops": request}
                 ),
@@ -1426,6 +1470,7 @@ class TestPerPlanDispatchCap:
         digests = [
             await TOOL_BY_FAMILY["siem"](
                 question=f"q{i}",
+                step_id=f"step-{i % 3}",
                 tool_context=FakeToolContext(
                     tool_use={"toolUseId": f"tu-{i}"}, invocation_state={"smartops": request}
                 ),
@@ -1435,4 +1480,214 @@ class TestPerPlanDispatchCap:
 
         assert any("refused" in d for d in digests)
         assert request.dispatched.count("siem") == MAX_PLANNED_DISPATCHES_PER_FAMILY
+
+
+class TestDispatchIsBoundToAPlannedStep:
+    """The two gaps this task closed, as negative tests.
+
+    Gap 1: planning was mandated in prose and optional in code -- `_dispatch()`
+    tolerated `req.plan is None` and fetched anyway, which is why every run
+    artifact on disk took the synthesized-plan fallback and the code-evaluated
+    completion guarantee never ran end to end.
+
+    Gap 2: dispatch was bound to a *family*, and the step a result belonged to
+    was guessed afterwards ("first not-yet-completed step of this family, else
+    the last one"). Per-step completion is a headline A/B metric, so it was
+    being measured off an attribution heuristic rather than off the handoff.
+    """
+
+    @staticmethod
+    def _two_step_siem_plan(request):
+        return with_plan(
+            request,
+            FetchStep(
+                step_id="siem-auth",
+                family="siem",
+                objective="Retrieve at least 3 auth events",
+                completion=CompletionRule(requires="rows_required", min_rows=3),
+            ),
+            FetchStep(
+                step_id="siem-proc",
+                family="siem",
+                objective="Retrieve process events",
+                completion=CompletionRule(requires="rows_required", min_rows=3),
+            ),
+        )
+
+    @staticmethod
+    def _rows(count):
+        def result_for(mission):
+            return SubtaskResult(
+                task_id=mission.task_id,
+                status=SubtaskStatus.OK,
+                findings=SiemFindings(
+                    processes=[
+                        ResultSet(query="q", row_count=count, rows=[{"p": i} for i in range(count)])
+                    ]
+                ),
+                queries_run=[QueryRun(query="q")],
+            )
+
+        return result_for
+
+    async def test_a_dispatch_before_any_plan_fetch_call_does_not_fetch(self):
+        run = runner_returning(ok_result)
+        request = BrokerRequest(task=make_task(), run_subagent=run)
+
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="just go",
+            step_id="step-1",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert run.missions == []
+        assert request.dispatched == []
+        assert request.collected == []
+        # Naming the missing thing and the tool that supplies it, not a generic
+        # error: the model has to be able to recover in one turn.
+        assert "refused" in digest
+        assert "no fetch plan" in digest
+        assert "plan_fetch" in digest
+
+    async def test_the_no_plan_refusal_is_returned_not_raised(self):
+        # One tool's refusal must never abort the run -- `_dispatch()`'s
+        # containment discipline. A raised exception here would end the
+        # investigation instead of costing it one turn.
+        outcome = await broker_task(
+            make_task(),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(ok_result),
+            invoke=fake_invoker(["siem", "vt"], plan=False),
+        )
+
+        assert outcome.results == []
+        assert outcome.dispatched == []
+
+    async def test_an_unknown_step_id_does_not_fetch_and_the_message_lists_the_valid_ids(self):
+        run = runner_returning(ok_result)
+        request = BrokerRequest(task=make_task(), run_subagent=run)
+        self._two_step_siem_plan(request)
+
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="go",
+            step_id="step-42",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert run.missions == []
+        assert request.dispatched == []
+        assert "refused" in digest
+        assert "step-42" in digest
+        assert "siem-auth" in digest and "siem-proc" in digest
+
+    async def test_a_step_id_from_another_family_does_not_fetch(self):
+        run = runner_returning(ok_result)
+        request = BrokerRequest(task=make_task(), run_subagent=run)
+        with_plan(
+            request,
+            FetchStep(step_id="siem-auth", family="siem", objective="auth events"),
+            FetchStep(step_id="vt-rep", family="vt", objective="reputation"),
+        )
+
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="go",
+            step_id="vt-rep",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert run.missions == []
+        assert request.dispatched == []
+        # The vt step must not be credited a dispatch it never received.
+        assert request.step_outcomes["vt-rep"].dispatches == 0
+        assert "refused" in digest
+        assert "investigate_vt" in digest
+
+    async def test_two_dispatches_naming_the_same_step_both_land_on_it(self):
+        """The regression test for gap 2.
+
+        Two rows, then two more, against a step needing three. Under the old
+        heuristic the retry would have been credited to `siem-proc` the moment
+        `siem-auth` flipped complete -- a step nobody ever dispatched. Bound by
+        name, the rows accumulate on `siem-auth` and cross its rule, and
+        `siem-proc` stays untouched.
+        """
+        request = BrokerRequest(task=make_task(), run_subagent=runner_returning(self._rows(2)))
+        self._two_step_siem_plan(request)
+
+        for index in range(2):
+            await TOOL_BY_FAMILY["siem"](
+                question=f"q{index}",
+                step_id="siem-auth",
+                tool_context=FakeToolContext(
+                    tool_use={"toolUseId": f"tu-{index}"},
+                    invocation_state={"smartops": request},
+                ),
+            )
+
+        auth = request.step_outcomes["siem-auth"]
+        assert auth.dispatches == 2
+        assert auth.rows_retrieved == 4
+        assert auth.completed is True
+
+        proc = request.step_outcomes["siem-proc"]
+        assert proc.dispatches == 0
+        assert proc.rows_retrieved == 0
+        assert proc.completed is False
+        assert proc.status is None
+
+    async def test_a_completed_step_can_still_be_re_dispatched_by_name(self):
+        # The Broker keeps its agency: a step that met its rule but returned
+        # something unsatisfying may still be asked again, and the retry lands
+        # where it was aimed rather than sliding onto the next step.
+        request = BrokerRequest(task=make_task(), run_subagent=runner_returning(self._rows(5)))
+        self._two_step_siem_plan(request)
+
+        for index in range(2):
+            digest = await TOOL_BY_FAMILY["siem"](
+                question=f"q{index}",
+                step_id="siem-auth",
+                tool_context=FakeToolContext(
+                    tool_use={"toolUseId": f"tu-{index}"},
+                    invocation_state={"smartops": request},
+                ),
+            )
+            assert "refused" not in digest
+
+        assert request.step_outcomes["siem-auth"].dispatches == 2
+        assert request.step_outcomes["siem-proc"].dispatches == 0
+
+
+class TestPlanFetchHandsBackItsStepIds:
+    """The model cannot cite a step id it was never told.
+
+    `plan_fetch` reported only a count, which left the `step_id` argument every
+    dispatch now requires unusable from the model's side.
+    """
+
+    async def test_the_return_names_every_step_id_it_minted(self):
+        request = BrokerRequest(task=make_task())
+        steps = [
+            FetchStep(step_id="siem-auth", family="siem", objective="auth events"),
+            FetchStep(step_id="vt-rep", family="vt", objective="reputation"),
+        ]
+
+        res = await plan_fetch(
+            steps=steps,
+            rationale="two domains",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-plan"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert "siem-auth" in res and "vt-rep" in res
+        # The family too, so the model knows which tool each id belongs to.
+        assert "siem" in res and "vt" in res
+        assert "step_id" in res
 
