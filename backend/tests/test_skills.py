@@ -16,7 +16,9 @@ from smartops.skills import (
 from smartops.subagents import _system_prompt_for, domain_runner
 
 from contracts import (
+    AnalystTask,
     Entity,
+    FetchStep,
     Scope,
     SubagentMission,
     SubtaskResult,
@@ -182,6 +184,74 @@ class TestSkillPackGate:
         tools = await self._siem_tools(monkeypatch, ["splunk__splunk_search"])
 
         assert read_reference in tools
+
+
+class TestBothArmsCarryTheSameSwitch:
+    """Fix 3: the pack must not be an Arm-S-only structural capability.
+
+    The bench pins skills off for both arms, so the divergence was never live in
+    a bench run -- but that pin was the only thing standing between the flag and
+    a confounded `main.py --arm F` run. Arm F's step executor now carries the
+    same two halves, on the same `skills_enabled()`, so with the flag set both
+    arms get the table and the tool and with it unset neither does.
+    """
+
+    @staticmethod
+    async def _flat_step_agent(monkeypatch, base_tools):
+        """What `default_flat_step_executor` actually builds its `Agent` with."""
+        from smartops.broker_flat import _mission_for, default_flat_step_executor
+
+        captured: dict = {}
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def invoke_async(self, *args, **kwargs):
+                return type("R", (), {"structured_output": None, "metrics": None, "stop_reason": "end_turn"})()
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        step = FetchStep(step_id="s1", family="siem", objective="retrieve siem evidence")
+        task = AnalystTask(
+            task_id="t1",
+            hypothesis_id="h1",
+            goal="what happened",
+            scope=_siem_mission().scope,
+        )
+        execute = default_flat_step_executor(MODEL)
+        await execute(_mission_for(task, step), step, list(base_tools))
+        return captured
+
+    async def test_flat_step_has_neither_half_when_disabled(self, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+
+        captured = await self._flat_step_agent(monkeypatch, ["splunk__splunk_search"])
+
+        assert captured["tools"] == ["splunk__splunk_search"]
+        assert "SKILL PACK ROUTING TABLE" not in captured["system_prompt"]
+        # Gated, not gutted: the step prompt is otherwise what it always was.
+        assert "EXECUTION PHASE" in captured["system_prompt"]
+
+    async def test_flat_step_has_both_halves_when_enabled(self, monkeypatch):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        captured = await self._flat_step_agent(monkeypatch, ["splunk__splunk_search"])
+
+        assert read_reference in captured["tools"]
+        assert "SKILL PACK ROUTING TABLE" in captured["system_prompt"]
+        assert "spl_syntax" in captured["system_prompt"]
+
+    async def test_a_non_siem_step_is_untouched_in_both_arms(self, monkeypatch):
+        """`vt` gets no pack in Arm S either -- the switch is siem-only."""
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+        from smartops.broker_flat import _with_skill_pack
+
+        prompt, tools = _with_skill_pack("vt", "base prompt", ["vt_lookup_ip"])
+
+        assert prompt == "base prompt"
+        assert tools == ["vt_lookup_ip"]
 
 
 def _siem_mission() -> SubagentMission:

@@ -474,6 +474,38 @@ def _result_for_step(
     return result.model_copy(update={"citation_ids": citation_ids})
 
 
+def _with_skill_pack(
+    family: ToolFamily, system_prompt: str, tools: list[Any]
+) -> tuple[str, list[Any]]:
+    """The same gated skill-pack switch Arm S's step executor carries.
+
+    `subagents._system_prompt_for()` injects the routing table and
+    `subagents.domain_runner()` appends `read_reference`, both on
+    `skills_enabled()`. Arm F's step executor did neither, so `main.py --arm F`
+    with the flag on gave Arm S a tool and a prompt section Arm F structurally
+    could not have -- a confound the bench's pin (skills off for both arms) was
+    the only thing standing between us and.
+
+    Wired rather than refused: refusing to run Arm F with skills enabled would
+    make the pack itself un-A/B-able across topologies, and this task sequence
+    exists to remove variables, not to ban the configurations that carry them.
+    Both halves are attached here together, which is what `skills_enabled()`'s
+    own docstring says the single switch is for -- a run with the table but not
+    the tool is a configuration nobody can name afterwards.
+    """
+    if family != "siem":
+        return system_prompt, tools
+    try:
+        from smartops.skills import inject_skill_routing_table, read_reference, skills_enabled
+    except ImportError:
+        return system_prompt, tools
+    if not skills_enabled():
+        return system_prompt, tools
+    if read_reference not in tools:
+        tools = list(tools) + [read_reference]
+    return inject_skill_routing_table(system_prompt), tools
+
+
 def default_flat_step_executor(
     choice: ModelChoice,
     *,
@@ -486,8 +518,9 @@ def default_flat_step_executor(
     Broker's, not a domain specialist's, and there is no hand-off: the tool
     output stays in the context that asked for it. Everything else -- the
     per-family answer model, the evidence collector, the index guard, the
-    projection -- is the shared spine, so the arms stay comparable on every
-    field a `SubtaskResult` carries, `assessment` included.
+    projection, and the skill-pack switch -- is the shared spine, so the arms
+    stay comparable on every field a `SubtaskResult` carries, `assessment`
+    included.
     """
 
     async def execute(
@@ -504,10 +537,12 @@ def default_flat_step_executor(
         if allowlist is not None:
             hooks.append(IndexScopeGuard(family, allowlist))
 
+        system_prompt, tools = _with_skill_pack(family, _FLAT_STEP_SYSTEM_PROMPT, tools)
+
         agent = Agent(
             model=choice.build(),
             tools=tools,
-            system_prompt=_FLAT_STEP_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             structured_output_model=make_answer_model(family, DOMAINS[family].assessment_model),
             callback_handler=None,
             hooks=hooks,
