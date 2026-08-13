@@ -86,6 +86,7 @@ from smartops.projection import project
 from smartops.subagents import (
     DEFAULT_MAX_OUTPUT_TOKENS as _SUBAGENT_OUTPUT_TOKENS,
     DEFAULT_TURNS as _SUBAGENT_TURNS,
+    _FAMILY_SPECIALIZATIONS,
     _EvidenceCollector,
     _ToolCall,
     _estimated_input_tokens as _step_estimated_input_tokens,
@@ -585,7 +586,9 @@ def default_flat_step_executor(
         if allowlist is not None:
             hooks.append(IndexScopeGuard(family, allowlist))
 
-        system_prompt, tools = _with_skill_pack(family, _FLAT_STEP_SYSTEM_PROMPT, tools)
+        spec_text = _FAMILY_SPECIALIZATIONS.get(family, "")
+        base_prompt = _FLAT_STEP_SYSTEM_PROMPT + (f"\n\n{spec_text}\n" if spec_text else "\n")
+        system_prompt, tools = _with_skill_pack(family, base_prompt, tools)
 
         agent = Agent(
             model=choice.build(),
