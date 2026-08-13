@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -933,7 +934,11 @@ def default_broker_invoker(
     return invoke
 
 
-def save_run_artifacts(report: BrokerReport, base_dir: Path | str = ".smartops/runs") -> Path:
+RUNS_DIR_ENV_VAR = "SMARTOPS_RUNS_DIR"
+DEFAULT_RUNS_DIR = ".smartops/runs"
+
+
+def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None) -> Path:
     """Save BrokerReport and collected evidence to `<base_dir>/<task_id>/<created_at>/`.
 
     Timestamped, because the path used to be keyed on `task_id` alone and every
@@ -944,8 +949,16 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str = ".smartops/r
     real money. It happened during this cleanup: a test-suite run destroyed the
     artifact of the live run being measured.
 
-    `latest` points at the newest run for a stable path to hand a person.
+    `latest.txt` names the newest run, for a stable path to hand a person.
+
+    `base_dir` falls back to `$SMARTOPS_RUNS_DIR`, then to `.smartops/runs`
+    relative to the working directory. The env var exists because the default is
+    relative: any process invoking a run writes into whatever directory it
+    happened to start in, which is how a test suite came to leave 179 artifact
+    directories in the repository.
     """
+    if base_dir is None:
+        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
     case_dir = Path(base_dir) / report.task_id
     stamp = report.created_at.strftime("%Y%m%dT%H%M%S%f")[:-3]
     # Two runs of one case can share a millisecond -- the bench runs them back to

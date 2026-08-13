@@ -1,5 +1,7 @@
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +13,7 @@ from smartops.broker import (
     MAX_PLANNED_DISPATCHES_PER_FAMILY,
     TOOL_BY_FAMILY,
     BrokerRequest,
+    RUNS_DIR_ENV_VAR,
     MissingStepIdGuard,
     ModelChoice,
     _digest,
@@ -60,6 +63,11 @@ def make_task(**overrides):
         scope=make_scope(),
     )
     return AnalystTask(**{**defaults, **overrides})
+
+
+def _runs_dir() -> Path:
+    """Where the conftest fixture points run artifacts for this test."""
+    return Path(os.environ[RUNS_DIR_ENV_VAR])
 
 
 @dataclass
@@ -1263,7 +1271,7 @@ class TestFetchPlanAndReport:
         assert outcome.report.task_id == "run-123"
         assert outcome.report.plan is not None
 
-        case_dir = tmp_path / ".smartops" / "runs" / "run-123"
+        case_dir = _runs_dir() / "run-123"
         assert case_dir.exists()
 
         # Each run lands in its own timestamped directory. Keyed on task_id
@@ -1288,7 +1296,7 @@ class TestFetchPlanAndReport:
                 invoke=fake_invoker(["siem"]),
             )
 
-        case_dir = tmp_path / ".smartops" / "runs" / "run-123"
+        case_dir = _runs_dir() / "run-123"
         runs = [p for p in case_dir.iterdir() if p.is_dir()]
         assert len(runs) == 2, f"both runs must survive, found {[p.name for p in runs]}"
 
