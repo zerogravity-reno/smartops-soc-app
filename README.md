@@ -105,14 +105,6 @@ SubagentMission ──▶ tools_for(family) ──▶ subagent ──▶ Subtask
 
 ---
 
-## 🎨 Waterfall HTML Trace Reports
-
-Interactive, side-by-side 4-phase waterfall HTML reports are generated in `docs/`:
-- **[`docs/trace_unoptimized.html`](docs/trace_unoptimized.html)** — Unoptimized trace comparison (14-turn cap).
-- **[`docs/trace_optimized.html`](docs/trace_optimized.html)** — Optimized trace comparison (5-turn cap + early stop guidance).
-
----
-
 ## 🧪 Testing
 
 ```bash
