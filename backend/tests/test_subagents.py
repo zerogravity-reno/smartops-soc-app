@@ -368,6 +368,75 @@ class TestStructuredOutputModel:
         assert answer_model.model_fields["assessment"].annotation is SiemAssessment
 
 
+class TestNoStructuredAnswerStillReportsItsQueries:
+    """Fix 2: the no-answer path must not be asymmetric between the arms.
+
+    `broker_flat._result_for_step()` has always rebuilt `queries_run` from the
+    collected tool calls when the model produced no structured answer;
+    `investigate()` left it empty in the same situation. That moved two compared
+    metrics -- the bench's `queries_run_count`, and `check_index_scoping()`,
+    which skips any result with no `queries_run` and so never scope-checked Arm S
+    on this path. Arm F's behaviour is the better one, so it was ported here.
+    """
+
+    @staticmethod
+    def _invoke_recording(calls):
+        async def fake(*args, **kwargs):
+            kwargs["collector"].calls.extend(calls)
+            return _Result(None)
+
+        return fake
+
+    async def test_queries_are_rebuilt_from_the_calls_that_actually_ran(self, monkeypatch):
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            self._invoke_recording(
+                [
+                    subagents._ToolCall("splunk_search", "index=botsv3 sourcetype=dns", {"results": [{"a": 1}]}),
+                    subagents._ToolCall("splunk_search", "index=botsv3 sourcetype=web", {"results": []}),
+                    # No recoverable query text: nothing to report, so nothing is.
+                    subagents._ToolCall("splunk_get_indexes", None, {"x": 1}),
+                ]
+            ),
+        )
+
+        result = await investigate(
+            mission("siem"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"]
+        )
+
+        assert [q.query for q in result.queries_run] == [
+            "index=botsv3 sourcetype=dns",
+            "index=botsv3 sourcetype=web",
+        ]
+        # Reconstructed queries carry no category, so the rows still land in
+        # `uncategorised` exactly as they did before -- only the report of what
+        # ran changed.
+        assert result.findings is not None
+        assert len(result.findings.uncategorised) == 3
+
+    async def test_a_scope_check_that_skips_empty_queries_now_sees_this_path(
+        self, monkeypatch
+    ):
+        """The security consequence, stated as the bench states it."""
+        from smartops.bench import check_index_scoping
+
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            self._invoke_recording(
+                [subagents._ToolCall("splunk_search", "index=secret_hr | head 5", {"results": []})]
+            ),
+        )
+
+        result = await investigate(
+            mission("siem"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"]
+        )
+
+        assert result.queries_run
+        assert check_index_scoping([result]) is False
+
+
 def _async_returning(value):
     async def fake(*args, **kwargs):
         return value

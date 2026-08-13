@@ -33,6 +33,7 @@ from typing import Any
 
 from contracts import (
     Evidence,
+    QueryRun,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
@@ -451,6 +452,19 @@ async def investigate(
             stop_reason,
             len(evidence),
         )
+        # The queries the tools were actually *called* with, reconstructed from
+        # the collector. The model's own report of them is what went missing, but
+        # `_ToolCall.query` is the tool input and is the one that really ran.
+        #
+        # This branch has happened twice on real runs, and leaving `queries_run`
+        # empty here made it asymmetric with `broker_flat`'s identical branch,
+        # which has always reconstructed them. Two compared metrics moved with
+        # it: the bench's `queries_run_count` (Arm F reported N where Arm S
+        # reported 0), and `bench.check_index_scoping()`, which skips any result
+        # with no `queries_run` -- so on this path Arm S was never scope-checked
+        # and Arm F always was. A security check that silently does not run on
+        # one arm is worse than either number.
+        queries_run = [QueryRun(query=call.query) for call in collector.calls if call.query]
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.NO_DATA if evidence else SubtaskStatus.ERROR,
@@ -461,8 +475,9 @@ async def investigate(
             ),
             # No answer means no category tags, so every result set lands in
             # `uncategorised` -- the rows were still retrieved and paid for.
-            findings=project(family, collector.calls, []),
+            findings=project(family, collector.calls, queries_run),
             error=None if evidence else "subagent returned no structured output and no evidence",
+            queries_run=queries_run,
             citation_ids=[e.id for e in evidence],
             evidence=evidence,
         )
