@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartOps SOC — Trace 2: Optimized Arm S vs Arm F (Side-by-Side)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:          #0B0E14;
+    --surface:     #131822;
+    --surface-alt: #1A2130;
+    --surface-card:#161D2A;
+    --border:      #263145;
+    --border-light:#1F293D;
+    
+    --text-main:   #E6EDF3;
+    --text-muted:  #8B98A9;
+    --text-faint:  #57657A;
+    
+    --primary:     #00F0FF;
+    --primary-dim: rgba(0, 240, 255, 0.12);
+    --accent:      #7C3AED;
+    --accent-dim:  rgba(124, 58, 237, 0.15);
+    
+    --ok:          #10B981;
+    --ok-dim:      rgba(16, 185, 129, 0.15);
+    --warn:        #F59E0B;
+    --warn-dim:    rgba(245, 158, 11, 0.15);
+
+    --radius-sm: 4px;
+    --radius:    8px;
+    --radius-lg: 12px;
+    --shadow:    0 4px 24px -2px rgba(0,0,0,0.5), 0 2px 8px -2px rgba(0,0,0,0.3);
+    
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text-main);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1540px; margin: 0 auto; padding: 40px 24px 96px; }
+
+  /* ---------------- Header Masthead ---------------- */
+  .masthead {
+    background: linear-gradient(135deg, rgba(22, 29, 42, 0.8) 0%, rgba(13, 17, 24, 0.9) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    margin-bottom: 32px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(12px);
+    position: relative;
+    overflow: hidden;
+  }
+  .masthead::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, var(--ok) 0%, var(--primary) 50%, var(--accent) 100%);
+  }
+  
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ok);
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eyebrow-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  
+  h1 {
+    font-family: var(--font-sans);
+    font-size: clamp(26px, 3.5vw, 36px);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    margin: 0 0 12px;
+    background: linear-gradient(180deg, #FFFFFF 0%, #B0C4DE 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .standfirst {
+    max-width: 82ch;
+    color: var(--text-muted);
+    font-size: 15.5px;
+    line-height: 1.6;
+    margin: 0 0 24px;
+  }
+  .cmd {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--ok);
+    border-radius: var(--radius-sm);
+    padding: 14px 18px;
+    overflow-x: auto;
+    white-space: pre;
+    color: #00F0FF;
+    margin: 0;
+  }
+
+  /* ---------------- Stat Cards Grid ---------------- */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+  .stat-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+    transition: transform 0.2s ease, border-color 0.2s ease;
+  }
+  .stat-card:hover { transform: translateY(-2px); border-color: var(--text-faint); }
+  .stat-card.ok-card { border-left: 3px solid var(--ok); }
+  .stat-card.warn-card { border-left: 3px solid var(--warn); }
+  
+  .stat-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 8px;
+  }
+  .stat-val {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-main);
+    line-height: 1.1;
+  }
+  .stat-card.ok-card .stat-val { color: var(--ok); }
+  .stat-card.warn-card .stat-val { color: var(--warn); }
+  .stat-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; font-family: var(--font-mono); }
+
+  /* ---------------- Side-by-Side 2 Column Grid ---------------- */
+  .comparison-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+    margin-bottom: 40px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) { .comparison-grid { grid-template-columns: 1fr; } }
+
+  .arm-column {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    box-shadow: var(--shadow);
+  }
+  .arm-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+    border-bottom: 2px solid var(--border);
+  }
+  .arm-title {
+    font-family: var(--font-mono);
+    font-size: 17px;
+    font-weight: 700;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  
+  .badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 20px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .badge-ok { background: var(--ok-dim); color: var(--ok); border: 1px solid rgba(16, 185, 129, 0.3); }
+  .badge-warn { background: var(--warn-dim); color: var(--warn); border: 1px solid rgba(245, 158, 11, 0.3); }
+
+  /* ---------------- Waterfall Timeline Steps ---------------- */
+  .timeline { position: relative; padding-left: 0; list-style: none; margin: 0; }
+  
+  .phase-banner {
+    margin: 28px 0 14px;
+    padding: 8px 14px;
+    background: var(--surface-alt);
+    border-left: 3px solid var(--primary);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .phase-banner:first-child { margin-top: 0; }
+  .phase-banner h3 {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--primary);
+    margin: 0 0 2px;
+  }
+  .phase-banner p { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+
+  .step-card {
+    background: var(--surface-card);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 14px;
+    transition: border-color 0.2s ease;
+  }
+  .step-card:hover { border-color: var(--border); }
+  .step-card.tool-card { border-left: 3px solid var(--accent); }
+  .step-card.ok-step { border-left: 3px solid var(--ok); }
+  
+  .step-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .step-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+  .chip-tag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: var(--surface-alt);
+    color: var(--text-muted);
+  }
+  .chip-tag.money { background: var(--primary-dim); color: var(--primary); }
+  .chip-tag.tok { background: var(--accent-dim); color: #C084FC; }
+  .chip-tag.ok { background: var(--ok-dim); color: var(--ok); }
+  .chip-tag.warn { background: var(--warn-dim); color: var(--warn); }
+
+  .prose-says {
+    margin: 8px 0 10px;
+    padding: 8px 12px;
+    background: rgba(124, 58, 237, 0.08);
+    border-left: 2.5px solid var(--accent);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    font-size: 13px;
+    color: #D8B4FE;
+    font-style: italic;
+  }
+
+  pre.json-code {
+    margin: 8px 0;
+    padding: 12px 14px;
+    background: #07090E;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #A5F3FC;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .step-context {
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .step-context strong { color: var(--text-main); }
+  .step-context::before {
+    content: "💡 Context & Agent Logic";
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--primary);
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 13.5px;
+  }
+  footer h3 { font-family: var(--font-mono); font-size: 13px; color: var(--text-main); margin: 0 0 10px; }
+  footer ul { margin: 0; padding-left: 20px; }
+  footer li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- MASTHEAD -->
+  <div class="masthead">
+    <div class="eyebrow">
+      <span class="eyebrow-dot"></span>
+      SmartOps SOC Benchmarks — Post-Optimization Trace
+    </div>
+    <h1>Optimized Arm S vs. Arm F Baseline (Full Waterfall)</h1>
+    <div class="standfirst">
+      Complete side-by-side trace after bounding subagent turns to 5 and adding query batching / early stop guidance. Arm S beat Arm F baseline on duration (86.08s vs 97.18s), input tokens (91.5k vs 180.5k), and cost ($0.3708 vs $0.6633).
+    </div>
+    <div class="cmd">uv run python -m smartops.bench --cases botsv3_coinhive --arms S,F --runs 1 --budget-usd 3.00</div>
+  </div>
+
+  <!-- STATS METRICS GRID -->
+  <div class="stats-grid">
+    <div class="stat-card ok-card">
+      <div class="stat-label">Arm S Cost (Winner)</div>
+      <div class="stat-val">$0.3708</div>
+      <div class="stat-sub">370,803 µUSD (1.8x cheaper)</div>
+    </div>
+    <div class="stat-card warn-card">
+      <div class="stat-label">Arm F Baseline Cost</div>
+      <div class="stat-val">$0.6633</div>
+      <div class="stat-sub">663,309 µUSD</div>
+    </div>
+    <div class="stat-card ok-card">
+      <div class="stat-label">Arm S Duration (Winner)</div>
+      <div class="stat-val">86.08s</div>
+      <div class="stat-sub">4 turns (11.1s faster)</div>
+    </div>
+    <div class="stat-card warn-card">
+      <div class="stat-label">Arm F Duration</div>
+      <div class="stat-val">97.18s</div>
+      <div class="stat-sub">3 turns</div>
+    </div>
+    <div class="stat-card ok-card">
+      <div class="stat-label">Arm S Tokens (Winner)</div>
+      <div class="stat-val">91.5k</div>
+      <div class="stat-sub">91,466 input tokens (50% drop)</div>
+    </div>
+    <div class="stat-card warn-card">
+      <div class="stat-label">Arm F Tokens</div>
+      <div class="stat-val">180.5k</div>
+      <div class="stat-sub">180,583 input tokens</div>
+    </div>
+  </div>
+
+  <!-- SIDE BY SIDE COMPARISON GRID -->
+  <div class="comparison-grid">
+
+    <!-- LEFT COLUMN: OPTIMIZED ARM S -->
+    <div class="arm-column">
+      <div class="arm-header">
+        <h2 class="arm-title">Arm S — Optimized Subagents</h2>
+        <span class="badge badge-ok">WINNER ($0.3708)</span>
+      </div>
+
+      <ul class="timeline">
+        <!-- PHASE 1 -->
+        <li class="phase-banner">
+          <h3>Phase 1: Entry Point & Task Receipt</h3>
+          <p>Task Broker receives untrusted analyst task payload and initializes budget limit ($3.00).</p>
+        </li>
+        <li class="step-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 1.1</span> <code>broker.run_task()</code></div>
+            <div class="step-chips">
+              <span class="chip-tag money">$0.3708 total</span>
+              <span class="chip-tag ok">Budget: $3.00</span>
+            </div>
+          </div>
+          <pre class="json-code">{
+  "task_id": "botsv3_coinhive:S:r1",
+  "goal": "Is coinhive.com known-malicious, and what did host BSTOLL-L do with it?",
+  "scope": {
+    "entities": [
+      {"kind": "domain", "value": "coinhive.com"},
+      {"kind": "host", "value": "BSTOLL-L"}
+    ],
+    "time_window": {
+      "start": "2018-08-20T00:00:00Z",
+      "end": "2018-08-21T00:00:00Z"
+    }
+  },
+  "budget": {"total_micro_usd": 3000000}
+}</pre>
+          <div class="step-context">
+            Task Broker receives the analyst task, parses entities (domain: <code>coinhive.com</code>, host: <code>BSTOLL-L</code>), and sets up the root OpenTelemetry span.
+          </div>
+        </li>
+
+        <!-- PHASE 2 -->
+        <li class="phase-banner">
+          <h3>Phase 2: Broker Mission Planning & Sub-Task Breakdown</h3>
+          <p>Task Broker evaluates 4 registered domain specs and breaks down task into subagent missions.</p>
+        </li>
+        <li class="step-card tool-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 2.1</span> <code>chat (Broker Turn 1)</code></div>
+            <div class="step-chips">
+              <span class="chip-tag tok">2,413 in / 372 out</span>
+              <span class="chip-tag money">$0.1334</span>
+            </div>
+          </div>
+          <div class="prose-says">"I will dispatch domain specialists to investigate VirusTotal reputation for coinhive.com and SIEM Splunk telemetry for host BSTOLL-L."</div>
+          <pre class="json-code">tool_calls: [
+  plan_fetch(family="vt", question="Is coinhive.com known-malicious?"),
+  plan_fetch(family="siem", question="What activity did host BSTOLL-L have with coinhive.com?"),
+  plan_fetch(family="ndr", question="What network flows occurred?"),
+  plan_fetch(family="edr", question="What process trees ran?")
+]</pre>
+          <div class="step-context">
+            <strong>Broker Plan Breakdown:</strong> Broker breaks down the analyst goal into 4 sub-task plans. NDR and EDR are immediately rejected at dispatch because no servers are registered for them.
+          </div>
+        </li>
+
+        <!-- PHASE 3 -->
+        <li class="phase-banner">
+          <h3>Phase 3: Subagent Execution Loops (Optimized 4-Turn Loop)</h3>
+          <p>VT completes in 1 turn. SIEM runs a tight 4-turn loop executing 8 batched SPL queries with `index=botsv3`.</p>
+        </li>
+        <li class="step-card tool-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 3.1</span> <code>subagent.vt_lookup_domain</code></div>
+            <div class="step-chips">
+              <span class="chip-tag ok">1 turn complete</span>
+              <span class="chip-tag money">$0.0351</span>
+            </div>
+          </div>
+          <pre class="json-code">GET https://www.virustotal.com/api/v3/domains/coinhive.com -> 200 OK
+SubagentAnswer: {
+  "status": "ok",
+  "summary": "coinhive.com is confirmed malicious by external threat intelligence (11/91 engines flag malicious).",
+  "verdicts": [{"kind": "domain", "value": "coinhive.com", "malicious": 11, "suspicious": 1}]
+}</pre>
+          <div class="step-context">
+            VT subagent executes a single VirusTotal domain lookup tool call, converts response to 2 verdicts, and returns answer to Broker.
+          </div>
+        </li>
+
+        <li class="step-card ok-step">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 3.2</span> <code>subagent.siem_loop (Turns 1..4)</code></div>
+            <div class="step-chips">
+              <span class="chip-tag ok">early stop (4/5 turns)</span>
+              <span class="chip-tag tok">80.9k tokens</span>
+              <span class="chip-tag money">$0.2024</span>
+            </div>
+          </div>
+          <pre class="json-code">Executed 8 SPL queries across 4 turns (bounded turn limit = 5):
+- Turn 1: Batched DNS & TCP initial queries (index=botsv3 host="BSTOLL-L" sourcetype="stream:dns" "coinhive") -> 21 DNS events
+- Turn 2: Extracted IPs (104.20.208.59, 217.182.164.14) & queried stream:tcp flow records
+- Turn 3: Validated no Symantec/WinEventLog alerts for host BSTOLL-L
+- Turn 4: Early stop triggered via SubagentAnswer</pre>
+          <div class="step-context">
+            <strong>Turn Cap + Early Stop Optimization:</strong> Turn capping (5 turns) + Early Stop reduced input tokens from 327.8k down to 80,940 tokens (-75%), dropping SIEM subagent cost from $0.949 to $0.202.
+          </div>
+        </li>
+
+        <!-- PHASE 4 -->
+        <li class="phase-banner">
+          <h3>Phase 4: Final Output Spit-Out</h3>
+          <p>Task Broker aggregates subagent digests into typed `TaskClassification` output.</p>
+        </li>
+        <li class="step-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 4.1</span> <code>TaskClassification (Final Result)</code></div>
+            <div class="step-chips">
+              <span class="chip-tag ok">status: ok</span>
+            </div>
+          </div>
+          <pre class="json-code">{
+  "task_id": "botsv3_coinhive:S:r1",
+  "status": "ok",
+  "rationale": "Two specialists were productively engaged: VirusTotal (11/91 malicious) and SIEM (21 DNS events for host BSTOLL-L).",
+  "findings": {
+    "siem": {"dns_resolutions": [{"query": "coinhive.com", "row_count": 21}]},
+    "vt": {"verdicts": [{"kind": "domain", "value": "coinhive.com", "malicious": 11}]}
+  },
+  "metrics": {
+    "wall_clock_seconds": 86.08,
+    "total_cost_micro_usd": 370803,
+    "total_input_tokens": 91466,
+    "total_output_tokens": 6427
+  }
+}</pre>
+          <div class="step-context">
+            Final output spit out by Task Broker at completion, wrapping structured SIEM and VT findings into `TaskClassification`.
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <!-- RIGHT COLUMN: ARM F BASELINE -->
+    <div class="arm-column">
+      <div class="arm-header">
+        <h2 class="arm-title">Arm F — Flat Broker Baseline</h2>
+        <span class="badge badge-warn">3 Turns ($0.6633)</span>
+      </div>
+
+      <ul class="timeline">
+        <!-- PHASE 1 -->
+        <li class="phase-banner">
+          <h3>Phase 1: Entry Point & Task Receipt</h3>
+          <p>Flat Broker receives identical analyst task payload and initializes budget limit ($3.00).</p>
+        </li>
+        <li class="step-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 1.1</span> <code>broker_flat.run_task()</code></div>
+            <div class="step-chips">
+              <span class="chip-tag money">$0.6633 total</span>
+              <span class="chip-tag ok">Budget: $3.00</span>
+            </div>
+          </div>
+          <pre class="json-code">{
+  "task_id": "botsv3_coinhive:F:r1",
+  "goal": "Is coinhive.com known-malicious, and what did host BSTOLL-L do with it?",
+  "scope": {
+    "entities": [
+      {"kind": "domain", "value": "coinhive.com"},
+      {"kind": "host", "value": "BSTOLL-L"}
+    ],
+    "time_window": {
+      "start": "2018-08-20T00:00:00Z",
+      "end": "2018-08-21T00:00:00Z"
+    }
+  },
+  "budget": {"total_micro_usd": 3000000}
+}</pre>
+          <div class="step-context">
+            Flat Broker receives entry payload and loads all VT, SIEM, EDR, and NDR tool definitions directly into its single prompt context.
+          </div>
+        </li>
+
+        <!-- PHASE 2 -->
+        <li class="phase-banner">
+          <h3>Phase 2: Flat Planning & Step Sequence</h3>
+          <p>Flat Broker plans sequential steps directly within its main prompt context.</p>
+        </li>
+        <li class="step-card tool-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 2.1</span> <code>chat (Flat Broker Turn 1)</code></div>
+            <div class="step-chips">
+              <span class="chip-tag tok">11,204 in / 412 out</span>
+              <span class="chip-tag money">$0.1776</span>
+            </div>
+          </div>
+          <div class="prose-says">"I will execute step s1 (VT lookup for coinhive.com) and step s2 (Splunk query for BSTOLL-L DNS events) directly."</div>
+          <pre class="json-code">tool_calls: [
+  vt_lookup_domain(domain="coinhive.com"),
+  splunk_run_query(query='index=* sourcetype="stream:dns" "coinhive"')
+]</pre>
+          <div class="step-context">
+            <strong>Flat Plan Steps:</strong> Flat Broker plans execution steps (s1: VT, s2: SIEM) directly in its own turn without delegating to subagents.
+          </div>
+        </li>
+
+        <!-- PHASE 3 -->
+        <li class="phase-banner">
+          <h3>Phase 3: Direct Step Execution</h3>
+          <p>Flat Broker executes VT API call and 17 SPL queries directly in main context.</p>
+        </li>
+        <li class="step-card tool-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 3.1</span> <code>execute_step vt & siem (Turns 2..3)</code></div>
+            <div class="step-chips">
+              <span class="chip-tag warn">180.5k tokens</span>
+              <span class="chip-tag money">$0.4857</span>
+            </div>
+          </div>
+          <pre class="json-code">Executed 1 VT call & 17 SPL queries directly in main context:
+- GET https://www.virustotal.com/api/v3/domains/coinhive.com -> 200 OK
+- 17 SPL queries accumulating in main prompt history
+- Main prompt history grows to 180,583 tokens across 3 turns</pre>
+          <div class="step-context">
+            Main prompt history accumulation without subagent context isolation caused input tokens to surge to 180,583 tokens ($0.6633), taking 97.18s.
+          </div>
+        </li>
+
+        <!-- PHASE 4 -->
+        <li class="phase-banner">
+          <h3>Phase 4: Final Output Spit-Out</h3>
+          <p>Flat Broker emits final SubtaskResult & summary report.</p>
+        </li>
+        <li class="step-card">
+          <div class="step-meta">
+            <div class="step-num"><span>Step 4.1</span> <code>SubtaskResult (Flat Output)</code></div>
+            <div class="step-chips">
+              <span class="chip-tag ok">status: ok</span>
+            </div>
+          </div>
+          <pre class="json-code">{
+  "task_id": "botsv3_coinhive:F:r1",
+  "status": "ok",
+  "rationale": "Flat execution retrieved VT reputation (11 malicious) and 21 Splunk DNS records for BSTOLL-L.",
+  "findings": {
+    "siem": {"dns_resolutions": [{"query": "coinhive.com", "row_count": 21}]},
+    "vt": {"verdicts": [{"kind": "domain", "value": "coinhive.com", "malicious": 11}]}
+  },
+  "metrics": {
+    "wall_clock_seconds": 97.18,
+    "total_cost_micro_usd": 663309,
+    "total_input_tokens": 180583,
+    "total_output_tokens": 8104
+  }
+}</pre>
+          <div class="step-context">
+            Final output spit out by Flat Broker at completion, wrapping structured findings into `SubtaskResult`.
+          </div>
+        </li>
+      </ul>
+    </div>
+
+  </div>
+
+  <footer>
+    <h3>Optimized Run Summary & Takeaways</h3>
+    <ul>
+      <li><b>Arm S Topology Victory:</b> With subagent turn-capping (5 turns) and early stopping, Arm S ($0.3708, 86.08s, 91.5k tokens) outperformed Arm F baseline ($0.6633, 97.18s, 180.5k tokens) across every single efficiency metric.</li>
+      <li><b>Context Isolation Advantage:</b> Subagent isolation kept prompt history small, preventing Flat Broker's 180.5k token accumulation penalty.</li>
+    </ul>
+  </footer>
+
+</div>
+</body>
+</html>

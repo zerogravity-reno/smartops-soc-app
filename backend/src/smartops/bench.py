@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from dotenv import find_dotenv, load_dotenv
+
 from contracts.findings import SiemFindings, VtFindings
 from pydantic import BaseModel, Field
 
@@ -45,6 +47,7 @@ from smartops.guards import IndexScopeGuard
 from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
 from smartops.subagents import domain_runner
+from smartops.tools.registry import load_mcp_servers
 
 logger = logging.getLogger(__name__)
 
@@ -672,6 +675,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _run(argv: list[str] | None = None) -> int:
+    load_dotenv(find_dotenv(usecwd=True))
+    load_mcp_servers()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

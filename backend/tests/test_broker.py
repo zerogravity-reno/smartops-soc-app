@@ -332,6 +332,7 @@ class TestStubSubagent:
         # wrong place, so the two reasons must not collapse into one.
         import smartops.tools.registry as registry
 
+        monkeypatch.setattr(registry, "_clients_by_family", {})
         unconfigured = await broker_task(
             make_task(), Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["siem"])
         )

@@ -457,6 +457,8 @@ class SubtaskResult(_StatusErrorContract):
         raise `AttributeError` for any caller that (legitimately, per tests)
         constructs a plain `SubagentAnswer`.
         """
+        known_ids = {e.id for e in evidence}
+        cids = [cid for cid in answer.citation_ids if cid in known_ids] if known_ids else [e.id for e in evidence]
         return cls(
             task_id=task_id,
             status=answer.status,
@@ -465,7 +467,7 @@ class SubtaskResult(_StatusErrorContract):
             findings=findings,
             assessment=getattr(answer, "assessment", None),
             queries_run=list(answer.queries_run),
-            citation_ids=list(answer.citation_ids),
+            citation_ids=cids,
             gaps=list(answer.gaps),
             evidence=evidence,
         )

@@ -44,7 +44,7 @@ from smartops.broker import BUDGET_REFUSAL_ERROR, SubagentRunner, enrich_mission
 from smartops.domains import DOMAINS
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.guards import IndexScopeGuard, escape_untrusted, fenced
-from smartops.projection import project
+from smartops.projection import project, project_vt
 from smartops.telemetry import record_cost, trace_attributes_for
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
@@ -93,10 +93,10 @@ _LOOKUP_GUIDANCE = """\
 _FAMILY_SPECIALIZATIONS: dict[str, str] = {
     "siem": (
         "SIEM SPECIALIZATION (Splunk):\n"
+        "- MANDATORY: Every SPL query MUST target `index=botsv3` explicitly. Do NOT use wildcard `index=*` as it is forbidden and rejected by the deployment guard.\n"
         "- Retrieve data into CIM categories (Network Resolution, Network Traffic, Endpoint Processes, Authentication).\n"
-        "- First discover available indexes and sourcetypes if unfamiliar.\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
-        "- Filter early using index and sourcetype predicates before searching free-text fields.\n"
+        "- Filter early using index=botsv3 and sourcetype predicates before searching free-text fields.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"
@@ -495,7 +495,7 @@ async def investigate(
         evidence=evidence,
         # The model said which category each of its queries served; the rows come
         # from what the tools returned. Neither half can forge the other.
-        findings=project(family, collector.calls, answer.queries_run),
+        findings=project(family, collector.calls, answer.queries_run) or (project_vt(collector.calls) if family == "vt" else None),
     )
     # `from_answer` cites nothing, because only this layer knows the evidence ids.
     return result.model_copy(update={"citation_ids": [e.id for e in evidence]})

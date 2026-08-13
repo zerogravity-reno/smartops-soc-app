@@ -13,7 +13,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import re
 from contracts import CimCategory, Findings, QueryRun, ResultSet, SiemFindings
+from contracts.findings import VtFindings, VtVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,12 @@ _CIM_BUCKETS: tuple[CimCategory, ...] = (
     "connections",
     "processes",
     "auth_events",
+)
+
+_VT_SUMMARY_RE = re.compile(
+    r"^(?P<kind>\w+)=(?P<value>\S+):\s+"
+    r"(?:(?P<unknown>unknown to VirusTotal)|"
+    r"(?P<malicious>\d+)\s+malicious\s+/\s+(?P<suspicious>\d+)\s+suspicious\s+of\s+(?P<engines>\d+)\s+engines)"
 )
 
 
@@ -52,17 +60,7 @@ def _rows_of(payload: Any) -> list[dict[str, Any]]:
 
 
 def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
-    """Bucket each executed call's rows into the CIM category its query was tagged with.
-
-    Matching is on the query text, not on call order: the collector skips failed
-    calls while the model may still list them, so index alignment breaks exactly
-    when something has gone wrong -- the worst time to lose attribution.
-
-    A result set whose query the model never tagged goes to `uncategorised`
-    rather than being dropped. Silently discarding retrieved rows would be the
-    worse failure, and an unexpectedly full `uncategorised` bucket is a signal
-    worth seeing.
-    """
+    """Bucket each executed call's rows into the CIM category its query was tagged with."""
     by_query: dict[str, CimCategory | None] = {
         _normalise(q.query): q.category for q in queries_run
     }
@@ -91,13 +89,79 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
     return SiemFindings(**buckets)
 
 
-def project(family: str, calls: list[Any], queries_run: list[QueryRun]) -> Findings | None:
-    """The family's typed payload, or `None` where the family has no projector.
+def project_vt(calls: list[Any]) -> VtFindings:
+    """Project captured VT tool calls into VtFindings."""
+    verdicts: list[VtVerdict] = []
+    for c in calls:
+        payload = getattr(c, "payload", c)
+        tool_name = getattr(c, "tool", "vt_lookup")
+        query_val = getattr(c, "query", None)
 
-    `vt` is deliberately absent: its findings are built in
-    `broker.enrich_mission()` straight from parsed `Verdict`s, on a path that
-    calls no model at all.
-    """
+        if isinstance(payload, dict) and "verdicts" in payload:
+            for v in payload["verdicts"]:
+                if isinstance(v, VtVerdict):
+                    verdicts.append(v)
+                elif isinstance(v, dict):
+                    verdicts.append(VtVerdict(**v))
+            continue
+
+        text = str(payload) if payload is not None else ""
+        match = _VT_SUMMARY_RE.search(text)
+        if match:
+            kind = match.group("kind")
+            value = match.group("value")
+            if match.group("unknown"):
+                verdicts.append(
+                    VtVerdict(
+                        kind=kind,
+                        value=value,
+                        found=False,
+                        malicious=0,
+                        suspicious=0,
+                        harmless=0,
+                        undetected=0,
+                        reputation=None,
+                    )
+                )
+            else:
+                malicious = int(match.group("malicious"))
+                suspicious = int(match.group("suspicious"))
+                engines = int(match.group("engines"))
+                harmless = max(0, engines - malicious - suspicious)
+                verdicts.append(
+                    VtVerdict(
+                        kind=kind,
+                        value=value,
+                        found=True,
+                        malicious=malicious,
+                        suspicious=suspicious,
+                        harmless=harmless,
+                        undetected=0,
+                        reputation=None,
+                    )
+                )
+        else:
+            kind = tool_name.replace("vt_lookup_", "").replace("virustotal_", "")
+            if kind not in ("ip", "domain", "url", "file_hash"):
+                kind = "domain"
+            value = query_val or "unknown"
+            verdicts.append(
+                VtVerdict(
+                    kind=kind,
+                    value=value,
+                    found=False,
+                    malicious=0,
+                    suspicious=0,
+                    harmless=0,
+                    undetected=0,
+                    reputation=None,
+                )
+            )
+    return VtFindings(verdicts=verdicts)
+
+
+def project(family: str, calls: list[Any], queries_run: list[QueryRun]) -> Findings | None:
+    """The family's typed payload, or `None` where the family has no projector."""
     if family == "siem":
         return project_siem(calls, queries_run)
     return None
