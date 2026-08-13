@@ -296,6 +296,46 @@ class TestPrompt:
         vt_prompt = subagents._system_prompt_for("vt", turns=14)
         assert "REPUTATION SPECIALIZATION (VirusTotal)" in vt_prompt
 
+    def test_the_budget_block_carries_both_stop_conditions(self):
+        # Two different reasons to stop, and losing either one is expensive in a
+        # different direction. "Running short" stops a subagent that would
+        # otherwise be cut off mid-loop and lose its entire answer -- the failure
+        # the block was originally written for. "Have the answer" stops one that
+        # would otherwise spend its whole turn ceiling confirming a result it
+        # already had: the measured 2026-08-13 siem run burned $2.46 across 14
+        # turns doing exactly that.
+        #
+        # Asserted together, per family, because the two halves live in one
+        # section and an edit that rewrites the section can silently drop one
+        # while leaving it looking intact. That is not hypothetical here -- a
+        # handover claimed this whole optimization had landed when no version of
+        # it had ever been committed.
+        # Whitespace is collapsed because the prompt is a hard-wrapped triple
+        # quoted string: asserting on raw text would make a purely cosmetic
+        # re-wrap look like a deleted instruction.
+        for family in ("siem", "edr", "ndr", "vt"):
+            prompt = " ".join(subagents._system_prompt_for(family, turns=14).split())
+            assert "if you are running short, stop searching" in prompt, family
+            assert "STOP EARLY WHEN YOU HAVE THE ANSWER" in prompt, family
+            assert "ceiling, not a target" in prompt, family
+
+    def test_the_first_turn_is_told_to_batch_independent_queries(self):
+        # One query per turn is what makes a long loop expensive: every turn
+        # re-sends the whole accumulated history, so serial querying pays for the
+        # transcript again on each pass. The execution side was already free --
+        # `Agent` defaults to `ConcurrentToolExecutor`, so several tool calls in
+        # one turn already run concurrently -- and the only thing standing
+        # between sequential and parallel was saying so in the prompt.
+        prompt = " ".join(subagents._system_prompt_for("siem", turns=14).split())
+
+        assert "BATCH YOUR FIRST TURN" in prompt
+        assert "parallel tool calls in turn 1" in prompt
+        # The carve-out is what keeps the instruction honest. Without it the
+        # model is being told to issue queries in turn 1 that depend on values it
+        # has not retrieved yet, and the way a model satisfies that is by
+        # inventing the value.
+        assert "genuinely need a value from an earlier result" in prompt
+
     def test_the_question_cannot_break_out_of_its_fence_by_any_tag(self):
         """Was a single literal `replace("</question>", ...)`, so `</QUESTION>`,
         `</ question>`, and opening a new tag all got through. Escaping `<`
