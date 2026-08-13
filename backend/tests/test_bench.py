@@ -1,0 +1,369 @@
+"""Test suite for smartops-bench interleaved A/B benchmark runner (Task C8 / §8).
+
+Verifies:
+1. Interleaved execution sequence [S, F, S, F, S, F].
+2. Accuracy of duration, tokens, cost per role, queries count, index scoping, findings, and stop_reason.
+3. Median & spread statistical computation and topology comparison logic.
+4. CLI flag handling and output file generation (JSON and Markdown).
+"""
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from contracts import (
+    AnalystTask,
+    Entity,
+    QueryRun,
+    ResultSet,
+    Scope,
+    SiemFindings,
+    SubtaskResult,
+    SubtaskStatus,
+    VtFindings,
+    VtVerdict,
+)
+
+from smartops.bench import (
+    BENCHMARK_CASES,
+    ArmSummary,
+    BenchmarkReport,
+    ComparisonDetail,
+    MetricStats,
+    RunMetrics,
+    _execute_single_run,
+    _run,
+    check_index_scoping,
+    compare_arms,
+    compute_arm_summary,
+    compute_metric_stats,
+    extract_findings_completeness,
+    run,
+    run_interleaved_benchmark,
+)
+from smartops.main import _PLACEHOLDER_MODEL
+
+
+class TestBenchRunnerInterleaving:
+    """Verifies interleaved execution sequence [S, F, S, F, S, F]."""
+
+    @pytest.mark.asyncio
+    async def test_interleaved_sequence_order(self):
+        report = await run_interleaved_benchmark(
+            cases=["botsv3_coinhive"],
+            arms=["S", "F"],
+            runs_per_arm=3,
+            scripted=True,
+        )
+
+        sequence = [r.arm for r in report.raw_runs]
+        assert sequence == ["S", "F", "S", "F", "S", "F"], (
+            f"Execution sequence must be interleaved [S, F, S, F, S, F], got {sequence}"
+        )
+
+        indexed_sequence = [(r.arm, r.run_index) for r in report.raw_runs]
+        assert indexed_sequence == [
+            ("S", 0),
+            ("F", 0),
+            ("S", 1),
+            ("F", 1),
+            ("S", 2),
+            ("F", 2),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_interleaved_execution_multiple_cases(self):
+        report = await run_interleaved_benchmark(
+            cases=["botsv3_coinhive", "custom_case"],
+            arms=["S", "F"],
+            runs_per_arm=2,
+            scripted=True,
+        )
+
+        assert len(report.raw_runs) == 8  # 2 cases * 2 arms * 2 runs
+        case1_sequence = [r.arm for r in report.raw_runs[:4]]
+        case2_sequence = [r.arm for r in report.raw_runs[4:]]
+        assert case1_sequence == ["S", "F", "S", "F"]
+        assert case2_sequence == ["S", "F", "S", "F"]
+
+
+class TestBenchMetricsCollection:
+    """Verifies accuracy of duration, tokens, cost per role, queries, index scoping, findings, and stop_reason."""
+
+    def test_check_index_scoping_valid(self):
+        res = SubtaskResult(
+            task_id="task:siem",
+            status=SubtaskStatus.OK,
+            queries_run=[QueryRun(query="index=botsv3 sourcetype=dns", category="dns_resolutions")],
+        )
+        assert check_index_scoping([res]) is True
+
+    def test_check_index_scoping_invalid_wildcard(self):
+        res = SubtaskResult(
+            task_id="task:siem",
+            status=SubtaskStatus.OK,
+            queries_run=[QueryRun(query="index=* sourcetype=dns", category="dns_resolutions")],
+        )
+        assert check_index_scoping([res]) is False
+
+    def test_check_index_scoping_unpinned_query(self):
+        res = SubtaskResult(
+            task_id="task:siem",
+            status=SubtaskStatus.OK,
+            queries_run=[QueryRun(query="sourcetype=dns | head 5", category="dns_resolutions")],
+        )
+        assert check_index_scoping([res]) is False
+
+    def test_extract_findings_completeness(self):
+        siem_findings = SiemFindings(
+            dns_resolutions=[
+                ResultSet(query="q1", row_count=3, rows=[{"a": 1}, {"a": 2}, {"a": 3}])
+            ],
+            connections=[
+                ResultSet(query="q2", row_count=2, rows=[{"b": 1}, {"b": 2}])
+            ],
+        )
+        vt_findings = VtFindings(
+            verdicts=[
+                VtVerdict(kind="domain", value="coinhive.com", found=True, malicious=5, suspicious=0, harmless=10, undetected=0)
+            ]
+        )
+
+        res_siem = SubtaskResult(task_id="t:siem", status=SubtaskStatus.OK, findings=siem_findings)
+        res_vt = SubtaskResult(task_id="t:vt", status=SubtaskStatus.OK, findings=vt_findings)
+
+        counts = extract_findings_completeness([res_siem, res_vt])
+        assert counts.get("dns_resolutions") == 3
+        assert counts.get("connections") == 2
+        assert counts.get("vt_verdicts") == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_single_run_scripted_metrics(self):
+        task, expected = BENCHMARK_CASES["botsv3_coinhive"]
+        metrics = await _execute_single_run(
+            task,
+            arm="S",
+            run_index=0,
+            expected_families=expected,
+            model=_PLACEHOLDER_MODEL,
+            budget_usd=1.0,
+            scripted=True,
+        )
+
+        assert metrics.arm == "S"
+        assert metrics.case_id == "botsv3_coinhive"
+        assert metrics.wall_clock_seconds >= 0.0
+        assert metrics.total_cost_micro_usd >= 0
+        assert isinstance(metrics.cost_by_role, dict)
+        assert metrics.input_tokens >= 0
+        assert metrics.output_tokens >= 0
+        assert metrics.sequential_turns >= 0
+        assert metrics.queries_run_count >= 0
+        assert metrics.index_scoping_correct is True
+        assert metrics.routing_correctness is True
+        assert metrics.stop_reason in ("scripted", "end_turn")
+        assert set(metrics.dispatched) == set(expected)
+
+
+class TestBenchStatsComputation:
+    """Verifies median and spread computation and topology comparison logic."""
+
+    def test_compute_metric_stats_odd(self):
+        stats = compute_metric_stats([10.0, 30.0, 20.0])
+        assert stats.median == 20.0
+        assert stats.min == 10.0
+        assert stats.max == 30.0
+        assert stats.spread == 20.0
+
+    def test_compute_metric_stats_even(self):
+        stats = compute_metric_stats([10.0, 40.0, 20.0, 30.0])
+        assert stats.median == 25.0
+        assert stats.min == 10.0
+        assert stats.max == 40.0
+        assert stats.spread == 30.0
+
+    def test_compute_arm_summary(self):
+        runs = [
+            RunMetrics(
+                arm="S",
+                case_id="case1",
+                run_index=0,
+                wall_clock_seconds=10.0,
+                total_cost_micro_usd=1000,
+                cost_by_role={"broker": 1000},
+                input_tokens=100,
+                output_tokens=50,
+                sequential_turns=2,
+                queries_run_count=3,
+                index_scoping_correct=True,
+                findings_completeness={"dns": 5},
+                routing_correctness=True,
+                stop_reason="end_turn",
+                dispatched=["siem", "vt"],
+            ),
+            RunMetrics(
+                arm="S",
+                case_id="case1",
+                run_index=1,
+                wall_clock_seconds=12.0,
+                total_cost_micro_usd=1200,
+                cost_by_role={"broker": 1200},
+                input_tokens=120,
+                output_tokens=60,
+                sequential_turns=2,
+                queries_run_count=3,
+                index_scoping_correct=True,
+                findings_completeness={"dns": 5},
+                routing_correctness=True,
+                stop_reason="end_turn",
+                dispatched=["siem", "vt"],
+            ),
+            RunMetrics(
+                arm="S",
+                case_id="case1",
+                run_index=2,
+                wall_clock_seconds=14.0,
+                total_cost_micro_usd=1400,
+                cost_by_role={"broker": 1400},
+                input_tokens=140,
+                output_tokens=70,
+                sequential_turns=3,
+                queries_run_count=4,
+                index_scoping_correct=True,
+                findings_completeness={"dns": 5},
+                routing_correctness=True,
+                stop_reason="end_turn",
+                dispatched=["siem", "vt"],
+            ),
+        ]
+
+        summary = compute_arm_summary("S", runs)
+        assert summary.arm == "S"
+        assert summary.runs_count == 3
+        assert summary.wall_clock_seconds.median == 12.0
+        assert summary.wall_clock_seconds.spread == 4.0
+        assert summary.total_cost_micro_usd.median == 1200.0
+        assert summary.index_scoping_correct_pct == 100.0
+        assert summary.routing_correctness_pct == 100.0
+        assert summary.stop_reasons == {"end_turn": 3}
+        assert summary.cost_by_role_median["broker"] == 1200.0
+
+    def test_compare_arms_statistically_significant(self):
+        sum_S = ArmSummary(
+            arm="S",
+            runs_count=3,
+            wall_clock_seconds=MetricStats(median=100.0, min=98.0, max=102.0, spread=4.0),
+            total_cost_micro_usd=MetricStats(median=5000.0, min=4900.0, max=5100.0, spread=200.0),
+            input_tokens=MetricStats(median=1000.0, min=950.0, max=1050.0, spread=100.0),
+            output_tokens=MetricStats(median=500.0, min=480.0, max=520.0, spread=40.0),
+            sequential_turns=MetricStats(median=10.0, min=9.0, max=11.0, spread=2.0),
+            queries_run_count=MetricStats(median=5.0, min=5.0, max=5.0, spread=0.0),
+            total_findings_rows=MetricStats(median=10.0, min=10.0, max=10.0, spread=0.0),
+            index_scoping_correct_pct=100.0,
+            routing_correctness_pct=100.0,
+            stop_reasons={"end_turn": 3},
+            cost_by_role_median={"broker": 5000.0},
+        )
+
+        sum_F = ArmSummary(
+            arm="F",
+            runs_count=3,
+            wall_clock_seconds=MetricStats(median=20.0, min=18.0, max=22.0, spread=4.0),
+            total_cost_micro_usd=MetricStats(median=1000.0, min=900.0, max=1100.0, spread=200.0),
+            input_tokens=MetricStats(median=200.0, min=150.0, max=250.0, spread=100.0),
+            output_tokens=MetricStats(median=100.0, min=80.0, max=120.0, spread=40.0),
+            sequential_turns=MetricStats(median=2.0, min=2.0, max=2.0, spread=0.0),
+            queries_run_count=MetricStats(median=5.0, min=5.0, max=5.0, spread=0.0),
+            total_findings_rows=MetricStats(median=10.0, min=10.0, max=10.0, spread=0.0),
+            index_scoping_correct_pct=100.0,
+            routing_correctness_pct=100.0,
+            stop_reasons={"end_turn": 3},
+            cost_by_role_median={"broker_flat": 1000.0},
+        )
+
+        comparisons = compare_arms({"S": sum_S, "F": sum_F})
+        comp_wall = next(c for c in comparisons if c.metric_name == "wall_clock_seconds")
+        assert comp_wall.difference_status == "statistically significant difference"
+        assert comp_wall.winner == "F"  # F is faster (20s vs 100s)
+
+        comp_cost = next(c for c in comparisons if c.metric_name == "total_cost_micro_usd")
+        assert comp_cost.difference_status == "statistically significant difference"
+        assert comp_cost.winner == "F"  # F is cheaper
+
+    def test_compare_arms_no_measurable_difference(self):
+        sum_S = ArmSummary(
+            arm="S",
+            runs_count=3,
+            wall_clock_seconds=MetricStats(median=10.0, min=5.0, max=15.0, spread=10.0),
+            total_cost_micro_usd=MetricStats(median=1000.0, min=800.0, max=1200.0, spread=400.0),
+            input_tokens=MetricStats(median=100.0, min=50.0, max=150.0, spread=100.0),
+            output_tokens=MetricStats(median=50.0, min=20.0, max=80.0, spread=60.0),
+            sequential_turns=MetricStats(median=3.0, min=2.0, max=4.0, spread=2.0),
+            queries_run_count=MetricStats(median=2.0, min=1.0, max=3.0, spread=2.0),
+            total_findings_rows=MetricStats(median=5.0, min=2.0, max=8.0, spread=6.0),
+            index_scoping_correct_pct=100.0,
+            routing_correctness_pct=100.0,
+            stop_reasons={"end_turn": 3},
+            cost_by_role_median={"broker": 1000.0},
+        )
+
+        sum_F = ArmSummary(
+            arm="F",
+            runs_count=3,
+            wall_clock_seconds=MetricStats(median=12.0, min=7.0, max=17.0, spread=10.0),
+            total_cost_micro_usd=MetricStats(median=1100.0, min=900.0, max=1300.0, spread=400.0),
+            input_tokens=MetricStats(median=110.0, min=60.0, max=160.0, spread=100.0),
+            output_tokens=MetricStats(median=55.0, min=25.0, max=85.0, spread=60.0),
+            sequential_turns=MetricStats(median=3.0, min=2.0, max=4.0, spread=2.0),
+            queries_run_count=MetricStats(median=2.0, min=1.0, max=3.0, spread=2.0),
+            total_findings_rows=MetricStats(median=5.0, min=2.0, max=8.0, spread=6.0),
+            index_scoping_correct_pct=100.0,
+            routing_correctness_pct=100.0,
+            stop_reasons={"end_turn": 3},
+            cost_by_role_median={"broker_flat": 1100.0},
+        )
+
+        comparisons = compare_arms({"S": sum_S, "F": sum_F})
+        comp_wall = next(c for c in comparisons if c.metric_name == "wall_clock_seconds")
+        assert comp_wall.difference_status == "no measurable difference"
+        assert comp_wall.winner == "none"
+
+
+class TestBenchCLIEntrypoint:
+    """Verifies CLI flag handling and output file generation."""
+
+    @pytest.mark.asyncio
+    async def test_cli_flag_handling_scripted(self):
+        exit_code = await _run(["--cases", "botsv3_coinhive", "--arms", "S,F", "--runs", "1", "--scripted"])
+        assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_cli_output_file_generation_json(self, tmp_path: Path):
+        json_out = tmp_path / "bench_report.json"
+        exit_code = await _run(["--scripted", "--runs", "1", "--out", str(json_out)])
+        assert exit_code == 0
+        assert json_out.exists()
+
+        data = json.loads(json_out.read_text(encoding="utf-8"))
+        assert "raw_runs" in data
+        assert "arm_summaries" in data
+        assert len(data["raw_runs"]) == 2  # 1 run per arm for S and F
+
+    @pytest.mark.asyncio
+    async def test_cli_output_file_generation_markdown(self, tmp_path: Path):
+        md_out = tmp_path / "bench_report.md"
+        exit_code = await _run(["--scripted", "--runs", "1", "--out", str(md_out)])
+        assert exit_code == 0
+        assert md_out.exists()
+
+        text = md_out.read_text(encoding="utf-8")
+        assert "# Benchmark Report — SmartOps SOC A/B Runner" in text
+        assert "Arm S (Hierarchical)" in text
+        assert "Arm F (Flat)" in text
+
+    def test_cli_run_entrypoint(self):
+        with pytest.raises(SystemExit) as exc_info:
+            run(["--scripted", "--runs", "1"])
+        assert exc_info.value.code == 0
