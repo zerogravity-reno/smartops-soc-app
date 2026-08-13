@@ -147,8 +147,15 @@ def _result_line(result: SubtaskResult) -> str:
     parts: list[str] = []
 
     if result.findings is not None:
+        # Not every `Findings` list holds `ResultSet`. `SiemFindings` does, and a
+        # ResultSet knows how many rows it stands for -- but `VtFindings.verdicts`
+        # holds `VtVerdict`, which has no `row_count` because one verdict IS one
+        # indicator. Reading `.row_count` unconditionally raised AttributeError on
+        # every run that returned VT findings, after the investigation had already
+        # finished: no data lost, but the operator saw a traceback instead of their
+        # results. Anything without its own row count contributes itself.
         counts = [
-            f"{name}:{sum(rs.row_count for rs in value)}"
+            f"{name}:{sum(getattr(item, 'row_count', 1) for item in value)}"
             for name, value in result.findings
             if isinstance(value, list) and value
         ]
@@ -265,7 +272,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"comma-separated families to dispatch (default: all of {','.join(ALL_FAMILIES)})",
     )
     parser.add_argument(
-        "--budget-usd", type=float, default=1.0, help="investigation budget in USD (default: 1.0)"
+        # 1.0 was below the cost of a single run and guaranteed a confusing
+        # failure: one siem subagent reserves a measured $1.2431, so a
+        # default-budget run reserved the Broker's hold and was then declined on
+        # siem -- the one domain most cases are about -- reporting "budget
+        # exhausted" without naming the number. A realistic plan (3 siem steps
+        # plus one each edr/vt/ndr) holds ~$7.67 concurrently, and both arms now
+        # reserve per step, so 10.0 clears it with headroom. A ceiling is not a
+        # bill: reservations settle to actual, measured ~1.27x lower.
+        "--budget-usd",
+        type=float,
+        default=10.0,
+        help="investigation budget in USD (default: 10.0)",
     )
     parser.add_argument(
         "--mcp-config",

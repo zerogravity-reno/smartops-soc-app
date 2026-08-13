@@ -3,8 +3,13 @@ import os
 from datetime import datetime, timezone
 
 import pytest
-
-from smartops.main import _build_parser, _load_env_file, _parse_entity, _parse_instant, _resolve_window
+from smartops.main import (
+    _build_parser,
+    _load_env_file,
+    _parse_entity,
+    _parse_instant,
+    _resolve_window,
+)
 
 
 class TestEnvFileLoading:
@@ -196,3 +201,56 @@ class TestOutputEncoding:
         monkeypatch.setattr("sys.stderr", object())
 
         _force_utf8_output()  # must not raise
+
+
+class TestResultLineRendersEveryFindingsShape:
+    """`_result_line` summed `.row_count` over every list on a `Findings`.
+
+    `SiemFindings` holds `ResultSet`s, which have one. `VtFindings.verdicts`
+    holds `VtVerdict`s, which do not -- one verdict *is* one indicator. So any
+    run returning VT findings died with `AttributeError` after the investigation
+    had already completed: no data lost, but the operator got a traceback where
+    the results should have been. Both shapes are pinned here because the crash
+    only appeared on the path a `domain` or `ip` entity takes.
+    """
+
+    def test_verdicts_render_as_a_count_rather_than_crashing(self):
+        from contracts.findings import VtFindings, VtVerdict
+        from smartops.main import _result_line
+
+        from contracts import SubtaskResult, SubtaskStatus
+
+        findings = VtFindings(
+            verdicts=[
+                VtVerdict(
+                    kind="domain",
+                    value="coinhive.com",
+                    found=True,
+                    malicious=7,
+                    suspicious=1,
+                    harmless=60,
+                    undetected=0,
+                    reputation=-42,
+                )
+            ]
+        )
+        line = _result_line(
+            SubtaskResult(task_id="t:vt:step-1", status=SubtaskStatus.OK, findings=findings)
+        )
+
+        assert "verdicts:1" in line
+
+    def test_row_bearing_findings_still_sum_their_rows(self):
+        from contracts.findings import ResultSet, SiemFindings
+        from smartops.main import _result_line
+
+        from contracts import SubtaskResult, SubtaskStatus
+
+        findings = SiemFindings(
+            dns_resolutions=[ResultSet(query="search index=botsv3 coinhive", row_count=28)]
+        )
+        line = _result_line(
+            SubtaskResult(task_id="t:siem:step-1", status=SubtaskStatus.OK, findings=findings)
+        )
+
+        assert "dns_resolutions:28" in line
