@@ -6,10 +6,12 @@ import pytest
 from contracts import (
     AnalystTask,
     Entity,
+    FetchPlan,
     QueryRun,
     ResultSet,
     Scope,
     SiemFindings,
+    StepOutcome,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
@@ -17,9 +19,11 @@ from contracts import (
 )
 
 from smartops.broker import (
+    BUDGET_REFUSAL_ERROR,
     DEFAULT_BROKER_OUTPUT_TOKENS,
     DEFAULT_BROKER_TURNS,
     MAX_DISPATCHES_PER_FAMILY,
+    MAX_PLANNED_DISPATCHES_PER_FAMILY,
     TOOL_BY_FAMILY,
     BrokerRequest,
     ModelChoice,
@@ -1202,4 +1206,233 @@ class TestFetchPlanAndReport:
         assert run_dir.exists()
         assert (run_dir / "report.json").exists()
         assert (run_dir / "evidence.json").exists()
+
+    async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
+        """The regression test for the failure this task exists to remove.
+
+        No `plan_fetch` call means `broker_task()` reconstructs a plan from
+        `dispatched` purely to have something to report. `ok_result` below
+        returns `NO_DATA` with nothing collected -- exactly the shape the old
+        `completed=len(request.collected) > 0` fallback would have called
+        "complete" just because a result existed at all.
+        """
+        monkeypatch.chdir(tmp_path)
+        outcome = await broker_task(
+            make_task(task_id="run-456"),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(ok_result),
+            invoke=fake_invoker(["siem"]),
+        )
+
+        assert outcome.report.plan.rationale == "Synthesized fetch plan from dispatched families"
+        (step_outcome,) = outcome.report.step_outcomes
+        assert step_outcome.completed is False
+        assert step_outcome.evaluated is False
+
+
+class TestCompletionIsCodeEvaluated:
+    """Code decides whether a step is done, not the model's own account of it.
+
+    The negative case is the one that matters: a subagent's `status`/`reason`
+    can say whatever it likes, but `StepOutcome.completed` must only ever
+    reflect `_dispatch()` running the step's own `CompletionRule` against what
+    was actually retrieved.
+    """
+
+    async def test_a_step_below_its_min_rows_stays_incomplete_despite_a_success_status(self):
+        from contracts import CompletionRule, FetchStep
+
+        step = FetchStep(
+            step_id="step-1",
+            family="siem",
+            objective="Retrieve at least 5 auth events",
+            completion=CompletionRule(requires="rows_required", min_rows=5),
+        )
+        request = BrokerRequest(task=make_task())
+        request.plan = FetchPlan(steps=[step], rationale="test plan")
+        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+
+        def claims_success_with_one_row(mission):
+            # status=OK and a reason that reads as satisfied -- what a model
+            # calling this domain "done" would look like. Only one row came
+            # back, well under the rule's min_rows=5.
+            return SubtaskResult(
+                task_id=mission.task_id,
+                status=SubtaskStatus.OK,
+                reason="objective satisfied",
+                findings=SiemFindings(
+                    processes=[ResultSet(query="q", row_count=1, rows=[{"p": "a"}])]
+                ),
+                queries_run=[QueryRun(query="q")],
+            )
+
+        request.run_subagent = runner_returning(claims_success_with_one_row)
+
+        await TOOL_BY_FAMILY["siem"](
+            question="go",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        outcome = request.step_outcomes["step-1"]
+        assert outcome.rows_retrieved == 1
+        assert outcome.completed is False
+        assert outcome.evaluated is True
+
+    async def test_a_step_at_or_above_its_min_rows_is_completed(self):
+        from contracts import CompletionRule, FetchStep
+
+        step = FetchStep(
+            step_id="step-1",
+            family="siem",
+            objective="Retrieve at least 2 auth events",
+            completion=CompletionRule(requires="rows_required", min_rows=2),
+        )
+        request = BrokerRequest(task=make_task())
+        request.plan = FetchPlan(steps=[step], rationale="test plan")
+        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+
+        def two_rows(mission):
+            return SubtaskResult(
+                task_id=mission.task_id,
+                status=SubtaskStatus.OK,
+                findings=SiemFindings(
+                    processes=[
+                        ResultSet(query="q", row_count=2, rows=[{"p": "a"}, {"p": "b"}])
+                    ]
+                ),
+                queries_run=[QueryRun(query="q")],
+            )
+
+        request.run_subagent = runner_returning(two_rows)
+
+        await TOOL_BY_FAMILY["siem"](
+            question="go",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        assert request.step_outcomes["step-1"].completed is True
+
+
+class TestBudgetRefusalIsDistinguishableFromEmpty:
+    """R3: a step refused for budget must not read as an unmet fetch criterion."""
+
+    async def test_a_budget_refusal_sets_the_flag(self):
+        from contracts import FetchStep
+
+        step = FetchStep(step_id="step-1", family="siem", objective="Retrieve auth events")
+        request = BrokerRequest(task=make_task())
+        request.plan = FetchPlan(steps=[step], rationale="test plan")
+        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+
+        def budget_refused(mission):
+            # Exactly what smartops.subagents.investigate() returns when
+            # budget.reserve() comes back None -- see BUDGET_REFUSAL_ERROR.
+            return SubtaskResult(
+                task_id=mission.task_id,
+                status=SubtaskStatus.ERROR,
+                reason="siem not attempted: budget exhausted",
+                error=BUDGET_REFUSAL_ERROR,
+            )
+
+        request.run_subagent = runner_returning(budget_refused)
+
+        await TOOL_BY_FAMILY["siem"](
+            question="go",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        outcome = request.step_outcomes["step-1"]
+        assert outcome.completed is False
+        assert outcome.refused_for_budget is True
+
+    async def test_a_step_that_ran_and_found_nothing_is_not_flagged_as_budget_refused(self):
+        from contracts import FetchStep
+
+        step = FetchStep(step_id="step-1", family="siem", objective="Retrieve auth events")
+        request = BrokerRequest(task=make_task())
+        request.plan = FetchPlan(steps=[step], rationale="test plan")
+        request.step_outcomes[step.step_id] = StepOutcome(step=step)
+
+        def ran_and_found_nothing(mission):
+            return SubtaskResult(
+                task_id=mission.task_id,
+                status=SubtaskStatus.NO_DATA,
+                reason="no matching events",
+                queries_run=[QueryRun(query="q")],
+            )
+
+        request.run_subagent = runner_returning(ran_and_found_nothing)
+
+        await TOOL_BY_FAMILY["siem"](
+            question="go",
+            tool_context=FakeToolContext(
+                tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}
+            ),
+        )
+
+        outcome = request.step_outcomes["step-1"]
+        # A confirmed-empty result satisfies the default completion rule -- as
+        # it should, since the domain was actually queried. The point of this
+        # test is the flag, not `completed`: a budget refusal must never set it.
+        assert outcome.completed is True
+        assert outcome.refused_for_budget is False
+
+
+class TestPerPlanDispatchCap:
+    """MAX_DISPATCHES_PER_FAMILY moved from per-family to per-plan: a legitimate
+    multi-step plan for one family must not collide with the same cap that
+    stops runaway re-dispatch.
+    """
+
+    @staticmethod
+    def _three_step_siem_plan(request):
+        from contracts import FetchStep
+
+        steps = [
+            FetchStep(step_id=f"step-{i}", family="siem", objective=f"objective {i}")
+            for i in range(3)
+        ]
+        request.plan = FetchPlan(steps=steps, rationale="three legitimate siem steps")
+        for s in steps:
+            request.step_outcomes[s.step_id] = StepOutcome(step=s)
+        return steps
+
+    async def test_three_planned_siem_steps_are_all_dispatchable(self):
+        request = BrokerRequest(task=make_task(), run_subagent=runner_returning(ok_result))
+        self._three_step_siem_plan(request)
+
+        for i in range(3):
+            digest = await TOOL_BY_FAMILY["siem"](
+                question=f"q{i}",
+                tool_context=FakeToolContext(
+                    tool_use={"toolUseId": f"tu-{i}"}, invocation_state={"smartops": request}
+                ),
+            )
+            assert "refused" not in digest
+
+        assert request.dispatched.count("siem") == 3
+
+    async def test_the_cap_still_stops_unbounded_redispatch_under_a_plan(self):
+        request = BrokerRequest(task=make_task(), run_subagent=runner_returning(ok_result))
+        self._three_step_siem_plan(request)
+
+        digests = [
+            await TOOL_BY_FAMILY["siem"](
+                question=f"q{i}",
+                tool_context=FakeToolContext(
+                    tool_use={"toolUseId": f"tu-{i}"}, invocation_state={"smartops": request}
+                ),
+            )
+            for i in range(10)
+        ]
+
+        assert any("refused" in d for d in digests)
+        assert request.dispatched.count("siem") == MAX_PLANNED_DISPATCHES_PER_FAMILY
 

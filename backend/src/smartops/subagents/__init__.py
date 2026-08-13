@@ -39,7 +39,7 @@ from contracts import (
     make_answer_model,
 )
 
-from smartops.broker import SubagentRunner, enrich_mission
+from smartops.broker import BUDGET_REFUSAL_ERROR, SubagentRunner, enrich_mission
 from smartops.domains import DOMAINS
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.guards import IndexScopeGuard, escape_untrusted, fenced
@@ -395,7 +395,11 @@ async def investigate(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
             reason=f"{family} not attempted: budget exhausted",
-            error="budget could not cover a subagent call",
+            # This exact string is `smartops.broker.BUDGET_REFUSAL_ERROR` -- the
+            # sentinel `_dispatch()` matches on to set `StepOutcome
+            # .refused_for_budget`, so a step refused here is distinguishable
+            # from one that ran and legitimately found nothing.
+            error=BUDGET_REFUSAL_ERROR,
         )
 
     collector = _EvidenceCollector()

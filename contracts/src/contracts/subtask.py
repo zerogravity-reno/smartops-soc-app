@@ -504,6 +504,25 @@ class StepOutcome(BaseModel):
     confirmed_empty: bool = False
     status: SubtaskStatus | None = None
     reason: str | None = None
+    evaluated: bool = True
+    """False only for a step that never went through `_dispatch()`'s completion-
+    rule tracking at all -- e.g. `broker.py`'s synthesized-plan fallback, which
+    reconstructs a `FetchStep` per dispatched family after the model never
+    called `plan_fetch`. `completed` on such a step is not a judgement, real or
+    fabricated; it is just `False`, because nobody -- code or model -- ever
+    evaluated a rule against it. A consumer must check this before trusting
+    `completed`: `completed=False, evaluated=False` means "unknown", not "ran
+    and fell short" (that is `completed=False, evaluated=True`).
+    """
+    refused_for_budget: bool = False
+    """True when the step's most recent dispatch never actually executed
+    because the shared `Budget` refused to reserve it (see
+    `smartops.broker.BUDGET_REFUSAL_ERROR`). Distinct from an unmet completion
+    rule on purpose: `completed=False` alone reads as "criteria not met", which
+    is a fetch-quality problem, but a budget refusal is a cost problem -- the
+    step was never attempted. Conflating the two turns a budget shortfall into
+    what looks like a data gap.
+    """
 
 
 class CostSummary(BaseModel):

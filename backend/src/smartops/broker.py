@@ -67,14 +67,42 @@ logger = logging.getLogger(__name__)
 
 BROKER_ROLE = "broker"
 
-# How many times one family may be dispatched in a single investigation. Two, so
-# a subagent's reported `gaps` can justify one better-aimed follow-up, and no
-# more. See `_dispatch()` for what this prevents.
+# How many times one family may be dispatched when the fetch plan named it no
+# steps at all -- the Broker never called `plan_fetch`, or called it but planned
+# nothing for this family. Two, so a subagent's reported `gaps` can still
+# justify one better-aimed follow-up, and no more. See `_dispatch()` for what
+# this prevents.
 MAX_DISPATCHES_PER_FAMILY = 2
+
+# Hard ceiling on dispatches for a family the fetch plan DID name steps for.
+# The Broker earns one dispatch per planned step, plus the same "at most twice"
+# re-dispatch allowance MAX_DISPATCHES_PER_FAMILY grants above -- so
+# `len(planned_steps) * 2` -- but a plan is still Broker-authored, not free, and
+# an uncapped multiply would let it recreate the exact runaway re-dispatch this
+# cap exists to stop just by naming more steps. Six is sized for the plan this
+# was built for: three siem steps, each earning one re-dispatch, and it is what
+# keeps that plan from colliding with the cap the way MAX_DISPATCHES_PER_FAMILY
+# alone did. See `_dispatch()`.
+MAX_PLANNED_DISPATCHES_PER_FAMILY = 6
+
+# The literal `SubtaskResult.error` a domain subagent's budget refusal is
+# reported with (`smartops.subagents.investigate()`, when `budget.reserve()`
+# returns None). `_dispatch()` compares against this exact string to set
+# `StepOutcome.refused_for_budget` -- a shared sentinel rather than each side
+# inventing its own text, so the two cannot drift apart.
+BUDGET_REFUSAL_ERROR = "budget could not cover a subagent call"
 
 # Bounds on one Broker run.
 DEFAULT_BROKER_OUTPUT_TOKENS = 4000
-DEFAULT_BROKER_TURNS = 6
+
+# One turn is one model call plus any tool execution that follows. Planning
+# costs the first one -- `plan_fetch` is now mandatory before any dispatch. A
+# worst-case plan built from the scenario MAX_PLANNED_DISPATCHES_PER_FAMILY is
+# sized for -- three siem steps plus one each for edr/vt/ndr, six steps total --
+# costs one dispatch turn per step. The `TaskClassification` the Broker must
+# still emit at the end costs the last one. 1 (plan) + 6 (dispatch) + 1
+# (report) = 8.
+DEFAULT_BROKER_TURNS = 8
 _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
 
 _SYSTEM_PROMPT = """\
@@ -462,10 +490,14 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
             "Do not call it again; engage a different domain or report what you have."
         )
 
-    if req.plan is not None:
-        planned_steps = [s for s in req.plan.steps if s.family == family]
-        allowed_dispatches = max(2, len(planned_steps) * 2)
+    planned_steps = [s for s in req.plan.steps if s.family == family] if req.plan is not None else []
+    if planned_steps:
+        # Per-plan: see MAX_PLANNED_DISPATCHES_PER_FAMILY for the arithmetic and
+        # why this is capped rather than left to grow with the plan's size.
+        allowed_dispatches = min(MAX_PLANNED_DISPATCHES_PER_FAMILY, len(planned_steps) * 2)
     else:
+        # No plan named this family -- either no plan_fetch call was made, or it
+        # was and this family simply is not in it. The no-plan ceiling applies.
         allowed_dispatches = MAX_DISPATCHES_PER_FAMILY
 
     if req.dispatched.count(family) >= allowed_dispatches:
@@ -527,6 +559,11 @@ async def _dispatch(family: ToolFamily, question: str, ctx: ToolContext) -> str:
             outcome.completed = completed
             outcome.status = result.status
             outcome.reason = result.reason
+            # R3: a step this dispatch never actually attempted because the
+            # shared Budget refused it must not read the same as one that ran
+            # and legitimately found nothing -- both leave `completed=False`,
+            # but only one of them is a cost problem rather than a fetch one.
+            outcome.refused_for_budget = result.error == BUDGET_REFUSAL_ERROR
             req.step_outcomes[target_step.step_id] = outcome
 
     record_result_status(result)
@@ -752,7 +789,19 @@ async def _run_broker_task(
         )
         for s in plan_steps:
             if s.step_id not in request.step_outcomes:
-                request.step_outcomes[s.step_id] = StepOutcome(step=s, completed=len(request.collected) > 0)
+                # This plan is a report-time reconstruction, not one the Broker
+                # actually authored -- `plan_fetch` was never called, so
+                # `_dispatch()`'s per-step completion tracking never ran for it
+                # either. `completed=len(request.collected) > 0` used to stand in
+                # here: "something came back, so call it done," without checking
+                # against any rule. That is precisely the guarantee this task
+                # exists to make real, so the honest state for a step nobody --
+                # code or model -- ever evaluated is `completed=False,
+                # evaluated=False`: unknown, not fabricated-complete. See
+                # `StepOutcome.evaluated`.
+                request.step_outcomes[s.step_id] = StepOutcome(
+                    step=s, completed=False, evaluated=False
+                )
 
     step_outcomes = list(request.step_outcomes.values())
     queries_run = [q for res in request.collected for q in res.queries_run]
