@@ -69,20 +69,40 @@ def _normalise(query: str | None) -> str:
     return " ".join((query or "").split())
 
 
+_ROW_KEYS = ("results", "rows", "records", "events")
+
+
 def _rows_of(payload: Any) -> list[dict[str, Any]]:
     """Rows inside a tool result, without knowing the server's envelope.
 
     Tries the common shapes and gives up honestly rather than guessing: an
     unrecognised payload yields no rows and is reported as a zero-row result set,
     which is visible, instead of being silently reshaped into something wrong.
+
+    **`structuredContent` is unwrapped first, and that is not a nicety.** A tool
+    reached through a live `Agent` returns
+    `{"status":…, "content":[…], "structuredContent": {"results": [...]}, …}`,
+    so looking only at the top level found no `results` key and every projected
+    finding came back with `row_count=0` and `rows=[]`. Measured on a 10-case
+    live run: 54 siem evidence items carried real rows -- 100, 2, 100 and so on
+    -- and the projection saw zero for all of them.
+
+    The evidence itself was always captured correctly, which is why citations
+    resolved and nothing looked broken. What was empty was the typed findings
+    payload, which is the entire point of assembling findings in code.
     """
     if isinstance(payload, list):
         return [r for r in payload if isinstance(r, dict)]
     if isinstance(payload, dict):
-        for key in ("results", "rows", "records", "events"):
+        for key in _ROW_KEYS:
             value = payload.get(key)
             if isinstance(value, list):
                 return [r for r in value if isinstance(r, dict)]
+        # Envelope, not payload: recurse once into the field that carries the
+        # real body rather than teaching every caller about the wrapper.
+        inner = payload.get("structuredContent")
+        if isinstance(inner, dict | list):
+            return _rows_of(inner)
     return []
 
 

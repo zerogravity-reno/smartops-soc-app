@@ -1,3 +1,4 @@
+import json
 """Projecting captured tool output into typed findings.
 
 The two-layer payload only works if neither layer can forge the other: the model
@@ -5,7 +6,7 @@ says which category each query served, code supplies every row. These tests pin
 that split, and the behaviour when the two disagree.
 """
 
-from smartops.projection import project, project_siem, project_vt
+from smartops.projection import _rows_of, project, project_siem, project_vt
 from smartops.subagents import _ToolCall
 
 from contracts import QueryRun
@@ -181,3 +182,60 @@ class TestVtProjection:
         findings = project_vt([_ToolCall("vt_lookup_domain", "coinhive.com", {"unexpected": "envelope"})])
 
         assert findings.verdicts == []
+
+
+class TestRowsSurviveTheLiveToolEnvelope:
+    """The rows a Splunk search returned must reach the typed findings payload.
+
+    This was broken for every run the system had ever made. `_rows_of` looked for
+    `results`/`rows`/`records`/`events` at the top level of the payload, but a
+    tool reached through a live `Agent` nests the body under `structuredContent`.
+    So every projected `ResultSet` carried `row_count=0` and `rows=[]`.
+
+    Nothing looked wrong from outside: `Evidence` was captured correctly, so
+    citations resolved and evidence counts were healthy. Only the findings -- the
+    half the two-layer design exists to have code assemble -- were empty.
+    Measured on a 10-case live run: 54 siem evidence items held real rows and the
+    projection saw zero for all 54.
+    """
+
+    @staticmethod
+    def _envelope(rows: list[dict]) -> dict:
+        """The shape splunk_run_query actually returns through a live Agent."""
+        return {
+            "status": "success",
+            "toolUseId": "tooluse_abc",
+            "content": [{"text": json.dumps({"results": rows})}],
+            "structuredContent": {
+                "results": rows,
+                "truncated": False,
+                "total_rows": len(rows),
+            },
+            "isError": False,
+        }
+
+    def test_rows_nested_under_structured_content_are_found(self):
+        rows = [{"host": "BSTOLL-L", "count": "21"}, {"host": "MKRAEUS-L", "count": "7"}]
+
+        assert _rows_of(self._envelope(rows)) == rows
+
+    def test_a_categorised_query_reports_its_real_row_count(self):
+        """End to end: the count a reader sees comes from the tool's own rows."""
+        rows = [{"query": "coinhive.com", "count": "21"}]
+        findings = project_siem(
+            [_ToolCall("splunk_run_query", "index=botsv3 sourcetype=stream:dns", self._envelope(rows))],
+            [QueryRun(query="index=botsv3 sourcetype=stream:dns", category="dns_resolutions")],
+        )
+
+        assert findings.dns_resolutions[0].row_count == 1
+        assert findings.dns_resolutions[0].rows == rows
+
+    def test_an_empty_result_is_still_zero_rather_than_unrecognised(self):
+        """A search that legitimately matched nothing must stay distinguishable
+        from one whose envelope could not be read -- both show 0, so the
+        difference has to hold at the shape level."""
+        assert _rows_of(self._envelope([])) == []
+
+    def test_a_top_level_payload_still_works(self):
+        """The enricher and the scripted path hand rows over unwrapped."""
+        assert _rows_of({"results": [{"a": 1}]}) == [{"a": 1}]
