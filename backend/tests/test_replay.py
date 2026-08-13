@@ -1,9 +1,11 @@
 """Unit tests for Requirement R3 Offline Replay Harness (backend/src/smartops/replay.py)."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 import pytest
-from contracts import Evidence, SubagentMission, Scope, Entity
+from contracts import Evidence, SubagentMission, Scope, Entity, SubtaskResult, SubtaskStatus
+from smartops import subagents
+from smartops.budget import Budget, ModelChoice
 from smartops.replay import (
     ReplayToolset,
     create_replay_subagent_runner,
@@ -12,6 +14,12 @@ from smartops.replay import (
     load_evidence_from_run,
     make_replay_tool,
 )
+from smartops.skills import SKILLS_ENABLED_ENV_VAR
+from smartops.subagents import _system_prompt_for
+
+
+def _tool_names(tools) -> list:
+    return [getattr(t, "tool_name", getattr(t, "__name__", None)) for t in tools]
 
 
 @pytest.fixture
@@ -117,21 +125,122 @@ class TestReplayToolFactory:
         res = await replayed_tool(query="search index=botsv3 query=coinhive.com")
         assert res["status"] == "success"
 
-    def test_get_replay_tools_for_family(self, sample_evidence_items):
+    def test_get_replay_tools_for_family(self, sample_evidence_items, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
         replayer = ReplayToolset(sample_evidence_items)
         siem_tools = get_replay_tools_for_family("siem", replayer)
 
-        tool_names = [getattr(t, "tool_name", getattr(t, "__name__", None)) for t in siem_tools]
+        tool_names = _tool_names(siem_tools)
         assert "splunk__splunk_search" in tool_names
-        assert "read_reference" in tool_names
+        # `read_reference` is half of the skill pack, which is off by default --
+        # see `TestReplayKeepsTheSkillPackHalvesTogether` below.
+        assert "read_reference" not in tool_names
+
+
+class TestReplayKeepsTheSkillPackHalvesTogether:
+    """A replay gets both halves of the skill pack, or neither -- never one.
+
+    The two halves are built by different modules: `replay.py` assembles the
+    toolset, while the routing table that tells the model `read_reference` exists
+    is injected by `subagents._system_prompt_for`, which `investigate` calls on
+    the replay's behalf. Nothing but a test holds those two together, and the
+    failure mode is silent -- a replay ships a tool the prompt never mentions, or
+    advertises a tool that is not attached, and diverges from the run it claims
+    to be replaying without saying so.
+
+    So this asserts the two halves against each other in both directions, rather
+    than asserting either one's contents.
+    """
+
+    @staticmethod
+    async def _replayed_siem_prompt_and_tools(monkeypatch, evidence):
+        """What the replay runner hands `investigate` for a `siem` mission."""
+        captured: dict = {}
+
+        async def fake_investigate(mission, **kwargs):
+            captured["tools"] = _tool_names(kwargs["tools"])
+            # The prompt `investigate` would build for this mission -- see
+            # `subagents._run_agent`, which is the only construction site.
+            captured["prompt"] = _system_prompt_for(
+                mission.tool_family, turns=kwargs["turns"]
+            )
+            return SubtaskResult(task_id=mission.task_id, status=SubtaskStatus.OK)
+
+        monkeypatch.setattr(subagents, "investigate", fake_investigate)
+
+        runner = create_replay_subagent_runner(
+            ReplayToolset(evidence),
+            model=ModelChoice(model_id="mock-model", pricing_key="claude-sonnet-4-6"),
+            budget=Budget(10.0),
+        )
+        await runner(_siem_replay_mission())
+        return captured
+
+    async def test_neither_half_by_default(self, monkeypatch, sample_evidence_items):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+
+        captured = await self._replayed_siem_prompt_and_tools(
+            monkeypatch, sample_evidence_items
+        )
+
+        assert "read_reference" not in captured["tools"]
+        assert "read_reference" not in captured["prompt"]
+        assert "SKILL PACK ROUTING TABLE" not in captured["prompt"]
+        # Gated, not gutted: the replayed domain tools are still there.
+        assert "splunk__splunk_search" in captured["tools"]
+
+    async def test_both_halves_when_enabled(self, monkeypatch, sample_evidence_items):
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        captured = await self._replayed_siem_prompt_and_tools(
+            monkeypatch, sample_evidence_items
+        )
+
+        assert "read_reference" in captured["tools"]
+        assert "read_reference" in captured["prompt"]
+        assert "SKILL PACK ROUTING TABLE" in captured["prompt"]
+
+    @pytest.mark.parametrize("env_value", [None, "0", "1", "true"])
+    async def test_the_tool_and_the_table_never_disagree(
+        self, monkeypatch, sample_evidence_items, env_value
+    ):
+        """The invariant itself, stated once: whatever the switch says, the
+        toolset and the prompt say the same thing as each other."""
+        if env_value is None:
+            monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+        else:
+            monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, env_value)
+
+        captured = await self._replayed_siem_prompt_and_tools(
+            monkeypatch, sample_evidence_items
+        )
+
+        tool_attached = "read_reference" in captured["tools"]
+        table_injected = "SKILL PACK ROUTING TABLE" in captured["prompt"]
+        assert tool_attached == table_injected
 
 
 class TestReplaySubagentRunner:
     def test_create_replay_subagent_runner(self, sample_evidence_items):
-        from smartops.budget import Budget, ModelChoice
         replayer = ReplayToolset(sample_evidence_items)
         model = ModelChoice(model_id="mock-model", pricing_key="claude-sonnet-4-6")
         budget = Budget(10.0)
 
         runner = create_replay_subagent_runner(replayer, model=model, budget=budget)
         assert callable(runner)
+
+
+def _siem_replay_mission() -> SubagentMission:
+    return SubagentMission(
+        task_id="replay-1:siem:u1",
+        hypothesis_id="h1",
+        tool_family="siem",
+        goal="what did BSTOLL-L do with coinhive.com",
+        scope=Scope(
+            entities=[Entity(kind="host", value="BSTOLL-L")],
+            time_window=(
+                datetime(2018, 8, 20, tzinfo=UTC),
+                datetime(2018, 8, 21, tzinfo=UTC),
+            ),
+        ),
+    )

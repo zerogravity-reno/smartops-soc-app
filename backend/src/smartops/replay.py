@@ -184,10 +184,17 @@ def get_replay_tools_for_family(family: ToolFamily | str, replayer: ReplayToolse
         desc = f"Offline replayed tool for {family} domain: {tool_name}"
         tools.append(make_replay_tool(tool_name, desc, replayer))
 
-    # Always attach read_reference for siem
+    # Same switch as the routing table, which `investigate` injects into the
+    # `siem` system prompt from behind `skills_enabled()`. Attaching the tool
+    # unconditionally would have handed a replay the tool with no table telling
+    # the model it exists -- half a skill pack, and a silent divergence from the
+    # run being replayed. Replay follows the global default like every other
+    # caller rather than opting itself in: the recorded evidence carries no note
+    # of what the original run's flag was, so a replay-only opt-in would be a
+    # different fabrication, not a restoration of fidelity.
     if family == "siem":
-        from smartops.skills import read_reference
-        if read_reference not in tools:
+        from smartops.skills import read_reference, skills_enabled
+        if skills_enabled() and read_reference not in tools:
             tools.append(read_reference)
 
     return tools

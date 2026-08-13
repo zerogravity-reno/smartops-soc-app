@@ -26,7 +26,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import sys
 import time
 from collections.abc import Iterator
@@ -44,7 +43,7 @@ from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES, spec_for
 from smartops.guards import IndexScopeGuard
 from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
-from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
+from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +59,23 @@ BENCH_SKILLS_ENABLED = False
 
 @contextlib.contextmanager
 def _pinned_skills(enabled: bool) -> Iterator[bool]:
-    """Pin `SMARTOPS_SKILLS_ENABLED` for the duration of a benchmark, then
-    restore whatever the caller had (including "unset").
+    """Pin the skill-pack switch for the duration of a benchmark, then restore
+    whatever the caller had (including "unset").
 
-    Yields the value that `skills_enabled()` actually reports inside the block,
-    so the report records what the runs saw rather than what was intended.
+    Delegates to `pinned_skills_enabled()`, whose `ContextVar` is scoped to this
+    task and the tasks it spawns. The pin is held across the whole await-heavy
+    run loop below, so writing `os.environ` here -- as this once did -- would
+    have forced the pin onto every other coroutine in the process for the
+    duration: harmless while the loop is sequential, silent and invisible in the
+    artifact the moment it is not.
+
+    Yields `skills_enabled()` read inside the block. That is the pin round-tripped
+    through the predicate -- proof the pin took effect, not an independent
+    observation of a run. The genuinely observed per-run value is
+    `RunMetrics.skills_enabled`, sampled while each run is executing.
     """
-    previous = os.environ.get(SKILLS_ENABLED_ENV_VAR)
-    os.environ[SKILLS_ENABLED_ENV_VAR] = "1" if enabled else "0"
-    try:
+    with pinned_skills_enabled(enabled):
         yield skills_enabled()
-    finally:
-        if previous is None:
-            os.environ.pop(SKILLS_ENABLED_ENV_VAR, None)
-        else:
-            os.environ[SKILLS_ENABLED_ENV_VAR] = previous
 
 
 # Standard benchmark test cases
@@ -540,9 +541,11 @@ async def run_interleaved_benchmark(
     raw_runs: list[RunMetrics] = []
 
     # Pinned across every case, arm and run, so the two arms are compared under
-    # one skill-pack configuration -- and so the value put in the report below is
-    # the value the runs actually executed under.
-    with _pinned_skills(BENCH_SKILLS_ENABLED) as effective_skills_enabled:
+    # one skill-pack configuration. The pinned value is the header the report
+    # carries; each run additionally records its own `skills_enabled` as
+    # observed at execution time, so a run that somehow escaped the pin shows up
+    # in the artifact rather than hiding behind the header.
+    with _pinned_skills(BENCH_SKILLS_ENABLED) as pinned_skills:
         for case_name in cases:
             if case_name in BENCHMARK_CASES:
                 task, expected_families = BENCHMARK_CASES[case_name]
@@ -572,7 +575,7 @@ async def run_interleaved_benchmark(
                         run_idx + 1,
                         runs_per_arm,
                         scripted,
-                        effective_skills_enabled,
+                        pinned_skills,
                     )
                     metrics = await _execute_single_run(
                         task,
@@ -599,7 +602,7 @@ async def run_interleaved_benchmark(
         arms=arms,
         runs_per_arm=runs_per_arm,
         scripted=scripted,
-        skills_enabled=effective_skills_enabled,
+        skills_enabled=pinned_skills,
         raw_runs=raw_runs,
         arm_summaries=arm_summaries,
         comparisons=comparisons,

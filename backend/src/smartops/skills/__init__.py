@@ -9,8 +9,11 @@ The whole pack is behind one off-by-default switch, `SMARTOPS_SKILLS_ENABLED`
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,11 +28,37 @@ SKILLS_ENABLED_ENV_VAR = "SMARTOPS_SKILLS_ENABLED"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+# An in-process pin that outranks the environment variable. A `ContextVar` and
+# not a module global (nor an `os.environ` write) because the only caller that
+# needs to pin the switch -- the A/B bench -- holds it across an await-heavy
+# loop: process-global state would force the pin onto every other coroutine in
+# the process, and nothing in the resulting artifact would show that it had
+# happened. `ContextVar` scopes the pin to the task that set it and the tasks
+# that task spawns, so an `asyncio.gather` over arms still inherits it.
+_SKILLS_ENABLED_PIN: ContextVar[bool | None] = ContextVar(
+    "smartops_skills_enabled_pin", default=None
+)
+
+
+@contextlib.contextmanager
+def pinned_skills_enabled(enabled: bool) -> Iterator[bool]:
+    """Force `skills_enabled()` to `enabled` for this task and its children.
+
+    Yields the pinned value. The ambient `SMARTOPS_SKILLS_ENABLED` is left
+    untouched -- readers outside this task's context still see it.
+    """
+    token = _SKILLS_ENABLED_PIN.set(enabled)
+    try:
+        yield enabled
+    finally:
+        _SKILLS_ENABLED_PIN.reset(token)
+
 
 def skills_enabled() -> bool:
     """Whether the skill pack is attached to a domain subagent at all.
 
-    Off unless `SMARTOPS_SKILLS_ENABLED` is explicitly truthy. Two things ride
+    Off unless a `pinned_skills_enabled()` block says otherwise or
+    `SMARTOPS_SKILLS_ENABLED` is explicitly truthy. Two things ride
     on this single answer -- the routing table injected into the `siem` system
     prompt, and the `read_reference` tool appended to the `siem` toolset. They
     are one switch on purpose: a run with the table but not the tool (or the
@@ -44,6 +73,9 @@ def skills_enabled() -> bool:
     nothing is a clean run. The code stays, to be evaluated on its own once a
     topology has won.
     """
+    pinned = _SKILLS_ENABLED_PIN.get()
+    if pinned is not None:
+        return pinned
     return os.environ.get(SKILLS_ENABLED_ENV_VAR, "").strip().lower() in _TRUTHY
 
 

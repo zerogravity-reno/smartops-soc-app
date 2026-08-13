@@ -648,7 +648,6 @@ def domain_runner(
             except ImportError:
                 pass
 
-
         return await investigate(
             mission,
             model=model,

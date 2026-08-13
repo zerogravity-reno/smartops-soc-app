@@ -7,6 +7,8 @@ Verifies:
 4. CLI flag handling and output file generation (JSON and Markdown).
 """
 
+import asyncio
+import contextlib
 import json
 import os
 from datetime import datetime, timezone
@@ -35,6 +37,7 @@ from smartops.bench import (
     MetricStats,
     RunMetrics,
     _execute_single_run,
+    _pinned_skills,
     _run,
     check_index_scoping,
     compare_arms,
@@ -403,6 +406,89 @@ class TestBenchDisablesTheSkillPack:
             cases=["botsv3_coinhive"], arms=["S"], runs_per_arm=1, scripted=True
         )
         assert SKILLS_ENABLED_ENV_VAR not in os.environ
+
+    def test_the_pin_is_released_when_the_block_raises(self, monkeypatch):
+        """A benchmark that dies mid-run must not leave the switch pinned.
+
+        The pin outranks the environment, so a leaked pin is worse than a leaked
+        env var: every later caller in the process reads an answer that no
+        setting anywhere explains.
+        """
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        with pytest.raises(RuntimeError, match="benchmark exploded"), _pinned_skills(False):
+            assert skills_enabled() is False
+            raise RuntimeError("benchmark exploded")
+
+        assert skills_enabled() is True
+        assert os.environ[SKILLS_ENABLED_ENV_VAR] == "1"
+
+    def test_an_unset_environment_stays_unset_when_the_block_raises(self, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+
+        with pytest.raises(RuntimeError, match="benchmark exploded"), _pinned_skills(True):
+            assert skills_enabled() is True
+            raise RuntimeError("benchmark exploded")
+
+        assert skills_enabled() is False
+        assert SKILLS_ENABLED_ENV_VAR not in os.environ
+
+    def test_nested_pins_restore_the_outer_pin(self, monkeypatch):
+        monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
+
+        with _pinned_skills(True):
+            with contextlib.suppress(RuntimeError), _pinned_skills(False):
+                raise RuntimeError("inner exploded")
+            assert skills_enabled() is True
+
+        assert skills_enabled() is False
+
+    async def test_the_pin_does_not_leak_into_other_concurrent_tasks(self, monkeypatch):
+        """The pin is scoped to the pinning task, not to the process.
+
+        The bench holds it across an await-heavy loop. If it were process-global
+        -- an `os.environ` write, as it once was -- any other coroutine running
+        in the same process would silently be forced to the bench's setting, and
+        neither its output nor the bench's would record that it happened.
+        """
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def bystander() -> bool:
+            await started.wait()
+            observed = skills_enabled()
+            release.set()
+            return observed
+
+        async def bench_like() -> bool:
+            with _pinned_skills(False):
+                started.set()
+                await release.wait()
+                return skills_enabled()
+
+        # The bystander is spawned outside the pinned block, so it does not
+        # inherit the pin -- exactly the situation the ContextVar protects.
+        bystander_task = asyncio.create_task(bystander())
+        pinned_observed = await bench_like()
+        bystander_observed = await bystander_task
+
+        assert pinned_observed is False
+        assert bystander_observed is True
+
+    async def test_tasks_spawned_inside_the_pin_do_inherit_it(self, monkeypatch):
+        """The other half of the scoping rule: an `asyncio.gather` over arms,
+        started from inside the block, is still covered by the pin."""
+        monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
+
+        async def arm() -> bool:
+            await asyncio.sleep(0)
+            return skills_enabled()
+
+        with _pinned_skills(False):
+            observed = await asyncio.gather(arm(), arm())
+
+        assert observed == [False, False]
 
     async def test_json_artifact_records_the_setting(self, tmp_path: Path):
         json_out = tmp_path / "bench_report.json"
