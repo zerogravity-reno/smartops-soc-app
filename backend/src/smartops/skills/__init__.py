@@ -64,14 +64,12 @@ def skills_enabled() -> bool:
     are one switch on purpose: a run with the table but not the tool (or the
     reverse) is a configuration nobody can name afterwards.
 
-    Off is the default because the A/B experiment between the hierarchical
-    Broker (Arm S) and the flat Broker (Arm F) compares tool count, token cost,
-    and sequential turns -- and only Arm S ever got this pack. Leaving it on by
-    default meant every comparison measured topology *plus* a skill pack *plus*
-    an extra tool, with no way to attribute a difference to any one of them. So
-    the confounded configuration is the one you have to ask for; a run that sets
-    nothing is a clean run. The code stays, to be evaluated on its own once a
-    topology has won.
+    Off is the default so that the confounded configuration is the one you have
+    to ask for. The pack adds a routing table and a tool to `siem` and nothing
+    else, so a run that silently had it on reports tool counts and token costs
+    that no later run can be compared against unless it had it on too. A run
+    that sets nothing is a clean run. The code stays, to be evaluated on its own
+    merits against a measured baseline.
     """
     pinned = _SKILLS_ENABLED_PIN.get()
     if pinned is not None:

@@ -486,12 +486,11 @@ def evaluate_step(
 ) -> StepOutcome:
     """The **single** implementation of a fetch step's completion rule.
 
-    Both arms call this. Arm S reaches it from `_dispatch()`, once per dispatch
-    a subagent answered; Arm F reaches it from its per-step loop, once per step
-    execution it ran in the Broker's own context. A second implementation would
-    drift, and the drift would land inside per-step completion -- a headline A/B
-    metric -- where it would read as a topology result rather than as two
-    slightly different rules.
+    Reached from `_dispatch()`, once per dispatch a subagent answered. It was
+    written as the shared implementation for two topologies and stays one
+    function now that only one remains: whether a step is complete is a property
+    of the step and its result, and nothing above should be free to decide it
+    differently.
 
     `prior` carries the accumulation across re-dispatches of the same step:
     `rows_retrieved` and `confirmed_empty` are cumulative, because a step that

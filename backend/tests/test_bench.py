@@ -1,10 +1,15 @@
-"""Test suite for smartops-bench interleaved A/B benchmark runner (Task C8 / §8).
+"""Test suite for the `smartops-bench` measurement harness.
 
 Verifies:
-1. Interleaved execution sequence [S, F, S, F, S, F].
-2. Accuracy of duration, tokens, cost per role, queries count, index scoping, findings, and stop_reason.
-3. Median & spread statistical computation and topology comparison logic.
+1. Every requested run executes, once, and is indexed.
+2. Accuracy of duration, tokens, cost per role, queries count, index scoping,
+   findings, and stop_reason.
+3. Median & spread statistical computation.
 4. CLI flag handling and output file generation (JSON and Markdown).
+
+The cross-arm comparison tests went with the flat baseline. They exercised a
+significance rule that compared two arms' medians against a hardcoded threshold
+-- a rule already observed calling a one-millisecond delta significant.
 """
 
 import asyncio
@@ -33,14 +38,12 @@ from smartops.bench import (
     BENCHMARK_CASES,
     ArmSummary,
     BenchmarkReport,
-    ComparisonDetail,
     MetricStats,
     RunMetrics,
     _execute_single_run,
     _pinned_skills,
     _run,
     check_index_scoping,
-    compare_arms,
     compute_arm_summary,
     compute_metric_stats,
     extract_findings_completeness,
@@ -51,47 +54,38 @@ from smartops.main import _PLACEHOLDER_MODEL
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
 
 
-class TestBenchRunnerInterleaving:
-    """Verifies interleaved execution sequence [S, F, S, F, S, F]."""
+class TestBenchRunOrdering:
+    """Every requested run happens, once, in case-then-run order."""
 
     @pytest.mark.asyncio
-    async def test_interleaved_sequence_order(self):
+    async def test_every_run_is_executed_and_indexed(self):
         report = await run_interleaved_benchmark(
             cases=["botsv3_coinhive"],
-            arms=["S", "F"],
             runs_per_arm=3,
             scripted=True,
         )
 
-        sequence = [r.arm for r in report.raw_runs]
-        assert sequence == ["S", "F", "S", "F", "S", "F"], (
-            f"Execution sequence must be interleaved [S, F, S, F, S, F], got {sequence}"
-        )
-
-        indexed_sequence = [(r.arm, r.run_index) for r in report.raw_runs]
-        assert indexed_sequence == [
+        assert [(r.arm, r.run_index) for r in report.raw_runs] == [
             ("S", 0),
-            ("F", 0),
             ("S", 1),
-            ("F", 1),
             ("S", 2),
-            ("F", 2),
         ]
 
     @pytest.mark.asyncio
-    async def test_interleaved_execution_multiple_cases(self):
+    async def test_multiple_cases_each_get_their_full_run_count(self):
         report = await run_interleaved_benchmark(
             cases=["botsv3_coinhive", "custom_case"],
-            arms=["S", "F"],
             runs_per_arm=2,
             scripted=True,
         )
 
-        assert len(report.raw_runs) == 8  # 2 cases * 2 arms * 2 runs
-        case1_sequence = [r.arm for r in report.raw_runs[:4]]
-        case2_sequence = [r.arm for r in report.raw_runs[4:]]
-        assert case1_sequence == ["S", "F", "S", "F"]
-        assert case2_sequence == ["S", "F", "S", "F"]
+        assert len(report.raw_runs) == 4  # 2 cases * 2 runs
+        assert [r.case_id for r in report.raw_runs] == [
+            "botsv3_coinhive",
+            "botsv3_coinhive",
+            "custom_case",
+            "custom_case",
+        ]
 
 
 class TestBenchMetricsCollection:
@@ -234,7 +228,7 @@ class TestBenchMetricsCollection:
         assert isinstance(metrics.cost_by_role, dict)
         assert metrics.input_tokens >= 0
         assert metrics.output_tokens >= 0
-        assert metrics.sequential_turns >= 0
+        assert metrics.model_calls >= 0
         assert metrics.queries_run_count >= 0
         assert metrics.index_scoping_correct is True
         assert metrics.routing_correctness is True
@@ -270,7 +264,7 @@ class TestBenchStatsComputation:
                 cost_by_role={"broker": 1000},
                 input_tokens=100,
                 output_tokens=50,
-                sequential_turns=2,
+                model_calls=2,
                 queries_run_count=3,
                 index_scoping_correct=True,
                 findings_completeness={"dns": 5},
@@ -287,7 +281,7 @@ class TestBenchStatsComputation:
                 cost_by_role={"broker": 1200},
                 input_tokens=120,
                 output_tokens=60,
-                sequential_turns=2,
+                model_calls=2,
                 queries_run_count=3,
                 index_scoping_correct=True,
                 findings_completeness={"dns": 5},
@@ -304,7 +298,7 @@ class TestBenchStatsComputation:
                 cost_by_role={"broker": 1400},
                 input_tokens=140,
                 output_tokens=70,
-                sequential_turns=3,
+                model_calls=3,
                 queries_run_count=4,
                 index_scoping_correct=True,
                 findings_completeness={"dns": 5},
@@ -325,93 +319,12 @@ class TestBenchStatsComputation:
         assert summary.stop_reasons == {"end_turn": 3}
         assert summary.cost_by_role_median["broker"] == 1200.0
 
-    def test_compare_arms_statistically_significant(self):
-        sum_S = ArmSummary(
-            arm="S",
-            runs_count=3,
-            wall_clock_seconds=MetricStats(median=100.0, min=98.0, max=102.0, spread=4.0),
-            total_cost_micro_usd=MetricStats(median=5000.0, min=4900.0, max=5100.0, spread=200.0),
-            input_tokens=MetricStats(median=1000.0, min=950.0, max=1050.0, spread=100.0),
-            output_tokens=MetricStats(median=500.0, min=480.0, max=520.0, spread=40.0),
-            sequential_turns=MetricStats(median=10.0, min=9.0, max=11.0, spread=2.0),
-            queries_run_count=MetricStats(median=5.0, min=5.0, max=5.0, spread=0.0),
-            total_findings_rows=MetricStats(median=10.0, min=10.0, max=10.0, spread=0.0),
-            index_scoping_correct_pct=100.0,
-            routing_correctness_pct=100.0,
-            stop_reasons={"end_turn": 3},
-            cost_by_role_median={"broker": 5000.0},
-        )
-
-        sum_F = ArmSummary(
-            arm="F",
-            runs_count=3,
-            wall_clock_seconds=MetricStats(median=20.0, min=18.0, max=22.0, spread=4.0),
-            total_cost_micro_usd=MetricStats(median=1000.0, min=900.0, max=1100.0, spread=200.0),
-            input_tokens=MetricStats(median=200.0, min=150.0, max=250.0, spread=100.0),
-            output_tokens=MetricStats(median=100.0, min=80.0, max=120.0, spread=40.0),
-            sequential_turns=MetricStats(median=2.0, min=2.0, max=2.0, spread=0.0),
-            queries_run_count=MetricStats(median=5.0, min=5.0, max=5.0, spread=0.0),
-            total_findings_rows=MetricStats(median=10.0, min=10.0, max=10.0, spread=0.0),
-            index_scoping_correct_pct=100.0,
-            routing_correctness_pct=100.0,
-            stop_reasons={"end_turn": 3},
-            cost_by_role_median={"broker_flat": 1000.0},
-        )
-
-        comparisons = compare_arms({"S": sum_S, "F": sum_F})
-        comp_wall = next(c for c in comparisons if c.metric_name == "wall_clock_seconds")
-        assert comp_wall.difference_status == "statistically significant difference"
-        assert comp_wall.winner == "F"  # F is faster (20s vs 100s)
-
-        comp_cost = next(c for c in comparisons if c.metric_name == "total_cost_micro_usd")
-        assert comp_cost.difference_status == "statistically significant difference"
-        assert comp_cost.winner == "F"  # F is cheaper
-
-    def test_compare_arms_no_measurable_difference(self):
-        sum_S = ArmSummary(
-            arm="S",
-            runs_count=3,
-            wall_clock_seconds=MetricStats(median=10.0, min=5.0, max=15.0, spread=10.0),
-            total_cost_micro_usd=MetricStats(median=1000.0, min=800.0, max=1200.0, spread=400.0),
-            input_tokens=MetricStats(median=100.0, min=50.0, max=150.0, spread=100.0),
-            output_tokens=MetricStats(median=50.0, min=20.0, max=80.0, spread=60.0),
-            sequential_turns=MetricStats(median=3.0, min=2.0, max=4.0, spread=2.0),
-            queries_run_count=MetricStats(median=2.0, min=1.0, max=3.0, spread=2.0),
-            total_findings_rows=MetricStats(median=5.0, min=2.0, max=8.0, spread=6.0),
-            index_scoping_correct_pct=100.0,
-            routing_correctness_pct=100.0,
-            stop_reasons={"end_turn": 3},
-            cost_by_role_median={"broker": 1000.0},
-        )
-
-        sum_F = ArmSummary(
-            arm="F",
-            runs_count=3,
-            wall_clock_seconds=MetricStats(median=12.0, min=7.0, max=17.0, spread=10.0),
-            total_cost_micro_usd=MetricStats(median=1100.0, min=900.0, max=1300.0, spread=400.0),
-            input_tokens=MetricStats(median=110.0, min=60.0, max=160.0, spread=100.0),
-            output_tokens=MetricStats(median=55.0, min=25.0, max=85.0, spread=60.0),
-            sequential_turns=MetricStats(median=3.0, min=2.0, max=4.0, spread=2.0),
-            queries_run_count=MetricStats(median=2.0, min=1.0, max=3.0, spread=2.0),
-            total_findings_rows=MetricStats(median=5.0, min=2.0, max=8.0, spread=6.0),
-            index_scoping_correct_pct=100.0,
-            routing_correctness_pct=100.0,
-            stop_reasons={"end_turn": 3},
-            cost_by_role_median={"broker_flat": 1100.0},
-        )
-
-        comparisons = compare_arms({"S": sum_S, "F": sum_F})
-        comp_wall = next(c for c in comparisons if c.metric_name == "wall_clock_seconds")
-        assert comp_wall.difference_status == "no measurable difference"
-        assert comp_wall.winner == "none"
-
-
 class TestBenchCLIEntrypoint:
     """Verifies CLI flag handling and output file generation."""
 
     @pytest.mark.asyncio
     async def test_cli_flag_handling_scripted(self):
-        exit_code = await _run(["--cases", "botsv3_coinhive", "--arms", "S,F", "--runs", "1", "--scripted"])
+        exit_code = await _run(["--cases", "botsv3_coinhive", "--runs", "1", "--scripted"])
         assert exit_code == 0
 
     @pytest.mark.asyncio
@@ -424,7 +337,7 @@ class TestBenchCLIEntrypoint:
         data = json.loads(json_out.read_text(encoding="utf-8"))
         assert "raw_runs" in data
         assert "arm_summaries" in data
-        assert len(data["raw_runs"]) == 2  # 1 run per arm for S and F
+        assert len(data["raw_runs"]) == 1
 
     @pytest.mark.asyncio
     async def test_cli_output_file_generation_markdown(self, tmp_path: Path):
@@ -434,9 +347,9 @@ class TestBenchCLIEntrypoint:
         assert md_out.exists()
 
         text = md_out.read_text(encoding="utf-8")
-        assert "# Benchmark Report — SmartOps SOC A/B Runner" in text
-        assert "Arm S (Hierarchical)" in text
-        assert "Arm F (Flat)" in text
+        assert "# Benchmark Report — SmartOps SOC" in text
+        assert "| Metric | Median (min - max) |" in text
+        assert "Cache Read Tokens" in text
 
     def test_cli_run_entrypoint(self):
         with pytest.raises(SystemExit) as exc_info:
@@ -445,23 +358,22 @@ class TestBenchCLIEntrypoint:
 
 
 class TestBenchDisablesTheSkillPack:
-    """The A/B compares topologies, so the skill pack -- which only Arm S can
-    receive -- is pinned off for every arm, and the pin is written into the
-    artifact. A run whose configuration is not recorded in its own output cannot
-    be compared against a later run.
+    """The skill pack is pinned off for every run, and the pin is written into
+    the artifact. A run whose configuration is not recorded in its own output
+    cannot be compared against a later run.
     """
 
-    async def test_pack_is_off_for_both_arms_even_if_the_environment_enables_it(
+    async def test_pack_is_off_even_if_the_environment_enables_it(
         self, monkeypatch
     ):
         monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
 
         report = await run_interleaved_benchmark(
-            cases=["botsv3_coinhive"], arms=["S", "F"], runs_per_arm=1, scripted=True
+            cases=["botsv3_coinhive"], arms=["S"], runs_per_arm=1, scripted=True
         )
 
         assert report.skills_enabled is False
-        assert {r.arm for r in report.raw_runs} == {"S", "F"}
+        assert {r.arm for r in report.raw_runs} == {"S"}
         assert all(r.skills_enabled is False for r in report.raw_runs)
 
     async def test_the_ambient_setting_is_restored_afterwards(self, monkeypatch):

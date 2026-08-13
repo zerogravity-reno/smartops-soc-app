@@ -468,13 +468,11 @@ async def investigate(
         # `_ToolCall.query` is the tool input and is the one that really ran.
         #
         # This branch has happened twice on real runs, and leaving `queries_run`
-        # empty here made it asymmetric with `broker_flat`'s identical branch,
-        # which has always reconstructed them. Two compared metrics moved with
-        # it: the bench's `queries_run_count` (Arm F reported N where Arm S
-        # reported 0), and `bench.check_index_scoping()`, which skips any result
-        # with no `queries_run` -- so on this path Arm S was never scope-checked
-        # and Arm F always was. A security check that silently does not run on
-        # one arm is worse than either number.
+        # empty here is not cosmetic. `bench.check_index_scoping()` SKIPS any
+        # result with no `queries_run`, so a run that lost its structured answer
+        # would silently go un-scope-checked and still report 100% scoping
+        # correct. A security check that quietly does not run is worse than one
+        # that fails.
         queries_run = [QueryRun(query=call.query) for call in collector.calls if call.query]
         return SubtaskResult(
             task_id=mission.task_id,

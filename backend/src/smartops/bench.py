@@ -1,22 +1,29 @@
-"""Requirement R2: `smartops-bench` Interleaved A/B Runner (Task C8 / §8).
+"""`smartops-bench`: runs the Task Broker over benchmark cases and records what it cost.
 
-Executes N interleaved benchmark runs per topology arm (Arm S: Hierarchical Multi-Agent Task
-Broker, Arm F: Flat Broker Baseline) against pre-defined or custom investigative test cases.
+Originally an A/B runner comparing the hierarchical Broker (Arm S) against a flat
+baseline (Arm F). The flat baseline was dropped in favour of the subagent design,
+so this is now a single-topology measurement harness: N runs per case, median and
+spread across them.
 
-Collects metrics per run:
+The cross-arm comparison machinery went with Arm F, and that retired two defects
+rather than fixing them. `routing_correctness` was comparing two different
+quantities -- Arm S recorded dispatch INTENT while Arm F recorded REALISED work --
+and the significance rule was a hardcoded threshold that called a one-millisecond
+delta "statistically significant". Neither has a second arm to be wrong about now.
+
+Collects per run:
 - Wall-clock duration
 - Total cost & cost by role (`Budget.spend_by_role()`)
-- Input / output token counts (`accumulated_usage`)
-- Sequential model turns
+- Input / output tokens, and cache read/write tokens (`accumulated_usage`)
+- Model calls (ledger entries -- see `RunMetrics.model_calls`, which is NOT turns)
 - Queries run count
 - Index scoping correctness (`guards.IndexScopeGuard` / allowlist check)
 - Findings completeness (row counts per category)
 - Routing correctness (`dispatched` vs expected families)
 - Failure mode (`stop_reason`)
 
-Computes statistical aggregation (median & spread) across arms and generates
-a comparative report identifying statistically significant topology differences
-or reporting "no measurable difference". Supports offline dry-runs with --scripted / --mock.
+Supports offline dry-runs with --scripted / --mock, which cost nothing and call no
+model. A report whose `scripted` is true measured the plumbing, not the system.
 """
 
 from __future__ import annotations
@@ -40,7 +47,6 @@ from pydantic import BaseModel, Field
 
 from contracts import AnalystTask, Entity, Scope, SubtaskResult, ToolFamily
 from smartops.broker import BROKER_ROLE, BrokerOutcome, broker_task
-from smartops.broker_flat import BROKER_FLAT_ROLE, broker_flat_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES, spec_for
 from smartops.guards import IndexScopeGuard
@@ -52,12 +58,11 @@ from smartops.tools.registry import load_mcp_servers
 logger = logging.getLogger(__name__)
 
 
-# The benchmark's own answer to "was the skill pack in play?", forced onto both
-# arms. Arm S is the only arm that can receive the pack, so leaving it to the
-# ambient environment would let a stray `SMARTOPS_SKILLS_ENABLED=1` in a shell
-# hand Arm S a routing table and an extra tool that Arm F cannot have -- and the
-# tool-count, token-cost and turn-count comparisons would silently be measuring
-# that instead of topology. The bench pins it rather than trusting the default.
+# The benchmark's own answer to "was the skill pack in play?", pinned rather than
+# inherited. A stray `SMARTOPS_SKILLS_ENABLED=1` in a shell would otherwise hand
+# the siem subagent a routing table and an extra tool, and every cost and token
+# figure the run reports would silently be measuring that configuration instead
+# of the default one -- with nothing in the artifact to say so.
 BENCH_SKILLS_ENABLED = False
 
 
@@ -259,7 +264,7 @@ BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
 class RunMetrics(BaseModel):
     """Metrics captured for a single benchmark run."""
 
-    arm: str  # "S" or "F"
+    arm: str  # "S" -- the only topology, kept so older reports stay readable
     case_id: str
     run_index: int
     wall_clock_seconds: float
@@ -267,7 +272,23 @@ class RunMetrics(BaseModel):
     cost_by_role: dict[str, int]
     input_tokens: int
     output_tokens: int
-    sequential_turns: int
+    cache_read_input_tokens: int = 0
+    """Prefix tokens billed at the cache-read rate rather than full input price.
+
+    The only observable proof that prompt caching is actually engaged: the cache
+    point is silently ignored below the provider's minimum cacheable prefix, so
+    a run that fails to cache looks completely normal apart from this being 0.
+    """
+    cache_creation_input_tokens: int = 0
+    """Prefix tokens written to the cache, billed at ~1.25x input price."""
+    model_calls: int
+    """Settled entries in the budget ledger -- one per billed model call.
+
+    Named for what it counts. It was `sequential_turns` until it was checked
+    against the ledger, and it has never measured turns: a run whose Broker,
+    siem subagent and vt lookup each billed once reports 3 regardless of how
+    many turns any of them took.
+    """
     queries_run_count: int
     index_scoping_correct: bool
     findings_completeness: dict[str, int]
@@ -292,7 +313,7 @@ class MetricStats(BaseModel):
 
 
 class ArmSummary(BaseModel):
-    """Summary statistics across multiple runs for a single arm."""
+    """Median and spread across the runs of one arm."""
 
     arm: str
     runs_count: int
@@ -300,25 +321,14 @@ class ArmSummary(BaseModel):
     total_cost_micro_usd: MetricStats
     input_tokens: MetricStats
     output_tokens: MetricStats
-    sequential_turns: MetricStats
+    cache_read_input_tokens: MetricStats
+    model_calls: MetricStats
     queries_run_count: MetricStats
     total_findings_rows: MetricStats
     index_scoping_correct_pct: float
     routing_correctness_pct: float
     stop_reasons: dict[str, int]
     cost_by_role_median: dict[str, float]
-
-
-class ComparisonDetail(BaseModel):
-    """Comparison result for a single metric across arms."""
-
-    metric_name: str
-    median_S: float | None = None
-    median_F: float | None = None
-    delta: float | None = None
-    within_arm_spread: float | None = None
-    difference_status: str
-    winner: str
 
 
 class BenchmarkReport(BaseModel):
@@ -333,23 +343,21 @@ class BenchmarkReport(BaseModel):
     """The skill-pack setting this benchmark pinned onto *every* arm."""
     raw_runs: list[RunMetrics]
     arm_summaries: dict[str, ArmSummary]
-    comparisons: list[ComparisonDetail]
 
     def to_markdown(self) -> str:
         lines: list[str] = [
-            "# Benchmark Report — SmartOps SOC A/B Runner",
+            "# Benchmark Report — SmartOps SOC",
             "",
             f"- **Timestamp:** {self.timestamp}",
             f"- **Cases:** {', '.join(self.cases)}",
-            f"- **Arms:** {', '.join(self.arms)}",
-            f"- **Runs per arm:** {self.runs_per_arm}",
+            f"- **Runs per case:** {self.runs_per_arm}",
             f"- **Scripted Mode:** {self.scripted}",
             f"- **Skill Pack ({SKILLS_ENABLED_ENV_VAR}):** {self.skills_enabled}",
             "",
-            "## Summary Comparison",
+            "## Summary",
             "",
-            "| Metric | Arm S (Hierarchical) | Arm F (Flat) | Comparison |",
-            "|---|---|---|---|",
+            "| Metric | Median (min - max) |",
+            "|---|---|",
         ]
 
         def _fmt_arm(arm: str, attr: str, fmt: str = ".2f") -> str:
@@ -371,37 +379,25 @@ class BenchmarkReport(BaseModel):
         rows = [
             ("Wall clock (s)", "wall_clock_seconds", ".3f"),
             ("Total Cost (micro-USD)", "total_cost_micro_usd", ".0f"),
-            ("Input Tokens", "input_tokens", ".0f"),
+            ("Input Tokens (uncached)", "input_tokens", ".0f"),
+            ("Cache Read Tokens", "cache_read_input_tokens", ".0f"),
             ("Output Tokens", "output_tokens", ".0f"),
-            ("Sequential Turns", "sequential_turns", ".0f"),
+            ("Model Calls", "model_calls", ".0f"),
             ("Queries Run", "queries_run_count", ".0f"),
             ("Findings Rows", "total_findings_rows", ".0f"),
         ]
 
-        comp_by_metric = {c.metric_name: c for c in self.comparisons}
-
         for label, attr, fmt in rows:
-            val_s = _fmt_arm("S", attr, fmt)
-            val_f = _fmt_arm("F", attr, fmt)
-            comp = comp_by_metric.get(attr)
-            if comp:
-                comp_str = f"{comp.difference_status} (Winner: {comp.winner})"
-            else:
-                comp_str = "N/A"
-            lines.append(f"| {label} | {val_s} | {val_f} | {comp_str} |")
+            lines.append(f"| {label} | {_fmt_arm('S', attr, fmt)} |")
 
         lines.append(
-            f"| Index Scoping (% correct) | {_fmt_pct('S', 'index_scoping_correct_pct')} | "
-            f"{_fmt_pct('F', 'index_scoping_correct_pct')} | "
-            f"{comp_by_metric.get('index_scoping_correct_pct', ComparisonDetail(metric_name='', difference_status='N/A', winner='N/A')).difference_status} |"
+            f"| Index Scoping (% correct) | {_fmt_pct('S', 'index_scoping_correct_pct')} |"
         )
         lines.append(
-            f"| Routing Correctness (% correct) | {_fmt_pct('S', 'routing_correctness_pct')} | "
-            f"{_fmt_pct('F', 'routing_correctness_pct')} | "
-            f"{comp_by_metric.get('routing_correctness_pct', ComparisonDetail(metric_name='', difference_status='N/A', winner='N/A')).difference_status} |"
+            f"| Routing Correctness (% correct) | {_fmt_pct('S', 'routing_correctness_pct')} |"
         )
 
-        lines.extend(["", "## Failure Modes by Arm", ""])
+        lines.extend(["", "## Failure Modes", ""])
         for arm in self.arms:
             if arm in self.arm_summaries:
                 reasons = self.arm_summaries[arm].stop_reasons
@@ -509,15 +505,6 @@ async def _execute_single_run(
             invoke=invoke,
             run_subagent=None if scripted else domain_runner(model=model, budget=budget),
         )
-    elif arm == "F":
-        outcome = await broker_flat_task(
-            task,
-            budget,
-            model=model,
-            invoke=invoke,
-            scripted=scripted,
-            families=target_families,
-        )
     else:
         raise ValueError(f"Unknown arm: {arm!r}")
 
@@ -528,7 +515,9 @@ async def _execute_single_run(
 
     input_tokens = sum(entry.usage.input_tokens for entry in budget.ledger)
     output_tokens = sum(entry.usage.output_tokens for entry in budget.ledger)
-    turns = len(budget.ledger)
+    cache_reads = sum(entry.usage.cache_read_input_tokens for entry in budget.ledger)
+    cache_writes = sum(entry.usage.cache_creation_input_tokens for entry in budget.ledger)
+    calls = len(budget.ledger)
 
     queries_count = sum(len(res.queries_run) for res in outcome.results if res.queries_run)
     scoping_correct = check_index_scoping(outcome.results)
@@ -550,7 +539,9 @@ async def _execute_single_run(
         cost_by_role=cost_by_role,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        sequential_turns=turns,
+        cache_read_input_tokens=cache_reads,
+        cache_creation_input_tokens=cache_writes,
+        model_calls=calls,
         queries_run_count=queries_count,
         index_scoping_correct=scoping_correct,
         findings_completeness=findings_map,
@@ -580,7 +571,8 @@ def compute_arm_summary(arm: str, runs: list[RunMetrics]) -> ArmSummary:
     costs = [float(r.total_cost_micro_usd) for r in runs]
     inputs = [float(r.input_tokens) for r in runs]
     outputs = [float(r.output_tokens) for r in runs]
-    turns = [float(r.sequential_turns) for r in runs]
+    cache_reads = [float(r.cache_read_input_tokens) for r in runs]
+    calls = [float(r.model_calls) for r in runs]
     queries = [float(r.queries_run_count) for r in runs]
     total_rows = [float(sum(r.findings_completeness.values())) for r in runs]
 
@@ -607,7 +599,8 @@ def compute_arm_summary(arm: str, runs: list[RunMetrics]) -> ArmSummary:
         total_cost_micro_usd=compute_metric_stats(costs),
         input_tokens=compute_metric_stats(inputs),
         output_tokens=compute_metric_stats(outputs),
-        sequential_turns=compute_metric_stats(turns),
+        cache_read_input_tokens=compute_metric_stats(cache_reads),
+        model_calls=compute_metric_stats(calls),
         queries_run_count=compute_metric_stats(queries),
         total_findings_rows=compute_metric_stats(total_rows),
         index_scoping_correct_pct=round(index_pct, 1),
@@ -617,93 +610,25 @@ def compute_arm_summary(arm: str, runs: list[RunMetrics]) -> ArmSummary:
     )
 
 
-def compare_arms(summaries: dict[str, ArmSummary]) -> list[ComparisonDetail]:
-    """Compare arms S and F, identifying statistically significant differences.
-
-    If delta between medians is less than or equal to within-arm spread (max of arm spreads),
-    the result is reported as 'no measurable difference'.
-    """
-    comparisons: list[ComparisonDetail] = []
-
-    if "S" not in summaries or "F" not in summaries:
-        return comparisons
-
-    sum_S = summaries["S"]
-    sum_F = summaries["F"]
-
-    metrics_to_compare = [
-        ("wall_clock_seconds", True),  # lower is better
-        ("total_cost_micro_usd", True),
-        ("input_tokens", True),
-        ("output_tokens", True),
-        ("sequential_turns", True),
-        ("queries_run_count", True),
-        ("total_findings_rows", False),  # higher is better
-    ]
-
-    for attr, lower_is_better in metrics_to_compare:
-        stats_S = getattr(sum_S, attr)
-        stats_F = getattr(sum_F, attr)
-
-        delta = abs(stats_S.median - stats_F.median)
-        within_arm_spread = max(stats_S.spread, stats_F.spread)
-
-        if delta <= within_arm_spread or delta == 0.0:
-            diff_status = "no measurable difference"
-            winner = "none"
-        else:
-            diff_status = "statistically significant difference"
-            if lower_is_better:
-                winner = "S" if stats_S.median < stats_F.median else "F"
-            else:
-                winner = "S" if stats_S.median > stats_F.median else "F"
-
-        comparisons.append(
-            ComparisonDetail(
-                metric_name=attr,
-                median_S=stats_S.median,
-                median_F=stats_F.median,
-                delta=round(delta, 4),
-                within_arm_spread=round(within_arm_spread, 4),
-                difference_status=diff_status,
-                winner=winner,
-            )
-        )
-
-    for pct_attr in ["index_scoping_correct_pct", "routing_correctness_pct"]:
-        val_S = getattr(sum_S, pct_attr)
-        val_F = getattr(sum_F, pct_attr)
-        delta = abs(val_S - val_F)
-        diff_status = "no measurable difference" if delta < 0.1 else "statistically significant difference"
-        winner = "none" if delta < 0.1 else ("S" if val_S > val_F else "F")
-        comparisons.append(
-            ComparisonDetail(
-                metric_name=pct_attr,
-                median_S=val_S,
-                median_F=val_F,
-                delta=round(delta, 1),
-                within_arm_spread=0.0,
-                difference_status=diff_status,
-                winner=winner,
-            )
-        )
-
-    return comparisons
-
-
 async def run_interleaved_benchmark(
     *,
     cases: list[str],
-    arms: list[str] = ["S", "F"],
+    arms: list[str] = ["S"],
     runs_per_arm: int = 3,
     scripted: bool = False,
     model: ModelChoice | None = None,
-    budget_usd: float = 1.0,
+    budget_usd: float = 10.0,
 ) -> BenchmarkReport:
-    """Execute interleaved benchmark runs across cases and arms.
+    """Execute `runs_per_arm` runs of each case.
 
-    Interleaving sequence for runs_per_arm=3 and arms=['S', 'F']:
-    [S, F, S, F, S, F].
+    `arms` survives the removal of the flat baseline because the artifact schema
+    is keyed by it and older reports are still readable, but "S" is now the only
+    topology -- the A/B this runner was built for ended when the flat broker was
+    dropped in favour of the subagent design.
+
+    `budget_usd` defaults to 10.0 rather than 1.0: one siem subagent RESERVES
+    ~$1.24, so a 1.0 default refused siem on every run -- the one domain that
+    matters -- and reported it as a domain failure rather than a budget one.
     """
     model_choice = model or (None if scripted else model_choice_from_env()) or _PLACEHOLDER_MODEL
 
@@ -763,8 +688,6 @@ async def run_interleaved_benchmark(
         if arm_runs:
             arm_summaries[arm] = compute_arm_summary(arm, arm_runs)
 
-    comparisons = compare_arms(arm_summaries)
-
     return BenchmarkReport(
         timestamp=datetime.now(timezone.utc).isoformat(),
         cases=cases,
@@ -774,7 +697,6 @@ async def run_interleaved_benchmark(
         skills_enabled=pinned_skills,
         raw_runs=raw_runs,
         arm_summaries=arm_summaries,
-        comparisons=comparisons,
     )
 
 
@@ -789,15 +711,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="comma-separated benchmark cases to run (default: botsv3_coinhive)",
     )
     parser.add_argument(
-        "--arms",
-        default="S,F",
-        help="comma-separated execution arms to benchmark, e.g. S,F (default: S,F)",
-    )
-    parser.add_argument(
         "--runs",
         type=int,
         default=3,
-        help="number of interleaved runs per arm (default: 3)",
+        help="number of runs per case (default: 3)",
     )
     parser.add_argument(
         "--scripted",
@@ -815,8 +732,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--budget-usd",
         type=float,
-        default=1.0,
-        help="budget per run in USD (default: 1.0)",
+        default=10.0,
+        help="budget per run in USD (default: 10.0)",
     )
     parser.add_argument(
         "--verbose",
@@ -838,11 +755,9 @@ async def _run(argv: list[str] | None = None) -> int:
     )
 
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
-    arms = [a.strip().upper() for a in args.arms.split(",") if a.strip()]
 
     report = await run_interleaved_benchmark(
         cases=cases,
-        arms=arms,
         runs_per_arm=args.runs,
         scripted=args.scripted,
         budget_usd=args.budget_usd,

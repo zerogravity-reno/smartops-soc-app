@@ -1,0 +1,107 @@
+{
+  "timestamp": "2026-08-13T15:38:10.069468+00:00",
+  "cases": [
+    "botsv3_coinhive"
+  ],
+  "arms": [
+    "S"
+  ],
+  "runs_per_arm": 1,
+  "scripted": false,
+  "skills_enabled": false,
+  "raw_runs": [
+    {
+      "arm": "S",
+      "case_id": "botsv3_coinhive",
+      "run_index": 0,
+      "wall_clock_seconds": 136.1103,
+      "total_cost_micro_usd": 619313,
+      "cost_by_role": {
+        "vt": 25726,
+        "siem": 498153,
+        "broker": 95434
+      },
+      "input_tokens": 136988,
+      "output_tokens": 10446,
+      "sequential_turns": 3,
+      "queries_run_count": 11,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 2
+      },
+      "routing_correctness": false,
+      "stop_reason": "end_turn",
+      "dispatched": [
+        "vt",
+        "siem",
+        "edr",
+        "ndr"
+      ],
+      "skills_enabled": false
+    }
+  ],
+  "arm_summaries": {
+    "S": {
+      "arm": "S",
+      "runs_count": 1,
+      "wall_clock_seconds": {
+        "median": 136.1103,
+        "min": 136.1103,
+        "max": 136.1103,
+        "spread": 0.0
+      },
+      "total_cost_micro_usd": {
+        "median": 619313.0,
+        "min": 619313.0,
+        "max": 619313.0,
+        "spread": 0.0
+      },
+      "input_tokens": {
+        "median": 136988.0,
+        "min": 136988.0,
+        "max": 136988.0,
+        "spread": 0.0
+      },
+      "output_tokens": {
+        "median": 10446.0,
+        "min": 10446.0,
+        "max": 10446.0,
+        "spread": 0.0
+      },
+      "sequential_turns": {
+        "median": 3.0,
+        "min": 3.0,
+        "max": 3.0,
+        "spread": 0.0
+      },
+      "queries_run_count": {
+        "median": 11.0,
+        "min": 11.0,
+        "max": 11.0,
+        "spread": 0.0
+      },
+      "total_findings_rows": {
+        "median": 2.0,
+        "min": 2.0,
+        "max": 2.0,
+        "spread": 0.0
+      },
+      "index_scoping_correct_pct": 100.0,
+      "routing_correctness_pct": 0.0,
+      "stop_reasons": {
+        "end_turn": 1
+      },
+      "cost_by_role_median": {
+        "vt": 25726.0,
+        "broker": 95434.0,
+        "siem": 498153.0
+      }
+    }
+  },
+  "comparisons": []
+}
