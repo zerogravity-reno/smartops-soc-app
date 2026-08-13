@@ -1,3 +1,8 @@
+---
+date: 2026-08-13
+title: First live smoke run — Splunk never ran, and why
+---
+
 # Handover — 2026-08-13, after the first live smoke run
 
 Branch `task-broker-agent`, **62 commits ahead of origin, nothing pushed**, tree
