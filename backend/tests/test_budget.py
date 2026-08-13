@@ -55,6 +55,12 @@ def test_from_usd_converts_to_micro_usd():
     assert budget.remaining == 2_500_000
 
 
+def test_model_choice_temperature_default():
+    choice = ModelChoice(model_id="us.anthropic.claude-sonnet-4-6-v1:0", pricing_key="claude-sonnet-4-6")
+    assert choice.temperature == 0.3
+    assert choice.top_p is None
+
+
 class TestReserveAndSettle:
     async def test_reserve_deducts_worst_case_estimate(self):
         budget = Budget(total_micro_usd=100_000)

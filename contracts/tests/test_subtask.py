@@ -410,3 +410,50 @@ class TestSubtaskResult:
             task_id="t1", status=SubtaskStatus.REJECTED, reason="no vt observable in scope"
         )
         assert ok.reason
+
+
+class TestBrokerReport:
+    def test_broker_report_construction(self):
+        from contracts import (
+            BrokerReport,
+            CompletionRule,
+            CostSummary,
+            FetchPlan,
+            FetchStep,
+            StepOutcome,
+            TaskClassification,
+        )
+
+        step = FetchStep(
+            step_id="step-1",
+            family="siem",
+            objective="Fetch auth events for host-1",
+            completion=CompletionRule(requires="rows_or_confirmed_empty", min_rows=1),
+        )
+        plan = FetchPlan(steps=[step], rationale="Initial fetch plan")
+        outcome = StepOutcome(step=step, completed=True, dispatches=1, rows_retrieved=5)
+        cost = CostSummary(
+            spend_by_role={"broker": 100, "siem": 200},
+            total_spend_micro_usd=300,
+            budget_remaining_micro_usd=700,
+        )
+        classification = TaskClassification(tool_families=["siem"], rationale="dispatched siem")
+
+        report = BrokerReport(
+            task_id="t1",
+            hypothesis_id="h1",
+            plan=plan,
+            step_outcomes=[outcome],
+            results=[],
+            dispatched=["siem"],
+            classification=classification,
+            cost=cost,
+            queries_run=[QueryRun(query="index=botsv3 | head 5", category="auth_events")],
+        )
+
+        assert report.task_id == "t1"
+        assert report.plan.steps[0].family == "siem"
+        assert report.step_outcomes[0].completed is True
+        assert report.cost.total_spend_micro_usd == 300
+        assert report.queries_run[0].category == "auth_events"
+

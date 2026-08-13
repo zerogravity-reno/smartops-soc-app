@@ -654,6 +654,7 @@ class TestDefaultInvoker:
         kwargs = agent_cls.call_args.kwargs
         assert kwargs["model"] is sentinel
         assert [t.tool_name for t in kwargs["tools"]] == [
+            "plan_fetch",
             "investigate_siem",
             "investigate_edr",
             "investigate_vt",
@@ -1157,3 +1158,48 @@ class TestTelemetryIsActuallyWired:
         )
 
         assert events == ["enter", "result", "exit"]
+
+
+class TestFetchPlanAndReport:
+    async def test_plan_fetch_tool_creates_fetch_plan(self):
+        from contracts import CompletionRule, FetchStep
+        from smartops.broker import plan_fetch
+
+        request = BrokerRequest(task=make_task())
+        step = FetchStep(
+            step_id="step-1",
+            family="siem",
+            objective="Retrieve auth logs",
+            completion=CompletionRule(requires="rows_or_confirmed_empty"),
+        )
+        context = FakeToolContext(
+            tool_use={"toolUseId": "tu-plan"},
+            invocation_state={"smartops": request},
+        )
+
+        res = await plan_fetch(steps=[step], rationale="Plan rationale", tool_context=context)
+
+        assert "Fetch plan recorded" in res
+        assert request.plan is not None
+        assert request.plan.steps[0].step_id == "step-1"
+        assert "step-1" in request.step_outcomes
+
+    async def test_broker_outcome_carries_report_and_persists_artifacts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        outcome = await broker_task(
+            make_task(task_id="run-123"),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(ok_result),
+            invoke=fake_invoker(["siem"]),
+        )
+
+        assert outcome.report is not None
+        assert outcome.report.task_id == "run-123"
+        assert outcome.report.plan is not None
+
+        run_dir = tmp_path / ".smartops" / "runs" / "run-123"
+        assert run_dir.exists()
+        assert (run_dir / "report.json").exists()
+        assert (run_dir / "evidence.json").exists()
+

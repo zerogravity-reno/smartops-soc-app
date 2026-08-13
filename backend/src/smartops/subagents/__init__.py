@@ -92,29 +92,35 @@ _LOOKUP_GUIDANCE = """\
 _FAMILY_SPECIALIZATIONS: dict[str, str] = {
     "siem": (
         "SIEM SPECIALIZATION (Splunk):\n"
+        "- Retrieve data into CIM categories (Network Resolution, Network Traffic, Endpoint Processes, Authentication).\n"
         "- First discover available indexes and sourcetypes if unfamiliar.\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
         "- Filter early using index and sourcetype predicates before searching free-text fields.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"
+        "- Retrieve process execution, lineage, and host telemetry.\n"
         "- Focus on host process trees (parent/child relationships), command-line arguments, and file modifications.\n"
         "- Correlate process executions with user logon sessions and persistence mechanisms (registry, services, launch items).\n"
     ),
     "ndr": (
         "NDR SPECIALIZATION (Network Telemetry):\n"
+        "- Retrieve network flow and DNS resolution evidence.\n"
         "- Focus on network flow records, IP source/destination sessions, DNS query logs, and protocol analysis.\n"
         "- Identify unusual outbound traffic volumes, beaconing patterns, or suspicious domain resolution.\n"
     ),
     "vt": (
         "REPUTATION SPECIALIZATION (VirusTotal):\n"
+        "- Retrieve indicator reputation data.\n"
         "- Focus on threat verdicts, detection ratios, malicious tags, and known indicator relationships.\n"
     ),
 }
 
 _SYSTEM_PROMPT = """\
-You are a {family} domain specialist in a security operations investigation. You
-receive one narrow question and answer it using only your domain's tools.
+You are a {family} domain specialist responsible for fetching security telemetry
+and evidence. Your role is data retrieval: execute constrained queries to fetch
+requested data categories, report absence as a result, state gaps clearly, draw
+NO investigative conclusions, and name NO root causes.
 
 BUDGET -- read this before your first tool call:
 - You have at most {turns} turns. One turn is one reply, whether or not it calls
@@ -126,13 +132,15 @@ BUDGET -- read this before your first tool call:
   partial answer that states its own gaps is worth far more than none.
 
 HOW TO WORK:
-- Derive the queries yourself. Nothing is pre-authored for you.
+- Derive the queries yourself to fetch evidence matching requested categories.
+- Do NOT generate prose summaries, narrative conclusions, or root cause opinions.
 - If you do not know what data exists, look first: list indexes, sourcetypes, or
   hosts before writing a detailed search.
 {time_guidance}- Keep result sets small. Aggregate with stats/top rather than returning raw
   events, and set a row limit.
 - If a query returns nothing, that is an answer worth reporting. Do not keep
-  widening the search until something matches.
+  widening the search until something matches. An empty result is a covered
+  category, not a missing one.
 - A tool call that FAILS is not a finding. Never report a failed lookup as though
   it showed the subject to be clean, absent, or benign.
 {family_specialization}
@@ -280,13 +288,21 @@ def _system_prompt_for(family: str, *, turns: int, time_scoped: bool | None = No
         time_scoped = DOMAINS[family].time_scoped
     spec_text = _FAMILY_SPECIALIZATIONS.get(family, "")
     specialization = f"\n{spec_text}\n" if spec_text else "\n"
-    return _SYSTEM_PROMPT.format(
+    prompt = _SYSTEM_PROMPT.format(
         family=family,
         turns=turns,
         last_query_turn=max(1, turns - 1),
         time_guidance=_TIME_GUIDANCE if time_scoped else _LOOKUP_GUIDANCE,
         family_specialization=specialization,
     )
+    if family == "siem":
+        try:
+            from smartops.skills import inject_skill_routing_table
+            prompt = inject_skill_routing_table(prompt)
+        except ImportError:
+            pass
+    return prompt
+
 
 
 def _prompt_for(mission: SubagentMission) -> str:
@@ -616,6 +632,15 @@ def domain_runner(
                 status=SubtaskStatus.REJECTED,
                 reason=f"no tools resolved for {family}: {reason}",
             )
+
+        if family == "siem":
+            try:
+                from smartops.skills import read_reference
+                if read_reference not in tools:
+                    tools = list(tools) + [read_reference]
+            except ImportError:
+                pass
+
 
         return await investigate(
             mission,

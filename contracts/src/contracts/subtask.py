@@ -6,7 +6,7 @@ charging, retries, and aggregation are separate components that consume these ty
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal, Self
 
@@ -469,3 +469,63 @@ class SubtaskResult(_StatusErrorContract):
             gaps=list(answer.gaps),
             evidence=evidence,
         )
+
+
+class CompletionRule(BaseModel):
+    """Rule evaluated by code to judge whether a fetch step is satisfied."""
+
+    requires: Literal["rows_or_confirmed_empty", "rows_required"] = "rows_or_confirmed_empty"
+    min_rows: int = 0
+
+
+class FetchStep(BaseModel):
+    """One bounded retrieval step in a Broker's fetch plan."""
+
+    step_id: str = Field(min_length=1)
+    family: ToolFamily
+    objective: str = Field(min_length=1)
+    completion: CompletionRule = Field(default_factory=CompletionRule)
+
+
+class FetchPlan(BaseModel):
+    """The Broker's explicit fetch plan, authored via `plan_fetch` before dispatch."""
+
+    steps: list[FetchStep] = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
+class StepOutcome(BaseModel):
+    """Evaluated outcome for one step in a fetch plan."""
+
+    step: FetchStep
+    completed: bool = False
+    dispatches: int = 0
+    rows_retrieved: int = 0
+    confirmed_empty: bool = False
+    status: SubtaskStatus | None = None
+    reason: str | None = None
+
+
+class CostSummary(BaseModel):
+    """Summary of investigation spend by role and remaining budget."""
+
+    spend_by_role: dict[str, int] = Field(default_factory=dict)
+    total_spend_micro_usd: int = 0
+    budget_remaining_micro_usd: int = 0
+
+
+class BrokerReport(BaseModel):
+    """Return contract to the Analyst: full record of one investigation run."""
+
+    schema_version: int = 1
+    task_id: str = Field(min_length=1)
+    hypothesis_id: str = Field(min_length=1)
+    plan: FetchPlan | None = None
+    step_outcomes: list[StepOutcome] = Field(default_factory=list)
+    results: list[SubtaskResult] = Field(default_factory=list)
+    dispatched: list[ToolFamily] = Field(default_factory=list)
+    classification: Any
+    cost: CostSummary
+    queries_run: list[QueryRun] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+

@@ -140,6 +140,8 @@ class ModelChoice:
     api_key_env_var: str | None = None
     connect_timeout: float = 10.0
     read_timeout: float = 120.0
+    temperature: float = 0.3
+    top_p: float | None = None
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
@@ -175,15 +177,19 @@ class ModelChoice:
         # region reads as a missing model. And an explicit request timeout,
         # because Python Bedrock has no default at all: a stuck connection would
         # hang the run forever, and `Limits` bounds tokens, not wall clock.
-        return BedrockModel(
-            model_id=self.model_id,
-            region_name=self.region,
-            boto_client_config=Config(
+        kwargs: dict[str, Any] = {
+            "model_id": self.model_id,
+            "region_name": self.region,
+            "temperature": self.temperature,
+            "boto_client_config": Config(
                 connect_timeout=self.connect_timeout,
                 read_timeout=self.read_timeout,
                 retries={"max_attempts": 2, "mode": "standard"},
             ),
-        )
+        }
+        if self.top_p is not None:
+            kwargs["top_p"] = self.top_p
+        return BedrockModel(**kwargs)
 
     def _build_openai_compatible(self) -> Any:
         from strands.models.openai import OpenAIModel
@@ -197,10 +203,15 @@ class ModelChoice:
         # DeepSeek speaks the OpenAI wire format, so the only difference from
         # OpenAI proper is base_url. The key is read from the environment here
         # rather than stored on this object, so it cannot be logged by a repr.
-        return OpenAIModel(
-            client_args={"api_key": api_key, "base_url": self.base_url},
-            model_id=self.model_id,
-        )
+        client_args: dict[str, Any] = {"api_key": api_key, "base_url": self.base_url}
+        kwargs: dict[str, Any] = {
+            "client_args": client_args,
+            "model_id": self.model_id,
+            "temperature": self.temperature,
+        }
+        if self.top_p is not None:
+            kwargs["top_p"] = self.top_p
+        return OpenAIModel(**kwargs)
 
 
 PROVIDER_ENV_VAR = "SMARTOPS_LLM_PROVIDER"

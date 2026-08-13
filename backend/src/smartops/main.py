@@ -38,6 +38,7 @@ from contracts import (
 from pydantic import ValidationError
 
 from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task
+from smartops.broker_flat import broker_flat_task
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
 from smartops.subagents import domain_runner
@@ -254,6 +255,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--arm",
+        choices=["S", "F"],
+        default="S",
+        help="Execution arm/topology: S (Hierarchical Multi-Agent Broker) or F (Flat Broker Baseline) (default: S)",
+    )
+    parser.add_argument(
         "--console-traces",
         action="store_true",
         help="export OpenTelemetry spans to stdout (off by default: spans can carry SOC data)",
@@ -275,6 +282,11 @@ def _parse_families(raw: str) -> list[ToolFamily]:
 
 
 def _print_outcome(outcome, budget: Budget) -> None:
+    if outcome.plan:
+        print(f"\nfetch plan ({len(outcome.plan.steps)} step(s)): {outcome.plan.rationale}")
+        for step in outcome.plan.steps:
+            print(f"  [{step.step_id}] {step.family}: {step.objective}")
+
     print(f"\nclassification: {outcome.classification.rationale}")
     print(f"dispatched:     {', '.join(outcome.dispatched) or '(nothing)'}")
 
@@ -439,9 +451,19 @@ async def _run(argv: list[str] | None = None) -> int:
     )
 
     try:
-        outcome = await broker_task(
-            task, budget, model=model, invoke=invoke, run_subagent=run_subagent
-        )
+        if args.arm == "F":
+            outcome = await broker_flat_task(
+                task,
+                budget,
+                model=model,
+                invoke=invoke,
+                scripted=(choice is None or args.scripted),
+                families=families,
+            )
+        else:
+            outcome = await broker_task(
+                task, budget, model=model, invoke=invoke, run_subagent=run_subagent
+            )
     except Exception as exc:
         # An investigation failing must not look like the tool crashing. Report
         # it, and report the ledger too: the call may already have been billed,
