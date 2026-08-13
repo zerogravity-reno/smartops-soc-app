@@ -116,14 +116,18 @@ class TestDisallowedQueriesAreCancelled:
     def test_a_wildcard_suffix_is_not_treated_as_a_match(self):
         assert isinstance(_run({"query": "index=bots* | head 1"}).cancel_tool, str)
 
-    def test_a_search_with_no_index_at_all_is_rejected(self):
-        """The spec requires a *literal* allowlisted index, not merely the absence
-        of a disallowed one -- an unpinned search runs against whatever the token's
-        default indexes happen to be."""
-        event = _run({"query": "sourcetype=WinEventLog | stats count by host"})
+    def test_a_search_with_no_index_and_no_cim_predicate_is_rejected(self):
+        """Unconstrained search with neither index nor sourcetype/CIM predicate is rejected."""
+        event = _run({"query": "host=BSTOLL-L | stats count"})
 
         assert isinstance(event.cancel_tool, str)
-        assert "does not pin an index" in event.cancel_tool
+        assert "unconstrained" in event.cancel_tool
+
+    def test_a_cim_sourcetype_search_without_explicit_index_is_allowed(self):
+        """CIM-compliant queries specifying sourcetype hit Splunk's default/CIM indexes cleanly."""
+        event = _run({"query": "sourcetype=WinEventLog | stats count by host"})
+
+        assert event.cancel_tool is False
 
     def test_one_disallowed_index_among_several_still_rejects(self):
         assert isinstance(

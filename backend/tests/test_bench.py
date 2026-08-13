@@ -117,7 +117,7 @@ class TestBenchMetricsCollection:
         res = SubtaskResult(
             task_id="task:siem",
             status=SubtaskStatus.OK,
-            queries_run=[QueryRun(query="sourcetype=dns | head 5", category="dns_resolutions")],
+            queries_run=[QueryRun(query="host=BSTOLL-L | head 5", category="dns_resolutions")],
         )
         assert check_index_scoping([res]) is False
 

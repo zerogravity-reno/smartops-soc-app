@@ -93,10 +93,11 @@ _LOOKUP_GUIDANCE = """\
 _FAMILY_SPECIALIZATIONS: dict[str, str] = {
     "siem": (
         "SIEM SPECIALIZATION (Splunk):\n"
-        "- MANDATORY: Every SPL query MUST target `index=botsv3` explicitly. Do NOT use wildcard `index=*` as it is forbidden and rejected by the deployment guard.\n"
+        "- Target queries using CIM-compliant predicates (sourcetype, datamodel, tag, eventtype) or configured indexes.\n"
+        "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
         "- Retrieve data into CIM categories (Network Resolution, Network Traffic, Endpoint Processes, Authentication).\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
-        "- Filter early using index=botsv3 and sourcetype predicates before searching free-text fields.\n"
+        "- Filter early using sourcetype or eventtype predicates before searching free-text fields.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"

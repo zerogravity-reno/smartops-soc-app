@@ -124,23 +124,31 @@ class IndexScopeGuard:
         allowed = ", ".join(f"index={name}" for name in self._allowlist)
         targeted = [_unquote(m.group(1)) for m in _INDEX_TERM.finditer(value)]
 
-        if not targeted:
-            return (
-                f"Rejected: this search does not pin an index. Every {self._family} "
-                f"search must state one of: {allowed}. Reissue the query with an "
-                f"explicit index."
-            )
+        # If an explicit index predicate was provided, check it.
+        if targeted:
+            disallowed = [name for name in targeted if name.lower() not in self._allowed]
+            if disallowed:
+                shown = ", ".join(f"index={name}" for name in dict.fromkeys(disallowed))
+                allowed = ", ".join(f"index={name}" for name in self._allowlist)
+                return (
+                    f"Rejected: {shown} is outside this deployment's allowed indexes. "
+                    f"Use one of: {allowed}, or rely on CIM-compliant sourcetype/datamodel predicates. "
+                    f"A wildcard index is never allowed -- reissue the query with an explicit index or sourcetype."
+                )
+            return None
 
-        disallowed = [name for name in targeted if name.lower() not in self._allowed]
-        if disallowed:
-            shown = ", ".join(f"index={name}" for name in dict.fromkeys(disallowed))
-            return (
-                f"Rejected: {shown} is outside this deployment's allowed indexes. "
-                f"Use one of: {allowed}. A wildcard index is never allowed -- name "
-                f"the index explicitly and reissue the query."
-            )
+        # If no index predicate was provided, check if the search relies on a CIM predicate
+        # (sourcetype=, datamodel=, tag=, eventtype=). If so, allow it to hit Splunk's default/CIM indexes.
+        _CIM_PREDICATES = re.compile(r"\b(sourcetype|datamodel|tag|eventtype)\s*=", re.IGNORECASE)
+        if _CIM_PREDICATES.search(value):
+            return None
 
-        return None
+        # Completely unconstrained query with neither index nor CIM/sourcetype predicate.
+        allowed = ", ".join(f"index={name}" for name in self._allowlist)
+        return (
+            f"Rejected: this search is unconstrained (no index or sourcetype/CIM predicate). "
+            f"Please specify a sourcetype (e.g., sourcetype=stream:dns), a datamodel, or one of: {allowed}."
+        )
 
 
 def _unquote(token: str) -> str:
