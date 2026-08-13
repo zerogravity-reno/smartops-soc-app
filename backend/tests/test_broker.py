@@ -1263,10 +1263,34 @@ class TestFetchPlanAndReport:
         assert outcome.report.task_id == "run-123"
         assert outcome.report.plan is not None
 
-        run_dir = tmp_path / ".smartops" / "runs" / "run-123"
-        assert run_dir.exists()
+        case_dir = tmp_path / ".smartops" / "runs" / "run-123"
+        assert case_dir.exists()
+
+        # Each run lands in its own timestamped directory. Keyed on task_id
+        # alone, a second run of the same case overwrote the first -- so the
+        # bench's N-runs-for-median kept only the last, and a scripted run could
+        # replace a live one.
+        stamp = (case_dir / "latest.txt").read_text(encoding="utf-8")
+        run_dir = case_dir / stamp
         assert (run_dir / "report.json").exists()
         assert (run_dir / "evidence.json").exists()
+
+    async def test_a_second_run_of_a_case_does_not_overwrite_the_first(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        for _ in range(2):
+            await broker_task(
+                make_task(task_id="run-123"),
+                Budget.from_usd(1.0),
+                model=MODEL,
+                run_subagent=runner_returning(ok_result),
+                invoke=fake_invoker(["siem"]),
+            )
+
+        case_dir = tmp_path / ".smartops" / "runs" / "run-123"
+        runs = [p for p in case_dir.iterdir() if p.is_dir()]
+        assert len(runs) == 2, f"both runs must survive, found {[p.name for p in runs]}"
 
     async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
         """The regression test for the failure this task exists to remove.

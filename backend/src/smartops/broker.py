@@ -934,9 +934,33 @@ def default_broker_invoker(
 
 
 def save_run_artifacts(report: BrokerReport, base_dir: Path | str = ".smartops/runs") -> Path:
-    """Save BrokerReport and collected evidence payloads to .smartops/runs/<task_id>/."""
-    run_dir = Path(base_dir) / report.task_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    """Save BrokerReport and collected evidence to `<base_dir>/<task_id>/<created_at>/`.
+
+    Timestamped, because the path used to be keyed on `task_id` alone and every
+    run of a case silently overwrote the previous one. That is not a tidiness
+    problem: the bench runs each case N times to report median and spread, so
+    N-1 of every N runs left no artifact at all, and a `--scripted` run -- which
+    calls no model and retrieves nothing -- would replace a live one that cost
+    real money. It happened during this cleanup: a test-suite run destroyed the
+    artifact of the live run being measured.
+
+    `latest` points at the newest run for a stable path to hand a person.
+    """
+    case_dir = Path(base_dir) / report.task_id
+    stamp = report.created_at.strftime("%Y%m%dT%H%M%S%f")[:-3]
+    # Two runs of one case can share a millisecond -- the bench runs them back to
+    # back with no model call on the scripted path. `exist_ok=False` plus a
+    # suffix makes the collision impossible rather than unlikely; silently
+    # reusing the directory would reintroduce the overwrite this exists to stop.
+    run_dir, suffix = case_dir / stamp, 1
+    while True:
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            run_dir = case_dir / f"{stamp}-{suffix}"
+            suffix += 1
+    stamp = run_dir.name
 
     report_file = run_dir / "report.json"
     report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -945,6 +969,11 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str = ".smartops/r
     evidence_file = run_dir / "evidence.json"
     evidence_data = [ev.model_dump(mode="json") for ev in all_evidence]
     evidence_file.write_text(json.dumps(evidence_data, indent=2, default=str), encoding="utf-8")
+
+    # A plain file rather than a symlink: this runs on Windows, where creating a
+    # symlink needs either developer mode or elevation, and failing to record a
+    # run because a pointer could not be made would be the wrong trade.
+    (run_dir.parent / "latest.txt").write_text(stamp, encoding="utf-8")
 
     return run_dir
 
