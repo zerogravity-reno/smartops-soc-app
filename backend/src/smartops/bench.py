@@ -130,10 +130,129 @@ BOTSV3_C2_IP_TASK = AnalystTask(
     ),
 )
 
+BOTSV3_WEB_SHELL_TASK = AnalystTask(
+    task_id="botsv3_web_shell_url",
+    hypothesis_id="web-shell-uri-access",
+    goal="Is URL http://po18-s92-l01/swm/upload/shell.php known-malicious, and what web server logs exist for host po18-s92-l01?",
+    scope=Scope(
+        entities=[
+            Entity(kind="url", value="http://po18-s92-l01/swm/upload/shell.php"),
+            Entity(kind="host", value="po18-s92-l01"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_DNS_TUNNELING_TASK = AnalystTask(
+    task_id="botsv3_dns_tunneling",
+    hypothesis_id="dns-tunneling-query",
+    goal="Is domain a1b2c3.tunnel.malicious.net known-malicious, and what DNS resolutions occurred for host BSTOLL-L?",
+    scope=Scope(
+        entities=[
+            Entity(kind="domain", value="a1b2c3.tunnel.malicious.net"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_MIMIKATZ_TASK = AnalystTask(
+    task_id="botsv3_mimikatz_hash",
+    hypothesis_id="mimikatz-lsass-dumper",
+    goal="Investigate LSASS dumper file hash 31d6cfe0d16ae931b73c59d7e0c089c0 reputation on VirusTotal and endpoint process logs on host BSTOLL-L.",
+    scope=Scope(
+        entities=[
+            Entity(kind="file_hash", value="31d6cfe0d16ae931b73c59d7e0c089c0"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_PHISHING_TASK = AnalystTask(
+    task_id="botsv3_phishing_domain",
+    hypothesis_id="phishing-domain-credential-harvest",
+    goal="Is domain secure-login-account.com known-malicious, and did host BSTOLL-L access it?",
+    scope=Scope(
+        entities=[
+            Entity(kind="domain", value="secure-login-account.com"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_EXFIL_IP_TASK = AnalystTask(
+    task_id="botsv3_exfil_ip",
+    hypothesis_id="data-exfiltration-ip",
+    goal="Is external IP 104.20.208.59 known-malicious, and what volume of network traffic was sent to it by host BSTOLL-L?",
+    scope=Scope(
+        entities=[
+            Entity(kind="ip", value="104.20.208.59"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_RANSOMWARE_TASK = AnalystTask(
+    task_id="botsv3_ransomware_note",
+    hypothesis_id="ransomware-note-hash",
+    goal="Check VirusTotal reputation for ransomware payload hash 8f4e2b109156a297e68c123456789abc and search endpoint file logs on host BSTOLL-L.",
+    scope=Scope(
+        entities=[
+            Entity(kind="file_hash", value="8f4e2b109156a297e68c123456789abc"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_USER_AUTH_TASK = AnalystTask(
+    task_id="botsv3_suspicious_user_auth",
+    hypothesis_id="suspicious-user-authentication",
+    goal="Investigate authentication logs for user account bostoll on host BSTOLL-L.",
+    scope=Scope(
+        entities=[
+            Entity(kind="user", value="bostoll"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
 BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
     "botsv3_coinhive": (DEFAULT_BOTSV3_TASK, ["siem", "vt"]),
     "botsv3_powershell_hash": (BOTSV3_POWERSHELL_TASK, ["siem", "vt"]),
     "botsv3_c2_ip": (BOTSV3_C2_IP_TASK, ["siem", "vt"]),
+    "botsv3_web_shell_url": (BOTSV3_WEB_SHELL_TASK, ["siem", "vt"]),
+    "botsv3_dns_tunneling": (BOTSV3_DNS_TUNNELING_TASK, ["siem", "vt"]),
+    "botsv3_mimikatz_hash": (BOTSV3_MIMIKATZ_TASK, ["siem", "vt"]),
+    "botsv3_phishing_domain": (BOTSV3_PHISHING_TASK, ["siem", "vt"]),
+    "botsv3_exfil_ip": (BOTSV3_EXFIL_IP_TASK, ["siem", "vt"]),
+    "botsv3_ransomware_note": (BOTSV3_RANSOMWARE_TASK, ["siem", "vt"]),
+    "botsv3_suspicious_user_auth": (BOTSV3_USER_AUTH_TASK, ["siem"]),
 }
 
 
