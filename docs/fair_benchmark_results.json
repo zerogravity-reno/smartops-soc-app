@@ -1,0 +1,2011 @@
+{
+  "timestamp": "2026-08-13T14:53:51.560053+00:00",
+  "cases": [
+    "botsv3_coinhive",
+    "botsv3_powershell_hash",
+    "botsv3_c2_ip",
+    "botsv3_web_shell_url",
+    "botsv3_dns_tunneling",
+    "botsv3_mimikatz_hash",
+    "botsv3_phishing_domain",
+    "botsv3_exfil_ip",
+    "botsv3_ransomware_note",
+    "botsv3_suspicious_user_auth"
+  ],
+  "arms": [
+    "S",
+    "F"
+  ],
+  "runs_per_arm": 3,
+  "scripted": true,
+  "skills_enabled": false,
+  "raw_runs": [
+    {
+      "arm": "S",
+      "case_id": "botsv3_coinhive",
+      "run_index": 0,
+      "wall_clock_seconds": 1.692,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_coinhive",
+      "run_index": 0,
+      "wall_clock_seconds": 1.1027,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_coinhive",
+      "run_index": 1,
+      "wall_clock_seconds": 0.819,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_coinhive",
+      "run_index": 1,
+      "wall_clock_seconds": 0.8172,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_coinhive",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7326,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_coinhive",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7014,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_powershell_hash",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7378,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_powershell_hash",
+      "run_index": 0,
+      "wall_clock_seconds": 1.6179,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_powershell_hash",
+      "run_index": 1,
+      "wall_clock_seconds": 0.8209,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_powershell_hash",
+      "run_index": 1,
+      "wall_clock_seconds": 0.8162,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_powershell_hash",
+      "run_index": 2,
+      "wall_clock_seconds": 0.921,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_powershell_hash",
+      "run_index": 2,
+      "wall_clock_seconds": 0.8197,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_c2_ip",
+      "run_index": 0,
+      "wall_clock_seconds": 0.8178,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_c2_ip",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7419,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_c2_ip",
+      "run_index": 1,
+      "wall_clock_seconds": 0.7003,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_c2_ip",
+      "run_index": 1,
+      "wall_clock_seconds": 0.8084,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_c2_ip",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7225,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_c2_ip",
+      "run_index": 2,
+      "wall_clock_seconds": 0.8139,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_web_shell_url",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7369,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_web_shell_url",
+      "run_index": 0,
+      "wall_clock_seconds": 0.6968,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_web_shell_url",
+      "run_index": 1,
+      "wall_clock_seconds": 1.9596,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_web_shell_url",
+      "run_index": 1,
+      "wall_clock_seconds": 1.1248,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_web_shell_url",
+      "run_index": 2,
+      "wall_clock_seconds": 0.8213,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_web_shell_url",
+      "run_index": 2,
+      "wall_clock_seconds": 0.8413,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_dns_tunneling",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7992,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_dns_tunneling",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7291,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_dns_tunneling",
+      "run_index": 1,
+      "wall_clock_seconds": 0.7058,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_dns_tunneling",
+      "run_index": 1,
+      "wall_clock_seconds": 0.9182,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_dns_tunneling",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7177,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_dns_tunneling",
+      "run_index": 2,
+      "wall_clock_seconds": 0.8188,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_mimikatz_hash",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7148,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_mimikatz_hash",
+      "run_index": 0,
+      "wall_clock_seconds": 1.0234,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_mimikatz_hash",
+      "run_index": 1,
+      "wall_clock_seconds": 0.9233,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_mimikatz_hash",
+      "run_index": 1,
+      "wall_clock_seconds": 0.8178,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_mimikatz_hash",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7397,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_mimikatz_hash",
+      "run_index": 2,
+      "wall_clock_seconds": 0.709,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_phishing_domain",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7052,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_phishing_domain",
+      "run_index": 0,
+      "wall_clock_seconds": 0.8189,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_phishing_domain",
+      "run_index": 1,
+      "wall_clock_seconds": 0.7157,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_phishing_domain",
+      "run_index": 1,
+      "wall_clock_seconds": 0.7154,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_phishing_domain",
+      "run_index": 2,
+      "wall_clock_seconds": 0.8215,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_phishing_domain",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7145,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_exfil_ip",
+      "run_index": 0,
+      "wall_clock_seconds": 0.8343,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_exfil_ip",
+      "run_index": 0,
+      "wall_clock_seconds": 0.8272,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_exfil_ip",
+      "run_index": 1,
+      "wall_clock_seconds": 0.8139,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_exfil_ip",
+      "run_index": 1,
+      "wall_clock_seconds": 0.7001,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_exfil_ip",
+      "run_index": 2,
+      "wall_clock_seconds": 1.0274,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_exfil_ip",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7132,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_ransomware_note",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7311,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_ransomware_note",
+      "run_index": 0,
+      "wall_clock_seconds": 0.7002,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_ransomware_note",
+      "run_index": 1,
+      "wall_clock_seconds": 1.2332,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_ransomware_note",
+      "run_index": 1,
+      "wall_clock_seconds": 0.7123,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_ransomware_note",
+      "run_index": 2,
+      "wall_clock_seconds": 0.719,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_ransomware_note",
+      "run_index": 2,
+      "wall_clock_seconds": 0.7137,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 1,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 1
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem",
+        "vt"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_suspicious_user_auth",
+      "run_index": 0,
+      "wall_clock_seconds": 0.0034,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 0,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 0
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_suspicious_user_auth",
+      "run_index": 0,
+      "wall_clock_seconds": 0.0017,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 0,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 0
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_suspicious_user_auth",
+      "run_index": 1,
+      "wall_clock_seconds": 0.002,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 0,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 0
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_suspicious_user_auth",
+      "run_index": 1,
+      "wall_clock_seconds": 0.0012,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 0,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 0
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "S",
+      "case_id": "botsv3_suspicious_user_auth",
+      "run_index": 2,
+      "wall_clock_seconds": 0.0017,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 0,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 0
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem"
+      ],
+      "skills_enabled": false
+    },
+    {
+      "arm": "F",
+      "case_id": "botsv3_suspicious_user_auth",
+      "run_index": 2,
+      "wall_clock_seconds": 0.0012,
+      "total_cost_micro_usd": 0,
+      "cost_by_role": {
+        "broker_flat": 0
+      },
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "sequential_turns": 1,
+      "queries_run_count": 0,
+      "index_scoping_correct": true,
+      "findings_completeness": {
+        "dns_resolutions": 0,
+        "connections": 0,
+        "processes": 0,
+        "auth_events": 0,
+        "uncategorised": 0,
+        "vt_verdicts": 0
+      },
+      "routing_correctness": true,
+      "stop_reason": "scripted",
+      "dispatched": [
+        "siem"
+      ],
+      "skills_enabled": false
+    }
+  ],
+  "arm_summaries": {
+    "S": {
+      "arm": "S",
+      "runs_count": 30,
+      "wall_clock_seconds": {
+        "median": 0.73875,
+        "min": 0.0017,
+        "max": 1.9596,
+        "spread": 1.9579
+      },
+      "total_cost_micro_usd": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "spread": 0.0
+      },
+      "input_tokens": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "spread": 0.0
+      },
+      "output_tokens": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "spread": 0.0
+      },
+      "sequential_turns": {
+        "median": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "spread": 0.0
+      },
+      "queries_run_count": {
+        "median": 1.0,
+        "min": 0.0,
+        "max": 1.0,
+        "spread": 1.0
+      },
+      "total_findings_rows": {
+        "median": 1.0,
+        "min": 0.0,
+        "max": 1.0,
+        "spread": 1.0
+      },
+      "index_scoping_correct_pct": 100.0,
+      "routing_correctness_pct": 100.0,
+      "stop_reasons": {
+        "scripted": 30
+      },
+      "cost_by_role_median": {
+        "broker": 0.0
+      }
+    },
+    "F": {
+      "arm": "F",
+      "runs_count": 30,
+      "wall_clock_seconds": {
+        "median": 0.77515,
+        "min": 0.0012,
+        "max": 1.6179,
+        "spread": 1.6166999999999998
+      },
+      "total_cost_micro_usd": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "spread": 0.0
+      },
+      "input_tokens": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "spread": 0.0
+      },
+      "output_tokens": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "spread": 0.0
+      },
+      "sequential_turns": {
+        "median": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "spread": 0.0
+      },
+      "queries_run_count": {
+        "median": 1.0,
+        "min": 0.0,
+        "max": 1.0,
+        "spread": 1.0
+      },
+      "total_findings_rows": {
+        "median": 1.0,
+        "min": 0.0,
+        "max": 1.0,
+        "spread": 1.0
+      },
+      "index_scoping_correct_pct": 100.0,
+      "routing_correctness_pct": 100.0,
+      "stop_reasons": {
+        "scripted": 30
+      },
+      "cost_by_role_median": {
+        "broker_flat": 0.0
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "metric_name": "wall_clock_seconds",
+      "median_S": 0.73875,
+      "median_F": 0.77515,
+      "delta": 0.0364,
+      "within_arm_spread": 1.9579,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "total_cost_micro_usd",
+      "median_S": 0.0,
+      "median_F": 0.0,
+      "delta": 0.0,
+      "within_arm_spread": 0.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "input_tokens",
+      "median_S": 0.0,
+      "median_F": 0.0,
+      "delta": 0.0,
+      "within_arm_spread": 0.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "output_tokens",
+      "median_S": 0.0,
+      "median_F": 0.0,
+      "delta": 0.0,
+      "within_arm_spread": 0.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "sequential_turns",
+      "median_S": 1.0,
+      "median_F": 1.0,
+      "delta": 0.0,
+      "within_arm_spread": 0.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "queries_run_count",
+      "median_S": 1.0,
+      "median_F": 1.0,
+      "delta": 0.0,
+      "within_arm_spread": 1.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "total_findings_rows",
+      "median_S": 1.0,
+      "median_F": 1.0,
+      "delta": 0.0,
+      "within_arm_spread": 1.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "index_scoping_correct_pct",
+      "median_S": 100.0,
+      "median_F": 100.0,
+      "delta": 0.0,
+      "within_arm_spread": 0.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    },
+    {
+      "metric_name": "routing_correctness_pct",
+      "median_S": 100.0,
+      "median_F": 100.0,
+      "delta": 0.0,
+      "within_arm_spread": 0.0,
+      "difference_status": "no measurable difference",
+      "winner": "none"
+    }
+  ]
+}
