@@ -33,10 +33,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from contracts.findings import SiemFindings, VtFindings
 from pydantic import BaseModel, Field
 
 from contracts import AnalystTask, Entity, Scope, SubtaskResult, ToolFamily
-from contracts.findings import SiemFindings, VtFindings
 from smartops.broker import BROKER_ROLE, BrokerOutcome, broker_task
 from smartops.broker_flat import BROKER_FLAT_ROLE, broker_flat_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
@@ -44,6 +44,7 @@ from smartops.domains import ALL_FAMILIES, spec_for
 from smartops.guards import IndexScopeGuard
 from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
+from smartops.subagents import domain_runner
 
 logger = logging.getLogger(__name__)
 
@@ -333,12 +334,25 @@ async def _execute_single_run(
         invoke = None
 
     if arm == "S":
+        # Arm S's whole claim is that a dedicated subagent executes the step, so
+        # the bench has to hand `broker_task` a real one. `run_subagent=None`
+        # stood here until now, which `_dispatch()` resolves to
+        # `broker._stub_subagent` -- a stand-in that calls no model and executes
+        # no tool, returning NO_DATA with a tool count. Every family except `vt`
+        # (the only one carrying a model-free enricher) therefore retrieved
+        # NOTHING, while Arm F ran a real per-step model loop against live tools.
+        # The A/B was comparing a real arm against a hollow one, and siem -- the
+        # domain the case is about -- was the emptiest of them.
+        #
+        # Scripted runs keep the stub deliberately: `--scripted` exists to
+        # exercise the plumbing without a provider, and `_stub_subagent` is what
+        # makes that possible (its `vt` enricher still returns real evidence).
         outcome = await broker_task(
             task,
             budget,
             model=model,
             invoke=invoke,
-            run_subagent=None,
+            run_subagent=None if scripted else domain_runner(model=model, budget=budget),
         )
     elif arm == "F":
         outcome = await broker_flat_task(

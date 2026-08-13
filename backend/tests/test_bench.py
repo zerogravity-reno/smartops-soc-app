@@ -144,6 +144,76 @@ class TestBenchMetricsCollection:
         assert counts.get("connections") == 2
         assert counts.get("vt_verdicts") == 1
 
+    @staticmethod
+    def _capture_run_subagent(monkeypatch):
+        """Record what the bench hands `broker_task` as its subagent runner."""
+        from contracts import TaskClassification
+
+        from smartops import bench as bench_mod
+        from smartops.broker import BrokerOutcome
+
+        seen: dict = {}
+
+        async def fake_broker_task(task, budget, **kwargs):
+            seen["run_subagent"] = kwargs.get("run_subagent")
+            return BrokerOutcome(
+                results=[],
+                classification=TaskClassification(tool_families=[], rationale="captured"),
+                dispatched=[],
+            )
+
+        monkeypatch.setattr(bench_mod, "broker_task", fake_broker_task)
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_a_live_arm_s_run_gets_a_real_subagent(self, monkeypatch):
+        """Arm S's entire claim is that a dedicated subagent executes the step.
+
+        The bench passed `run_subagent=None`, which `_dispatch()` resolves to
+        `broker._stub_subagent` -- no model, no tool call, `NO_DATA` and a tool
+        count. Only `vt` carries a model-free enricher, so every other family
+        (siem included -- the domain the case is about) retrieved nothing, while
+        Arm F ran a real per-step model loop against live tools. The A/B was
+        comparing a real arm against a hollow one.
+        """
+        seen = self._capture_run_subagent(monkeypatch)
+        task, expected = BENCHMARK_CASES["botsv3_coinhive"]
+
+        await _execute_single_run(
+            task,
+            arm="S",
+            run_index=0,
+            expected_families=expected,
+            model=_PLACEHOLDER_MODEL,
+            budget_usd=1.0,
+            scripted=False,
+        )
+
+        assert seen["run_subagent"] is not None, (
+            "a live bench run must hand Arm S a real subagent runner; None falls "
+            "back to _stub_subagent, which never calls a model or a tool"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_scripted_arm_s_run_keeps_the_stub(self, monkeypatch):
+        """`--scripted` exists to exercise the plumbing without a provider, and
+        the stub is what makes that possible. Wiring a real runner here would
+        make every offline dry-run try to reach a model."""
+        seen = self._capture_run_subagent(monkeypatch)
+        task, expected = BENCHMARK_CASES["botsv3_coinhive"]
+
+        await _execute_single_run(
+            task,
+            arm="S",
+            run_index=0,
+            expected_families=expected,
+            model=_PLACEHOLDER_MODEL,
+            budget_usd=1.0,
+            scripted=True,
+        )
+
+        assert seen["run_subagent"] is None
+
     @pytest.mark.asyncio
     async def test_execute_single_run_scripted_metrics(self):
         task, expected = BENCHMARK_CASES["botsv3_coinhive"]
