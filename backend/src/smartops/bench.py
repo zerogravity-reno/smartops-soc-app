@@ -82,7 +82,6 @@ def _pinned_skills(enabled: bool) -> Iterator[bool]:
         yield skills_enabled()
 
 
-# Standard benchmark test cases
 DEFAULT_BOTSV3_TASK = AnalystTask(
     task_id="botsv3_coinhive",
     hypothesis_id="coinhive-cryptomining",
@@ -99,8 +98,42 @@ DEFAULT_BOTSV3_TASK = AnalystTask(
     ),
 )
 
+BOTSV3_POWERSHELL_TASK = AnalystTask(
+    task_id="botsv3_powershell_hash",
+    hypothesis_id="powershell-malware-hash",
+    goal="Investigate suspicious file hash e2ac36894c2560d2b277ff9618b76c8c reputation on VirusTotal and SIEM activity on host BSTOLL-L.",
+    scope=Scope(
+        entities=[
+            Entity(kind="file_hash", value="e2ac36894c2560d2b277ff9618b76c8c"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
+BOTSV3_C2_IP_TASK = AnalystTask(
+    task_id="botsv3_c2_ip",
+    hypothesis_id="c2-outbound-ip",
+    goal="Is external IP 217.182.164.14 known-malicious, and what network connections did host BSTOLL-L make to it?",
+    scope=Scope(
+        entities=[
+            Entity(kind="ip", value="217.182.164.14"),
+            Entity(kind="host", value="BSTOLL-L"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+    ),
+)
+
 BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
     "botsv3_coinhive": (DEFAULT_BOTSV3_TASK, ["siem", "vt"]),
+    "botsv3_powershell_hash": (BOTSV3_POWERSHELL_TASK, ["siem", "vt"]),
+    "botsv3_c2_ip": (BOTSV3_C2_IP_TASK, ["siem", "vt"]),
 }
 
 
