@@ -10,3 +10,16 @@ __pycache__/
 !.env.example
 *.pem
 mcp_servers.local.json
+
+# Per-run output: BrokerReport plus the evidence payloads behind it. Real
+# investigation data against a real estate -- it is the output of the system,
+# not part of it, and it must never reach a remote.
+.smartops/
+
+# Scaffolding left behind by orchestrator agents. Briefings and progress files
+# from runs that were killed mid-flight; kept on disk for post-mortems, never
+# source.
+.agents/
+
+# Subagent-driven-development ledgers and review packages, per plan.
+.superpowers/
