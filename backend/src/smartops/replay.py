@@ -17,6 +17,10 @@ from typing import Any, Callable, Sequence
 from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily
 from smartops.broker import SubagentRunner
 from smartops.budget import Budget, ModelChoice
+from smartops.subagents import (
+    DEFAULT_MAX_OUTPUT_TOKENS as _SUBAGENT_OUTPUT_TOKENS,
+    DEFAULT_TURNS as _SUBAGENT_TURNS,
+)
 from strands import tool
 
 logger = logging.getLogger(__name__)
@@ -205,8 +209,8 @@ def create_replay_subagent_runner(
     *,
     model: ModelChoice,
     budget: Budget,
-    turns: int = 14,
-    max_output_tokens: int = 12000,
+    turns: int = _SUBAGENT_TURNS,
+    max_output_tokens: int = _SUBAGENT_OUTPUT_TOKENS,
 ) -> SubagentRunner:
     """Create a `SubagentRunner` that executes missions offline using replayed tool calls."""
     from smartops.subagents import investigate

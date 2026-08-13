@@ -13,6 +13,7 @@ with Arm S's.
 """
 
 import asyncio
+import inspect
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -45,11 +46,13 @@ from contracts.subtask import make_answer_model
 from pydantic import ValidationError
 
 from smartops.broker import (
+    DISPATCHES_PER_PLANNED_STEP,
     BrokerOutcome,
     BrokerRequest,
     _estimated_input_tokens,
     plan_fetch,
 )
+from smartops.replay import create_replay_subagent_runner
 from smartops.projection import project
 from smartops.broker_flat import (
     BROKER_FLAT_ROLE,
@@ -73,6 +76,7 @@ from smartops.broker_flat import (
 )
 from smartops.budget import Budget, ModelChoice, Usage, estimate_cost
 from smartops.domains import ALL_FAMILIES, DOMAINS
+from smartops import subagents
 from smartops.subagents import _EvidenceCollector, _ToolCall
 
 MODEL = ModelChoice(
@@ -836,6 +840,74 @@ class TestFlatCompletionRuleIsCodeEvaluated:
 
         assert outcome.report is not None
         assert outcome.report.step_outcomes[0].completed is True
+
+
+class TestTheArmsStayAliasedOnStepCost:
+    """Fix 4: pin the aliasing that makes the two arms comparable on cost.
+
+    Arm F's per-step turns and output tokens are bound to `subagents`' constants
+    at import, which is what keeps the two arms' per-step reservations within a
+    fraction of a cent. Nothing asserted it, and `step_turns` /
+    `step_max_output_tokens` are public keyword arguments, so a future bench
+    could un-alias one arm without touching the other. The drift these guard
+    against had already happened once, in `replay.py`.
+    """
+
+    def test_step_turns_are_arm_s_turns(self):
+        # `is`, not `==`: the point is that there is one constant, not two
+        # numbers that happen to agree today.
+        assert DEFAULT_FLAT_STEP_TURNS is subagents.DEFAULT_TURNS
+
+    def test_step_output_tokens_are_arm_s_output_tokens(self):
+        assert DEFAULT_FLAT_STEP_OUTPUT_TOKENS is subagents.DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_retry_allowance_is_arm_s_dispatch_allowance(self):
+        assert EXECUTIONS_PER_PLANNED_STEP is DISPATCHES_PER_PLANNED_STEP
+
+    def test_the_replay_harness_takes_the_constants_not_literals(self):
+        """`replay.py` hardcoded `turns=14, max_output_tokens=12000`; a bump to
+        either constant would silently have left the replay harness behind."""
+        params = inspect.signature(create_replay_subagent_runner).parameters
+        assert params["turns"].default is subagents.DEFAULT_TURNS
+        assert params["max_output_tokens"].default is subagents.DEFAULT_MAX_OUTPUT_TOKENS
+
+    @staticmethod
+    def _reservations(tool_count: int) -> tuple[int, int]:
+        """(Arm F step, Arm S mission) worst-case reservation for one mission."""
+        mission = _mission_for(make_task(), make_step("s1", "siem"))
+        tools = [f"tool-{i}" for i in range(tool_count)]
+        arm_f = estimate_cost(
+            MODEL.pricing_key,
+            DEFAULT_FLAT_STEP_OUTPUT_TOKENS,
+            step_input_estimate(mission, tools, turns=DEFAULT_FLAT_STEP_TURNS),
+        )
+        arm_s = estimate_cost(
+            MODEL.pricing_key,
+            subagents.DEFAULT_MAX_OUTPUT_TOKENS,
+            subagents._estimated_input_tokens(
+                subagents._prompt_for(mission),
+                turns=subagents.DEFAULT_TURNS,
+                tool_count=tool_count,
+            ),
+        )
+        return arm_f, arm_s
+
+    @pytest.mark.parametrize("tool_count", [0, 1, 4, 10, 25])
+    def test_the_per_step_reservations_stay_within_a_third_of_a_cent(self, tool_count):
+        """The near-equality is what makes the arms comparable on cost at all,
+        and it moves unobserved on any edit to either prompt -- it is driven
+        purely by `len(prompt)`. Bounded so a prompt rewrite has to notice."""
+        arm_f, arm_s = self._reservations(tool_count)
+
+        assert abs(arm_f - arm_s) < 3_000  # micro-USD, i.e. $0.003
+
+    def test_the_delta_does_not_grow_with_the_toolset(self):
+        """Tool schemas are charged identically on both sides, so the gap is a
+        constant rather than something that widens as a SIEM exposes more tools.
+        """
+        deltas = {abs(f - s) for f, s in (self._reservations(n) for n in (0, 4, 25))}
+
+        assert len(deltas) == 1
 
 
 class TestFlatRetriesAnUnmetStepOnce:
