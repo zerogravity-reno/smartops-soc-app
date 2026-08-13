@@ -80,7 +80,14 @@ def _scripted_invoker(families: list[ToolFamily]):
     the same families as its classification, so a normal run shows no divergence;
     `test_broker.py` covers the case where the two disagree.
     """
-    step_ids = {family: f"step-{index + 1}" for index, family in enumerate(families)}
+    # `dict.fromkeys` first: keying by family collapses a repeated family onto one
+    # entry while `enumerate(families)` keeps counting, which would mint the same
+    # step-N id twice -- a plan `FetchPlan` now rejects outright, and for good
+    # reason. `_parse_families` de-dupes today, so this is a guard rather than a
+    # live bug; the test helper in `test_broker.py` has always had it.
+    step_ids = {
+        family: f"step-{index + 1}" for index, family in enumerate(dict.fromkeys(families))
+    }
 
     async def invoke(prompt: str, request: BrokerRequest) -> _ScriptedResult:
         if families:

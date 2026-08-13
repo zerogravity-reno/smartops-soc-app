@@ -412,6 +412,51 @@ class TestSubtaskResult:
         assert ok.reason
 
 
+class TestFetchPlanStepIdsAreUnique:
+    """A duplicate `step_id` is not cosmetic: dispatch is keyed on it.
+
+    Two steps sharing an id means the second one can never be dispatched (first
+    match wins), never appears in `step_outcomes`, and -- because the wrong-family
+    refusal names the ids the plan holds -- sends the model back to retry the very
+    id it just used. Rejecting the plan is what makes that one recoverable error
+    instead of a loop.
+    """
+
+    @staticmethod
+    def _steps(*pairs):
+        from contracts import FetchStep
+
+        return [
+            FetchStep(step_id=step_id, family=family, objective=f"retrieve {family}")
+            for step_id, family in pairs
+        ]
+
+    def test_two_families_reusing_one_step_id_is_rejected(self):
+        from contracts import FetchPlan
+
+        with pytest.raises(ValidationError) as exc:
+            FetchPlan(
+                steps=self._steps(("step-1", "siem"), ("step-1", "vt")),
+                rationale="one step per family, ids numbered per family",
+            )
+
+        # The message has to name the collision, or the model cannot tell which
+        # of its ids to change.
+        message = str(exc.value)
+        assert "duplicate step_id" in message
+        assert "'step-1'" in message
+
+    def test_distinct_ids_across_families_are_accepted(self):
+        from contracts import FetchPlan
+
+        plan = FetchPlan(
+            steps=self._steps(("siem-1", "siem"), ("vt-1", "vt")),
+            rationale="ids prefixed by family",
+        )
+
+        assert [s.step_id for s in plan.steps] == ["siem-1", "vt-1"]
+
+
 class TestBrokerReport:
     def test_broker_report_construction(self):
         from contracts import (

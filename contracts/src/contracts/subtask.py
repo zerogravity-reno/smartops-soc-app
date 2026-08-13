@@ -509,6 +509,32 @@ class FetchPlan(BaseModel):
     steps: list[FetchStep] = Field(min_length=1)
     rationale: str = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _step_ids_are_unique(self) -> Self:
+        """`step_id` is the key everything downstream is filed under, so a
+        duplicate is not a cosmetic problem -- it is unrecoverable.
+
+        A model naming its steps per family (`step-1` for siem, `step-1` for vt)
+        is an entirely plausible thing to do, and before this validator existed it
+        produced two failures at once: dispatch resolved a step by first match, so
+        the shadowed step **vanished** from `step_outcomes` -- a plan step with no
+        outcome in the report -- and the wrong-family refusal told the model to
+        retry the exact id it had just used, which loops until the turn budget
+        runs out. Rejecting the plan at construction turns both into one loud,
+        recoverable failure before anything is fetched.
+        """
+        seen: dict[str, int] = {}
+        for step in self.steps:
+            seen[step.step_id] = seen.get(step.step_id, 0) + 1
+        collisions = [f"{sid!r} appears {n} times" for sid, n in seen.items() if n > 1]
+        if collisions:
+            raise ValueError(
+                f"duplicate step_id in fetch plan: {'; '.join(collisions)}. "
+                "Every step_id must be unique across the whole plan, not just "
+                "within one family"
+            )
+        return self
+
 
 class StepOutcome(BaseModel):
     """Evaluated outcome for one step in a fetch plan."""
@@ -521,10 +547,13 @@ class StepOutcome(BaseModel):
     status: SubtaskStatus | None = None
     reason: str | None = None
     evaluated: bool = True
-    """False only for a step that never went through `_dispatch()`'s completion-
-    rule tracking at all -- e.g. `broker.py`'s synthesized-plan fallback, which
-    reconstructs a `FetchStep` per dispatched family after the model never
-    called `plan_fetch`. `completed` on such a step is not a judgement, real or
+    """False for any step that never went through `broker.evaluate_step()` -- the
+    single implementation of the completion rule, and the only place this flag is
+    set to True. Two paths mint an outcome without evaluating one: `plan_fetch`,
+    which records a step the moment it is planned and long before anything is
+    dispatched to it, and `broker.py`'s synthesized-plan fallback, which
+    reconstructs a `FetchStep` per dispatched family after the model never called
+    `plan_fetch`. `completed` on such a step is not a judgement, real or
     fabricated; it is just `False`, because nobody -- code or model -- ever
     evaluated a rule against it. A consumer must check this before trusting
     `completed`: `completed=False, evaluated=False` means "unknown", not "ran

@@ -54,7 +54,9 @@ from contracts import (
     ToolFamily,
 )
 from contracts.findings import VtFindings, VtVerdict
+from pydantic import ValidationError
 from strands import ToolContext, tool
+from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
 
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.domains import DOMAINS, DomainSpec
@@ -67,24 +69,26 @@ logger = logging.getLogger(__name__)
 
 BROKER_ROLE = "broker"
 
-# How many dispatches one planned step earns: the step itself, plus one
+# How many dispatches ONE planned step earns: the step itself, plus one
 # re-dispatch, so a subagent's reported `gaps` can still justify one
-# better-aimed follow-up and no more. This used to be the ceiling for a family
-# the fetch plan named no steps for -- the Broker never called `plan_fetch`, or
-# called it and planned nothing for this family. `_dispatch()` refuses both of
-# those outright now, so that case can no longer arise, and the value survives
-# as the single-planned-step allowance, which is numerically what it always
-# granted. See `_dispatch()` for what this prevents.
-MAX_DISPATCHES_PER_FAMILY = 2
+# better-aimed follow-up and no more. Enforced per step, against that step's own
+# `StepOutcome.dispatches`, not pooled across the family: a family-wide check
+# alone let a three-step siem plan spend its whole allowance re-asking step one,
+# leaving steps two and three at `dispatches=0` -- which is precisely the
+# never-attempted state `StepOutcome.evaluated` exists to keep out of the A/B
+# metric. It was named MAX_DISPATCHES_PER_FAMILY while it was the ceiling for a
+# family the plan named no steps for; `_dispatch()` refuses an unplanned dispatch
+# outright now, so that reading is gone and the name followed it.
+DISPATCHES_PER_PLANNED_STEP = 2
 
 # Hard ceiling on dispatches for a family the fetch plan DID name steps for.
 # The Broker earns one dispatch per planned step, plus the same "at most twice"
-# re-dispatch allowance MAX_DISPATCHES_PER_FAMILY grants above -- so
+# re-dispatch allowance DISPATCHES_PER_PLANNED_STEP grants above -- so
 # `len(planned_steps) * 2` -- but a plan is still Broker-authored, not free, and
 # an uncapped multiply would let it recreate the exact runaway re-dispatch this
 # cap exists to stop just by naming more steps. Six is sized for the plan this
 # was built for: three siem steps, each earning one re-dispatch, and it is what
-# keeps that plan from colliding with the cap the way MAX_DISPATCHES_PER_FAMILY
+# keeps that plan from colliding with the cap the way a flat per-family two
 # alone did. See `_dispatch()`.
 MAX_PLANNED_DISPATCHES_PER_FAMILY = 6
 
@@ -104,8 +108,19 @@ DEFAULT_BROKER_OUTPUT_TOKENS = 4000
 # sized for -- three siem steps plus one each for edr/vt/ndr, six steps total --
 # costs one dispatch turn per step. The `TaskClassification` the Broker must
 # still emit at the end costs the last one. 1 (plan) + 6 (dispatch) + 1
-# (report) = 8.
-DEFAULT_BROKER_TURNS = 8
+# (report) = 8, plus 3 for correction = 11.
+#
+# The slack is for the refusals this design *depends on*. Every guard in
+# `_dispatch()` -- no plan yet, an unplanned step id, a step id belonging to
+# another family, a step past its allowance -- and every rejected `plan_fetch`
+# is deliberately a returned tool result rather than an exception, precisely so
+# the model can correct itself on the next turn. That next turn is a real model
+# call, and at exactly 8 the arithmetic above allocates none: on the six-step
+# plan the cap was sized for, one refusal (or one framework validation error for
+# an omitted `step_id`) meant the run hit its turn limit before emitting
+# `TaskClassification`, losing the classification for a mistake it had already
+# recovered from. Three spare turns cover three such corrections.
+DEFAULT_BROKER_TURNS = 11
 _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
 
 _SYSTEM_PROMPT = """\
@@ -607,10 +622,11 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     # Per-plan: see MAX_PLANNED_DISPATCHES_PER_FAMILY for the arithmetic and why
     # this is capped rather than left to grow with the plan's size. The guards
     # above mean `family_step_ids` is never empty here, so the no-plan ceiling is
-    # no longer reachable through a tool call -- it survives as the value of the
-    # single-planned-step case, which is exactly what it always granted.
+    # no longer reachable through a tool call. This is the family's hard ceiling
+    # only; the per-step allowance it is built from is charged separately, just
+    # below, so a family with budget left over cannot spend it all on one step.
     allowed_dispatches = min(
-        MAX_PLANNED_DISPATCHES_PER_FAMILY, len(family_step_ids) * MAX_DISPATCHES_PER_FAMILY
+        MAX_PLANNED_DISPATCHES_PER_FAMILY, len(family_step_ids) * DISPATCHES_PER_PLANNED_STEP
     )
 
     if req.dispatched.count(family) >= allowed_dispatches:
@@ -625,6 +641,31 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
             f"status=refused | {family} has already been consulted "
             f"{allowed_dispatches} time(s), which is the limit for one "
             "investigation. Use what it already returned, or engage a different domain."
+        )
+
+    # Per step, not merely per family. The family ceiling above is computed from
+    # the number of planned steps but spent from one pool, so a three-step siem
+    # plan let the Broker burn all six dispatches re-asking step one and leave the
+    # other two at `dispatches=0` -- steps that were planned, never attempted, and
+    # then reported alongside ones that genuinely came back empty. The allowance is
+    # what each step earns, so it is charged to that step.
+    prior_outcome = req.step_outcomes.get(step.step_id)
+    spent = prior_outcome.dispatches if prior_outcome is not None else 0
+    if spent >= DISPATCHES_PER_PLANNED_STEP:
+        others = [sid for sid in family_step_ids if sid != step_id]
+        logger.warning(
+            "task_id=%s family=%s | refusing dispatch %d for step_id=%r, per-step allowance is %d",
+            req.task.task_id,
+            family,
+            spent + 1,
+            step_id,
+            DISPATCHES_PER_PLANNED_STEP,
+        )
+        return (
+            f"status=refused | step {step_id!r} has already been dispatched {spent} time(s), "
+            f"which is the whole allowance for one planned step. Use what it returned, or "
+            f"dispatch another step. The plan's other {family} step ids are: "
+            f"{', '.join(others) or 'none -- it is the only ' + family + ' step planned'}."
         )
 
     mission = SubagentMission(
@@ -673,25 +714,89 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
 async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolContext) -> str:
     """Author a fetch plan decomposing the goal into bounded retrieval steps.
 
+    Calling this a second time **re-plans**: the new plan replaces the old one and
+    `step_outcomes` is rebuilt from it, because two of `_dispatch()`'s refusals
+    tell the model to "call plan_fetch to plan the step you need" -- so re-planning
+    is a designed recovery path, not a corner case. Rebuilding rather than merging
+    is what keeps the report honest in both directions: an outcome for a step the
+    current plan no longer contains is pruned (it would otherwise appear in
+    `BrokerReport.step_outcomes` with no matching entry in `report.plan.steps`),
+    and a step id carried over from the old plan keeps its accumulated
+    `dispatches`/`rows_retrieved`. Resetting those counters -- which is what
+    overwriting the plan alone did -- would have re-granted a step its whole
+    dispatch allowance while `req.dispatched` kept counting against the family cap,
+    i.e. the report would under-count exactly the spend the caps exist to bound.
+
     Args:
         steps: The list of fetch steps to execute.
         rationale: Explanation of why these steps were chosen.
     """
     req: BrokerRequest = tool_context.invocation_state["smartops"]
-    plan = FetchPlan(steps=steps, rationale=rationale)
+
+    # `FetchPlan` rejects duplicate step ids (see its validator). Catching that
+    # here rather than letting the `ValidationError` escape is the difference
+    # between the model reading "duplicate step_id 'step-1' appears 2 times" and
+    # reading the framework's generic tool-input error: only one of those tells it
+    # what to change. Nothing is recorded, so any plan already in place survives.
+    try:
+        plan = FetchPlan(steps=steps, rationale=rationale)
+    except ValidationError as exc:
+        detail = "; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors())
+        logger.warning(
+            "task_id=%s | fetch plan rejected, nothing recorded: %s", req.task.task_id, detail
+        )
+        return (
+            f"status=refused | the fetch plan was NOT recorded: {detail}. Nothing is "
+            "planned yet, so no dispatch can succeed. Call plan_fetch again with a "
+            "unique step_id for every step -- prefixing each id with its family "
+            "(siem-1, vt-1) keeps them distinct across families."
+        )
+
+    replacing = req.plan is not None
+    carried = req.step_outcomes
     req.plan = plan
+    req.step_outcomes = {}
     for step in steps:
-        req.step_outcomes[step.step_id] = StepOutcome(step=step, completed=False)
+        prior = carried.pop(step.step_id, None)
+        req.step_outcomes[step.step_id] = (
+            # Planned, not judged: `evaluated=False` until `evaluate_step()` runs
+            # a rule against a real result. A planned step nobody ever dispatched
+            # would otherwise report `completed=False, evaluated=True`, which per
+            # that field's contract means "ran and fell short" -- indistinguishable
+            # in the A/B artifact from a step that was dispatched and came back
+            # empty.
+            StepOutcome(step=step, completed=False, evaluated=False)
+            if prior is None
+            # Counters accumulate; the step *definition* is taken from the new
+            # plan, or `report.step_outcomes[i].step` would disagree with
+            # `report.plan.steps[i]` whenever a re-plan reworded a carried-over id.
+            else prior.model_copy(update={"step": step})
+        )
+
+    dropped = sorted(sid for sid, outcome in carried.items() if outcome.dispatches)
+    if dropped:
+        logger.warning(
+            "task_id=%s | re-plan dropped %d already-dispatched step outcome(s): %s",
+            req.task.task_id,
+            len(dropped),
+            ", ".join(dropped),
+        )
 
     # The step ids go back to the model because it now has to cite one on every
     # dispatch, and it cannot cite an id it was never told. Reporting only a
     # count -- which is all this returned before -- left the binding in change 3
     # unusable from the model's side.
     minted = "; ".join(f"{s.step_id} ({s.family}): {s.objective}" for s in steps)
+    replaced = (
+        " This replaced the previous plan: any step id you re-listed kept the dispatches "
+        "it had already spent, and outcomes for steps you did not re-list were dropped."
+        if replacing
+        else ""
+    )
     return (
         f"Fetch plan recorded with {len(steps)} step(s). Rationale: {rationale}. "
         f"Step ids: {minted}. Dispatch a step by calling its family's tool with "
-        "that step's step_id."
+        f"that step's step_id.{replaced}"
     )
 
 
@@ -714,6 +819,71 @@ def make_investigate_tool(spec: DomainSpec):
 TOOL_BY_FAMILY = {spec.family: make_investigate_tool(spec) for spec in DOMAINS.values()}
 FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
 BROKER_TOOLS = [plan_fetch] + FAMILY_TOOLS
+
+_DISPATCH_TOOL_PREFIX = "investigate_"
+
+
+def missing_step_id_refusal(tool_name: str, req: BrokerRequest | None) -> str:
+    """What a dispatch that omitted `step_id` altogether is answered with.
+
+    Every other way of naming the wrong step is refused by `_dispatch()` with the
+    tool's real name, the valid ids, and a `logger.warning`. Omitting the argument
+    was the one that was not: Strands' input validation rejects it before the tool
+    body runs, so the model got `Validation failed for input parameters: ... for
+    InvestigateTool` -- the pydantic model `@tool` builds internally, which is the
+    same string for all four family tools -- with no valid ids and no log line at
+    all. Repeated omissions were therefore invisible in the broker's own logs while
+    every other malformed dispatch was recorded.
+    """
+    family = tool_name.removeprefix(_DISPATCH_TOOL_PREFIX)
+    ids = (
+        [s.step_id for s in req.plan.steps if s.family == family]
+        if req is not None and req.plan is not None
+        else []
+    )
+    if ids:
+        where = f"The plan's {family} step ids are: {', '.join(ids)}."
+    elif req is not None and req.plan is not None:
+        where = f"This plan has no {family} step; call plan_fetch to plan the step you need."
+    else:
+        where = "There is no fetch plan yet; call plan_fetch first."
+    return (
+        f"status=refused | {tool_name} requires a step_id and none was given, so nothing "
+        f"was dispatched. {where} Call {tool_name} again with the step_id of the planned "
+        "step this dispatch carries out."
+    )
+
+
+class MissingStepIdGuard(HookProvider):
+    """Turns an omitted `step_id` into the same kind of refusal every other
+    malformed dispatch already gets: named, logged, and answerable in one turn.
+
+    A `BeforeToolCallEvent` hook rather than anything in the tool body, because
+    the body never runs -- the argument is missing, so `@tool`'s generated input
+    model rejects the call first. `step_id` stays a required parameter; this only
+    intercepts the omission earlier so the answer can name the tool and list the
+    ids, and so the broker's logs show it happening.
+    """
+
+    def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
+        registry.add_callback(BeforeToolCallEvent, self.on_before_tool_call)
+
+    def on_before_tool_call(self, event: BeforeToolCallEvent) -> None:
+        tool_use = event.tool_use or {}
+        name = tool_use.get("name") or ""
+        if not name.startswith(_DISPATCH_TOOL_PREFIX):
+            return
+        if str((tool_use.get("input") or {}).get("step_id") or "").strip():
+            return
+
+        req = (event.invocation_state or {}).get("smartops")
+        task_id = req.task.task_id if isinstance(req, BrokerRequest) else "unknown"
+        logger.warning(
+            "task_id=%s tool=%s | dispatch omitted step_id, nothing dispatched", task_id, name
+        )
+        event.cancel_tool = missing_step_id_refusal(
+            name, req if isinstance(req, BrokerRequest) else None
+        )
 
 
 def _prompt_for(task: AnalystTask) -> str:
@@ -753,6 +923,7 @@ def default_broker_invoker(
             system_prompt=_SYSTEM_PROMPT,
             structured_output_model=TaskClassification,
             callback_handler=None,
+            hooks=[MissingStepIdGuard()],
             retry_strategy=ModelRetryStrategy(max_attempts=2),
             conversation_manager=SlidingWindowConversationManager(should_truncate_results=False),
         )
