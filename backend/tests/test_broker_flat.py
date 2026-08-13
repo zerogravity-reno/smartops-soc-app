@@ -71,13 +71,13 @@ from smartops.broker_flat import (
     default_flat_broker_invoker,
     default_flat_step_executor,
     execution_layers,
-    resolve_flat_tools,
     step_input_estimate,
 )
 from smartops.budget import Budget, ModelChoice, Usage, estimate_cost
 from smartops.domains import ALL_FAMILIES, DOMAINS
 from smartops import subagents
 from smartops.subagents import _EvidenceCollector, _ToolCall
+from smartops.telemetry import trace_attributes_for
 
 MODEL = ModelChoice(
     model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -167,20 +167,10 @@ def fake_flat_invoker(
     return invoke
 
 
-# --- 1. TestFlatToolSetResolution ---
-
-
-class TestFlatToolSetResolution:
-    async def test_resolve_flat_tools_combines_active_family_tools(self):
-        res = await resolve_flat_tools(["siem", "vt"])
-        assert "siem" in res
-        assert "vt" in res
-
-    async def test_flat_agent_filters_disabled_families(self):
-        res = await resolve_flat_tools(["vt"])
-        assert "vt" in res
-        assert "siem" not in res
-        assert "edr" not in res
+# `TestFlatToolSetResolution` used to sit here, covering `resolve_flat_tools()`.
+# That function was dead in production -- `_gate_families()` replaced it when Arm
+# F became plan-then-execute -- and these tests were the only thing keeping it
+# alive, so both went together.
 
 
 # --- 2. TestToolFamilyAttribution ---
@@ -638,7 +628,11 @@ class TestFlatIndependentStepsOverlap:
         another, the first step waits forever and this times out. It is a
         liveness proof, not a count of results -- N results come back either way.
         """
-        barrier = asyncio.Barrier(3)
+        steps = [make_step(f"s{i}", "siem") for i in (1, 2, 3)]
+        # Derived, not hardcoded: a barrier whose party count and step list drift
+        # apart deadlocks, and a deadlock here reads as "concurrency broke" when
+        # it is really an authoring slip in the test.
+        barrier = asyncio.Barrier(len(steps))
         windows: dict[str, tuple[float, float]] = {}
 
         async def block(mission, step, tools):
@@ -646,7 +640,6 @@ class TestFlatIndependentStepsOverlap:
             await barrier.wait()
             windows[step.step_id] = (entered, time.perf_counter())
 
-        steps = [make_step(f"s{i}", "siem") for i in (1, 2, 3)]
         with tools_available(siem=SIEM_TOOLS):
             outcome = await asyncio.wait_for(
                 broker_flat_task(
@@ -660,8 +653,8 @@ class TestFlatIndependentStepsOverlap:
                 timeout=10,
             )
 
-        assert len(outcome.results) == 3
-        assert len(windows) == 3
+        assert len(outcome.results) == len(steps)
+        assert len(windows) == len(steps)
         # And the windows overlap pairwise, stated explicitly so a future change
         # that drops the barrier does not quietly turn this into a smoke test.
         spans = list(windows.values())
@@ -702,6 +695,24 @@ class TestFlatIndependentStepsOverlap:
         assert events.index("s3:start") > events.index("s1:end")
         assert events.index("s3:start") > events.index("s2:end")
 
+    def test_all_independent_steps_are_one_layer(self):
+        """The shape, not just the liveness. Nothing asserted that overlap lives
+        in `execution_layers` at all, so a refactor that moved it elsewhere could
+        leave this degenerate -- one step per layer -- with the barrier test still
+        green because the steps overlapped for some other reason."""
+        from contracts import FetchPlan
+
+        plan = FetchPlan(
+            steps=[make_step(f"s{i}", "siem") for i in (1, 2, 3)],
+            rationale="three independent steps",
+        )
+        schedule = execution_layers(plan)
+
+        assert [[s.step_id for s in layer] for layer in schedule.layers] == [
+            ["s1", "s2", "s3"]
+        ]
+        assert schedule.repairs == 0
+
     def test_execution_layers_break_a_cycle_rather_than_deadlocking(self):
         from contracts import FetchPlan
 
@@ -713,8 +724,34 @@ class TestFlatIndependentStepsOverlap:
             ],
             rationale="cyclic, because a plan is model-authored",
         )
-        layers = execution_layers(plan)
-        assert [s.step_id for layer in layers for s in layer] == ["c", "a", "b"]
+        schedule = execution_layers(plan)
+        assert [s.step_id for layer in schedule.layers for s in layer] == ["c", "a", "b"]
+        # One dropped edge plus two steps released to break the cycle.
+        assert schedule.repairs == 3
+
+    def test_a_step_downstream_of_a_cycle_keeps_its_ordering(self):
+        """The narrowed break. Releasing *everything* still pending into the
+        final layer also stripped the ordering from a step that merely depended
+        on a cyclic one -- one bad edge cost the whole tail of the plan its
+        dependencies."""
+        from contracts import FetchPlan
+
+        plan = FetchPlan(
+            steps=[
+                make_step("a", "siem", depends_on=["b"]),
+                make_step("b", "siem", depends_on=["a"]),
+                make_step("c", "siem", depends_on=["a"]),
+            ],
+            rationale="c is downstream of the cycle, not in it",
+        )
+        schedule = execution_layers(plan)
+
+        assert [[s.step_id for s in layer] for layer in schedule.layers] == [
+            ["a", "b"],
+            ["c"],
+        ]
+        # Only the two steps genuinely in the cycle were released.
+        assert schedule.repairs == 2
 
 
 class TestFlatBudgetRefusalIsDeterministic:
@@ -1028,6 +1065,110 @@ class TestFlatRetriesAnUnmetStepOnce:
         assert so.completed is False
         assert so.refused_for_budget is False
         assert outcome.results[0].status == SubtaskStatus.OK
+
+
+class TestPlanRepairsReachTheReport:
+    """Fix 7: a repaired plan is a plan-quality datum, and plan quality is one of
+    the things the A/B compares. It existed only as a `logger.warning`."""
+
+    async def test_a_clean_plan_reports_no_repairs(self):
+        with tools_available(siem=SIEM_TOOLS):
+            outcome = await broker_flat_task(
+                make_task(),
+                Budget.from_usd(50.0),
+                model=MODEL,
+                invoke=planning_invoker([make_step("s1", "siem"), make_step("s2", "siem")]),
+                execute_step=fake_step_executor(),
+                families=["siem"],
+            )
+
+        assert outcome.report is not None
+        assert outcome.report.plan_repairs == 0
+
+    async def test_a_repaired_plan_says_how_much_repairing_it_needed(self):
+        steps = [
+            make_step("s1", "siem", depends_on=["s1"]),  # self edge
+            make_step("s2", "siem", depends_on=["ghost"]),  # unknown step
+        ]
+        with tools_available(siem=SIEM_TOOLS):
+            outcome = await broker_flat_task(
+                make_task(),
+                Budget.from_usd(50.0),
+                model=MODEL,
+                invoke=planning_invoker(steps),
+                execute_step=fake_step_executor(),
+                families=["siem"],
+            )
+
+        assert outcome.report is not None
+        assert outcome.report.plan_repairs == 2
+        # Repaired, not refused: both steps still ran.
+        assert len(outcome.results) == 2
+
+
+class TestFlatStepSpansCarryTheInvestigation:
+    async def test_the_step_agent_is_stamped_with_trace_attributes(self):
+        """Fix 7: Arm S passes `trace_attributes_for(mission)`; Arm F omitted it,
+        so its spans carried no task_id/hypothesis_id/tool_family and the two
+        arms' traces were not correlatable the same way."""
+        captured: dict = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def invoke_async(self, *args, **kwargs):
+                return FakeInvokerResult(structured_output=None)
+
+        step = make_step("s1", "siem")
+        mission = _mission_for(make_task(), step)
+        with (
+            patch.object(ModelChoice, "build", lambda self: "built-model"),
+            patch("strands.Agent", FakeAgent),
+        ):
+            await default_flat_step_executor(MODEL)(mission, step, SIEM_TOOLS)
+
+        assert captured["trace_attributes"] == trace_attributes_for(mission)
+        assert captured["trace_attributes"]["task_id"] == "t1:siem:s1"
+
+
+class _Abort(BaseException):
+    """A `BaseException` `guarded` deliberately does not contain, standing in for
+    the real ones (`CancelledError`, `KeyboardInterrupt`) without either
+    cancelling the test's own task or tearing down the pytest session."""
+
+
+class TestFlatDoesNotLeakLaterLayersReservations:
+    async def test_a_base_exception_escaping_a_layer_releases_what_is_still_held(self):
+        """Fix 7: every step is reserved up front, so an exception `guarded` does
+        not contain -- a `BaseException`, by design -- used to walk out past every
+        later layer's reservation and leak all of it. Arm S leaks at most one,
+        because it reserves per dispatch."""
+        budget = Budget.from_usd(50.0)
+        before = budget.remaining
+        # s2 and s3 sit in later layers, so their reservations are held but
+        # unspent when s1 tears the run down.
+        steps = [
+            make_step("s1", "siem"),
+            make_step("s2", "siem", depends_on=["s1"]),
+            make_step("s3", "siem", depends_on=["s2"]),
+        ]
+
+        async def abort(mission, step, tools):
+            raise _Abort("the run was torn down mid-layer")
+
+        with tools_available(siem=SIEM_TOOLS), pytest.raises(_Abort):
+            await broker_flat_task(
+                make_task(),
+                budget,
+                model=MODEL,
+                invoke=planning_invoker(steps),
+                execute_step=abort,
+                families=["siem"],
+            )
+
+        assert budget.remaining == before
+        assert [e.task_id for e in budget.ledger] == ["t1"]
 
 
 class TestFlatTakesNoSubagentRunner:

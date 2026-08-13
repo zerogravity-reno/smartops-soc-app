@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol, Sequence
 
@@ -89,7 +90,12 @@ from smartops.subagents import (
     _ToolCall,
     _estimated_input_tokens as _step_estimated_input_tokens,
 )
-from smartops.telemetry import investigation_span, record_cost, record_result_status
+from smartops.telemetry import (
+    investigation_span,
+    record_cost,
+    record_result_status,
+    trace_attributes_for,
+)
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
 logger = logging.getLogger(__name__)
@@ -309,19 +315,13 @@ def _project_vt(calls: list[_ToolCall]) -> VtFindings:
     return VtFindings(verdicts=verdicts)
 
 
-async def resolve_flat_tools(
-    families: Sequence[ToolFamily] = ALL_FAMILIES,
-) -> dict[ToolFamily, list[Any]]:
-    """Resolve active domain tools for given families."""
-    res: dict[ToolFamily, list[Any]] = {}
-    for family in families:
-        try:
-            tools = await tools_for(family)
-            res[family] = tools
-        except Exception as exc:
-            logger.warning("Failed to resolve tools for family %s: %s", family, exc)
-            res[family] = []
-    return res
+# `resolve_flat_tools()` used to live here: it resolved every family's tools into
+# one dict for a single flat agent to hold at once. `_gate_families()` replaced it
+# when Arm F became plan-then-execute -- a step holds only its own family's tools,
+# and a family that resolves nothing needs a *reason* recorded, not an empty list.
+# It survived only on its own tests, which is not a reason for production code to
+# exist, and a second tool-resolution path that no arm runs is exactly where a
+# future edit lands by mistake.
 
 
 # --------------------------------------------------------------------------
@@ -329,7 +329,46 @@ async def resolve_flat_tools(
 # --------------------------------------------------------------------------
 
 
-def execution_layers(plan: FetchPlan) -> list[list[FetchStep]]:
+@dataclass(frozen=True)
+class PlanSchedule:
+    """A walkable schedule, plus what had to be repaired to get one.
+
+    `repairs` is carried out of here rather than left in the log because plan
+    quality is one of the things the A/B compares -- see
+    `BrokerReport.plan_repairs`.
+    """
+
+    layers: list[list[FetchStep]]
+    repairs: int = 0
+
+
+def _cycle_members(pending: dict[str, set[str]]) -> list[str]:
+    """The pending steps that can reach themselves through pending dependencies.
+
+    This is what makes the cycle break *narrow*. Releasing everything still
+    pending -- which is what stood here -- also stripped the ordering from a step
+    that merely depended on a cyclic one and was otherwise perfectly schedulable:
+    one bad edge cost the whole tail of the plan its dependencies.
+    """
+    unmet = {sid: deps & pending.keys() for sid, deps in pending.items()}
+
+    def reaches_itself(start: str) -> bool:
+        seen: set[str] = set()
+        stack = list(unmet[start])
+        while stack:
+            sid = stack.pop()
+            if sid == start:
+                return True
+            if sid in seen:
+                continue
+            seen.add(sid)
+            stack.extend(unmet.get(sid, ()))
+        return False
+
+    return [sid for sid in pending if reaches_itself(sid)]
+
+
+def execution_layers(plan: FetchPlan) -> PlanSchedule:
     """Group the plan's steps into layers that may execute concurrently.
 
     Every step in a layer is independent of every other step in it and of every
@@ -337,13 +376,16 @@ def execution_layers(plan: FetchPlan) -> list[list[FetchStep]]:
     order inside a layer, which is the order their budget is reserved in.
 
     A plan is model-authored, so its `depends_on` edges cannot be trusted to form
-    a DAG. Edges naming an unknown step, or a step naming itself, are dropped;
-    a genuine cycle is broken by releasing everything still pending into one
-    final layer rather than deadlocking the run. Both are logged -- a plan that
-    needed repairing is a signal, not a detail.
+    a DAG. Edges naming an unknown step, or a step naming itself, are dropped; a
+    genuine cycle is broken by releasing *the steps in the cycle* into one layer
+    rather than deadlocking the run. Both are logged and both are counted into
+    `PlanSchedule.repairs` -- a plan that needed repairing is a signal, not a
+    detail, and a `logger.warning` no artifact captures is not a signal anyone
+    can read afterwards.
     """
     by_id = {step.step_id: step for step in plan.steps}
     pending: dict[str, set[str]] = {}
+    repairs = 0
     for step in plan.steps:
         deps = set()
         for dep in step.depends_on:
@@ -351,6 +393,7 @@ def execution_layers(plan: FetchPlan) -> list[list[FetchStep]]:
                 logger.warning(
                     "step_id=%s | dropping unusable dependency %r", step.step_id, dep
                 )
+                repairs += 1
                 continue
             deps.add(dep)
         pending[step.step_id] = deps
@@ -360,17 +403,22 @@ def execution_layers(plan: FetchPlan) -> list[list[FetchStep]]:
     while pending:
         ready = [sid for sid, deps in pending.items() if not (deps - done)]
         if not ready:
+            # A finite graph whose every edge is unmet always has a source unless
+            # something is cyclic, so this is where a cycle surfaces. The list
+            # cannot be empty here; falling back to everything is a guard against
+            # spinning forever, not a case that is expected to fire.
+            ready = _cycle_members(pending) or list(pending)
             logger.warning(
                 "task plan has a dependency cycle among %s; running them together "
                 "rather than deadlocking",
-                sorted(pending),
+                sorted(ready),
             )
-            ready = list(pending)
+            repairs += len(ready)
         layers.append([by_id[sid] for sid in ready])
         done.update(ready)
         for sid in ready:
             del pending[sid]
-    return layers
+    return PlanSchedule(layers=layers, repairs=repairs)
 
 
 # --------------------------------------------------------------------------
@@ -546,6 +594,12 @@ def default_flat_step_executor(
             structured_output_model=make_answer_model(family, DOMAINS[family].assessment_model),
             callback_handler=None,
             hooks=hooks,
+            # Same stamping Arm S's subagent gets. Without it an Arm F step's
+            # model and tool spans carry only Strands' generic GenAI attributes,
+            # so the two arms' traces could not be correlated back to the
+            # investigation the same way -- a difference in observability that
+            # nothing about the topology under test justifies.
+            trace_attributes=trace_attributes_for(mission),
             retry_strategy=ModelRetryStrategy(max_attempts=2),
             conversation_manager=SlidingWindowConversationManager(should_truncate_results=False),
         )
@@ -1028,6 +1082,21 @@ async def _run_broker_flat_task(
         else {}
     )
 
+    # Every reservation currently held by nobody's completed call. Reservations
+    # are taken for the whole plan up front (see `_reserve_steps`), so a
+    # `BaseException` escaping a layer -- a `CancelledError`, a `KeyboardInterrupt`
+    # -- would otherwise walk out past every *later* layer's reservation and leak
+    # all of it. Arm S can leak at most one, because it reserves per dispatch.
+    outstanding = [r for r in reservations.values() if r is not None]
+
+    async def settle(res: Any, usage: Usage) -> None:
+        outstanding.remove(res)
+        record_cost(res, await budget.settle(res, usage))
+
+    async def release(res: Any) -> None:
+        outstanding.remove(res)
+        await budget.release(res)
+
     # One entry per *execution*, not per step: a step that spent its retry
     # allowance produced two results, and both are kept. Arm S keeps both too
     # (`BrokerRequest.collected` is appended per dispatch), and dropping the
@@ -1069,10 +1138,10 @@ async def _run_broker_flat_task(
                 # Release, not settle: settling would record a call that never
                 # completed as a zero-cost one that did.
                 if step_reservation is not None:
-                    await budget.release(step_reservation)
+                    await release(step_reservation)
                 raise
             if step_reservation is not None:
-                record_cost(step_reservation, await budget.settle(step_reservation, usage))
+                await settle(step_reservation, usage)
             attempts.append(result)
             executed_steps.add(step.step_id)
 
@@ -1099,7 +1168,9 @@ async def _run_broker_flat_task(
                     step_max_output_tokens=step_max_output_tokens,
                     step_turns=step_turns,
                 )
-                if step_reservation is None:
+                if step_reservation is not None:
+                    outstanding.append(step_reservation)
+                else:
                     # The step ran and fell short; it just cannot afford another
                     # go. Its first attempt's outcome stands -- overwriting it
                     # with a budget refusal would erase a real fetch result.
@@ -1140,8 +1211,16 @@ async def _run_broker_flat_task(
                 )
             )
 
-    for layer in execution_layers(plan):
-        await asyncio.gather(*(guarded(step) for step in layer))
+    schedule = execution_layers(plan)
+    try:
+        for layer in schedule.layers:
+            await asyncio.gather(*(guarded(step) for step in layer))
+    finally:
+        # Whatever is still held here was reserved for a step that will now never
+        # run. Release rather than settle: no call happened, so no ledger entry
+        # should claim one. On the normal path this list is empty.
+        for held in list(outstanding):
+            await release(held)
 
     # --- Assembly: per step, in plan order, whatever order they finished in. ---
     results: list[SubtaskResult] = []
@@ -1187,6 +1266,7 @@ async def _run_broker_flat_task(
         task_id=task.task_id,
         hypothesis_id=task.hypothesis_id,
         plan=plan,
+        plan_repairs=schedule.repairs,
         step_outcomes=step_outcomes,
         results=results,
         dispatched=dispatched,

@@ -585,6 +585,20 @@ class BrokerReport(BaseModel):
     task_id: str = Field(min_length=1)
     hypothesis_id: str = Field(min_length=1)
     plan: FetchPlan | None = None
+    plan_repairs: int = 0
+    """How many `depends_on` defects a code scheduler had to repair before the
+    plan could be walked: each dropped edge (naming an unknown step, or the step
+    itself) and each step released early to break a dependency cycle counts one.
+
+    A plan is model-authored, so repairing it silently is the right call at
+    runtime -- deadlocking on a bad edge would be worse. But **plan quality is
+    one of the things the A/B compares**, so a repaired plan is a datum, not a
+    detail, and it existed only as a `logger.warning` that no artifact captured.
+
+    Zero where nothing was repaired *and* where nothing schedules from the plan:
+    an arm whose model orders its own dispatches never walks `depends_on`, so it
+    has no defect to find and honestly reports none.
+    """
     step_outcomes: list[StepOutcome] = Field(default_factory=list)
     results: list[SubtaskResult] = Field(default_factory=list)
     dispatched: list[ToolFamily] = Field(default_factory=list)
