@@ -466,6 +466,58 @@ def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     return counts
 
 
+def evaluate_step(
+    step: FetchStep, result: SubtaskResult, *, prior: StepOutcome | None = None
+) -> StepOutcome:
+    """The **single** implementation of a fetch step's completion rule.
+
+    Both arms call this. Arm S reaches it from `_dispatch()`, once per dispatch
+    a subagent answered; Arm F reaches it from its per-step loop, once per step
+    execution it ran in the Broker's own context. A second implementation would
+    drift, and the drift would land inside per-step completion -- a headline A/B
+    metric -- where it would read as a topology result rather than as two
+    slightly different rules.
+
+    `prior` carries the accumulation across re-dispatches of the same step:
+    `rows_retrieved` and `confirmed_empty` are cumulative, because a step that
+    needed two attempts to reach its row floor did reach it. Pass the outcome
+    already recorded for this step, or nothing for a step's first attempt.
+
+    `evaluated` is set here and only here: a `StepOutcome` that has been through
+    this function has had a rule applied to it, which is exactly what that flag
+    means. Steps that never got here keep `evaluated=False`.
+    """
+    outcome = prior if prior is not None else StepOutcome(step=step)
+    outcome.dispatches += 1
+
+    counts = _finding_counts(result.findings)
+    rows_retrieved = sum(n for _, n in counts)
+    outcome.rows_retrieved += rows_retrieved
+
+    confirmed_empty = (
+        rows_retrieved == 0 and len(result.queries_run) > 0
+    ) or result.status == SubtaskStatus.NO_DATA
+    outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
+
+    if step.completion.requires == "rows_or_confirmed_empty":
+        completed = (
+            outcome.rows_retrieved >= max(1, step.completion.min_rows) or outcome.confirmed_empty
+        )
+    else:
+        completed = outcome.rows_retrieved >= max(1, step.completion.min_rows)
+
+    outcome.completed = completed
+    outcome.status = result.status
+    outcome.reason = result.reason
+    outcome.evaluated = True
+    # R3: a step this dispatch never actually attempted because the shared Budget
+    # refused it must not read the same as one that ran and legitimately found
+    # nothing -- both leave `completed=False`, but only one of them is a cost
+    # problem rather than a fetch one.
+    outcome.refused_for_budget = result.error == BUDGET_REFUSAL_ERROR
+    return outcome
+
+
 async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolContext) -> str:
     """Shared body of all four family tools: build a mission, run it, record it.
 
@@ -605,26 +657,9 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     # to step 2 the moment step 1 flipped complete, and a dispatch matching no
     # planned step at all still landed somewhere. Per-step completion is a
     # headline A/B metric; it must be measured off the binding, not a heuristic.
-    outcome = req.step_outcomes.get(step.step_id, StepOutcome(step=step))
-    outcome.dispatches += 1
-    counts = _finding_counts(result.findings)
-    rows_retrieved = sum(n for _, n in counts)
-    outcome.rows_retrieved += rows_retrieved
-    confirmed_empty = (rows_retrieved == 0 and len(result.queries_run) > 0) or result.status == SubtaskStatus.NO_DATA
-    outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
-    if step.completion.requires == "rows_or_confirmed_empty":
-        completed = outcome.rows_retrieved >= max(1, step.completion.min_rows) or outcome.confirmed_empty
-    else:
-        completed = outcome.rows_retrieved >= max(1, step.completion.min_rows)
-    outcome.completed = completed
-    outcome.status = result.status
-    outcome.reason = result.reason
-    # R3: a step this dispatch never actually attempted because the shared Budget
-    # refused it must not read the same as one that ran and legitimately found
-    # nothing -- both leave `completed=False`, but only one of them is a cost
-    # problem rather than a fetch one.
-    outcome.refused_for_budget = result.error == BUDGET_REFUSAL_ERROR
-    req.step_outcomes[step.step_id] = outcome
+    req.step_outcomes[step.step_id] = evaluate_step(
+        step, result, prior=req.step_outcomes.get(step.step_id)
+    )
 
     record_result_status(result)
     return _digest(result)

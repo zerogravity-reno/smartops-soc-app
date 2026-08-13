@@ -485,6 +485,22 @@ class FetchStep(BaseModel):
     family: ToolFamily
     objective: str = Field(min_length=1)
     completion: CompletionRule = Field(default_factory=CompletionRule)
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description=(
+            "step_ids this step must not start before. Empty -- the default, and "
+            "the usual case -- declares the step independent, which is what lets a "
+            "scheduler overlap it with every other independent step. It exists "
+            "because a code-driven step loop has to decide an order, and without a "
+            "declared dependency the only safe order is sequential, which would "
+            "make scheduling a property of the topology rather than of the plan. "
+            "Advisory where the executing agent schedules itself by emitting tool "
+            "calls (the model already orders those); load-bearing where code "
+            "schedules the steps. Unknown, self-referential, and cyclic entries "
+            "are dropped by the scheduler rather than deadlocking it -- a plan is "
+            "model-authored and cannot be trusted to be a DAG."
+        ),
+    )
 
 
 class FetchPlan(BaseModel):
