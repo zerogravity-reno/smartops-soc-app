@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -7,7 +7,7 @@ from contracts import AnalystTask, Entity, Scope, TaskClassification
 
 
 def make_scope(**overrides):
-    now = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 9, tzinfo=UTC)
     defaults = dict(
         entities=[Entity(kind="host", value="host-1")],
         time_window=(now - timedelta(hours=1), now),

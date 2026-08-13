@@ -11,17 +11,21 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
+
+from strands import tool
 
 from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily
 from smartops.broker import SubagentRunner
 from smartops.budget import Budget, ModelChoice
 from smartops.subagents import (
     DEFAULT_MAX_OUTPUT_TOKENS as _SUBAGENT_OUTPUT_TOKENS,
+)
+from smartops.subagents import (
     DEFAULT_TURNS as _SUBAGENT_TURNS,
 )
-from strands import tool
 
 logger = logging.getLogger(__name__)
 

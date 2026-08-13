@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from contracts import (
@@ -39,10 +39,9 @@ from contracts import (
     SubtaskStatus,
     make_answer_model,
 )
-
 from smartops.broker import BUDGET_REFUSAL_ERROR, SubagentRunner, enrich_mission
-from smartops.domains import DOMAINS
 from smartops.budget import Budget, ModelChoice, Usage
+from smartops.domains import DOMAINS
 from smartops.guards import IndexScopeGuard, escape_untrusted, fenced
 from smartops.projection import project, project_vt
 from smartops.telemetry import record_cost, trace_attributes_for
@@ -438,7 +437,7 @@ async def investigate(
     # rather than only in the Budget ledger.
     record_cost(reservation, await budget.settle(reservation, _usage_of(result)))
 
-    collected_at = datetime.now(timezone.utc)
+    collected_at = datetime.now(UTC)
     evidence = collector.evidence(mission.task_id, family, collected_at)
     answer = result.structured_output
 

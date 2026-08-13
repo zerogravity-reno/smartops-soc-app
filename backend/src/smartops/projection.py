@@ -11,11 +11,12 @@ them, and code that never reads the prompt cannot be talked into re-categorising
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
-import re
-from contracts import CimCategory, Findings, QueryRun, ResultSet, SiemFindings
 from contracts.findings import VtFindings, VtVerdict
+
+from contracts import CimCategory, Findings, QueryRun, ResultSet, SiemFindings
 
 logger = logging.getLogger(__name__)
 

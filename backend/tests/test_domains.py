@@ -10,6 +10,9 @@ import re
 from typing import get_args
 
 import pytest
+from smartops.domains import ALL_FAMILIES, DOMAINS, DomainSpec, spec_for
+from smartops.tools.native import virustotal
+
 from contracts import (
     Assessment,
     Findings,
@@ -20,8 +23,6 @@ from contracts import (
     VtFindings,
     make_answer_model,
 )
-from smartops.domains import ALL_FAMILIES, DOMAINS, DomainSpec, spec_for
-from smartops.tools.native import virustotal
 
 
 class TestRegistryCoverage:
@@ -223,7 +224,7 @@ class TestGeneratedTools:
     async def test_a_generated_tool_dispatches_its_own_family(self, monkeypatch):
         """Each closure carries its own family. Closing over a loop variable
         would make every generated tool dispatch the last one."""
-        import smartops.broker as broker
+        from smartops import broker
 
         seen: list[str] = []
 

@@ -1,9 +1,9 @@
 """Unit tests for Requirement R3 Offline Replay Harness (backend/src/smartops/replay.py)."""
 
 import json
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
+
 import pytest
-from contracts import Evidence, SubagentMission, Scope, Entity, SubtaskResult, SubtaskStatus
 from smartops import subagents
 from smartops.budget import Budget, ModelChoice
 from smartops.replay import (
@@ -17,6 +17,8 @@ from smartops.replay import (
 from smartops.skills import SKILLS_ENABLED_ENV_VAR
 from smartops.subagents import _system_prompt_for
 
+from contracts import Entity, Evidence, Scope, SubagentMission, SubtaskResult, SubtaskStatus
+
 
 def _tool_names(tools) -> list:
     return [getattr(t, "tool_name", getattr(t, "__name__", None)) for t in tools]
@@ -24,7 +26,7 @@ def _tool_names(tools) -> list:
 
 @pytest.fixture
 def sample_evidence_items():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return [
         Evidence(
             id="task_100:0",

@@ -23,8 +23,10 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import get_args
+
+from pydantic import ValidationError
 
 from contracts import (
     AnalystTask,
@@ -36,8 +38,6 @@ from contracts import (
     TaskClassification,
     ToolFamily,
 )
-from pydantic import ValidationError
-
 from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task, plan_fetch
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
@@ -204,7 +204,7 @@ def _parse_instant(raw: str) -> datetime:
         raise argparse.ArgumentTypeError(
             f"{raw!r} is not an ISO 8601 instant (e.g. 2018-08-20T00:00:00Z): {exc}"
         ) from exc
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _resolve_window(args) -> tuple[datetime, datetime]:
@@ -215,7 +215,7 @@ def _resolve_window(args) -> tuple[datetime, datetime]:
     for historical data "from 2018-08-20 for 24 hours" is almost always what is
     meant, and running to now would sweep eight years of empty index.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     span = timedelta(hours=args.hours)
 
     if args.since is not None:
@@ -432,7 +432,7 @@ async def _run(argv: list[str] | None = None) -> int:
 
     families = _parse_families(args.families)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     try:
         scope = Scope(entities=args.entities, time_window=_resolve_window(args))
     except ValidationError as exc:

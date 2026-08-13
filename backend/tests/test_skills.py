@@ -16,9 +16,7 @@ from smartops.skills import (
 from smartops.subagents import _system_prompt_for, domain_runner
 
 from contracts import (
-    AnalystTask,
     Entity,
-    FetchStep,
     Scope,
     SubagentMission,
     SubtaskResult,

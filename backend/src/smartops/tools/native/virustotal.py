@@ -35,10 +35,10 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from contracts import Entity, EntityKind, Scope
 from pydantic import ValidationError
 from strands import tool
 
+from contracts import Entity, EntityKind, Scope
 from smartops.errors import NotConfigured
 
 logger = logging.getLogger(__name__)

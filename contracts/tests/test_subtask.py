@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -19,7 +19,7 @@ from contracts import (
 
 
 def make_scope(**overrides):
-    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 4, tzinfo=UTC)
     defaults = dict(
         entities=[Entity(kind="host", value="host-1")],
         time_window=(now - timedelta(hours=1), now),
@@ -218,7 +218,7 @@ class TestScope:
         assert scope.kinds() == {"host", "ip"}
 
     def test_inverted_time_window_rejected(self):
-        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 4, tzinfo=UTC)
         with pytest.raises(ValidationError):
             make_scope(time_window=(now, now - timedelta(hours=1)))
 
@@ -293,7 +293,7 @@ class TestSubagentAnswer:
 
 class TestSubtaskResult:
     def test_from_answer_assembles_result(self):
-        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 4, tzinfo=UTC)
         evidence = [Evidence(id="ev-1", tool_family="edr", raw={"pid": 123}, collected_at=now)]
         answer = SubagentAnswer(status=SubtaskStatus.OK, citation_ids=["ev-1"])
 
@@ -313,7 +313,7 @@ class TestSubtaskResult:
             )
 
     def test_duplicate_evidence_ids_rejected(self):
-        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 4, tzinfo=UTC)
         dupes = [
             Evidence(id="ev-1", tool_family="edr", raw={"a": 1}, collected_at=now),
             Evidence(id="ev-1", tool_family="edr", raw={"a": 2}, collected_at=now),

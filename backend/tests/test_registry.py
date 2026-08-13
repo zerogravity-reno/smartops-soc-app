@@ -2,7 +2,6 @@ import dataclasses
 import json
 
 import pytest
-
 import smartops.tools.registry as registry_module
 from smartops.domains import DOMAINS
 from smartops.tools.registry import (

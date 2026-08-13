@@ -1,25 +1,8 @@
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from contracts import (
-    AnalystTask,
-    CompletionRule,
-    Entity,
-    FetchPlan,
-    FetchStep,
-    QueryRun,
-    ResultSet,
-    Scope,
-    SiemFindings,
-    StepOutcome,
-    SubagentMission,
-    SubtaskResult,
-    SubtaskStatus,
-    TaskClassification,
-)
-
 from smartops.broker import (
     BUDGET_REFUSAL_ERROR,
     DEFAULT_BROKER_OUTPUT_TOKENS,
@@ -40,11 +23,28 @@ from smartops.broker import (
 from smartops.budget import Budget
 from smartops.domains import DOMAINS
 
+from contracts import (
+    AnalystTask,
+    CompletionRule,
+    Entity,
+    FetchPlan,
+    FetchStep,
+    QueryRun,
+    ResultSet,
+    Scope,
+    SiemFindings,
+    StepOutcome,
+    SubagentMission,
+    SubtaskResult,
+    SubtaskStatus,
+    TaskClassification,
+)
+
 MODEL = ModelChoice(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", pricing_key="claude-sonnet-4-6")
 
 
 def make_scope(**overrides):
-    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 11, tzinfo=UTC)
     defaults = dict(
         entities=[Entity(kind="host", value="host-1")],
         time_window=(now - timedelta(hours=1), now),
@@ -330,7 +330,7 @@ class TestStubSubagent:
         # Two states, two fixes: check the config, versus check the network or
         # the token. Reporting both as "not configured" sends an analyst to the
         # wrong place, so the two reasons must not collapse into one.
-        import smartops.tools.registry as registry
+        from smartops.tools import registry
 
         monkeypatch.setattr(registry, "_clients_by_family", {})
         unconfigured = await broker_task(
@@ -1226,8 +1226,9 @@ class TestTelemetryIsActuallyWired:
 
 class TestFetchPlanAndReport:
     async def test_plan_fetch_tool_creates_fetch_plan(self):
-        from contracts import CompletionRule, FetchStep
         from smartops.broker import plan_fetch
+
+        from contracts import CompletionRule, FetchStep
 
         request = BrokerRequest(task=make_task())
         step = FetchStep(

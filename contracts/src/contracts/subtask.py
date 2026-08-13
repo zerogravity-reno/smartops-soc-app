@@ -6,7 +6,7 @@ charging, retries, and aggregation are separate components that consume these ty
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 
@@ -607,5 +607,5 @@ class BrokerReport(BaseModel):
     classification: Any
     cost: CostSummary
     queries_run: list[QueryRun] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

@@ -28,13 +28,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from contracts import ToolFamily
 from strands.tools.mcp import MCPClient
 
+from contracts import ToolFamily
 from smartops.domains import DOMAINS
 
 logger = logging.getLogger(__name__)

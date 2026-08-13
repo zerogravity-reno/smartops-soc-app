@@ -17,8 +17,9 @@ import each other.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from contracts import (
     Assessment,
@@ -30,7 +31,6 @@ from contracts import (
     VtAssessment,
     VtFindings,
 )
-
 from smartops.tools.native import virustotal
 
 

@@ -30,14 +30,14 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
-from contracts import AnalystTask, SubagentMission, SubtaskResult, SubtaskStatus
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from strands.telemetry import StrandsTelemetry
 
+from contracts import AnalystTask, SubagentMission, SubtaskResult, SubtaskStatus
 from smartops.budget import Reservation
 
 TRACER_NAME = "smartops"

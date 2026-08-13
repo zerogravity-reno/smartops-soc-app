@@ -23,7 +23,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -558,7 +558,7 @@ class Budget:
                     model=reservation.model,
                     usage=usage,
                     cost_micro_usd=actual,
-                    at=datetime.now(timezone.utc),
+                    at=datetime.now(UTC),
                 )
             )
         return actual

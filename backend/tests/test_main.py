@@ -1,6 +1,6 @@
 import argparse
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from smartops.main import (
@@ -113,11 +113,11 @@ class TestTimeWindow:
     def test_naive_values_are_read_as_utc(self):
         # Scope requires tz-aware datetimes; a naive string would otherwise fail
         # validation complaining about tzinfo rather than about the argument.
-        assert _parse_instant("2018-08-20T00:00:00").tzinfo is timezone.utc
+        assert _parse_instant("2018-08-20T00:00:00").tzinfo is UTC
 
     def test_trailing_z_is_accepted(self):
         assert _parse_instant("2018-08-20T00:00:00Z") == datetime(
-            2018, 8, 20, tzinfo=timezone.utc
+            2018, 8, 20, tzinfo=UTC
         )
 
     def test_a_non_iso_value_is_rejected_with_an_example(self):
@@ -129,8 +129,8 @@ class TestTimeWindow:
         # sweep eight years of empty index.
         start, end = _resolve_window(self._args(["--since", "2018-08-20T00:00:00Z", "--hours", "24"]))
 
-        assert start == datetime(2018, 8, 20, tzinfo=timezone.utc)
-        assert end == datetime(2018, 8, 21, tzinfo=timezone.utc)
+        assert start == datetime(2018, 8, 20, tzinfo=UTC)
+        assert end == datetime(2018, 8, 21, tzinfo=UTC)
 
     def test_since_and_until_are_used_verbatim(self):
         start, end = _resolve_window(
@@ -145,13 +145,13 @@ class TestTimeWindow:
         start, end = _resolve_window(self._args(["--hours", "6"]))
 
         assert (end - start).total_seconds() == 6 * 3600
-        assert (datetime.now(timezone.utc) - end).total_seconds() < 60
+        assert (datetime.now(UTC) - end).total_seconds() < 60
 
     def test_until_alone_walks_back_by_hours(self):
         start, end = _resolve_window(self._args(["--until", "2018-08-21T00:00:00Z", "--hours", "12"]))
 
-        assert start == datetime(2018, 8, 20, 12, tzinfo=timezone.utc)
-        assert end == datetime(2018, 8, 21, tzinfo=timezone.utc)
+        assert start == datetime(2018, 8, 20, 12, tzinfo=UTC)
+        assert end == datetime(2018, 8, 21, tzinfo=UTC)
 
 
 class TestOutputEncoding:

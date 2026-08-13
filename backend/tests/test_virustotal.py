@@ -1,23 +1,22 @@
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from contracts import Entity, Scope, SubtaskStatus
-
 from smartops.tools.native import virustotal
 from smartops.tools.native.virustotal import (
     API_KEY_ENV_VAR,
     Verdict,
-    VirusTotalError,
     VirusTotalNotConfigured,
     enrich_scope,
     queryable_entities,
 )
 
+from contracts import Entity, Scope, SubtaskStatus
+
 
 def make_scope(*entities):
-    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 11, tzinfo=UTC)
     return Scope(entities=list(entities), time_window=(now - timedelta(hours=1), now))
 
 
@@ -345,10 +344,9 @@ class TestBrokerIntegration:
     """The path that makes `vt` return real evidence with no model at all."""
 
     async def test_a_flagged_indicator_produces_ok_plus_citable_evidence(self, monkeypatch):
+        import test_broker  # reuse the broker suite's fakes rather than re-inventing them
         from smartops.broker import broker_task
         from smartops.budget import Budget, ModelChoice
-
-        import test_broker  # reuse the broker suite's fakes rather than re-inventing them
 
         monkeypatch.setattr(
             virustotal.httpx,
@@ -378,10 +376,9 @@ class TestBrokerIntegration:
     async def test_a_clean_indicator_is_no_data_not_ok(self, monkeypatch):
         # The triage distinction: the lookup succeeded and found nothing to act
         # on, which is different from finding something.
+        import test_broker
         from smartops.broker import broker_task
         from smartops.budget import Budget, ModelChoice
-
-        import test_broker
 
         monkeypatch.setattr(
             virustotal.httpx,

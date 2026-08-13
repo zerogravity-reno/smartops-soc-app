@@ -16,7 +16,6 @@ from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from strands import tool
 
@@ -93,8 +92,7 @@ class SkillPack:
     def load_reference(self, name: str) -> str:
         """Retrieve a specific reference by name (case-insensitive, with or without .md extension)."""
         key = name.strip().lower()
-        if key.endswith(".md"):
-            key = key[:-3]
+        key = key.removesuffix(".md")
 
         if key in self.references:
             return self.references[key]

@@ -1,13 +1,13 @@
-from datetime import datetime, timedelta, timezone
-
-from contracts import Entity, Scope, SubagentMission, SubtaskResult, SubtaskStatus
+from datetime import UTC, datetime, timedelta
 
 from smartops.budget import Reservation
 from smartops.telemetry import record_cost, record_result_status, trace_attributes_for
 
+from contracts import Entity, Scope, SubagentMission, SubtaskResult, SubtaskStatus
+
 
 def _mission() -> SubagentMission:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return SubagentMission(
         task_id="task-1",
         hypothesis_id="hyp-1",

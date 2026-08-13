@@ -1,8 +1,13 @@
 """Tests for the domain subagents that actually execute missions."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
+import smartops.tools.registry as registry_module
+from smartops import subagents
+from smartops.budget import Budget, ModelChoice
+from smartops.subagents import domain_runner, investigate
+
 from contracts import (
     Entity,
     Scope,
@@ -13,14 +18,9 @@ from contracts import (
     SubtaskStatus,
 )
 
-import smartops.subagents as subagents
-import smartops.tools.registry as registry_module
-from smartops.budget import Budget, ModelChoice
-from smartops.subagents import domain_runner, investigate
-
 # The window botsv3 actually occupies. Absolute on purpose: a relative window
 # over this data returns nothing, which is the failure these tests exist inside.
-START = datetime(2018, 8, 20, tzinfo=timezone.utc)
+START = datetime(2018, 8, 20, tzinfo=UTC)
 WINDOW = (START, START + timedelta(hours=24))
 
 MODEL = ModelChoice(model_id="test-model", pricing_key="claude-sonnet-4-6")
@@ -174,7 +174,7 @@ class TestEvidenceAssembly:
             subagents._ToolCall("splunk_get_indexes", None, {"x": 2}),
         ]
 
-        evidence = collector.evidence("case-1:siem:u1", "siem", datetime.now(timezone.utc))
+        evidence = collector.evidence("case-1:siem:u1", "siem", datetime.now(UTC))
 
         assert [e.id for e in evidence] == ["case-1:siem:u1:0", "case-1:siem:u1:1"]
         assert evidence[0].raw["tool"] == "splunk_run_query"
@@ -228,7 +228,7 @@ class TestEvidenceAssembly:
         cannot know ids minted in code -- so citations are assembled, not asked for."""
         collector = subagents._EvidenceCollector()
         collector.calls = [subagents._ToolCall("t", None, {"ok": True})]
-        evidence = collector.evidence("case-1:siem:u1", "siem", datetime.now(timezone.utc))
+        evidence = collector.evidence("case-1:siem:u1", "siem", datetime.now(UTC))
 
         # Constructing this at all is the assertion: SubtaskResult raises on a
         # citation that does not resolve.

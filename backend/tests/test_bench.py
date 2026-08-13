@@ -16,29 +16,11 @@ import asyncio
 import contextlib
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
-from contracts import (
-    AnalystTask,
-    Entity,
-    QueryRun,
-    ResultSet,
-    Scope,
-    SiemFindings,
-    SubtaskResult,
-    SubtaskStatus,
-    VtFindings,
-    VtVerdict,
-)
-
 from smartops.bench import (
     BENCHMARK_CASES,
-    ArmSummary,
-    BenchmarkReport,
-    MetricStats,
     RunMetrics,
     _execute_single_run,
     _pinned_skills,
@@ -52,6 +34,16 @@ from smartops.bench import (
 )
 from smartops.main import _PLACEHOLDER_MODEL
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
+
+from contracts import (
+    QueryRun,
+    ResultSet,
+    SiemFindings,
+    SubtaskResult,
+    SubtaskStatus,
+    VtFindings,
+    VtVerdict,
+)
 
 
 class TestBenchRunOrdering:
@@ -141,10 +133,10 @@ class TestBenchMetricsCollection:
     @staticmethod
     def _capture_run_subagent(monkeypatch):
         """Record what the bench hands `broker_task` as its subagent runner."""
-        from contracts import TaskClassification
-
         from smartops import bench as bench_mod
         from smartops.broker import BrokerOutcome
+
+        from contracts import TaskClassification
 
         seen: dict = {}
 

@@ -31,24 +31,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import json
 import logging
-import sys
 import time
-from collections.abc import Iterator
-from datetime import datetime, timezone
+from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Sequence
-
-from dotenv import find_dotenv, load_dotenv
 
 from contracts.findings import SiemFindings, VtFindings
-from pydantic import BaseModel, Field
+from dotenv import find_dotenv, load_dotenv
+from pydantic import BaseModel
 
 from contracts import AnalystTask, Entity, Scope, SubtaskResult, ToolFamily
-from smartops.broker import BROKER_ROLE, BrokerOutcome, broker_task
+from smartops.broker import broker_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
-from smartops.domains import ALL_FAMILIES, spec_for
+from smartops.domains import spec_for
 from smartops.guards import IndexScopeGuard
 from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
@@ -97,8 +93,8 @@ DEFAULT_BOTSV3_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -113,8 +109,8 @@ BOTSV3_POWERSHELL_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -129,8 +125,8 @@ BOTSV3_C2_IP_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -145,8 +141,8 @@ BOTSV3_WEB_SHELL_TASK = AnalystTask(
             Entity(kind="host", value="po18-s92-l01"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -161,8 +157,8 @@ BOTSV3_DNS_TUNNELING_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -177,8 +173,8 @@ BOTSV3_MIMIKATZ_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -193,8 +189,8 @@ BOTSV3_PHISHING_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -209,8 +205,8 @@ BOTSV3_EXFIL_IP_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -225,8 +221,8 @@ BOTSV3_RANSOMWARE_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -241,8 +237,8 @@ BOTSV3_USER_AUTH_TASK = AnalystTask(
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
-            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
         ),
     ),
 )
@@ -651,8 +647,8 @@ async def run_interleaved_benchmark(
                     scope=Scope(
                         entities=[Entity(kind="domain", value="coinhive.com")],
                         time_window=(
-                            datetime(2018, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
-                            datetime(2018, 8, 21, 0, 0, 0, tzinfo=timezone.utc),
+                            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+                            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
                         ),
                     ),
                 )
@@ -689,7 +685,7 @@ async def run_interleaved_benchmark(
             arm_summaries[arm] = compute_arm_summary(arm, arm_runs)
 
     return BenchmarkReport(
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         cases=cases,
         arms=arms,
         runs_per_arm=runs_per_arm,

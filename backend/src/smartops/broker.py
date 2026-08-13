@@ -30,22 +30,25 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
+
+from contracts.findings import VtFindings, VtVerdict
+from pydantic import ValidationError
+from strands import ToolContext, tool
+from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
 
 from contracts import (
     AnalystTask,
     BrokerReport,
-    CompletionRule,
     CostSummary,
-    Entity,
     Evidence,
     FetchPlan,
     FetchStep,
     QueryRun,
-    Scope,
     StepOutcome,
     SubagentMission,
     SubtaskResult,
@@ -53,11 +56,6 @@ from contracts import (
     TaskClassification,
     ToolFamily,
 )
-from contracts.findings import VtFindings, VtVerdict
-from pydantic import ValidationError
-from strands import ToolContext, tool
-from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
-
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.domains import DOMAINS, DomainSpec
 from smartops.errors import NotConfigured
@@ -284,7 +282,7 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
     # run stopped early -- a partial result with a stated gap beats reporting
     # nothing. Status reflects the findings; the gap goes in `reason`, because
     # the contract forbids `error` on any non-ERROR status.
-    collected_at = datetime.now(timezone.utc)
+    collected_at = datetime.now(UTC)
     evidence = [
         Evidence(
             id=f"{mission.task_id}:{index}",

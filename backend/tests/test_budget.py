@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-
 from smartops.budget import (
     BEDROCK_MODEL_ID_ENV_VAR,
     PRICING,
