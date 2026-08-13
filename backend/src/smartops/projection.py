@@ -26,11 +26,37 @@ _CIM_BUCKETS: tuple[CimCategory, ...] = (
     "auth_events",
 )
 
+# Matches `Verdict.summary()` (virustotal.py:106-110). `\b` rather than `^`: a
+# single lookup can report several indicators on separate lines, and `^` without
+# MULTILINE matched only the first, silently dropping the rest.
 _VT_SUMMARY_RE = re.compile(
-    r"^(?P<kind>\w+)=(?P<value>\S+):\s+"
+    r"\b(?P<kind>\w+)=(?P<value>\S+):\s+"
     r"(?:(?P<unknown>unknown to VirusTotal)|"
     r"(?P<malicious>\d+)\s+malicious\s+/\s+(?P<suspicious>\d+)\s+suspicious\s+of\s+(?P<engines>\d+)\s+engines)"
 )
+
+
+def _text_of(payload: Any) -> str:
+    """The human-readable text a tool returned, whatever envelope carries it.
+
+    The model-free enricher returns `Verdict.summary()` as a bare string, but the
+    same tool reached through a live `Agent` comes back wrapped:
+    `{"status": ..., "content": [{"text": ...}], ...}`. `str()` on that dict
+    yields a `repr` in which the summary is embedded in quoting and punctuation,
+    which is how every model-driven VirusTotal lookup silently failed to parse
+    while the enricher path worked -- the two paths carry identical text.
+    """
+    if isinstance(payload, dict):
+        content = payload.get("content")
+        if isinstance(content, list):
+            parts = [
+                block["text"]
+                for block in content
+                if isinstance(block, dict) and isinstance(block.get("text"), str)
+            ]
+            if parts:
+                return "\n".join(parts)
+    return str(payload) if payload is not None else ""
 
 
 def _normalise(query: str | None) -> str:
@@ -105,9 +131,27 @@ def project_vt(calls: list[Any]) -> VtFindings:
                     verdicts.append(VtVerdict(**v))
             continue
 
-        text = str(payload) if payload is not None else ""
-        match = _VT_SUMMARY_RE.search(text)
-        if match:
+        # `finditer`, not `search`: one lookup can report several indicators, and
+        # taking only the first silently dropped the rest.
+        matches = list(_VT_SUMMARY_RE.finditer(_text_of(payload)))
+        if not matches:
+            # DELIBERATELY no verdict. This branch used to synthesise
+            # `found=False, malicious=0` from the tool name, which reads as "this
+            # indicator is unknown to VirusTotal" -- a real VT answer -- when what
+            # actually happened is that the response could not be parsed. That is
+            # the precise error the subagent prompt forbids: "A tool call that
+            # FAILS is not a finding. Never report a failed lookup as though it
+            # showed the subject to be clean." It fired on every live lookup:
+            # coinhive.com, 11/91 malicious, projected as a clean unknown.
+            logger.warning(
+                "tool=%s query=%s | VirusTotal payload carried no parseable verdict "
+                "summary; recording NO verdict rather than a false 'unknown'",
+                tool_name,
+                query_val,
+            )
+            continue
+
+        for match in matches:
             kind = match.group("kind")
             value = match.group("value")
             if match.group("unknown"):
@@ -140,23 +184,6 @@ def project_vt(calls: list[Any]) -> VtFindings:
                         reputation=None,
                     )
                 )
-        else:
-            kind = tool_name.replace("vt_lookup_", "").replace("virustotal_", "")
-            if kind not in ("ip", "domain", "url", "file_hash"):
-                kind = "domain"
-            value = query_val or "unknown"
-            verdicts.append(
-                VtVerdict(
-                    kind=kind,
-                    value=value,
-                    found=False,
-                    malicious=0,
-                    suspicious=0,
-                    harmless=0,
-                    undetected=0,
-                    reputation=None,
-                )
-            )
     return VtFindings(verdicts=verdicts)
 
 

@@ -446,14 +446,14 @@ class TestStructuredOutputModel:
 
 
 class TestNoStructuredAnswerStillReportsItsQueries:
-    """Fix 2: the no-answer path must not be asymmetric between the arms.
+    """A run that loses its structured answer must still report what it ran.
 
-    `broker_flat._result_for_step()` has always rebuilt `queries_run` from the
-    collected tool calls when the model produced no structured answer;
-    `investigate()` left it empty in the same situation. That moved two compared
-    metrics -- the bench's `queries_run_count`, and `check_index_scoping()`,
-    which skips any result with no `queries_run` and so never scope-checked Arm S
-    on this path. Arm F's behaviour is the better one, so it was ported here.
+    `investigate()` used to leave `queries_run` empty when the model produced no
+    structured answer, and that is a security hole rather than a missing metric:
+    `bench.check_index_scoping()` SKIPS any result with no `queries_run`, so such
+    a run went un-scope-checked and still counted toward "100% index scoping
+    correct". The queries are rebuilt from the collector, which holds the input
+    each tool was actually called with.
     """
 
     @staticmethod
