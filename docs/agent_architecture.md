@@ -1,6 +1,6 @@
 # SmartOps SOC — Agent Architecture
 
-**Status:** current as of 2026-08-14, branch `task-broker-agent`.
+**Status:** current as of 2026-08-15, branch `task-broker-agent`.
 **Scope:** how the agent is built and why. Every claim here is checked against the
 tree; every measured figure names the artifact it came from.
 
@@ -106,8 +106,16 @@ the model's `assessment`. A validator guarantees every citation resolves to a re
 evidence id.
 
 **`StepOutcome`** — `completed`, `evaluated`, `dispatches`, `rows_retrieved`,
-`refused_for_budget`. `evaluated` distinguishes *"ran and fell short"* from *"nobody ever
-attempted it"*; without it a never-dispatched step reported as a failure.
+`confirmed_empty`, `refused_for_budget`. `evaluated` distinguishes *"ran and fell short"*
+from *"nobody ever attempted it"*; without it a never-dispatched step reported as a failure.
+
+`confirmed_empty` is a claim about the **data** — we looked, and it is not there — and
+`rows_or_confirmed_empty` accepts it as satisfaction, so it decides whether a step closes.
+It was previously set by `status == NO_DATA` alone, which is also what a subagent returns
+when it is cut off before answering. A run on 2026-08-15 recorded `rows_retrieved=252`,
+`confirmed_empty=True` and `completed=True` together, for a host that had in fact resolved
+the domain 21 times: an infrastructure failure scored as a security conclusion. Retrieved
+rows now refute the claim outright.
 
 ---
 
@@ -115,10 +123,26 @@ attempted it"*; without it a never-dispatched step reported as a failure.
 
 [`backend/src/smartops/broker.py`](../backend/src/smartops/broker.py)
 
-A single Strands `Agent` with five tools: `plan_fetch` plus one
-`investigate_<family>` per domain. Calling a specialist's tool **is** the decision that
-its domain is relevant — so `DomainSpec.description` is the entire basis for routing and
-is written to say what each domain is *not* for, as well as what it is.
+A single Strands `Agent` with `plan_fetch` plus one `investigate_<family>` tool per
+**configured** domain. Calling a specialist's tool **is** the decision that its domain is
+relevant — so `DomainSpec.description` is the entire basis for routing and is written to
+say what each domain is *not* for, as well as what it is.
+
+**The toolset is gated on what is actually wired up.** `available_broker_tools()` drops
+any family with neither native tools nor a built MCP client, read at invoker construction
+because `load_mcp_servers()` runs after this module is imported — a module-level constant
+would be computed while every family still had zero servers. Both halves of
+`family_is_configured()` are load-bearing: `vt` carries `mcp_servers=()` and answers
+entirely through native tools, so a `server_count()`-only gate would withhold the one
+family that needs no server.
+
+This is the same **precondition, not judgement** line the entity gate draws, applied to
+tooling. Withholding a domain that provably cannot answer takes no decision away from the
+Broker; what it removes is planner output spent on steps that can only be rejected, and
+rejected families landing in `dispatched`, where they made `routing_correctness` read 0%.
+A family that *is* configured but cannot answer still dispatches and still gets the
+"configured but returning no tools" rejection — that distinction is the point, and
+collapsing it would send an analyst to the config file for a network problem.
 
 **Planning is mandatory in code.** Three guards sit before any dispatch is recorded:
 no plan, unknown `step_id`, wrong-family `step_id`. All three are *returned as tool
@@ -157,9 +181,41 @@ The entity gate is a **precondition, not a judgement**: it holds regardless of w
 model decides, which is why VirusTotal is refused a `user` observable in code before
 anything is dispatched.
 
-`edr` and `ndr` are configured but disabled — no vendor picked. They resolve zero tools
-and are rejected with a reason that distinguishes *"nothing configured"* from *"configured
-but not answering"*. Those need different fixes and would otherwise look identical.
+`edr` and `ndr` have no vendor picked, so nothing is wired up for them. They are now
+withheld from the Broker's toolset entirely (§3) rather than dispatched and rejected —
+they are neither planned nor called. The rejection path they used to take still exists and
+still distinguishes *"nothing configured"* from *"configured but not answering"*, which is
+what a **configured** family reaching zero tools now gets.
+
+### The answer survives the turn cap
+
+Strands ends a capped run with `limit_turns` / `limit_output_tokens` and raises nothing,
+so the tool calls are billed, the evidence is collected, and only the model's own answer is
+missing. Because no answer means no category tags, every result set then lands in
+`uncategorised` — the rows are retrieved and paid for, and arrive untyped.
+
+When the loop returns no structured output, `_build_agent_and_invoke()` makes **one** more
+call, bounded to `turns=1` and prompted not to query, purely to convert what was already
+retrieved into a typed answer. This is a sanctioned seam rather than a trick: `Limits`
+bounds a single `invoke_async`, its counters do not carry across reuses of the same agent,
+and a capped run leaves `agent.messages` "in a reinvokable state"
+([`strands/types/agent.py:17-23`](../.venv/Lib/site-packages/strands/types/agent.py)).
+Tools cannot be unbound after construction, so the prompt is what keeps this from becoming
+a second exploration loop and `turns=1` is what bounds it if the model ignores that.
+
+`structured_output_model` is already set on the `Agent`, so the recovery call is forced
+into the same family answer model without restating it, and usage keeps accumulating on
+`agent.event_loop_metrics` across invocations, so billing needs no change.
+
+### The skill pack
+
+`smartops.skills` can attach a `superman-splunk` reference pack to the `siem` subagent: a
+routing table injected into the system prompt plus a `read_reference` tool, both behind one
+switch so a run with the table but not the tool is impossible. It is **off unless asked
+for** — the pack changes tool counts and token costs, so a run that silently had it on
+reports figures no other run can be compared against. `--skills` pins it per run and the
+report records which way it ran; an ambient `SMARTOPS_SKILLS_ENABLED` cannot reach the
+bench, deliberately.
 
 ### Prompt structure
 
@@ -253,3 +309,42 @@ several tool calls emitted in one turn already run in parallel.
   `server_count()` too: a certificate rejection and "no server configured" both yield zero
   tools. A whole live run once reported success with Splunk entirely absent because
   nothing distinguished them.
+
+---
+
+## 8. Measured on this tree
+
+Three live runs of `botsv3_coinhive`, 2026-08-15, one run each, real Bedrock calls
+(`scripted: false`). Artifacts under `.smartops/runs/botsv3_coinhive/`.
+
+| | before the fixes<br>`…T112844145` | after<br>`…T124556942` | after, `--skills`<br>`…T161337647` |
+|---|---|---|---|
+| Cost | $1.0393 | $0.7293 | **$0.6132** |
+| Input tokens (uncached) | 264,343 | 172,897 | **141,692** |
+| Cache reads | 78,823 | 59,057 | 45,656 |
+| Wall clock | 168.7s | 138.9s | **111.5s** |
+| Queries run | 32 | 12 | 14 |
+| Findings rows | 252 | 183 | 222 |
+| — typed `dns_resolutions` | 0 | 27 | 45 |
+| — `uncategorised` | 252 | 135 | 176 |
+| Dispatched | vt, siem, ndr, edr | vt, siem | vt, siem |
+| Routing correctness | 0% | 100% | 100% |
+| siem step status | `no_data` | `ok` | `ok` |
+
+**What these do and do not establish.** The dispatch, routing, `confirmed_empty` and
+typing changes are deterministic code paths and are attributable. The cost, token and
+wall-clock deltas are **one sample against one sample** on a nondeterministic model, and
+the middle run happened to split siem into two steps while the others did not. Treat them
+as encouraging, not as a result. A skill-pack verdict needs `--runs 3` on both settings.
+
+Two things the runs surfaced that are not yet fixed:
+
+- **The MCP client tears down under a second dispatch.** When the planner split siem into
+  two steps, the second was rejected with "1 MCP server(s) configured but returning no
+  tools" while the first had just succeeded. `MCPClient` is a `ToolProvider` with
+  ref-counted consumers, so the first subagent's `cleanup()` can drop the count to zero
+  and close the connection under the second. Holding a process-level consumer across the
+  run is the fix.
+- **The plan has no granularity where the cost is.** The Broker plans *across* families,
+  but ~85% of a run's spend is inside `siem`, historically as a single step containing
+  every query. Nothing can evaluate or stop that loop until it returns.
