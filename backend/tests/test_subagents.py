@@ -559,3 +559,113 @@ class _Event:
         self.tool_use = tool_use
         self.result = result
         self.exception = exception
+
+
+class TestTheAnswerSurvivesTheTurnCap:
+    """A loop that ends without structured output has already paid for its work.
+
+    Strands ends a capped run with `limit_turns` / `limit_output_tokens` and
+    raises nothing, so the tool calls are billed, the evidence is collected, and
+    the model's own answer is simply gone. Everything then lands as
+    `uncategorised` because no answer means no category tags.
+
+    Measured live on 2026-08-15: the siem subagent spent $0.897 of a $1.039 run,
+    retrieved 252 rows, and returned none of them typed. One further bounded call
+    -- no new queries, just "report what you have" -- is worth far less than the
+    work it rescues.
+    """
+
+    async def test_a_loop_that_ends_without_an_answer_is_asked_once_to_report(
+        self, monkeypatch
+    ):
+        calls = []
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            async def invoke_async(self, prompt, **kwargs):
+                calls.append((prompt, kwargs))
+                if len(calls) == 1:
+                    capped = _Result(None)
+                    capped.stop_reason = "limit_turns"
+                    return capped
+                return _Result("recovered-answer")
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        result = await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        assert len(calls) == 2, "the capped loop was not given a chance to report"
+        assert result.structured_output == "recovered-answer"
+
+    async def test_the_recovery_call_is_bounded_to_a_single_turn(self, monkeypatch):
+        # Recovery must not become a second exploration loop: it exists to turn
+        # already-collected evidence into an answer, not to run more queries.
+        calls = []
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            async def invoke_async(self, prompt, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    capped = _Result(None)
+                    capped.stop_reason = "limit_turns"
+                    return capped
+                return _Result("recovered-answer")
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        # `Limits` is a TypedDict (`strands/types/agent.py:17`), not an object.
+        assert calls[1]["limits"]["turns"] == 1
+
+    async def test_a_loop_that_answered_is_not_billed_for_a_second_call(
+        self, monkeypatch
+    ):
+        calls = []
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            async def invoke_async(self, prompt, **kwargs):
+                calls.append(prompt)
+                return _Result("answered-first-time")
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        result = await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        assert len(calls) == 1
+        assert result.structured_output == "answered-first-time"

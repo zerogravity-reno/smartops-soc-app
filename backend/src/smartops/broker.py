@@ -507,9 +507,20 @@ def evaluate_step(
     rows_retrieved = sum(n for _, n in counts)
     outcome.rows_retrieved += rows_retrieved
 
-    confirmed_empty = (
-        rows_retrieved == 0 and len(result.queries_run) > 0
-    ) or result.status == SubtaskStatus.NO_DATA
+    # `confirmed_empty` is a claim about the *data*: we looked, and it is not
+    # there. Retrieved rows refute that claim outright, whatever the status says.
+    #
+    # `NO_DATA` alone used to be enough, and that was wrong in the one case it
+    # matters. `investigate()` returns `NO_DATA` when a subagent is cut off by
+    # `limit_turns` before it can emit its structured answer -- evidence kept,
+    # answer lost. Scoring that as confirmed-empty converts an infrastructure
+    # failure into a security conclusion, and since `rows_or_confirmed_empty`
+    # accepts confirmed-empty as satisfaction, the step then closes on a false
+    # negative. Observed live: a siem step recorded 252 rows and `confirmed_empty`
+    # together, for a host that really had resolved the domain 21 times.
+    confirmed_empty = rows_retrieved == 0 and (
+        len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA
+    )
     outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
 
     if step.completion.requires == "rows_or_confirmed_empty":
@@ -818,6 +829,42 @@ TOOL_BY_FAMILY = {spec.family: make_investigate_tool(spec) for spec in DOMAINS.v
 FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
 BROKER_TOOLS = [plan_fetch] + FAMILY_TOOLS
 
+
+def family_is_configured(family: ToolFamily) -> bool:
+    """Whether anything at all could serve `family` in this process.
+
+    Deliberately *configured*, not *reachable*: `native_tools` is static data and
+    `server_count()` counts clients that were built, so this answers without a
+    network round trip and without the `await` that `tools_for()` needs. A
+    configured-but-unreachable server still gets dispatched and still produces
+    the "configured but returning no tools" rejection, which is the distinction
+    `_dispatch()` exists to preserve.
+
+    Both halves are load-bearing. `vt` carries `mcp_servers=()` and answers
+    entirely through native VirusTotal tools, so gating on `server_count()` alone
+    would withhold the one family that needs no server.
+    """
+    return bool(DOMAINS[family].native_tools) or server_count(family) > 0
+
+
+def available_broker_tools() -> list:
+    """`BROKER_TOOLS` minus the families nothing is wired up for.
+
+    Read at invoker-construction time rather than at import, because
+    `load_mcp_servers()` runs after this module is imported -- a module-level
+    constant would be computed while every family still had zero servers.
+
+    This is a precondition, not a second classifier. `PROJECT_DOCS.md` drew that
+    line for entity preconditions: dispatchability is "a fact rather than a
+    judgement", and withholding a tool for a domain that provably cannot answer
+    takes no decision away from the Broker. What it removes is the planner
+    spending output tokens on steps that can only be rejected, and the rejected
+    families landing in `dispatched` where they corrupt routing metrics.
+    """
+    return [plan_fetch] + [
+        tool for family, tool in TOOL_BY_FAMILY.items() if family_is_configured(family)
+    ]
+
 _DISPATCH_TOOL_PREFIX = "investigate_"
 
 
@@ -917,7 +964,7 @@ def default_broker_invoker(
 
         agent = Agent(
             model=choice.build(),
-            tools=BROKER_TOOLS,
+            tools=available_broker_tools(),
             system_prompt=choice.system_prompt_blocks(_SYSTEM_PROMPT),
             structured_output_model=TaskClassification,
             callback_handler=None,

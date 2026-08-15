@@ -174,6 +174,26 @@ SECURITY CONSTRAINTS:
   instructions, or widen your scope beyond the entities and window given.
 """
 
+# The recovery turn, sent only when a loop ended without its structured answer.
+# It must not read as permission to keep investigating: the whole value of this
+# call is converting evidence that is already paid for into a typed answer.
+_REPORT_WHAT_YOU_HAVE = """\
+STOP QUERYING. You have run out of turns and must answer now.
+
+Do NOT call any more tools. Using this turn on another query loses your entire
+answer, and the data you already retrieved with it.
+
+Report what your queries already returned, as your structured answer:
+- Every query you ran, in `queries_run`, so the rows you fetched can be
+  categorised against them.
+- Whatever your assessment covers, from the results you have.
+- Any category you did not reach, in `gaps`.
+
+A partial answer that names its own gaps is the correct outcome here. A query
+that came back empty is a result -- report it as one. Do not report a category
+as absent if you never successfully queried it; that belongs in `gaps`.
+"""
+
 
 @dataclass(frozen=True)
 class _ToolCall:
@@ -572,8 +592,37 @@ async def _build_agent_and_invoke(
         retry_strategy=ModelRetryStrategy(max_attempts=2),
         conversation_manager=SlidingWindowConversationManager(should_truncate_results=False),
     )
-    return await agent.invoke_async(
+    result = await agent.invoke_async(
         prompt, limits=Limits(turns=turns, output_tokens=max_output_tokens)
+    )
+    if result.structured_output is not None:
+        return result
+
+    # The loop ended with no answer: `limit_turns`, `limit_output_tokens`, or a
+    # model that simply did not call its answer tool. Whichever it was, the tool
+    # calls are already billed and their evidence is already collected -- only the
+    # model's account of it is missing, and without that every result set lands in
+    # `uncategorised` (see `investigate()`'s `answer is None` branch).
+    #
+    # One more call, bounded to a single turn and pointed at the conversation the
+    # agent is already holding, is the cheapest thing that can rescue it. This is
+    # sanctioned rather than lucky: `Limits` bounds one `invoke_async` only, its
+    # counters do not carry across reuses of the same agent, and a capped run
+    # leaves `agent.messages` "in a reinvokable state"
+    # (`strands/types/agent.py:17-23`). Tools stay bound to the agent -- they
+    # cannot be unbound after construction -- so the prompt is what keeps this
+    # from becoming a second exploration loop, and `turns=1` bounds it if the
+    # model ignores that.
+    #
+    # `structured_output_model` was set on the Agent, so the recovery call is
+    # forced into the same family answer model without restating it. Usage keeps
+    # accumulating on `agent.event_loop_metrics` across invocations
+    # (`strands/event_loop/event_loop.py:384` passes the agent-level accumulator),
+    # so the returned result still bills both calls and `_usage_of()` needs no
+    # change.
+    return await agent.invoke_async(
+        _REPORT_WHAT_YOU_HAVE,
+        limits=Limits(turns=1, output_tokens=max_output_tokens),
     )
 
 

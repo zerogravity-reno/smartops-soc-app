@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from smartops import broker as broker_module
 from smartops.broker import (
     BUDGET_REFUSAL_ERROR,
     DEFAULT_BROKER_OUTPUT_TOKENS,
@@ -19,6 +20,7 @@ from smartops.broker import (
     _digest,
     _estimated_input_tokens,
     broker_task,
+    evaluate_step,
     default_broker_invoker,
     missing_step_id_refusal,
     plan_fetch,
@@ -705,6 +707,12 @@ class TestDefaultInvoker:
         # indirection.
         sentinel = object()
         monkeypatch.setattr(type(MODEL), "build", lambda self: sentinel)
+        # Every family configured, which is what this test is about: the full
+        # toolset reaching `Agent(...)`. The suite loads no MCP servers, so
+        # without this only `vt` -- the one family with native tools -- would
+        # survive `available_broker_tools()`. That gating has its own tests in
+        # `TestAnUnconfiguredFamilyIsNotOfferedToThePlanner`.
+        monkeypatch.setattr(broker_module, "server_count", lambda family: 1)
 
         with patch("strands.Agent", return_value=fake_agent) as agent_cls:
             invoker = default_broker_invoker(MODEL, max_output_tokens=500, turns=6)
@@ -2142,3 +2150,110 @@ class TestTheTurnBudgetHasCorrectionHeadroom:
         worst_case_run = 1 + MAX_PLANNED_DISPATCHES_PER_FAMILY + 1
 
         assert DEFAULT_BROKER_TURNS >= worst_case_run + 2
+
+
+class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
+    """Dispatchability is a fact the system already holds before planning.
+
+    `PROJECT_DOCS.md` settled this for entity preconditions -- "a family's
+    *dispatchability* becomes a fact rather than a judgement... It is **not** a
+    second classifier" -- but the same reasoning was never applied to whether a
+    domain has any tools at all. `DomainSpec.native_tools` and `server_count()`
+    are both synchronous and both known before the first model call.
+
+    Observed live on 2026-08-15: the Broker authored two full `FetchStep`s for
+    `ndr` and `edr`, dispatched both, and both were rejected with "no MCP server
+    configured yet" -- planner output tokens spent on families that could never
+    run, and two entries in `dispatched` that make `routing_correctness` unusable.
+    """
+
+    def test_a_family_with_neither_native_tools_nor_a_server_is_withheld(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(broker_module, "server_count", lambda family: 0)
+
+        names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
+
+        # vt keeps its native VirusTotal tool, so it stays available even with
+        # no MCP server at all -- gating on `server_count` alone would drop it.
+        assert "investigate_vt" in names
+        assert "investigate_ndr" not in names
+        assert "investigate_edr" not in names
+
+    def test_a_family_whose_server_is_configured_is_offered(self, monkeypatch):
+        monkeypatch.setattr(
+            broker_module, "server_count", lambda family: 1 if family == "ndr" else 0
+        )
+
+        names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
+
+        assert "investigate_ndr" in names
+
+    def test_planning_is_always_offered(self, monkeypatch):
+        # `plan_fetch` is not a family tool and must survive any gating -- a
+        # Broker that cannot plan cannot dispatch anything at all.
+        monkeypatch.setattr(broker_module, "server_count", lambda family: 0)
+
+        names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
+
+        assert "plan_fetch" in names
+
+
+class TestAFailedSubagentIsNotANegativeFinding:
+    """`confirmed_empty` means "we looked and the data is not there".
+
+    A subagent that ran out of turns looked and never got to say what it found.
+    Scoring that as confirmed-empty turns an infrastructure failure into a
+    security conclusion -- and the completion rule accepts confirmed-empty as
+    satisfaction, so the step closes on a false negative.
+
+    Observed live on 2026-08-15 (`.smartops/runs/botsv3_coinhive/20260815T112844145`):
+    the siem step recorded `rows_retrieved=252`, `confirmed_empty=True` and
+    `completed=True` at once, for a host that had in fact resolved coinhive.com
+    21 times.
+    """
+
+    def test_a_turn_capped_subagent_that_retrieved_rows_is_not_confirmed_empty(self):
+        step = FetchStep(
+            step_id="siem-1",
+            family="siem",
+            objective="Find host activity involving coinhive.com",
+        )
+        # What `investigate()` returns when the loop hits `limit_turns`: the
+        # evidence survives, the model's structured answer does not.
+        result = SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.NO_DATA,
+            reason="siem subagent produced no structured answer (stop_reason=limit_turns)",
+            findings=SiemFindings(
+                dns_resolutions=[
+                    ResultSet(query="q", row_count=21, rows=[{"query": "coinhive.com"}])
+                ]
+            ),
+            queries_run=[QueryRun(query="q")],
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 21
+        assert outcome.confirmed_empty is False
+
+    def test_a_subagent_that_ran_queries_and_got_nothing_is_still_confirmed_empty(self):
+        # The behaviour that must survive the fix: a genuine empty result, where
+        # queries ran and returned no rows, is still a real negative finding.
+        step = FetchStep(
+            step_id="siem-1",
+            family="siem",
+            objective="Find host activity involving coinhive.com",
+        )
+        result = SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(dns_resolutions=[ResultSet(query="q", row_count=0, rows=[])]),
+            queries_run=[QueryRun(query="q")],
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 0
+        assert outcome.confirmed_empty is True
