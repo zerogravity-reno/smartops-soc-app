@@ -2257,3 +2257,195 @@ class TestAFailedSubagentIsNotANegativeFinding:
 
         assert outcome.rows_retrieved == 0
         assert outcome.confirmed_empty is True
+
+
+class TestAStepIsJudgedAgainstItsOwnCategory:
+    """A `siem` step that names the CIM category it is responsible for is
+    complete only when *that* category produced rows.
+
+    Without this, `evaluate_step` sums every bucket, so a plan that splits siem
+    into "resolve the domain" and "find the processes" closes both steps as soon
+    as either one returns anything -- and the Broker is told a category was
+    covered that nobody ever queried. This is what makes a multi-step siem plan
+    worth authoring: the completion rule can finally disagree with the model.
+    """
+
+    def _result(self, findings: SiemFindings) -> SubtaskResult:
+        return SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.OK,
+            findings=findings,
+            queries_run=[QueryRun(query="q")],
+        )
+
+    def test_rows_in_another_category_do_not_complete_the_step(self):
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"], min_rows=1),
+        )
+        result = self._result(
+            SiemFindings(processes=[ResultSet(query="q", row_count=40, rows=[{"p": "x"}])])
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 0
+        assert outcome.completed is False
+
+    def test_rows_in_the_named_category_complete_the_step(self):
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"], min_rows=1),
+        )
+        result = self._result(
+            SiemFindings(
+                dns_resolutions=[ResultSet(query="q", row_count=21, rows=[{"q": "coinhive.com"}])],
+                processes=[ResultSet(query="q2", row_count=40, rows=[{"p": "x"}])],
+            )
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 21
+        assert outcome.completed is True
+
+    def test_uncategorised_rows_do_not_satisfy_a_named_category(self):
+        # `uncategorised` is the honesty bucket for rows the model never tagged.
+        # Letting it satisfy a category claim would rebuild, in a new place, the
+        # false-completion bug this whole class exists to prevent.
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"], min_rows=1),
+        )
+        result = self._result(
+            SiemFindings(uncategorised=[ResultSet(query="q", row_count=99, rows=[{"a": 1}])])
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 0
+        assert outcome.completed is False
+
+    def test_a_category_nobody_queried_is_not_a_confirmed_negative(self):
+        # The distinction the whole scoping rests on. "We queried DNS and there
+        # was nothing" is a finding; "we never queried DNS" is a gap. Both leave
+        # zero rows in the bucket, and only the first may close the step.
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"]),
+        )
+        result = self._result(
+            SiemFindings(processes=[ResultSet(query="q", row_count=40, rows=[{"p": "x"}])])
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.confirmed_empty is False
+        assert outcome.completed is False
+
+    def test_a_named_category_that_is_genuinely_empty_still_completes(self):
+        # An empty result is a finding. Scoping to a category must not turn a
+        # real negative into an unfinishable step.
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"]),
+        )
+        result = self._result(
+            SiemFindings(dns_resolutions=[ResultSet(query="q", row_count=0, rows=[])])
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.confirmed_empty is True
+        assert outcome.completed is True
+
+    def test_rows_required_in_a_named_category_is_not_satisfied_by_emptiness(self):
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(
+                requires="rows_required", categories=["dns_resolutions"], min_rows=1
+            ),
+        )
+        result = self._result(
+            SiemFindings(dns_resolutions=[ResultSet(query="q", row_count=0, rows=[])])
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.completed is False
+
+    def test_several_categories_are_summed_together(self):
+        step = FetchStep(
+            step_id="siem-network",
+            family="siem",
+            objective="Network activity for BSTOLL-L",
+            completion=CompletionRule(
+                categories=["dns_resolutions", "connections"], min_rows=30
+            ),
+        )
+        result = self._result(
+            SiemFindings(
+                dns_resolutions=[ResultSet(query="q", row_count=21, rows=[{"a": 1}])],
+                connections=[ResultSet(query="q2", row_count=9, rows=[{"b": 2}])],
+                processes=[ResultSet(query="q3", row_count=500, rows=[{"c": 3}])],
+            )
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 30
+        assert outcome.completed is True
+
+    def test_naming_no_category_counts_every_bucket_as_before(self):
+        # The default. Every existing plan and every vt step relies on it.
+        step = FetchStep(step_id="siem-1", family="siem", objective="Anything")
+        result = self._result(
+            SiemFindings(
+                dns_resolutions=[ResultSet(query="q", row_count=21, rows=[{"a": 1}])],
+                processes=[ResultSet(query="q2", row_count=40, rows=[{"b": 2}])],
+                uncategorised=[ResultSet(query="q3", row_count=1, rows=[{"c": 3}])],
+            )
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.rows_retrieved == 62
+        assert outcome.completed is True
+
+    def test_a_category_scoped_step_accumulates_across_redispatch(self):
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"], min_rows=20),
+        )
+        first = evaluate_step(
+            step,
+            self._result(
+                SiemFindings(dns_resolutions=[ResultSet(query="q", row_count=11, rows=[{"a": 1}])])
+            ),
+        )
+        assert first.completed is False
+
+        second = evaluate_step(
+            step,
+            self._result(
+                SiemFindings(dns_resolutions=[ResultSet(query="q2", row_count=9, rows=[{"a": 1}])])
+            ),
+            prior=first,
+        )
+
+        assert second.rows_retrieved == 20
+        assert second.completed is True

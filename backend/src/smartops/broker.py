@@ -131,6 +131,19 @@ its domain contains relevant evidence for the specified scope.
 Before dispatching domain specialists, you MUST call the `plan_fetch` tool to decompose the
 goal into bounded retrieval steps with completion criteria.
 
+HOW TO DECOMPOSE:
+- One step per question you actually need answered, not one step per family. `siem` in
+  particular is where most of an investigation's work happens, and a single step asking
+  for everything cannot be judged: it is complete the moment anything comes back.
+- For every `siem` step, set `completion.categories` to the CIM categories that step is
+  responsible for -- `dns_resolutions` (Network Resolution), `connections` (Network
+  Traffic), `processes` (Endpoint Processes), `auth_events` (Authentication). Split the
+  siem work so each step owns the categories it is actually asking for, and give each its
+  own step_id. A step is then judged on the data it asked for and nothing else.
+- Only name categories the goal genuinely needs. A step naming a category nobody retrieves
+  stays incomplete, which is the correct outcome and not something to plan around.
+- `vt` findings are not bucketed this way: leave `completion.categories` empty for them.
+
 `plan_fetch` returns the step ids it recorded. Every dispatch must name one of them: call a
 specialist's tool with the `step_id` of the planned step that dispatch carries out. A dispatch
 made before `plan_fetch`, or naming a step id that is not in the plan or belongs to another
@@ -504,7 +517,18 @@ def evaluate_step(
     outcome.dispatches += 1
 
     counts = _finding_counts(result.findings)
-    rows_retrieved = sum(n for _, n in counts)
+    # A step that named the categories it is responsible for is judged on those
+    # alone. Otherwise a plan that splits siem into "resolve the domain" and
+    # "find the processes" closes both the moment either one returns anything,
+    # and the Broker is told a category was covered that nobody queried.
+    #
+    # The names line up by construction: `CimCategory` is exactly the field
+    # names of the `SiemFindings` buckets (`contracts/findings.py:21`), which is
+    # what `_finding_counts` yields. `uncategorised` is not among them, so rows
+    # the subagent never tagged cannot satisfy a category claim -- see
+    # `CompletionRule.categories` for why that is deliberate.
+    wanted = set(step.completion.categories)
+    rows_retrieved = sum(n for name, n in counts if not wanted or name in wanted)
     outcome.rows_retrieved += rows_retrieved
 
     # `confirmed_empty` is a claim about the *data*: we looked, and it is not
@@ -518,8 +542,20 @@ def evaluate_step(
     # accepts confirmed-empty as satisfaction, the step then closes on a false
     # negative. Observed live: a siem step recorded 252 rows and `confirmed_empty`
     # together, for a host that really had resolved the domain 21 times.
-    confirmed_empty = rows_retrieved == 0 and (
-        len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA
+    #
+    # A category-scoped step adds a second requirement: the categories it names
+    # must actually have been retrieved into. `_finding_counts` reports a bucket
+    # that ran and came back with nothing (it holds a zero-row `ResultSet`) and
+    # omits a bucket nobody touched, so presence here is the code-side evidence
+    # that the question was asked. Without this check, a step scoped to
+    # `dns_resolutions` whose subagent only ever returned process events would
+    # score as "we looked for DNS and it is not there" -- the same false negative
+    # in a new place.
+    looked_at_named_categories = wanted <= {name for name, _ in counts}
+    confirmed_empty = (
+        rows_retrieved == 0
+        and looked_at_named_categories
+        and (len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA)
     )
     outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
 

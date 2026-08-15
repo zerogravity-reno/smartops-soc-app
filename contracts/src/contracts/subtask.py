@@ -393,6 +393,19 @@ class SubtaskResult(_StatusErrorContract):
             "the same reason as `gaps` below."
         ),
     )
+    blocked_queries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Queries a guard cancelled before they ran, assembled by code and "
+            "never model-authored. Deliberately NOT merged into `queries_run`, "
+            "which means 'queries this subagent ran'. It is here because a "
+            "cancelled call yields an error tool result, `_EvidenceCollector` "
+            "drops those, and so an attempt to query outside the allowlist "
+            "previously left no trace anywhere -- making it invisible both to an "
+            "analyst reading the report and to the benchmark metric whose whole "
+            "job is to catch it."
+        ),
+    )
     citation_ids: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     gaps: list[ToolFamily] = Field(
@@ -478,6 +491,21 @@ class CompletionRule(BaseModel):
 
     requires: Literal["rows_or_confirmed_empty", "rows_required"] = "rows_or_confirmed_empty"
     min_rows: int = 0
+    categories: list[CimCategory] = Field(
+        default_factory=list,
+        description=(
+            "CIM categories this step is responsible for. When set, only rows in "
+            "these categories count toward `min_rows` -- so a step planned to "
+            "resolve a domain is not closed by process events somebody else "
+            "retrieved. Empty, the default, counts every category the family "
+            "returned, which is the only sensible rule for a family whose "
+            "findings are not bucketed this way (`vt`). Rows the subagent never "
+            "tagged land in `SiemFindings.uncategorised` and deliberately do NOT "
+            "satisfy a named category: that bucket exists to record attribution "
+            "failure, and letting it stand in for a category would put the "
+            "false-completion problem back where it was."
+        ),
+    )
 
 
 class FetchStep(BaseModel):
