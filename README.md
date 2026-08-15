@@ -170,7 +170,12 @@ SubagentMission ─▶ tools_for(family) ─▶ subagent ─▶ SubtaskResult
    `AfterToolCallEvent` is projected into typed `SiemFindings` / `VtFindings`;
    citations are minted by code, never authored by the model.
 6. **Absence is reported honestly.** `confirmed_empty` means the data was looked
-   for and is not there. A subagent that failed to answer does not set it.
+   for and is not there. A subagent that failed to answer does not set it, and
+   neither does a step scoped to a CIM category nobody ever queried — "we asked
+   and found nothing" is a finding, "we never asked" is a gap.
+7. **A step is judged on what it asked for.** `CompletionRule.categories` scopes
+   a `siem` step to the CIM categories it owns, so splitting siem into several
+   steps gives code something it can actually evaluate per step.
 
 Deeper detail lives in [`docs/agent_architecture.md`](docs/agent_architecture.md).
 Decisions of record are in [`docs/PROJECT_DOCS.md`](docs/PROJECT_DOCS.md), which
@@ -182,7 +187,7 @@ is **compiled** from `docs/sessions/` — edit a session file and re-run
 ## 🧪 Testing
 
 ```bash
-uv run pytest        # 479 tests, from the workspace root
+uv run pytest        # 513 tests, from the workspace root
 ```
 
 `[tool.pytest.ini_options]` lives at the workspace root with

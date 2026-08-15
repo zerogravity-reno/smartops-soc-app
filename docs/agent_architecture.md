@@ -337,14 +337,55 @@ wall-clock deltas are **one sample against one sample** on a nondeterministic mo
 the middle run happened to split siem into two steps while the others did not. Treat them
 as encouraging, not as a result. A skill-pack verdict needs `--runs 3` on both settings.
 
-Two things the runs surfaced that are not yet fixed:
+### What the runs surfaced, and what it actually was
 
-- **The MCP client tears down under a second dispatch.** When the planner split siem into
-  two steps, the second was rejected with "1 MCP server(s) configured but returning no
-  tools" while the first had just succeeded. `MCPClient` is a `ToolProvider` with
-  ref-counted consumers, so the first subagent's `cleanup()` can drop the count to zero
-  and close the connection under the second. Holding a process-level consumer across the
-  run is the fix.
-- **The plan has no granularity where the cost is.** The Broker plans *across* families,
-  but ~85% of a run's spend is inside `siem`, historically as a single step containing
-  every query. Nothing can evaluate or stop that loop until it returns.
+**Concurrent dispatches raced the MCP connection.** In `…T124556942` a `siem` dispatch was
+rejected with "1 MCP server(s) configured but returning no tools" while another `siem`
+dispatch in the same run ran 11 queries.
+
+This was first written up here as a ref-counted teardown — the first subagent's
+`cleanup()` dropping `MCPClient`'s consumer count to zero and closing the connection under
+the second — with "hold a process-level consumer across the run" as the fix. **That was
+wrong, and it is recorded because it is a plausible story that survives a code read.**
+`add_consumer` has exactly one call site in the SDK (`strands/tools/registry.py:133`, the
+`isinstance(tool, ToolProvider)` branch of `ToolRegistry.process_tools`), and `tools_for()`
+hands `Agent` the already-resolved `MCPAgentTool`s rather than the provider — so those
+match the earlier `AgentTool` branch, no consumer is ever taken, and none is ever released.
+The teardown path was unreachable.
+
+The artifact says so plainly. `report.json` records the **rejected** dispatch first, with
+zero queries and zero evidence, and the successful one after it — the opposite order from
+a teardown-under-the-second, and a sticky `_connection_failed` would have failed the second
+one too.
+
+What it was: Strands runs a turn's tool calls under `ConcurrentToolExecutor`, so two `siem`
+steps in one plan arrive at the same cached client simultaneously.
+`MCPClient.load_tools()` checks `_tool_provider_started` and only then calls `start()`
+(`mcp_client.py:405-409`), with a network handshake in between and no lock across the two;
+`_is_session_active()` goes true as soon as the background thread starts. The second caller
+called `start()` on a starting client, got `MCPClientInitializationError("the client
+session is currently running")` (`mcp_client.py:334-336`), and `continue_on_error` turned
+that into `_connection_failed = True` and an empty tool list (`mcp_client.py:411-417`).
+
+Fixed two ways, because either alone leaves a hole:
+`warm_mcp_clients()` resolves every client once at startup (`main.py`, `bench.py`) so the
+racy branch is behind everyone; and `_load_tools_off_loop` serialises per client, so the
+property holds for a caller that never warmed — forgetting to warm is how this failed the
+first time. `PROCESS_CONSUMER` is claimed too: it fixes nothing here, but it closes the
+teardown path before someone does pass a client into `Agent(tools=[...])`.
+
+**The plan now has granularity where the cost is.** ~85% of a run's spend is inside `siem`.
+`CompletionRule.categories` scopes a step to the CIM categories it is responsible for, and
+`evaluate_step()` counts only those buckets, so a plan that splits siem into "resolve the
+domain" and "find the processes" no longer closes both the moment either returns anything.
+A named category that nobody retrieved into is **not** confirmed-empty — presence of a
+bucket in `_finding_counts` is the code-side evidence that the question was asked, and
+`uncategorised` never satisfies a named category. Whether splitting siem is worth its extra
+input tokens is unmeasured: `report.json` persists only totals, not the ledger, so
+prompt-cache engagement could not be read back from these three runs. That needs
+`--runs 3` before and after.
+
+Still open: nothing can evaluate or stop a mission *while* it runs. There is no checkpoint
+and no interrupt anywhere in the tree; the only mid-flight surface is
+`BeforeToolCallEvent` + `event.cancel_tool`. Steps are now independently evaluable
+*between* missions, which is a different and smaller thing.

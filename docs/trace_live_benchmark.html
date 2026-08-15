@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SmartOps SOC — Live LLM Benchmark Evaluation Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-card: rgba(20, 27, 45, 0.75);
+      --bg-card-hover: rgba(30, 41, 69, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(59, 130, 246, 0.3);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-blue: #3b82f6;
+      --accent-green: #10b981;
+      --accent-purple: #8b5cf6;
+      --accent-amber: #f59e0b;
+      --accent-cyan: #06b6d4;
+      --accent-rose: #f43f5e;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.12) 0px, transparent 50%);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      padding: 2rem 1.5rem;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    /* Header Masthead */
+    .header {
+      margin-bottom: 2.5rem;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .header-title h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.35rem;
+    }
+
+    .header-subtitle {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 0.2rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      background-color: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    /* Key Metrics Grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .metric-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      transition: all 0.25s ease;
+    }
+
+    .metric-card:hover {
+      border-color: var(--border-accent);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.3);
+    }
+
+    .metric-label {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+
+    .metric-value {
+      font-size: 1.85rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+    }
+
+    .metric-subtext {
+      font-size: 0.8rem;
+      color: var(--accent-green);
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    /* Section Cards */
+    .section {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 1.75rem;
+      margin-bottom: 2rem;
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .section-title {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Table Styling */
+    .table-container {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-secondary);
+      font-weight: 500;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+
+    .badge-blue { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-purple { background: rgba(139, 92, 246, 0.15); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.3); }
+    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+
+    /* Case Breakdown Cards */
+    .case-card {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .case-card:last-child {
+      margin-bottom: 0;
+    }
+
+    .case-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .case-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .case-goal {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      margin-bottom: 1rem;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border-left: 3px solid var(--accent-blue);
+    }
+
+    .case-stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .stat-pill {
+      background: rgba(255, 255, 255, 0.03);
+      padding: 0.65rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .stat-pill-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 0.2rem;
+    }
+
+    .stat-pill-value {
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+    }
+
+    /* Waterfall Timeline */
+    .waterfall {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .wf-step {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.85rem;
+    }
+
+    .wf-label {
+      width: 140px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    .wf-bar-container {
+      flex: 1;
+      height: 24px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .wf-bar {
+      height: 100%;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      padding-left: 0.6rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .wf-bar-broker { background: linear-gradient(90deg, #3b82f6, #60a5fa); width: 25%; }
+    .wf-bar-vt { background: linear-gradient(90deg, #8b5cf6, #a78bfa); width: 45%; }
+    .wf-bar-siem { background: linear-gradient(90deg, #10b981, #34d399); width: 30%; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    
+    <!-- Masthead -->
+    <header class="header">
+      <div class="header-title">
+        <h1>SmartOps SOC — Live LLM Benchmark Evaluation</h1>
+        <div class="header-subtitle">
+          <span class="live-badge"><span class="live-dot"></span> Live Bedrock LLM Run</span>
+          <span>•</span>
+          <span>Claude 3.5 Sonnet</span>
+          <span>•</span>
+          <span class="mono">smartops.bench</span>
+        </div>
+      </div>
+      <div>
+        <span class="badge badge-purple" style="font-size: 0.85rem; padding: 0.4rem 0.75rem;">Hierarchical Subagent Topology (Arm S)</span>
+      </div>
+    </header>
+
+    <!-- Key Metrics Grid -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Average Cost / Case</div>
+        <div class="metric-value" style="color: var(--accent-green);">$0.104</div>
+        <div class="metric-subtext">10.4¢ USD median Bedrock charge</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Wall-Clock Duration</div>
+        <div class="metric-value">47.7s</div>
+        <div class="metric-subtext">Median execution time per case</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Prompt Cache Read Tokens</div>
+        <div class="metric-value" style="color: var(--accent-purple);">25,587</div>
+        <div class="metric-subtext">⚡ 65%+ Cost Reduction via Cache</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Index Scoping Pass Rate</div>
+        <div class="metric-value" style="color: var(--accent-blue);">100.0%</div>
+        <div class="metric-subtext">IndexScopeGuard Enforced</div>
+      </div>
+    </div>
+
+    <!-- Live Execution Metrics Table -->
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">📊 Live Benchmark Execution Summary</div>
+        <span class="badge badge-blue">3 BOTSv3 Security Cases</span>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Case ID</th>
+              <th>Wall Clock</th>
+              <th>Total Cost (USD)</th>
+              <th>Input Tokens (Uncached)</th>
+              <th>Cache Read Tokens</th>
+              <th>Output Tokens</th>
+              <th>Index Scoping</th>
+              <th>VT Verdicts</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono" style="font-weight: 600;">botsv3_coinhive</td>
+              <td class="mono">47.82s</td>
+              <td class="mono" style="color: var(--accent-green); font-weight: 600;">$0.122</td>
+              <td class="mono">13,625</td>
+              <td class="mono" style="color: var(--accent-purple);">20,101</td>
+              <td class="mono">3,657</td>
+              <td><span class="badge badge-green">100% Pass</span></td>
+              <td><span class="badge badge-purple">1 Verdict</span></td>
+            </tr>
+            <tr>
+              <td class="mono" style="font-weight: 600;">botsv3_powershell_hash</td>
+              <td class="mono">44.95s</td>
+              <td class="mono" style="color: var(--accent-green); font-weight: 600;">$0.098</td>
+              <td class="mono">13,414</td>
+              <td class="mono" style="color: var(--accent-purple);">25,587</td>
+              <td class="mono">3,403</td>
+              <td><span class="badge badge-green">100% Pass</span></td>
+              <td><span class="badge badge-purple">1 Verdict</span></td>
+            </tr>
+            <tr>
+              <td class="mono" style="font-weight: 600;">botsv3_c2_ip</td>
+              <td class="mono">47.72s</td>
+              <td class="mono" style="color: var(--accent-green); font-weight: 600;">$0.104</td>
+              <td class="mono">13,928</td>
+              <td class="mono" style="color: var(--accent-purple);">25,587</td>
+              <td class="mono">3,652</td>
+              <td><span class="badge badge-green">100% Pass</span></td>
+              <td><span class="badge badge-purple">1 Verdict</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Detailed Case Breakdown Cards -->
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">🔍 Live Case Investigations Breakdown</div>
+      </div>
+
+      <!-- Case 1 -->
+      <div class="case-card">
+        <div class="case-header">
+          <div class="case-title">Case 1: Cryptomining Domain & Host Activity (<span class="mono">botsv3_coinhive</span>)</div>
+          <span class="badge badge-blue">Target Domains: SIEM, VT</span>
+        </div>
+        <div class="case-goal">
+          <strong>Analyst Goal:</strong> Is coinhive.com known-malicious, and what did host BSTOLL-L do with it?
+        </div>
+        <div class="case-stats-row">
+          <div class="stat-pill">
+            <div class="stat-pill-label">Wall-Clock Duration</div>
+            <div class="stat-pill-value">47.82s</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Total Cost</div>
+            <div class="stat-pill-value" style="color: var(--accent-green);">$0.122</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Prompt Cache Hits</div>
+            <div class="stat-pill-value" style="color: var(--accent-purple);">20,101 tokens</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">VirusTotal Findings</div>
+            <div class="stat-pill-value">11 Malicious / 91 Engines</div>
+          </div>
+        </div>
+        <div class="waterfall">
+          <div class="wf-step">
+            <div class="wf-label">Task Broker Plan</div>
+            <div class="wf-bar-container"><div class="wf-bar wf-bar-broker">Broker Planning ($0.096)</div></div>
+          </div>
+          <div class="wf-step">
+            <div class="wf-label">VT Domain Subagent</div>
+            <div class="wf-bar-container"><div class="wf-bar wf-bar-vt">VT Reputation Lookup ($0.026)</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Case 2 -->
+      <div class="case-card">
+        <div class="case-header">
+          <div class="case-title">Case 2: PowerShell Executable Hash Reputation (<span class="mono">botsv3_powershell_hash</span>)</div>
+          <span class="badge badge-blue">Target Domains: SIEM, VT</span>
+        </div>
+        <div class="case-goal">
+          <strong>Analyst Goal:</strong> Investigate suspicious file hash e2ac36894c2560d2b277ff9618b76c8c reputation on VirusTotal and SIEM activity on host BSTOLL-L.
+        </div>
+        <div class="case-stats-row">
+          <div class="stat-pill">
+            <div class="stat-pill-label">Wall-Clock Duration</div>
+            <div class="stat-pill-value">44.95s</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Total Cost</div>
+            <div class="stat-pill-value" style="color: var(--accent-green);">$0.098</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Prompt Cache Hits</div>
+            <div class="stat-pill-value" style="color: var(--accent-purple);">25,587 tokens</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Process Telemetry</div>
+            <div class="stat-pill-value">WinEventLog:Security</div>
+          </div>
+        </div>
+        <div class="waterfall">
+          <div class="wf-step">
+            <div class="wf-label">Task Broker Plan</div>
+            <div class="wf-bar-container"><div class="wf-bar wf-bar-broker">Broker Planning ($0.080)</div></div>
+          </div>
+          <div class="wf-step">
+            <div class="wf-label">VT Hash Subagent</div>
+            <div class="wf-bar-container"><div class="wf-bar wf-bar-vt">VT Hash Lookup ($0.018)</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Case 3 -->
+      <div class="case-card">
+        <div class="case-header">
+          <div class="case-title">Case 3: Outbound C2 IP Flow Telemetry (<span class="mono">botsv3_c2_ip</span>)</div>
+          <span class="badge badge-blue">Target Domains: SIEM, VT</span>
+        </div>
+        <div class="case-goal">
+          <strong>Analyst Goal:</strong> Is external IP 217.182.164.14 known-malicious, and what network connections did host BSTOLL-L make to it?
+        </div>
+        <div class="case-stats-row">
+          <div class="stat-pill">
+            <div class="stat-pill-label">Wall-Clock Duration</div>
+            <div class="stat-pill-value">47.72s</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Total Cost</div>
+            <div class="stat-pill-value" style="color: var(--accent-green);">$0.104</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Prompt Cache Hits</div>
+            <div class="stat-pill-value" style="color: var(--accent-purple);">25,587 tokens</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-pill-label">Network Flow Records</div>
+            <div class="stat-pill-value">stream:tcp</div>
+          </div>
+        </div>
+        <div class="waterfall">
+          <div class="wf-step">
+            <div class="wf-label">Task Broker Plan</div>
+            <div class="wf-bar-container"><div class="wf-bar wf-bar-broker">Broker Planning ($0.087)</div></div>
+          </div>
+          <div class="wf-step">
+            <div class="wf-label">VT IP Subagent</div>
+            <div class="wf-bar-container"><div class="wf-bar wf-bar-vt">VT IP Reputation ($0.017)</div></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+</body>
+</html>
