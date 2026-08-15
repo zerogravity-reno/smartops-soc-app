@@ -614,6 +614,7 @@ async def run_interleaved_benchmark(
     scripted: bool = False,
     model: ModelChoice | None = None,
     budget_usd: float = 10.0,
+    skills: bool = BENCH_SKILLS_ENABLED,
 ) -> BenchmarkReport:
     """Execute `runs_per_arm` runs of each case.
 
@@ -630,12 +631,17 @@ async def run_interleaved_benchmark(
 
     raw_runs: list[RunMetrics] = []
 
-    # Pinned across every case, arm and run, so the two arms are compared under
-    # one skill-pack configuration. The pinned value is the header the report
+    # Pinned across every case, arm and run, so every run in one report shares a
+    # skill-pack configuration. The pinned value is the header the report
     # carries; each run additionally records its own `skills_enabled` as
     # observed at execution time, so a run that somehow escaped the pin shows up
     # in the artifact rather than hiding behind the header.
-    with _pinned_skills(BENCH_SKILLS_ENABLED) as pinned_skills:
+    #
+    # `skills` defaults to off and is a parameter rather than an environment
+    # read: the pack is measurable on request, but only when a caller asked for
+    # it in as many words. An ambient `SMARTOPS_SKILLS_ENABLED` still cannot
+    # reach this -- that is the whole point of pinning rather than inheriting.
+    with _pinned_skills(skills) as pinned_skills:
         for case_name in cases:
             if case_name in BENCHMARK_CASES:
                 task, expected_families = BENCHMARK_CASES[case_name]
@@ -732,6 +738,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="budget per run in USD (default: 10.0)",
     )
     parser.add_argument(
+        "--skills",
+        action="store_true",
+        help=(
+            "attach the superman-splunk skill pack to the siem subagent "
+            "(off by default; the report records which way it ran)"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="enable verbose INFO logging",
@@ -756,6 +770,7 @@ async def _run(argv: list[str] | None = None) -> int:
         cases=cases,
         runs_per_arm=args.runs,
         scripted=args.scripted,
+        skills=args.skills,
         budget_usd=args.budget_usd,
     )
 

@@ -349,6 +349,36 @@ class TestBenchCLIEntrypoint:
         assert exc_info.value.code == 0
 
 
+class TestTheSkillPackCanBeMeasuredDeliberately:
+    """Off by default, but measurable on request.
+
+    `skills_enabled()`'s docstring says the pack "stays, to be evaluated on its
+    own merits against a measured baseline". That evaluation needs a way to turn
+    it on that is *explicit* and lands in the artifact -- which is exactly what
+    the ambient environment variable is not, and why the bench refuses to
+    inherit it.
+    """
+
+    async def test_an_explicit_opt_in_turns_the_pack_on(self):
+        report = await run_interleaved_benchmark(
+            cases=["botsv3_coinhive"],
+            arms=["S"],
+            runs_per_arm=1,
+            scripted=True,
+            skills=True,
+        )
+
+        assert report.skills_enabled is True
+        assert all(r.skills_enabled is True for r in report.raw_runs)
+
+    async def test_the_default_is_still_off(self):
+        report = await run_interleaved_benchmark(
+            cases=["botsv3_coinhive"], arms=["S"], runs_per_arm=1, scripted=True
+        )
+
+        assert report.skills_enabled is False
+
+
 class TestBenchDisablesTheSkillPack:
     """The skill pack is pinned off for every run, and the pin is written into
     the artifact. A run whose configuration is not recorded in its own output
