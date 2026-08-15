@@ -74,6 +74,28 @@ _SUPPORTED_NO_VERIFY_KEYS = frozenset(
 # stays a valid state -- no config and no credentials is how this runs today.
 _clients_by_family: dict[ToolFamily, list[MCPClient]] = {}
 
+# One lock per client, keyed by identity, serialising the first resolution of
+# each. See `_load_tools_off_loop` for why.
+_resolve_locks: dict[int, asyncio.Lock] = {}
+
+PROCESS_CONSUMER = "smartops-process"
+"""Consumer id held for the life of the process by every client we build.
+
+`MCPClient` is a Strands `ToolProvider` whose connection is torn down when its
+consumer count reaches zero (`strands/tools/mcp/mcp_client.py:476-484`). Today
+nothing registers one: `add_consumer` has exactly one call site in the SDK
+(`strands/tools/registry.py:133`, inside `ToolRegistry.process_tools`'s
+`isinstance(tool, ToolProvider)` branch), and `tools_for()` hands `Agent` the
+already-resolved `MCPAgentTool`s instead of the provider, so those match the
+earlier `AgentTool` branch and the client never becomes a tracked provider.
+
+Claiming one here is therefore *not* what fixes the observed failure -- nothing
+was releasing a consumer, because none was ever taken. It closes the path
+before someone passes a client straight into `Agent(tools=[...])`, at which
+point that agent's `cleanup()` would otherwise tear the shared connection down
+under every other family.
+"""
+
 
 def _default_config_path() -> Path | None:
     """Where to look for the `mcpServers` config, in precedence order.
@@ -174,7 +196,62 @@ def load_mcp_servers(config: str | Path | dict[str, Any] | None = None) -> dict[
             len(_clients_by_family[family]),
             len(subset),
         )
+
+    _resolve_locks.clear()
+    for client in mcp_clients():
+        # Not every stand-in implements the ToolProvider half of the interface,
+        # and a client we cannot claim is still a client we can resolve tools
+        # from -- so this is best-effort by design.
+        claim = getattr(client, "add_consumer", None)
+        if callable(claim):
+            claim(PROCESS_CONSUMER)
+
     return _clients_by_family
+
+
+async def warm_mcp_clients() -> None:
+    """Resolve every built client's tools once, before any dispatch can.
+
+    This is the fix for a live failure: in the run recorded at
+    `.smartops/runs/botsv3_coinhive/20260815T124556942`, one of two concurrent
+    `siem` dispatches came back with zero tools -- rejected with "1 MCP
+    server(s) configured but returning no tools" and zero queries run -- while
+    the other ran 11 queries against the same client.
+
+    The cause is that `MCPClient.load_tools()` checks `_tool_provider_started`
+    and only then calls `start()` (`mcp_client.py:405-409`), with a network
+    handshake in between and no lock across the two. `_is_session_active()` goes
+    true as soon as the background thread starts, well before the handshake
+    finishes, so a second caller arriving in that window calls `start()` on a
+    starting client and gets `MCPClientInitializationError("the client session
+    is currently running")` (`mcp_client.py:334-336`). Our servers set
+    `continue_on_error`, which converts that into `_connection_failed = True`
+    and an empty list (`mcp_client.py:411-417`) -- and that flag is sticky, only
+    cleared by `stop()` (`mcp_client.py:557`), which nothing here calls.
+
+    Two same-family dispatches in one Broker turn is not a corner case: Strands
+    runs a turn's tool calls under `ConcurrentToolExecutor` by default, so any
+    plan with two `siem` steps arrives here at once.
+
+    Call once at startup, after `load_mcp_servers()`. A server that cannot be
+    reached is *not* an error: it yields no tools here exactly as it would at
+    dispatch, and its family goes on to report honestly that nothing resolved.
+    """
+    clients = mcp_clients()
+    if not clients:
+        return
+
+    async def warm(client: MCPClient) -> None:
+        try:
+            tools = await _load_tools_off_loop(client)
+        except Exception:
+            # Same trade `tools_for()` makes: one dead vendor must not stop the
+            # others from being resolved.
+            logger.warning("failed to warm an MCP client, it will resolve no tools", exc_info=True)
+            return
+        logger.info("warmed an MCP client: %d tool(s)", len(tools))
+
+    await asyncio.gather(*(warm(client) for client in clients))
 
 
 def _read_servers(source: str | Path | dict[str, Any]) -> dict[str, Any]:
@@ -349,12 +426,20 @@ def server_count(family: ToolFamily) -> int:
 def mcp_clients() -> list[MCPClient]:
     """Every MCP client this process built, deduplicated.
 
-    For process-lifetime lifecycle work in an entry point. `MCPClient` is a
-    Strands `ToolProvider` with ref-counted consumers, so once a real subagent
-    passes one to `Agent(tools=[...])`, that agent's `cleanup()` releases its
-    consumer -- and if the count hits zero the connection tears down. When that
-    lands (Aug-27), hold a process-level consumer across the run so the session
-    spans every mission instead of reconnecting per mission.
+    For process-lifetime lifecycle work in an entry point: `load_mcp_servers()`
+    claims `PROCESS_CONSUMER` on each of these, and `warm_mcp_clients()`
+    resolves each one's tools before any dispatch can.
+
+    This docstring used to say that a subagent's `Agent.cleanup()` releases a
+    consumer and tears the connection down under the next mission, and that
+    holding a process-level consumer was the fix. **That was wrong**, and it is
+    recorded here because it is a plausible story that costs an afternoon: the
+    SDK calls `add_consumer` from exactly one place
+    (`strands/tools/registry.py:133`, the `isinstance(tool, ToolProvider)`
+    branch of `ToolRegistry.process_tools`), and `tools_for()` passes `Agent`
+    the resolved `MCPAgentTool`s rather than the provider, so no consumer is
+    ever taken and none is ever released. The real failure was a start-up race
+    between concurrent dispatches -- see `warm_mcp_clients`.
     """
     seen: dict[int, MCPClient] = {}
     for clients in _clients_by_family.values():
@@ -403,5 +488,15 @@ async def _load_tools_off_loop(client: MCPClient) -> Sequence[Any]:
     The coroutine is created here and driven by `asyncio.run` in a worker thread.
     Safe because nothing in `load_tools()` actually suspends, so it has no
     affinity to the loop it was created on.
+
+    **Serialised per client**, because sending it to a thread is exactly what
+    lets two callers into `load_tools()` at once, and its start-up check is not
+    atomic (see `warm_mcp_clients` for the mechanism and the run it broke).
+    `warm_mcp_clients()` is what keeps this off the hot path -- once a client
+    has resolved, every later call returns its cached list and the lock is
+    uncontended. The lock is what makes the property hold anyway for a caller
+    that never warmed, which is how this failed the first time.
     """
-    return await asyncio.to_thread(asyncio.run, client.load_tools())
+    lock = _resolve_locks.setdefault(id(client), asyncio.Lock())
+    async with lock:
+        return await asyncio.to_thread(asyncio.run, client.load_tools())

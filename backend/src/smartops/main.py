@@ -43,7 +43,7 @@ from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_
 from smartops.domains import ALL_FAMILIES
 from smartops.subagents import domain_runner
 from smartops.telemetry import configure_telemetry
-from smartops.tools.registry import load_mcp_servers, mcp_clients
+from smartops.tools.registry import load_mcp_servers, mcp_clients, warm_mcp_clients
 
 _ENTITY_KINDS = get_args(EntityKind)
 
@@ -424,11 +424,14 @@ async def _run(argv: list[str] | None = None) -> int:
         # A malformed config is a deployment error, distinct from an absent one.
         print(f"error: could not load MCP config: {exc}", file=sys.stderr)
         return 2
+    # Resolve every client's tools now, so two concurrent dispatches in one
+    # Broker turn cannot race each other's connection start-up.
+    await warm_mcp_clients()
     if args.verbose:
         # Which file supplied the settings is the first thing you want when a
         # credential "isn't being picked up".
         print(f"env file:    {env_file or '(none found)'}")
-        print(f"mcp servers: {len(mcp_clients())} connected")
+        print(f"mcp servers: {len(mcp_clients())} built")
 
     families = _parse_families(args.families)
 

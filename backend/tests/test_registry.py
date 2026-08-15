@@ -1,5 +1,8 @@
+import asyncio
 import dataclasses
 import json
+import threading
+from typing import Any
 
 import pytest
 import smartops.tools.registry as registry_module
@@ -8,6 +11,7 @@ from smartops.tools.registry import (
     load_mcp_servers,
     mcp_clients,
     tools_for,
+    warm_mcp_clients,
 )
 
 
@@ -94,6 +98,168 @@ class TestToolsFor:
 
         assert await tools_for("siem") == ["splunk_search"]
         assert await tools_for("edr") == []
+
+
+class RacyMCPClient:
+    """`FakeMCPClient`, but modelling `load_tools()`'s non-atomic start.
+
+    The real client checks `_tool_provider_started` and only *then* calls
+    `start()` (`mcp_client.py:405-409`), with a network handshake in between. A
+    second caller arriving in that window calls `start()` on an already-starting
+    client and gets `MCPClientInitializationError("the client session is
+    currently running")` (`mcp_client.py:334-336`); `continue_on_error` swallows
+    it into a sticky `_connection_failed` and an empty tool list
+    (`mcp_client.py:411-417`).
+
+    That is the shape of the failure observed in
+    `.smartops/runs/botsv3_coinhive/20260815T124556942`, where one of two
+    concurrent siem dispatches came back with zero tools while the other ran 11
+    queries. `FakeMCPClient` cannot express it: its `load_tools()` has no window
+    to arrive in.
+
+    Deterministic rather than timing-dependent: the first caller in holds the
+    handshake open until either a second caller has had its chance (and set
+    `_release`) or `window` elapses, so a lone caller costs `window` once and a
+    racing pair always interleaves.
+    """
+
+    def __init__(self, tools, *, window: float = 0.1):
+        self._tools = tools
+        self._window = window
+        self._lock = threading.Lock()
+        self._release = threading.Event()
+        self._in_flight = False
+        self._started = False
+        self._failed = False
+        self.connections = 0
+
+    async def load_tools(self):
+        with self._lock:
+            if self._failed:
+                return []
+            if self._started:
+                return self._tools
+            if self._in_flight:
+                # Lost the race to `start()`. continue_on_error turns the raise
+                # into an empty list, and the failure is sticky.
+                self._failed = True
+                self._release.set()
+                return []
+            self._in_flight = True
+            self.connections += 1
+
+        self._release.wait(timeout=self._window)
+
+        with self._lock:
+            self._started = True
+            self._in_flight = False
+            return self._tools
+
+
+class TestConcurrentResolutionDoesNotRaceTheConnection:
+    """One Broker turn can emit two same-family dispatches, and Strands runs them
+    concurrently under its default `ConcurrentToolExecutor`. Both must get tools.
+    """
+
+    async def test_two_concurrent_resolutions_both_receive_the_tools(self, monkeypatch):
+        client = RacyMCPClient(tools=["splunk_search"])
+        _install_clients(monkeypatch, siem=[client])
+        await warm_mcp_clients()
+
+        first, second = await asyncio.gather(tools_for("siem"), tools_for("siem"))
+
+        assert first == ["splunk_search"]
+        assert second == ["splunk_search"]
+
+    async def test_warming_connects_once_and_dispatch_connects_never(self, monkeypatch):
+        client = RacyMCPClient(tools=["splunk_search"])
+        _install_clients(monkeypatch, siem=[client])
+
+        await warm_mcp_clients()
+        assert client.connections == 1
+
+        await asyncio.gather(tools_for("siem"), tools_for("siem"))
+        assert client.connections == 1
+
+    async def test_a_server_that_fails_to_warm_still_resolves_empty(self, monkeypatch):
+        # The honest-refusal path has to survive warming: a dead vendor yields
+        # no tools, and the caller reports REJECTED rather than crashing.
+        _install_clients(monkeypatch, siem=[FakeMCPClient(tools=["x"], fails=True)])
+
+        await warm_mcp_clients()
+
+        assert await tools_for("siem") == []
+
+    async def test_warming_a_raising_server_does_not_abort_its_siblings(self, monkeypatch):
+        class Exploding:
+            connections = 0
+
+            async def load_tools(self):
+                raise RuntimeError("connection refused")
+
+        healthy = FakeMCPClient(tools=["splunk_search"])
+        _install_clients(monkeypatch, siem=[Exploding()], edr=[healthy])
+
+        await warm_mcp_clients()
+
+        assert healthy.load_calls == 1
+
+    async def test_warming_with_no_clients_is_a_supported_state(self):
+        await warm_mcp_clients()
+
+    async def test_resolution_is_safe_even_when_nobody_warmed(self, monkeypatch):
+        # Warming keeps the lock uncontended; the lock is what makes the
+        # property hold for a caller that skipped it. Forgetting to warm is how
+        # this failed the first time, so it must not be the only defence.
+        client = RacyMCPClient(tools=["splunk_search"])
+        _install_clients(monkeypatch, siem=[client])
+
+        first, second = await asyncio.gather(tools_for("siem"), tools_for("siem"))
+
+        assert first == ["splunk_search"]
+        assert second == ["splunk_search"]
+        assert client.connections == 1
+
+
+class TestEveryClientHoldsAProcessConsumer:
+    """`MCPClient` is a `ToolProvider` whose connection is torn down when its
+    consumer count reaches zero (`mcp_client.py:476-484`). Nothing registers one
+    today, because `tools_for()` hands `Agent` resolved `MCPAgentTool`s rather
+    than the provider. Holding one at process level is not what fixes the race,
+    but it closes that path before someone passes a client in directly.
+    """
+
+    def test_a_built_client_is_claimed_for_the_process(self, monkeypatch):
+        claimed: list[Any] = []
+
+        class Claimable:
+            def add_consumer(self, consumer_id, **kwargs):
+                claimed.append(consumer_id)
+
+        monkeypatch.setattr(registry_module, "MCPClient", _StubMCPClientFactory([Claimable()]))
+
+        load_mcp_servers({"mcpServers": {"splunk": {"url": "https://example.invalid"}}})
+
+        assert len(claimed) == 1
+
+    def test_a_client_without_the_provider_api_is_not_fatal(self, monkeypatch):
+        # Keeps the suite's own FakeMCPClient (and any older client) usable.
+        monkeypatch.setattr(
+            registry_module, "MCPClient", _StubMCPClientFactory([FakeMCPClient(tools=["x"])])
+        )
+
+        load_mcp_servers({"mcpServers": {"splunk": {"url": "https://example.invalid"}}})
+
+
+class _StubMCPClientFactory:
+    """Stands in for the `MCPClient` class, returning prepared clients."""
+
+    def __init__(self, clients):
+        self._clients = clients
+
+    def load_servers(self, config):
+        servers = (config or {}).get("mcpServers") or {}
+        return list(self._clients)[: len(servers)]
 
 
 class TestLoadMcpServers:
