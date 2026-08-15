@@ -89,6 +89,82 @@ class TestEvidenceLoaders:
         assert loaded[0].id == "t2:0"
 
 
+class TestLoadingARunTheBrokerActuallyWrote:
+    """`save_run_artifacts()` writes `<base>/<task_id>/<stamp>/`, not
+    `<base>/<run_id>/`.
+
+    The timestamped layout landed in `cfeae8a`/`2ed11e7` so two runs of one case
+    would stop overwriting each other, and this loader was never moved with it --
+    so every call for a real case raised `FileNotFoundError`, having appended
+    `evidence.json` to a directory that holds only timestamp subdirectories and
+    `latest.txt`.
+    """
+
+    @staticmethod
+    def _write_run(base, task_id, stamp, evidence_id):
+        run_dir = base / task_id / stamp
+        run_dir.mkdir(parents=True)
+        (run_dir / "evidence.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": evidence_id,
+                        "tool_family": "siem",
+                        "raw": {"tool": "splunk_search", "query": "index=botsv3", "result": {}},
+                        "collected_at": "2026-08-15T15:00:00Z",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return run_dir
+
+    def test_a_case_id_loads_the_run_latest_txt_names(self, tmp_path):
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T112844145", "old:0")
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T161337647", "new:0")
+        (tmp_path / "botsv3_coinhive" / "latest.txt").write_text(
+            "20260815T161337647", encoding="utf-8"
+        )
+
+        loaded = load_evidence_from_run("botsv3_coinhive", base_dir=tmp_path)
+
+        assert [e.id for e in loaded] == ["new:0"]
+
+    def test_without_latest_txt_the_newest_stamp_wins(self, tmp_path):
+        # The stamps sort lexicographically because they are zero-padded
+        # `%Y%m%dT%H%M%S%f`, so this needs no parsing.
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T112844145", "old:0")
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T161337647", "new:0")
+
+        loaded = load_evidence_from_run("botsv3_coinhive", base_dir=tmp_path)
+
+        assert [e.id for e in loaded] == ["new:0"]
+
+    def test_an_explicit_stamp_loads_exactly_that_run(self, tmp_path):
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T112844145", "old:0")
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T161337647", "new:0")
+
+        loaded = load_evidence_from_run("botsv3_coinhive/20260815T112844145", base_dir=tmp_path)
+
+        assert [e.id for e in loaded] == ["old:0"]
+
+    def test_the_runs_dir_env_var_is_honoured(self, tmp_path, monkeypatch):
+        # The writer defaults `base_dir` from SMARTOPS_RUNS_DIR; a reader that
+        # hardcodes `.smartops/runs` looks in a different tree entirely.
+        self._write_run(tmp_path, "botsv3_coinhive", "20260815T161337647", "new:0")
+        monkeypatch.setenv("SMARTOPS_RUNS_DIR", str(tmp_path))
+
+        loaded = load_evidence_from_run("botsv3_coinhive")
+
+        assert [e.id for e in loaded] == ["new:0"]
+
+    def test_a_case_with_no_runs_says_so(self, tmp_path):
+        (tmp_path / "botsv3_coinhive").mkdir(parents=True)
+
+        with pytest.raises(FileNotFoundError, match="botsv3_coinhive"):
+            load_evidence_from_run("botsv3_coinhive", base_dir=tmp_path)
+
+
 class TestReplayToolsetMatching:
     def test_exact_query_match(self, sample_evidence_items):
         replayer = ReplayToolset(sample_evidence_items)

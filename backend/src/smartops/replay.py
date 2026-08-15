@@ -1,7 +1,8 @@
 """Offline Replay Harness for SmartOps SOC App.
 
-Replays recorded tool calls and evidence logs (from `.smartops/runs/<run_id>/evidence.json`
-or `_EvidenceCollector`) offline without live network or Splunk MCP calls.
+Replays recorded tool calls and evidence logs (from
+`.smartops/runs/<task_id>/<stamp>/evidence.json` or `_EvidenceCollector`) offline
+without live network or Splunk MCP calls.
 
 Enables zero-cost, zero-latency prompt tuning, offline evaluation, and regression testing.
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,7 +20,7 @@ from typing import Any
 from strands import tool
 
 from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily
-from smartops.broker import SubagentRunner
+from smartops.broker import DEFAULT_RUNS_DIR, RUNS_DIR_ENV_VAR, SubagentRunner
 from smartops.budget import Budget, ModelChoice
 from smartops.subagents import (
     DEFAULT_MAX_OUTPUT_TOKENS as _SUBAGENT_OUTPUT_TOKENS,
@@ -48,17 +50,52 @@ def load_evidence_from_file(path: Path | str) -> list[Evidence]:
 
 
 def load_evidence_from_run(
-    run_id_or_path: Path | str, base_dir: Path | str = ".smartops/runs"
+    run_id_or_path: Path | str, base_dir: Path | str | None = None
 ) -> list[Evidence]:
-    """Load evidence records from a run directory `.smartops/runs/<run_id>/evidence.json`."""
+    """Load evidence for one run, given a case id, a `<case>/<stamp>` pair, or a path.
+
+    `save_run_artifacts()` writes `<base>/<task_id>/<stamp>/evidence.json` and a
+    sibling `latest.txt` naming the newest stamp -- one directory per run, so
+    that a second run of a case stops overwriting the first. A bare case id
+    therefore names a directory of runs, not a run, and is resolved here:
+    `latest.txt` if it is there, otherwise the highest stamp, which sorts
+    correctly because the stamps are zero-padded `%Y%m%dT%H%M%S%f`.
+
+    `base_dir` defaults through `$SMARTOPS_RUNS_DIR` exactly as the writer does.
+    Hardcoding `.smartops/runs` here meant that with that variable set, the
+    reader and the writer looked in different trees.
+    """
+    if base_dir is None:
+        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+
     path = Path(run_id_or_path)
     if not path.is_absolute() and not path.exists():
         path = Path(base_dir) / run_id_or_path
+
+    if path.is_dir() and not (path / "evidence.json").is_file():
+        path = _newest_run_in(path)
 
     if path.is_dir():
         path = path / "evidence.json"
 
     return load_evidence_from_file(path)
+
+
+def _newest_run_in(case_dir: Path) -> Path:
+    """The most recent run directory under a case directory."""
+    latest = case_dir / "latest.txt"
+    if latest.is_file():
+        stamp = latest.read_text(encoding="utf-8").strip()
+        if stamp and (case_dir / stamp).is_dir():
+            return case_dir / stamp
+
+    stamps = sorted(d for d in case_dir.iterdir() if d.is_dir())
+    if not stamps:
+        raise FileNotFoundError(
+            f"No runs recorded under {case_dir}: it holds no run directory. "
+            "Run the case first, or name a run directory directly."
+        )
+    return stamps[-1]
 
 
 def _normalize_query(query: str | None) -> str:
