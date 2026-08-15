@@ -1,5 +1,6 @@
 """Tests for the domain subagents that actually execute missions."""
 
+import types
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -445,6 +446,54 @@ class TestStructuredOutputModel:
         assert "domain specialist" in blocks[0]["text"]
 
 
+class TestABlockedQueryReachesTheResult:
+    """The guard `investigate()` registers must be the guard it reads back.
+
+    `bench.check_index_scoping()` can only fail if a cancelled query survives to
+    `SubtaskResult.blocked_queries`, and the only thing keeping that true is that
+    `_guard_for()` is called once and the same object is both registered as a
+    hook and drained afterwards. Rebuilding it in either place would silently
+    empty the list and put the metric back to reporting 100% always.
+    """
+
+    @staticmethod
+    def _invoke_blocking(spl):
+        async def fake(*args, **kwargs):
+            guard = kwargs["guard"]
+            event = types.SimpleNamespace(
+                tool_use={"name": "splunk_search", "input": {"query": spl}},
+                cancel_tool=False,
+            )
+            guard._check(event)
+            return _Result(None)
+
+        return fake
+
+    async def test_the_cancelled_query_is_reported(self, monkeypatch):
+        monkeypatch.setattr(
+            subagents, "_build_agent_and_invoke", self._invoke_blocking("search index=* coinhive")
+        )
+
+        result = await investigate(
+            mission("siem"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"]
+        )
+
+        assert result.blocked_queries == ["search index=* coinhive"]
+
+    async def test_a_family_with_no_guard_reports_nothing_blocked(self, monkeypatch):
+        async def fake(*args, **kwargs):
+            assert kwargs["guard"] is None
+            return _Result(None)
+
+        monkeypatch.setattr(subagents, "_build_agent_and_invoke", fake)
+
+        result = await investigate(
+            mission("vt"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"]
+        )
+
+        assert result.blocked_queries == []
+
+
 class TestNoStructuredAnswerStillReportsItsQueries:
     """A run that loses its structured answer must still report what it ran.
 
@@ -640,6 +689,134 @@ class TestTheAnswerSurvivesTheTurnCap:
 
         # `Limits` is a TypedDict (`strands/types/agent.py:17`), not an object.
         assert calls[1]["limits"]["turns"] == 1
+
+    async def test_the_first_loops_stop_reason_is_what_gets_reported(self, monkeypatch):
+        # The recovery call has its own `turns=1` cap, so it reports
+        # `limit_turns` almost every time it fails. Letting that overwrite the
+        # first call's reason destroys the only signal distinguishing "ran out of
+        # turns" from "ran out of output tokens" from "the model never answered"
+        # -- which is precisely what this branch logs in order to be diagnosable.
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                self._calls = 0
+
+            async def invoke_async(self, prompt, **kwargs):
+                self._calls += 1
+                out = _Result(None)
+                out.stop_reason = (
+                    "limit_output_tokens" if self._calls == 1 else "limit_turns"
+                )
+                return out
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        result = await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        assert result.stop_reason == "limit_output_tokens"
+
+    async def test_the_recovery_call_is_bounded_in_output_tokens(self, monkeypatch):
+        # It was handed a second full `max_output_tokens`, none of which the
+        # reservation had estimated.
+        calls = []
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            async def invoke_async(self, prompt, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    capped = _Result(None)
+                    capped.stop_reason = "limit_turns"
+                    return capped
+                return _Result("recovered-answer")
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=12000,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        assert calls[0]["limits"]["output_tokens"] == 12000
+        assert calls[1]["limits"]["output_tokens"] == subagents.RECOVERY_OUTPUT_TOKENS
+        assert subagents.RECOVERY_OUTPUT_TOKENS < 12000
+
+    async def test_a_small_output_cap_is_not_raised_by_the_recovery_call(
+        self, monkeypatch
+    ):
+        calls = []
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            async def invoke_async(self, prompt, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    capped = _Result(None)
+                    capped.stop_reason = "limit_turns"
+                    return capped
+                return _Result("recovered-answer")
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        assert calls[1]["limits"]["output_tokens"] == 100
+
+    async def test_the_reservation_covers_the_recovery_call(self, monkeypatch):
+        # `settle()` debits the shortfall unconditionally, so a reservation that
+        # never estimated the recovery call can drive the budget negative and
+        # start refusing unrelated later families with BUDGET_REFUSAL_ERROR.
+        reserved = {}
+        budget = Budget.from_usd(1.0)
+        original = budget.reserve
+
+        async def recording_reserve(**kwargs):
+            reserved.update(kwargs)
+            return await original(**kwargs)
+
+        monkeypatch.setattr(budget, "reserve", recording_reserve)
+
+        async def fake(*args, **kwargs):
+            return _Result(None)
+
+        monkeypatch.setattr(subagents, "_build_agent_and_invoke", fake)
+
+        await investigate(
+            mission("siem"),
+            model=MODEL,
+            budget=budget,
+            tools=["t"],
+            max_output_tokens=12000,
+        )
+
+        assert reserved["max_output_tokens"] == 12000 + subagents.RECOVERY_OUTPUT_TOKENS
 
     async def test_a_loop_that_answered_is_not_billed_for_a_second_call(
         self, monkeypatch

@@ -25,6 +25,11 @@ _LOOKS_LIKE_SEARCH = re.compile(
     re.IGNORECASE,
 )
 
+# A CIM-compliant predicate scopes a search without a literal `index=`, by
+# selecting a data model Splunk maps to its own indexes. Module-level like every
+# other pattern here: this one is evaluated once per string per tool call.
+_CIM_PREDICATES = re.compile(r"\b(sourcetype|datamodel|tag|eventtype)\s*=", re.IGNORECASE)
+
 
 def escape_untrusted(text: str) -> str:
     """Make attacker-influenced prose unable to carry markup into a prompt.
@@ -69,9 +74,25 @@ def fenced(tag: str, body: str) -> str:
 class IndexScopeGuard:
     """Rejects a domain's queries that target an index outside its allowlist.
 
-    Registered per subagent from `DomainSpec.index_allowlist`. The rule is the one
-    the design spec settled on: reject `index=*`, and require a literal
-    allowlisted `index=` on anything that is a search.
+    Registered per subagent from `DomainSpec.index_allowlist`. The rule, on
+    anything that looks like a search:
+
+    1. If the search names any index, every one of them must be in the
+       allowlist. `index=*` is never allowed.
+    2. Otherwise, a CIM-compliant predicate (`sourcetype=`, `datamodel=`,
+       `tag=`, `eventtype=`) is accepted in place of a literal index, because
+       that is how the siem prompt tells the model to write its SPL and it
+       scopes the search by data model rather than by index name.
+    3. A search with neither is rejected as unconstrained.
+
+    Rule 2 is a relaxation of the spec's original "require a literal allowlisted
+    `index=`", and it is a real widening: such a search runs against whatever
+    indexes the Splunk token can read. That is the deployment control below
+    doing the work, not this hook.
+
+    Queries cancelled under any of these are recorded on `blocked`, because a
+    cancelled call produces an error tool result and `_EvidenceCollector` drops
+    those -- leaving no record anywhere that the model attempted an escape.
 
     **This is a correctness guardrail, not a security control, and the difference
     matters.** Deciding "this SPL targets only allowed indexes" by inspecting the
@@ -92,6 +113,8 @@ class IndexScopeGuard:
         self._family = family
         self._allowlist = allowlist
         self._allowed = frozenset(name.strip().lower() for name in allowlist)
+        self.blocked: list[str] = []
+        """Every query string this guard cancelled, in the order it cancelled them."""
 
     def register_hooks(self, registry: Any, **kwargs: Any) -> None:
         from strands.hooks import BeforeToolCallEvent
@@ -114,6 +137,7 @@ class IndexScopeGuard:
                 name,
                 reason,
             )
+            self.blocked.append(value)
             event.cancel_tool = reason
             return
 
@@ -137,9 +161,8 @@ class IndexScopeGuard:
                 )
             return None
 
-        # If no index predicate was provided, check if the search relies on a CIM predicate
-        # (sourcetype=, datamodel=, tag=, eventtype=). If so, allow it to hit Splunk's default/CIM indexes.
-        _CIM_PREDICATES = re.compile(r"\b(sourcetype|datamodel|tag|eventtype)\s*=", re.IGNORECASE)
+        # No index predicate: a CIM predicate scopes it instead. See rule 2 in the
+        # class docstring, including what that concedes.
         if _CIM_PREDICATES.search(value):
             return None
 

@@ -69,6 +69,15 @@ DEFAULT_TURNS = 14
 # costs nothing when a run is short.
 DEFAULT_MAX_OUTPUT_TOKENS = 12000
 
+RECOVERY_OUTPUT_TOKENS = 4000
+"""Output ceiling for the one bounded "report what you have" call.
+
+Separate from `DEFAULT_MAX_OUTPUT_TOKENS` because the recovery call does no
+retrieval: it restates evidence already collected as the family answer model, so
+it needs room for `queries_run` and an assessment and nothing else. It is also
+what `investigate()` adds to its reservation, so the budget covers the worst case
+up front rather than discovering it at settle time."""
+
 # Same generous input floor the Broker uses, for the same reason: a reservation
 # is a ceiling and `settle()` credits back the difference, so over-estimating is
 # free while under-estimating disables the gate.
@@ -413,7 +422,12 @@ async def investigate(
         role=family,
         model=model.pricing_key,
         task_id=mission.task_id,
-        max_output_tokens=max_output_tokens,
+        # Covers the bounded recovery call as well, because a loop that ends
+        # without an answer gets one and `settle()` debits whatever was actually
+        # spent regardless of what was reserved. Over-reserving is corrected at
+        # settle; under-reserving is how the shared budget goes negative and
+        # starts refusing families that had nothing to do with it.
+        max_output_tokens=max_output_tokens + RECOVERY_OUTPUT_TOKENS,
         estimated_input_tokens=_estimated_input_tokens(
             prompt, turns=turns, tool_count=len(tools)
         ),
@@ -435,6 +449,7 @@ async def investigate(
         )
 
     collector = _EvidenceCollector()
+    guard = _guard_for(family)
     try:
         result = await _build_agent_and_invoke(
             prompt,
@@ -444,6 +459,7 @@ async def investigate(
             turns=turns,
             max_output_tokens=max_output_tokens,
             collector=collector,
+            guard=guard,
         )
     except BaseException:
         # Release, not settle: settle() appends a ledger entry, which would
@@ -506,6 +522,7 @@ async def investigate(
             findings=project(family, collector.calls, queries_run),
             error=None if evidence else "subagent returned no structured output and no evidence",
             queries_run=queries_run,
+            blocked_queries=list(guard.blocked) if guard is not None else [],
             citation_ids=[e.id for e in evidence],
             evidence=evidence,
         )
@@ -525,24 +542,32 @@ async def investigate(
         # from what the tools returned. Neither half can forge the other.
         findings=project(family, collector.calls, answer.queries_run) or (project_vt(collector.calls) if family == "vt" else None),
     )
-    # `from_answer` cites nothing, because only this layer knows the evidence ids.
-    return result.model_copy(update={"citation_ids": [e.id for e in evidence]})
+    # `from_answer` cites nothing, because only this layer knows the evidence ids;
+    # nor does it know what the guard refused, which is not the model's to report.
+    return result.model_copy(
+        update={
+            "citation_ids": [e.id for e in evidence],
+            "blocked_queries": list(guard.blocked) if guard is not None else [],
+        }
+    )
 
 
-def _hooks_for(family: str, collector: _EvidenceCollector) -> list:
-    """The hook providers a subagent of this family runs with.
+def _guard_for(family: str) -> IndexScopeGuard | None:
+    """The index guard for this family, or None where the concept does not apply.
 
-    `IndexScopeGuard` is only attached where the domain declares an allowlist.
-    A domain with `index_allowlist=None` has no index concept -- attaching a
-    guard with nothing to allow would reject every search it ever makes.
+    Built here rather than inside `_hooks_for` so the caller keeps a reference:
+    the guard accumulates the queries it cancelled, and those have to reach
+    `SubtaskResult.blocked_queries`. A domain with `index_allowlist=None` has no
+    index concept -- a guard with nothing to allow would reject every search it
+    ever makes.
     """
-    hooks: list = [collector]
-
     allowlist = DOMAINS[family].index_allowlist
-    if allowlist is not None:
-        hooks.append(IndexScopeGuard(family, allowlist))
+    return IndexScopeGuard(family, allowlist) if allowlist is not None else None
 
-    return hooks
+
+def _hooks_for(family: str, collector: _EvidenceCollector, guard: IndexScopeGuard | None) -> list:
+    """The hook providers a subagent of this family runs with."""
+    return [collector] if guard is None else [collector, guard]
 
 
 async def _build_agent_and_invoke(
@@ -554,6 +579,7 @@ async def _build_agent_and_invoke(
     turns: int,
     max_output_tokens: int,
     collector: _EvidenceCollector,
+    guard: IndexScopeGuard | None = None,
 ) -> Any:
     """Construct the subagent's `Agent` and run it once.
 
@@ -583,7 +609,7 @@ async def _build_agent_and_invoke(
         system_prompt=model.system_prompt_blocks(_system_prompt_for(family, turns=turns)),
         structured_output_model=answer_model,
         callback_handler=None,
-        hooks=_hooks_for(family, collector),
+        hooks=_hooks_for(family, collector, guard),
         # Stamps task_id/hypothesis_id/tool_family onto every span this agent
         # produces, so a trace correlates back to the investigation with no
         # separate correlation system. Without it, a subagent's model and tool
@@ -597,6 +623,8 @@ async def _build_agent_and_invoke(
     )
     if result.structured_output is not None:
         return result
+
+    first_stop_reason = getattr(result, "stop_reason", None)
 
     # The loop ended with no answer: `limit_turns`, `limit_output_tokens`, or a
     # model that simply did not call its answer tool. Whichever it was, the tool
@@ -620,10 +648,27 @@ async def _build_agent_and_invoke(
     # (`strands/event_loop/event_loop.py:384` passes the agent-level accumulator),
     # so the returned result still bills both calls and `_usage_of()` needs no
     # change.
-    return await agent.invoke_async(
+    # Bounded in output too, not just in turns. It was handed a second full
+    # `max_output_tokens`, none of which `investigate()`'s reservation had
+    # estimated -- and `settle()` debits the shortfall unconditionally, so a run
+    # that turn-capped on every family could drive the shared budget negative and
+    # start refusing *unrelated* later families with `BUDGET_REFUSAL_ERROR`. A
+    # cost overrun surfacing as a spurious domain failure is the worst way for
+    # this to be discovered. Reporting an answer over evidence already gathered
+    # needs a fraction of an exploration loop's output.
+    recovered = await agent.invoke_async(
         _REPORT_WHAT_YOU_HAVE,
-        limits=Limits(turns=1, output_tokens=max_output_tokens),
+        limits=Limits(turns=1, output_tokens=min(RECOVERY_OUTPUT_TOKENS, max_output_tokens)),
     )
+
+    # Report why the *first* loop failed. The recovery call carries its own
+    # `turns=1` cap, so when it fails too it reports `limit_turns` almost every
+    # time -- overwriting the distinction between "ran out of turns", "ran out of
+    # output tokens" and "the model never called its answer tool", which is the
+    # whole reason `investigate()` logs a stop reason on this path.
+    if first_stop_reason is not None and hasattr(recovered, "stop_reason"):
+        recovered.stop_reason = first_stop_reason
+    return recovered
 
 
 def _usage_of(result: Any) -> Usage:

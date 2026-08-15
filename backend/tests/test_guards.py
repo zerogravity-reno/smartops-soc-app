@@ -149,25 +149,65 @@ class TestDisallowedQueriesAreCancelled:
         assert "reissue" in reason.lower()
 
 
-class TestRegistration:
-    def test_siem_gets_a_guard(self):
-        hooks = subagents._hooks_for("siem", subagents._EvidenceCollector())
+class TestABlockedQueryIsRecorded:
+    """A cancelled query is the only evidence that the model tried to escape its
+    allowlist, and nothing downstream could see it.
 
-        assert any(isinstance(h, IndexScopeGuard) for h in hooks)
+    `_EvidenceCollector` drops failed calls by design, so a guard-cancelled
+    query left no trace at all: `bench.check_index_scoping()` scored only
+    `queries_run`, i.e. only queries that had already passed this guard, and so
+    could not fail. Recording them here is what lets the metric disagree with
+    the guard.
+    """
+
+    def test_a_cancelled_query_is_kept(self):
+        guard = IndexScopeGuard("siem", ALLOWLIST)
+        event = _BeforeEvent("splunk_run_query", {"query": "search index=* coinhive"})
+
+        guard._check(event)
+
+        assert guard.blocked == ["search index=* coinhive"]
+
+    def test_a_permitted_query_is_not_kept(self):
+        guard = IndexScopeGuard("siem", ALLOWLIST)
+        event = _BeforeEvent("splunk_run_query", {"query": "search index=botsv3 coinhive"})
+
+        guard._check(event)
+
+        assert guard.blocked == []
+
+    def test_every_block_accumulates(self):
+        guard = IndexScopeGuard("siem", ALLOWLIST)
+        for spl in ("search index=* a", "search index=secret b"):
+            guard._check(_BeforeEvent("splunk_run_query", {"query": spl}))
+
+        assert guard.blocked == ["search index=* a", "search index=secret b"]
+
+
+class TestRegistration:
+    """Which family gets a guard is decided by `_guard_for`, and `_hooks_for`
+    registers whatever it made. They are separate so `investigate()` can keep a
+    reference to the guard and read back what it blocked."""
+
+    def _hooks(self, family):
+        return subagents._hooks_for(
+            family, subagents._EvidenceCollector(), subagents._guard_for(family)
+        )
+
+    def test_siem_gets_a_guard(self):
+        assert isinstance(subagents._guard_for("siem"), IndexScopeGuard)
+        assert any(isinstance(h, IndexScopeGuard) for h in self._hooks("siem"))
 
     def test_a_domain_without_an_allowlist_gets_none(self):
         """`index_allowlist=None` means the domain has no index concept. Attaching
         a guard with nothing to allow would reject every search it makes."""
         assert DOMAINS["vt"].index_allowlist is None
 
-        hooks = subagents._hooks_for("vt", subagents._EvidenceCollector())
-
-        assert not any(isinstance(h, IndexScopeGuard) for h in hooks)
+        assert subagents._guard_for("vt") is None
+        assert not any(isinstance(h, IndexScopeGuard) for h in self._hooks("vt"))
 
     def test_the_collector_is_still_registered_alongside(self):
-        hooks = subagents._hooks_for("siem", subagents._EvidenceCollector())
-
-        assert any(isinstance(h, subagents._EvidenceCollector) for h in hooks)
+        assert any(isinstance(h, subagents._EvidenceCollector) for h in self._hooks("siem"))
 
 
 class TestCancelledCallsAreNotEvidence:

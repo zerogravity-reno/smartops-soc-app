@@ -17,7 +17,7 @@ Collects per run:
 - Input / output tokens, and cache read/write tokens (`accumulated_usage`)
 - Model calls (ledger entries -- see `RunMetrics.model_calls`, which is NOT turns)
 - Queries run count
-- Index scoping correctness (`guards.IndexScopeGuard` / allowlist check)
+- Index scoping correctness (allowlist check, scored independently of the guard)
 - Findings completeness (row counts per category)
 - Routing correctness (`dispatched` vs expected families)
 - Failure mode (`stop_reason`)
@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import re
 import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
@@ -45,11 +46,10 @@ from contracts import AnalystTask, Entity, Scope, SubtaskResult, ToolFamily
 from smartops.broker import broker_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import spec_for
-from smartops.guards import IndexScopeGuard
 from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
 from smartops.subagents import domain_runner
-from smartops.tools.registry import load_mcp_servers
+from smartops.tools.registry import load_mcp_servers, warm_mcp_clients
 
 logger = logging.getLogger(__name__)
 
@@ -410,27 +410,64 @@ class BenchmarkReport(BaseModel):
         return "\n".join(lines)
 
 
-def check_index_scoping(results: list[SubtaskResult]) -> bool:
-    """Verify index scoping correctness across all subtask results.
+_WILDCARD_INDEX = re.compile(r"\bindex\s*=\s*[\"']?\*", re.IGNORECASE)
+_INDEX_TERM = re.compile(r"\bindex\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s()|,]+)", re.IGNORECASE)
+_CIM_PREDICATE = re.compile(r"\b(sourcetype|datamodel|tag|eventtype)\s*=", re.IGNORECASE)
 
-    Returns False if any query targets a disallowed index or fails IndexScopeGuard check.
+
+def _query_is_scoped(query: str, allowed: frozenset[str]) -> bool:
+    """Whether one query stayed inside its allowlist.
+
+    Scoped means: every index it names is allowlisted and none is a wildcard;
+    or it names no index and scopes itself with a CIM predicate instead.
+    """
+    if _WILDCARD_INDEX.search(query):
+        return False
+
+    named = [m.group(1).strip("\"'").lower() for m in _INDEX_TERM.finditer(query)]
+    if named:
+        return all(name in allowed for name in named)
+
+    return bool(_CIM_PREDICATE.search(query))
+
+
+def check_index_scoping(results: list[SubtaskResult]) -> bool:
+    """Whether every query a subagent *attempted* stayed inside its allowlist.
+
+    Two things about this are deliberate, because the previous version got both
+    wrong and reported 100% regardless.
+
+    **It scores attempts, not successes.** `queries_run` holds only queries that
+    already passed `IndexScopeGuard`; a query the guard cancelled produces an
+    error tool result, which `_EvidenceCollector` drops. Scoring `queries_run`
+    alone therefore measured a set the guard had already filtered, and could not
+    fail -- while its entire reason for existing is the 2026-08-11 run in which
+    every SPL was `index=*`. Now that a guard blocks those, `blocked_queries` is
+    what keeps the attempt visible, and it counts here.
+
+    **It does not consult the guard.** This used to call
+    `IndexScopeGuard._reject_reason` directly, which made the measurement a
+    restatement of the control rather than a check on it: relaxing the guard
+    moved the metric with it, silently. The rule below is implemented here so
+    the two can disagree, which is the only condition under which measuring is
+    worth anything.
     """
     for res in results:
-        if not res.queries_run:
+        attempted = [q.query for q in res.queries_run] + list(res.blocked_queries)
+        if not attempted:
             continue
+
         family = res.task_id.split(":")[1] if ":" in res.task_id else "siem"
         try:
-            spec = spec_for(family)  # type: ignore[arg-type]
-            allowlist = spec.index_allowlist
+            allowlist = spec_for(family).index_allowlist  # type: ignore[arg-type]
         except KeyError:
             allowlist = ("botsv3",)
+        if allowlist is None:
+            continue
 
-        if allowlist is not None:
-            guard = IndexScopeGuard(family, allowlist)
-            for q in res.queries_run:
-                reason = guard._reject_reason(q.query)
-                if reason is not None:
-                    return False
+        allowed = frozenset(name.strip().lower() for name in allowlist)
+        if not all(_query_is_scoped(query, allowed) for query in attempted):
+            return False
     return True
 
 
@@ -756,6 +793,9 @@ def _build_parser() -> argparse.ArgumentParser:
 async def _run(argv: list[str] | None = None) -> int:
     load_dotenv(find_dotenv(usecwd=True))
     load_mcp_servers()
+    # Before any case runs: a benchmark that raced its own connection would
+    # measure the failure, not the system.
+    await warm_mcp_clients()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

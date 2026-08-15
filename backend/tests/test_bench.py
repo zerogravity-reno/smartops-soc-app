@@ -107,6 +107,46 @@ class TestBenchMetricsCollection:
         )
         assert check_index_scoping([res]) is False
 
+    def test_a_blocked_wildcard_fails_the_metric(self):
+        # The whole point. `queries_run` holds only queries that already passed
+        # IndexScopeGuard, so scoring it alone could never catch the failure this
+        # metric exists for -- the 2026-08-11 run where every SPL was `index=*`.
+        # Now that a guard blocks those, the attempt has to remain visible.
+        res = SubtaskResult(
+            task_id="task:siem",
+            status=SubtaskStatus.OK,
+            queries_run=[QueryRun(query="index=botsv3 sourcetype=dns", category="dns_resolutions")],
+            blocked_queries=["search index=* coinhive"],
+        )
+        assert check_index_scoping([res]) is False
+
+    def test_a_run_with_nothing_blocked_still_passes(self):
+        res = SubtaskResult(
+            task_id="task:siem",
+            status=SubtaskStatus.OK,
+            queries_run=[QueryRun(query="sourcetype=stream:dns coinhive", category="dns_resolutions")],
+            blocked_queries=[],
+        )
+        assert check_index_scoping([res]) is True
+
+    def test_the_metric_does_not_ask_the_guard(self, monkeypatch):
+        # Independence, asserted directly: the metric used to be *defined* as
+        # `IndexScopeGuard._reject_reason`, so it could not disagree with the
+        # guard and a relaxation of the guard silently moved the measurement.
+        import smartops.guards as guards_module
+
+        def explode(self, value):  # pragma: no cover - must never be reached
+            raise AssertionError("check_index_scoping consulted the guard")
+
+        monkeypatch.setattr(guards_module.IndexScopeGuard, "_reject_reason", explode)
+
+        res = SubtaskResult(
+            task_id="task:siem",
+            status=SubtaskStatus.OK,
+            queries_run=[QueryRun(query="index=* sourcetype=dns", category="dns_resolutions")],
+        )
+        assert check_index_scoping([res]) is False
+
     def test_extract_findings_completeness(self):
         siem_findings = SiemFindings(
             dns_resolutions=[
