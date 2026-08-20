@@ -473,6 +473,11 @@ class Reservation:
     task_id: str | None
     model: str
     reserved_micro_usd: int
+    reserved_output_tokens: int = 0
+    """Output-token hold placed against the investigation-level ceiling, if one
+    is set. Mirrors `reserved_micro_usd`: `settle()` credits back the unused
+    portion, `release()` credits back all of it. Zero when no ceiling is
+    configured, in which case `Budget` never reads it."""
 
 
 class LedgerEntry(BaseModel):
@@ -493,20 +498,51 @@ class Budget:
     same instance, which is what makes `spend_by_role` meaningful.
     """
 
-    def __init__(self, total_micro_usd: int) -> None:
+    def __init__(
+        self,
+        total_micro_usd: int,
+        *,
+        max_output_tokens_total: int | None = None,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._remaining = total_micro_usd
+        self._output_remaining = max_output_tokens_total
         self._ledger: list[LedgerEntry] = []
 
     @classmethod
-    def from_usd(cls, dollars: float) -> Budget:
-        return cls(total_micro_usd=round(dollars * 1_000_000))
+    def from_usd(
+        cls,
+        dollars: float,
+        *,
+        max_output_tokens_total: int | None = None,
+    ) -> Budget:
+        return cls(
+            total_micro_usd=round(dollars * 1_000_000),
+            max_output_tokens_total=max_output_tokens_total,
+        )
 
     @property
     def remaining(self) -> int:
         """Micro-USD not yet reserved or spent. Read-only -- the only way
         to change it is through reserve()/settle()."""
         return self._remaining
+
+    @property
+    def output_tokens_remaining(self) -> int | None:
+        """Output tokens left under the investigation-level ceiling, or None
+        when no ceiling is configured.
+
+        Why a second dimension at all: the USD reservation is sized from an
+        *optimistic* input estimate (`_estimated_input_tokens` holds for ~8
+        expected turns, not the 25-turn worst case), so `settle()` debiting the
+        real cost can carry total spend past the USD ceiling when several long
+        subagents run at once. Output tokens are the dominant cost and are already
+        hard-capped per call by `Limits(output_tokens=...)`, so holding them
+        against a single investigation-wide ceiling turns "roughly $N" into a
+        genuine upper bound on the biggest cost driver, without tightening the
+        input-side hold that keeps parallel subagents from colliding.
+        """
+        return self._output_remaining
 
     @property
     def ledger(self) -> list[LedgerEntry]:
@@ -523,13 +559,33 @@ class Budget:
     ) -> Reservation | None:
         """Atomic check-and-decrement against a worst-case estimate.
         Returns None (leaving `remaining` untouched) if it can't be
-        covered -- the caller must stop immediately, not retry."""
+        covered -- the caller must stop immediately, not retry.
+
+        Two ceilings are checked, not one: the USD budget always, and the
+        output-token ceiling when configured. BOTH must fit before EITHER is
+        decremented -- decrementing USD and only then finding the output ceiling
+        blocks the call would leak the USD hold, so the checks precede the
+        decrements inside the single lock acquisition.
+        """
         amount = estimate_cost(model, max_output_tokens, estimated_input_tokens)
         async with self._lock:
             if amount > self._remaining:
                 return None
+            if (
+                self._output_remaining is not None
+                and max_output_tokens > self._output_remaining
+            ):
+                return None
             self._remaining -= amount
-        return Reservation(role=role, task_id=task_id, model=model, reserved_micro_usd=amount)
+            if self._output_remaining is not None:
+                self._output_remaining -= max_output_tokens
+        return Reservation(
+            role=role,
+            task_id=task_id,
+            model=model,
+            reserved_micro_usd=amount,
+            reserved_output_tokens=max_output_tokens,
+        )
 
     async def release(self, reservation: Reservation) -> None:
         """Void a reservation that never resulted in a call -- e.g. the model/tool
@@ -542,6 +598,8 @@ class Budget:
         """
         async with self._lock:
             self._remaining += reservation.reserved_micro_usd
+            if self._output_remaining is not None:
+                self._output_remaining += reservation.reserved_output_tokens
 
     async def settle(self, reservation: Reservation, usage: Usage) -> int:
         """Reconcile a reservation against what the call actually cost:
@@ -551,6 +609,16 @@ class Budget:
         actual = cost_of(reservation.model, usage)
         async with self._lock:
             self._remaining += reservation.reserved_micro_usd - actual
+            if self._output_remaining is not None:
+                # Credit back the over-hold: the reservation withheld the
+                # per-call output cap, the call produced fewer. Net effect over a
+                # full reserve+settle cycle is `-= usage.output_tokens`, so
+                # committed actuals plus outstanding holds can never exceed the
+                # ceiling -- a hard upper bound on total output regardless of how
+                # optimistic the USD-side input estimate was.
+                self._output_remaining += (
+                    reservation.reserved_output_tokens - usage.output_tokens
+                )
             self._ledger.append(
                 LedgerEntry(
                     role=reservation.role,

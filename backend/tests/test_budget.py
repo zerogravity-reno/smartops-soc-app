@@ -136,6 +136,118 @@ class TestReserveAndSettle:
         assert budget.remaining >= 0
 
 
+class TestOutputTokenCeiling:
+    """The investigation-level output-token ceiling -- the second reservation
+    dimension that makes total output a HARD cap.
+
+    The USD hold is sized from an optimistic input estimate (~8 expected turns,
+    not the 25-turn worst case), so `settle()` debiting real cost can carry total
+    spend past the USD ceiling when several long subagents overlap. Output tokens
+    are the dominant cost and already per-call capped, so a single ceiling over
+    them restores a genuine upper bound. These pin that it bites, that it credits
+    back correctly, and that it stays entirely dormant when unconfigured.
+    """
+
+    async def test_no_ceiling_by_default_leaves_output_unbounded(self):
+        budget = Budget(total_micro_usd=1_000_000)
+        assert budget.output_tokens_remaining is None
+
+        r = await budget.reserve(role="planner", model="claude-haiku-4-5", max_output_tokens=10_000)
+
+        assert r is not None
+        assert r.reserved_output_tokens == 10_000  # recorded, but not tracked
+        assert budget.output_tokens_remaining is None
+
+    async def test_reserve_deducts_the_output_hold(self):
+        budget = Budget(total_micro_usd=1_000_000, max_output_tokens_total=5_000)
+
+        await budget.reserve(role="subagent:siem", model="claude-haiku-4-5", max_output_tokens=1_000)
+
+        assert budget.output_tokens_remaining == 4_000
+
+    async def test_reserve_refuses_when_the_output_ceiling_is_hit_though_usd_is_ample(self):
+        # USD is effectively unlimited; only the output ceiling should bind.
+        budget = Budget(total_micro_usd=1_000_000_000, max_output_tokens_total=1_500)
+
+        first = await budget.reserve(role="subagent:siem", model="claude-haiku-4-5", max_output_tokens=1_000)
+        second = await budget.reserve(role="subagent:vt", model="claude-haiku-4-5", max_output_tokens=1_000)
+
+        assert first is not None
+        assert second is None  # 1_000 + 1_000 > 1_500
+
+    async def test_a_refused_reservation_leaves_both_ceilings_untouched(self):
+        # The atomicity guarantee: a call blocked by the output ceiling must not
+        # have quietly spent USD on the way to being refused.
+        budget = Budget(total_micro_usd=1_000_000, max_output_tokens_total=500)
+
+        r = await budget.reserve(role="planner", model="claude-opus-5", max_output_tokens=1_000)
+
+        assert r is None
+        assert budget.remaining == 1_000_000
+        assert budget.output_tokens_remaining == 500
+
+    async def test_a_refusal_on_usd_leaves_the_output_ceiling_untouched(self):
+        # The mirror case: USD binds first, output ceiling must not be debited.
+        budget = Budget(total_micro_usd=1, max_output_tokens_total=10_000)
+
+        r = await budget.reserve(role="planner", model="claude-opus-5", max_output_tokens=1_000)
+
+        assert r is None
+        assert budget.output_tokens_remaining == 10_000
+
+    async def test_settle_credits_back_the_unused_output_hold(self):
+        budget = Budget(total_micro_usd=1_000_000, max_output_tokens_total=5_000)
+        r = await budget.reserve(role="subagent:siem", model="claude-haiku-4-5", max_output_tokens=1_000)
+
+        await budget.settle(r, Usage(input_tokens=200, output_tokens=300))
+
+        # Held 1_000, produced 300 -> 700 credited back: 4_000 + 700.
+        assert budget.output_tokens_remaining == 4_700
+
+    async def test_release_credits_back_the_full_output_hold(self):
+        budget = Budget(total_micro_usd=1_000_000, max_output_tokens_total=5_000)
+        r = await budget.reserve(role="subagent:siem", model="claude-haiku-4-5", max_output_tokens=1_000)
+
+        await budget.release(r)
+
+        assert budget.output_tokens_remaining == 5_000
+
+    async def test_committed_output_can_never_exceed_the_ceiling(self):
+        # The invariant the whole dimension exists for: even when every call
+        # overshoots its USD estimate, settled output tokens plus outstanding
+        # holds stay under the ceiling. Ten calls of 600 against a 2_000 ceiling.
+        budget = Budget(total_micro_usd=1_000_000_000, max_output_tokens_total=2_000)
+
+        reservations = await asyncio.gather(
+            *[
+                budget.reserve(role="subagent:siem", model="claude-haiku-4-5", max_output_tokens=600)
+                for _ in range(10)
+            ]
+        )
+
+        granted = [r for r in reservations if r is not None]
+        assert len(granted) == 3  # 3 * 600 = 1_800 fits, a 4th would exceed 2_000
+        assert budget.output_tokens_remaining == 2_000 - 3 * 600
+        assert budget.output_tokens_remaining >= 0
+
+    async def test_the_usd_ledger_is_unaffected_by_the_output_dimension(self):
+        # The two ceilings are orthogonal: adding the output dimension must not
+        # change what the USD path records.
+        budget = Budget.from_usd(1.0, max_output_tokens_total=100_000)
+        r = await budget.reserve(role="planner", model="claude-opus-5", max_output_tokens=10, task_id="t1")
+
+        actual = await budget.settle(r, Usage(output_tokens=10))
+
+        assert actual == 10 * 25
+        assert budget.spend_by_role() == {"planner": 10 * 25}
+
+    def test_from_usd_carries_the_ceiling(self):
+        budget = Budget.from_usd(2.5, max_output_tokens_total=42_000)
+
+        assert budget.remaining == 2_500_000
+        assert budget.output_tokens_remaining == 42_000
+
+
 class TestLedger:
     async def test_spend_by_role_and_by_task(self):
         budget = Budget.from_usd(1.0)
