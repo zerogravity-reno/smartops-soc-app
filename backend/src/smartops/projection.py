@@ -106,6 +106,79 @@ def _rows_of(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _has_eventcode(q: str, code: int) -> bool:
+    """Whether `q` references Windows/Sysmon `EventCode=<code>` exactly.
+
+    A word boundary on the trailing digit is load-bearing: a bare substring test
+    (`"eventcode=1" in q`) also matches `eventcode=10`, `13`, `100`, ... so a
+    Sysmon file-create (11) or registry (13) event would be mis-read as a process
+    (1) event. The negative lookahead pins the number to exactly `code`.
+    """
+    return re.search(rf"eventcode={code}(?![0-9])", q) is not None
+
+
+def _infer_cim_category(query: str | None) -> CimCategory | None:
+    """Infer CIM category from SPL predicates when the subagent did not explicitly tag it."""
+    if not query:
+        return None
+    q = query.lower()
+
+    # 1. DNS Resolution (Network Resolution)
+    if (
+        "stream:dns" in q
+        or "tag=dns" in q
+        or "tag::eventtype=dns" in q
+        or _has_eventcode(q, 22)  # Sysmon: DNS query
+        or "dns_resolvers" in q
+        or "dns_resolution" in q
+    ):
+        return "dns_resolutions"
+
+    # 2. Network Traffic (Connections)
+    if (
+        "stream:tcp" in q
+        or "stream:http" in q
+        or "stream:ip" in q
+        or "cisco:asa" in q
+        or "cisco:ios" in q
+        or "pan:traffic" in q
+        or "symantec:ep:traffic" in q
+        or _has_eventcode(q, 3)  # Sysmon: network connection
+        or _has_eventcode(q, 5156)  # WFP: allowed connection
+        or _has_eventcode(q, 5157)  # WFP: blocked connection
+        or "listeningports" in q
+    ):
+        return "connections"
+
+    # 3. Endpoint Processes
+    if (
+        _has_eventcode(q, 4688)  # Windows Security: process create
+        or _has_eventcode(q, 1)  # Sysmon: process create
+        or "perfmonmk:process" in q
+        or "symantec:ep:behavior" in q
+        or "new_process_name" in q
+        or "process_command_line" in q
+        or "parentimage" in q
+        or "pack_incident-response_processes" in q
+        or "winhostmon" in q
+    ):
+        return "processes"
+
+    # 4. Authentication
+    if (
+        _has_eventcode(q, 4624)  # successful logon
+        or _has_eventcode(q, 4625)  # failed logon
+        or _has_eventcode(q, 4648)  # explicit-credential logon
+        or _has_eventcode(q, 4672)  # special privileges assigned
+        or "tag=authentication" in q
+        or "unix:useraccounts" in q
+        or "unix:sshdconfig" in q
+    ):
+        return "auth_events"
+
+    return None
+
+
 def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
     """Bucket each executed call's rows into the CIM category its query was tagged with."""
     by_query: dict[str, CimCategory | None] = {
@@ -127,11 +200,20 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
         if category in _CIM_BUCKETS:
             buckets[category].append(result_set)
         else:
-            logger.info(
-                "tool=%s | result set not tagged with a CIM category, filing as uncategorised",
-                call.tool,
-            )
-            buckets["uncategorised"].append(result_set)
+            inferred = _infer_cim_category(call.query)
+            if inferred in _CIM_BUCKETS:
+                logger.info(
+                    "tool=%s | query was untagged by model, inferred CIM category '%s' from SPL",
+                    call.tool,
+                    inferred,
+                )
+                buckets[inferred].append(result_set)
+            else:
+                logger.info(
+                    "tool=%s | result set not tagged with a CIM category, filing as uncategorised",
+                    call.tool,
+                )
+                buckets["uncategorised"].append(result_set)
 
     return SiemFindings(**buckets)
 

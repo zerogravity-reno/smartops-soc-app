@@ -71,6 +71,41 @@ class TestNothingIsSilentlyDropped:
         assert findings.uncategorised[0].row_count == 1
         assert "not recoverable" in findings.uncategorised[0].query
 
+    def test_untagged_queries_are_inferred_from_spl_predicates(self):
+        calls = [
+            call("index=botsv3 sourcetype=stream:dns query=coinhive.com", [{"q": "coinhive.com"}]),
+            call("index=botsv3 sourcetype=stream:tcp dest_port=443", [{"port": 443}]),
+            call("index=botsv3 sourcetype=WinEventLog EventCode=4688", [{"proc": "cmd.exe"}]),
+            call("index=botsv3 sourcetype=WinEventLog EventCode=4624", [{"user": "admin"}]),
+        ]
+        findings = project_siem(calls, [])
+
+        assert findings.dns_resolutions[0].row_count == 1
+        assert findings.connections[0].row_count == 1
+        assert findings.processes[0].row_count == 1
+        assert findings.auth_events[0].row_count == 1
+        assert findings.uncategorised == []
+
+    def test_eventcode_inference_is_bounded_to_the_exact_code(self):
+        # Sysmon EventCode 1 = process create; 11/13/15 are file/registry/other and
+        # must NOT be mis-read as processes by a naive "eventcode=1" substring.
+        proc = project_siem([call("index=botsv3 EventCode=1", [{"p": 1}])], [])
+        assert proc.processes[0].row_count == 1
+        assert proc.uncategorised == []
+
+        for code in (11, 13, 15, 100):
+            findings = project_siem([call(f"index=botsv3 EventCode={code}", [{"e": code}])], [])
+            assert findings.processes == [], f"EventCode={code} wrongly inferred as processes"
+            assert findings.uncategorised[0].row_count == 1
+
+    def test_sysmon_network_connection_eventcode_3_infers_connections(self):
+        findings = project_siem(
+            [call("index=botsv3 sourcetype=xmlwineventlog EventCode=3 dest_ip=1.2.3.4", [{"c": 1}])],
+            [],
+        )
+        assert findings.connections[0].row_count == 1
+        assert findings.uncategorised == []
+
 
 class TestRowExtraction:
     def test_common_envelopes_are_understood(self):
