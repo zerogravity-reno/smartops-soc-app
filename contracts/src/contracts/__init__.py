@@ -10,6 +10,13 @@ from contracts.findings import (
     VtFindings,
     VtVerdict,
 )
+from contracts.reasoning import (
+    AnalystDomain,
+    AnalystVerdict,
+    HypothesisAssessment,
+    InvestigationContext,
+    Stance,
+)
 from contracts.subtask import (
     MAX_ENTITY_VALUE_LENGTH,
     BrokerReport,
@@ -33,10 +40,15 @@ from contracts.subtask import (
 
 __all__ = [
     "MAX_ENTITY_VALUE_LENGTH",
+    "AnalystDomain",
     "AnalystTask",
+    "AnalystVerdict",
     "Assessment",
     "BrokerReport",
     "CimCategory",
+    "HypothesisAssessment",
+    "InvestigationContext",
+    "Stance",
     "CompletionRule",
     "CostSummary",
     "Entity",

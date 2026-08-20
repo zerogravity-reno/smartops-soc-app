@@ -26,6 +26,12 @@ dependencies = [
     # os.environ and a .env file is inert -- which makes the documented
     # `cp .env.example .env` appear to do nothing.
     "python-dotenv>=1.0",
+    # Direct, not transitive: the subagent-analysts invoke a Bedrock CUSTOM
+    # IMPORTED model (Foundation-Sec-8B-Reasoning) with raw invoke_model, which
+    # needs boto3 directly. It already arrives via strands' Bedrock support, but
+    # depending on that is depending on someone else's dependency graph -- the
+    # same reasoning as httpx above.
+    "boto3>=1.34",
 ]
 
 [project.scripts]

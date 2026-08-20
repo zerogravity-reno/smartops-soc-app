@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import get_args
 
 from pydantic import ValidationError
@@ -33,14 +35,25 @@ from contracts import (
     Entity,
     EntityKind,
     FetchStep,
+    HypothesisAssessment,
+    InvestigationContext,
     Scope,
     SubtaskResult,
     TaskClassification,
     ToolFamily,
 )
-from smartops.broker import TOOL_BY_FAMILY, BrokerRequest, broker_task, plan_fetch
+from smartops.broker import (
+    DEFAULT_RUNS_DIR,
+    RUNS_DIR_ENV_VAR,
+    TOOL_BY_FAMILY,
+    BrokerRequest,
+    broker_task,
+    plan_fetch,
+)
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
+from smartops.subagent_analysts.analyze import analyze
+from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
 from smartops.telemetry import configure_telemetry
 from smartops.tools.registry import load_mcp_servers, mcp_clients, warm_mcp_clients
@@ -235,6 +248,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--goal", required=True, help="what to find out, in plain language")
     parser.add_argument(
+        "--hypothesis",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "the hypothesis to test, in plain language. When given AND "
+            "SMARTOPS_ANALYST_MODEL_ARN is configured, the identity/network/endpoint "
+            "subagent-analysts analyze the fetched evidence and report whether it "
+            "supports or refutes it. Stub for an upstream Analyst agent"
+        ),
+    )
+    parser.add_argument(
         "--entity",
         required=True,
         action="append",
@@ -285,6 +309,37 @@ def _build_parser() -> argparse.ArgumentParser:
         help="investigation budget in USD (default: 10.0)",
     )
     parser.add_argument(
+        # A HARD ceiling on total output tokens across the whole investigation,
+        # orthogonal to --budget-usd. The USD hold is sized from an optimistic
+        # input estimate (~8 expected turns, not the 25-turn worst case), so real
+        # settlement can carry spend past the USD ceiling when long subagents
+        # overlap. Output is the dominant cost and already per-call capped, so one
+        # investigation-wide output ceiling restores a genuine upper bound. Sized
+        # generously by default -- a full run reserves well under this -- so it
+        # bites only on a runaway, not a normal case.
+        "--max-output-tokens",
+        type=int,
+        default=200_000,
+        help="hard ceiling on total output tokens for the whole run (default: 200000)",
+    )
+    parser.add_argument(
+        # The Broker's cumulative output-token ceiling for one run. The library
+        # default (4000) is too low for a thinking-heavy model like Sonnet 4.6: it
+        # spends the budget authoring the fetch plan and hits limit_output_tokens
+        # before emitting a single dispatch, so nothing is fetched. Sonnet's large
+        # context affords a much higher ceiling; 16000 clears planning + dispatch.
+        "--broker-output-tokens",
+        type=int,
+        default=16000,
+        help="cumulative output-token ceiling for the Broker's run (default: 16000)",
+    )
+    parser.add_argument(
+        "--subagent-turns",
+        type=int,
+        default=25,
+        help="turn ceiling for domain subagents (default: 25)",
+    )
+    parser.add_argument(
         "--mcp-config",
         default=None,
         metavar="PATH",
@@ -302,6 +357,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "the model only -- domain lookups still run, so a configured VT_API_KEY "
             "means real VirusTotal requests"
         ),
+    )
+    parser.add_argument(
+        "--skills",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable the reference skill pack (superman-splunk) for siem (default: $SMARTOPS_SKILLS_ENABLED)",
     )
     parser.add_argument(
         "--console-traces",
@@ -354,6 +415,54 @@ def _print_outcome(outcome, budget: Budget) -> None:
     spend = budget.spend_by_role()
     print("\nspend by role (micro-USD):", spend or "(nothing spent)")
     print(f"budget remaining: {budget.remaining} micro-USD")
+
+
+def _print_assessment(assessment: HypothesisAssessment) -> None:
+    print(
+        f"\nhypothesis assessment: {assessment.overall_stance.upper()} "
+        f"(confidence {assessment.confidence:.2f})"
+    )
+    for verdict in assessment.verdicts:
+        print(
+            f"  [{verdict.domain:<8}] {verdict.stance:<12} conf={verdict.confidence:.2f}"
+            f"  tokens p={verdict.prompt_tokens} g={verdict.generation_tokens}"
+        )
+        if verdict.rationale:
+            print(f"             {verdict.rationale}")
+        for observation in verdict.key_observations:
+            print(f"               - {observation}")
+        if verdict.citations:
+            print(f"             cited: {', '.join(verdict.citations)}")
+
+    total_p = assessment.total_prompt_tokens()
+    total_g = assessment.total_generation_tokens()
+    print(
+        f"\nanalyst tokens: {total_p} prompt + {total_g} generation = {total_p + total_g} total"
+    )
+    # The per-call ceiling is the 32,768-token context window (prompt + generation).
+    # Prompts here are small, so headroom is large; raise SMARTOPS_ANALYST_MAX_GEN_LEN
+    # if a verdict looks cut off. Cost is billed per model-copy-minute, not per token.
+    print("  (per-call context ceiling is 32,768 tokens; imported-model cost is per warm-minute, not per token)")
+
+
+def _persist_assessment(task_id: str, assessment: HypothesisAssessment) -> None:
+    """Write assessment.json beside the broker's run artifacts, if that dir exists.
+
+    The Broker already timestamped a run directory and recorded its name in
+    `latest.txt`; the assessment for the same run belongs next to its
+    `report.json`. Best-effort: a missing run dir means the report was not
+    persisted (e.g. a fully rejected scripted run), so there is nothing to sit
+    beside and we skip silently rather than inventing a location.
+    """
+    base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+    latest = Path(base) / task_id / "latest.txt"
+    if not latest.exists():
+        return
+    run_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
+    if run_dir.is_dir():
+        (run_dir / "assessment.json").write_text(
+            assessment.model_dump_json(indent=2), encoding="utf-8"
+        )
 
 
 def _load_env_file() -> str | None:
@@ -486,34 +595,76 @@ async def _run(argv: list[str] | None = None) -> int:
         invoke = None  # broker_task builds default_broker_invoker itself
         print(f"model:    {choice.provider.value}:{choice.model_id}")
 
-    budget = Budget.from_usd(args.budget_usd)
-
-    # With a real model, domains get a real subagent; without one there is
-    # nothing to drive a tool loop, so the Broker's stub stands in and reports
-    # what each family *could* have used. `vt` answers either way -- its lookup
-    # needs no model at all.
-    run_subagent = (
-        domain_runner(model=choice, budget=budget) if choice is not None else None
+    budget = Budget.from_usd(
+        args.budget_usd, max_output_tokens_total=args.max_output_tokens
     )
 
-    try:
-        outcome = await broker_task(
-            task, budget, model=model, invoke=invoke, run_subagent=run_subagent
+    if args.skills is not None:
+        from smartops.skills import pinned_skills_enabled
+        skills_ctx = pinned_skills_enabled(args.skills)
+    else:
+        import contextlib
+        skills_ctx = contextlib.nullcontext()
+
+    with skills_ctx:
+        # With a real model, domains get a real subagent; without one there is
+        # nothing to drive a tool loop, so the Broker's stub stands in and reports
+        # what each family *could* have used. `vt` answers either way -- its lookup
+        # needs no model at all.
+        run_subagent = (
+            domain_runner(model=choice, budget=budget, turns=args.subagent_turns)
+            if choice is not None
+            else None
         )
-    except Exception as exc:
-        # An investigation failing must not look like the tool crashing. Report
-        # it, and report the ledger too: the call may already have been billed,
-        # and that is worth seeing.
-        print(f"\nerror: the investigation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        logging.getLogger(__name__).debug("broker_task failed", exc_info=True)
-        print(f"spend by role (micro-USD): {budget.spend_by_role() or '(nothing spent)'}")
-        return 1
+
+        try:
+            outcome = await broker_task(
+                task,
+                budget,
+                model=model,
+                invoke=invoke,
+                run_subagent=run_subagent,
+                max_output_tokens=args.broker_output_tokens,
+            )
+        except Exception as exc:
+            # An investigation failing must not look like the tool crashing. Report
+            # it, and report the ledger too: the call may already have been billed,
+            # and that is worth seeing.
+            print(f"\nerror: the investigation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            logging.getLogger(__name__).debug("broker_task failed", exc_info=True)
+            print(f"spend by role (micro-USD): {budget.spend_by_role() or '(nothing spent)'}")
+            return 1
 
     print(f"task:     {task.task_id}")
     print(f"goal:     {task.goal}")
     print(f"scope:    {', '.join(f'{e.kind}={e.value}' for e in scope.entities)}")
     print(f"window:   {scope.time_window[0].isoformat()} .. {scope.time_window[1].isoformat()}")
     _print_outcome(outcome, budget)
+
+    # Analysis layer: only when a hypothesis is given and the analyst model is
+    # configured. `--scripted` forces no model calls at all, analysts included.
+    if args.hypothesis:
+        analyst_model = None if args.scripted else analyst_model_from_env()
+        if analyst_model is None:
+            print(
+                "\nanalysis: skipped (set SMARTOPS_ANALYST_MODEL_ARN to enable, "
+                "and do not pass --scripted)"
+            )
+        elif outcome.report is None:
+            print("\nanalysis: skipped (the broker produced no report)")
+        else:
+            context = InvestigationContext(hypothesis=args.hypothesis)
+            try:
+                assessment = await analyze(outcome.report, context, scope, analyst_model)
+            except Exception as exc:
+                print(
+                    f"\nanalysis failed: {type(exc).__name__}: {exc}", file=sys.stderr
+                )
+                logging.getLogger(__name__).debug("analyze failed", exc_info=True)
+            else:
+                _print_assessment(assessment)
+                _persist_assessment(task.task_id, assessment)
+
     return 0
 
 

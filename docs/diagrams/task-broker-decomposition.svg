@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1720 1180" font-family="'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="d-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#334155"/>
+    </marker>
+    <marker id="d-arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#1d4ed8"/>
+    </marker>
+    <style>
+      .title{font-size:33px;font-weight:700;fill:#0f172a}
+      .subtitle{font-size:16px;fill:#475569}
+      .h{font-size:19px;font-weight:700}
+      .mono{font-size:14px;font-family:'Cascadia Code',Consolas,monospace}
+      .mono-s{font-size:12.5px;font-family:'Cascadia Code',Consolas,monospace;fill:#334155}
+      .lbl{font-size:14px;fill:#334155}
+      .lbl-i{font-size:13.5px;font-style:italic;fill:#64748b}
+      .k{font-size:13px;fill:#475569}
+      .badge{font-size:14px;font-weight:700}
+      .step-title{font-size:15px;font-weight:700;font-family:'Cascadia Code',Consolas,monospace}
+    </style>
+  </defs>
+  <rect x="0" y="0" width="1720" height="1180" fill="#ffffff"/>
+  <text x="60" y="52" class="title">How the Task Broker Decomposes a Goal</text>
+  <text x="60" y="80" class="subtitle">A real run: goal &#8594; the plan_fetch call the model was forced to make &#8594; three subtasks &#8594; three dispatched missions, each evaluated by code.</text>
+
+  <!-- GOAL -->
+  <rect x="360" y="106" width="1000" height="112" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="2.5"/>
+  <text x="384" y="136" class="h" fill="#3730a3">1 &#183; AnalystTask (goal + fixed scope)</text>
+  <text x="384" y="164" class="mono" fill="#1e293b">goal: "Is coinhive.com known-malicious, and what did host BSTOLL-L do with it?"</text>
+  <text x="384" y="190" class="k">scope (fixed by the system, not changeable by the model):  entities = domain:coinhive.com, host:BSTOLL-L</text>
+  <text x="384" y="209" class="k">time window = 2018-08-20 &#8594; 2018-08-21</text>
+
+  <!-- arrow goal -> plan_fetch -->
+  <path d="M860,218 L860,262" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+  <rect x="880" y="222" width="560" height="34" rx="6" fill="#fffbeb" stroke="#ca8a04"/>
+  <text x="896" y="244" class="lbl">system prompt: <tspan font-weight="700">"you MUST call plan_fetch first"</tspan> &#8212; planning is mandatory in code</text>
+
+  <!-- PLAN_FETCH -->
+  <rect x="300" y="272" width="1120" height="120" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5"/>
+  <text x="324" y="302" class="h" fill="#1e3a8a">2 &#183; plan_fetch(steps, rationale)  &#8212;  this call IS the decomposition</text>
+  <text x="324" y="330" class="lbl-i" fill="#1e40af">rationale (model-authored): "Two domains of evidence are needed: VirusTotal for external reputation of coinhive.com,</text>
+  <text x="324" y="350" class="lbl-i" fill="#1e40af">and SIEM for logs of host BSTOLL-L activity with that domain."</text>
+  <text x="324" y="378" class="k">rule the model followed: <tspan font-weight="700" fill="#1e3a8a">one step per question you actually need answered &#8212; not one step per family.</tspan></text>
+
+  <!-- fan-out lines to 3 columns -->
+  <path d="M860,392 L860,420" stroke="#1d4ed8" stroke-width="2.2" fill="none"/>
+  <path d="M300,420 L1420,420" stroke="#1d4ed8" stroke-width="2.2" fill="none"/>
+  <path d="M300,420 L300,452" stroke="#1d4ed8" stroke-width="2.2" fill="none" marker-end="url(#d-arrowBlue)"/>
+  <path d="M860,420 L860,452" stroke="#1d4ed8" stroke-width="2.2" fill="none" marker-end="url(#d-arrowBlue)"/>
+  <path d="M1420,420 L1420,452" stroke="#1d4ed8" stroke-width="2.2" fill="none" marker-end="url(#d-arrowBlue)"/>
+  <text x="880" y="414" class="lbl-i" fill="#1d4ed8">3 &#183; decomposed into three FetchSteps (subtasks)</text>
+
+  <!-- ============ COLUMN 1: vt ============ -->
+  <!-- FetchStep -->
+  <rect x="70" y="456" width="460" height="150" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="90" y="482" class="step-title" fill="#1e3a8a">[vt-coinhive-reputation]</text>
+  <text x="90" y="504" class="k">family = <tspan font-weight="700" fill="#1e3a8a">vt</tspan></text>
+  <text x="90" y="528" class="lbl">objective: look up reputation &amp; threat</text>
+  <text x="90" y="547" class="lbl">intel for domain coinhive.com</text>
+  <text x="90" y="575" class="k">completion: rows_or_confirmed_empty</text>
+  <text x="90" y="596" class="k">categories: (none &#8212; vt is not bucketed)</text>
+
+  <!-- SUBAGENT -->
+  <rect x="70" y="700" width="460" height="150" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="2"/>
+  <text x="90" y="726" class="h" fill="#115e59" font-size="16">vt subagent</text>
+  <text x="90" y="750" class="lbl-i" fill="#0f766e">authors its own query (not the Broker):</text>
+  <text x="90" y="778" class="mono-s">vt_lookup_domain: coinhive.com</text>
+  <text x="90" y="824" class="k">raw results stay inside the subagent;</text>
+  <text x="90" y="843" class="k">code assembles the Evidence.</text>
+
+  <!-- OUTCOME -->
+  <rect x="70" y="900" width="460" height="86" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="90" y="928" class="badge" fill="#065f46">&#10003; completed &#183; 1 row &#183; status=ok</text>
+  <text x="90" y="954" class="k">evaluated=true, confirmed_empty=false</text>
+  <text x="90" y="974" class="lbl-i" fill="#047857">code decided this, from the row count</text>
+
+  <!-- ============ COLUMN 2: siem activity ============ -->
+  <rect x="630" y="456" width="460" height="150" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="650" y="482" class="step-title" fill="#1e3a8a">[siem-bstoll-coinhive-activity]</text>
+  <text x="650" y="504" class="k">family = <tspan font-weight="700" fill="#1e3a8a">siem</tspan></text>
+  <text x="650" y="528" class="lbl">objective: search logs for BSTOLL-L</text>
+  <text x="650" y="547" class="lbl">activity involving coinhive.com</text>
+  <text x="650" y="575" class="k">completion: rows_or_confirmed_empty</text>
+  <text x="650" y="596" class="k">window: 2018-08-20 &#8594; 2018-08-21</text>
+
+  <rect x="630" y="700" width="460" height="150" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="2"/>
+  <text x="650" y="726" class="h" fill="#115e59" font-size="16">siem subagent</text>
+  <text x="650" y="750" class="lbl-i" fill="#0f766e">authors its own SPL queries:</text>
+  <text x="650" y="776" class="mono-s">stream:http host="BSTOLL-L" "coinhive"</text>
+  <text x="650" y="797" class="mono-s">WinEventLog EventCode=4688 "coinhive"</text>
+  <text x="650" y="818" class="mono-s">syslog "coinhive" | table _time, host</text>
+  <text x="650" y="843" class="k">&#8230; batched into the first turn</text>
+
+  <rect x="630" y="900" width="460" height="86" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="650" y="928" class="badge" fill="#065f46">&#10003; completed &#183; 182 rows &#183; status=ok</text>
+  <text x="650" y="954" class="k">evaluated=true, confirmed_empty=false</text>
+  <text x="650" y="974" class="lbl-i" fill="#047857">real telemetry &#8212; the host did use coinhive</text>
+
+  <!-- ============ COLUMN 3: siem dns (rejected) ============ -->
+  <rect x="1190" y="456" width="460" height="150" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="1210" y="482" class="step-title" fill="#1e3a8a">[siem-bstoll-network-dns]</text>
+  <text x="1210" y="504" class="k">family = <tspan font-weight="700" fill="#1e3a8a">siem</tspan></text>
+  <text x="1210" y="528" class="lbl">objective: DNS queries / network</text>
+  <text x="1210" y="547" class="lbl">connections BSTOLL-L &#8594; coinhive.com</text>
+  <text x="1210" y="575" class="k">completion: rows_or_confirmed_empty</text>
+  <text x="1210" y="596" class="lbl-i" fill="#64748b">the SIEM goal split into a 2nd question</text>
+
+  <rect x="1190" y="700" width="460" height="150" rx="10" fill="#fef2f2" stroke="#b91c1c" stroke-width="2"/>
+  <text x="1210" y="726" class="h" fill="#991b1b" font-size="16">siem subagent (2nd dispatch)</text>
+  <text x="1210" y="752" class="lbl" fill="#991b1b">never returned an answer &#8212; the</text>
+  <text x="1210" y="771" class="lbl" fill="#991b1b">concurrent-dispatch MCP race</text>
+  <text x="1210" y="790" class="lbl" fill="#991b1b">(documented in agent_architecture &#167;8)</text>
+  <text x="1210" y="824" class="k">no rows retrieved, no clean "empty"</text>
+  <text x="1210" y="843" class="k">signal either</text>
+
+  <rect x="1190" y="900" width="460" height="86" rx="10" fill="#fef2f2" stroke="#b91c1c" stroke-width="2"/>
+  <text x="1210" y="928" class="badge" fill="#991b1b">&#10007; rejected &#183; 0 rows</text>
+  <text x="1210" y="954" class="k" fill="#991b1b">completed=false, <tspan font-weight="700">confirmed_empty=false</tspan></text>
+  <text x="1210" y="974" class="lbl-i" fill="#b91c1c">"we never asked" &#8800; "we asked, found nothing"</text>
+
+  <!-- step -> mission -> subagent arrows -->
+  <g>
+    <path d="M300,606 L300,700" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+    <path d="M860,606 L860,700" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+    <path d="M1420,606 L1420,700" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+    <path d="M300,850 L300,900" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+    <path d="M860,850 L860,900" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+    <path d="M1420,850 L1420,900" stroke="#334155" stroke-width="2" fill="none" marker-end="url(#d-arrow)"/>
+  </g>
+  <!-- mission mint label (shared) -->
+  <rect x="150" y="632" width="1420" height="34" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="860" y="654" text-anchor="middle" class="lbl">4 &#183; each step is minted into a <tspan font-weight="700">SubagentMission</tspan> &#8212; scope copied in out-of-band, the model's question as the goal, <tspan font-style="italic">no pre-authored query</tspan></text>
+
+  <!-- footer takeaway -->
+  <rect x="60" y="1016" width="1600" height="118" rx="12" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="84" y="1046" class="h" fill="#0f172a" font-size="17">Why this shape matters</text>
+  <text x="84" y="1074" class="lbl">&#8226; The Broker <tspan font-weight="700">authors the plan</tspan> (which questions, which domains); <tspan font-weight="700">code grades every step</tspan> against its CompletionRule. The model never ticks its own boxes.</text>
+  <text x="84" y="1098" class="lbl">&#8226; Splitting the SIEM goal into two questions lets each subtask be judged on exactly what it asked for &#8212; so one failing subtask cannot mark the other complete.</text>
+  <text x="84" y="1122" class="lbl">&#8226; A rejected subtask stays <tspan font-family="'Cascadia Code',Consolas,monospace">completed=false, confirmed_empty=false</tspan>: the report distinguishes a failure to answer from a genuine "nothing here."</text>
+</svg>

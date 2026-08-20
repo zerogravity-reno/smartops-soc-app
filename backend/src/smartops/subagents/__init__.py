@@ -102,10 +102,21 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
     "siem": (
         "SIEM SPECIALIZATION (Splunk):\n"
         "- Target queries using CIM-compliant predicates (sourcetype, datamodel, tag, eventtype) or configured indexes.\n"
+        "- Prefer accelerated Splunk CIM data models using `| tstats summariesonly=t count from datamodel=<Model>` when exploring broad telemetry:\n"
+        "  * Network Resolution: `| tstats summariesonly=t count from datamodel=Network_Resolution where nodename=DNS by DNS.src, DNS.dest, DNS.query, DNS.answer`\n"
+        "  * Network Traffic: `| tstats summariesonly=t count from datamodel=Network_Traffic where nodename=All_Traffic by All_Traffic.src, All_Traffic.dest, All_Traffic.dest_port`\n"
+        "  * Endpoint Processes: `| tstats summariesonly=t count from datamodel=Endpoint.Processes by Processes.process_name, Processes.parent_process_name, Processes.user`\n"
+        "  * Authentication: `| tstats summariesonly=t count from datamodel=Authentication by Authentication.user, Authentication.src, Authentication.action`\n"
+        "- If data models are not accelerated or return 0, query specific sourcetypes directly (`sourcetype=stream:dns`, `sourcetype=stream:tcp`, `sourcetype=WinEventLog EventCode=4688`, `sourcetype=WinEventLog EventCode=4624`).\n"
         "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
-        "- Retrieve data into CIM categories (Network Resolution, Network Traffic, Endpoint Processes, Authentication).\n"
+        "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events).\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
         "- Filter early using sourcetype or eventtype predicates before searching free-text fields.\n"
+        "- STOPPING CONDITIONS:\n"
+        "  1. POSITIVE STOP: Once you have obtained non-empty events answering the requested objective, STOP iterating. Do not run redundant cosmetic column or syntax variations. Submit your answer immediately.\n"
+        "  2. NEGATIVE STOP: If 3 distinct queries across candidate sourcetypes return 0 events, conclude data is absent in SIEM. Note the gap in gaps/assessment and finish.\n"
+        "  3. TURN RESERVE: When 4 turns remain before your turn ceiling, stop all new queries and spend remaining turns submitting your structured answer.\n"
+        "- In `queries_run`, you MUST include every query that returned evidence and explicitly set its `category` to one of: 'dns_resolutions', 'connections', 'processes', 'auth_events'.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"
@@ -132,7 +143,7 @@ and evidence. Your role is data retrieval: execute constrained queries to fetch
 requested data categories, report absence as a result, state gaps clearly, draw
 NO investigative conclusions, and name NO root causes.
 
-BUDGET -- read this before your first tool call:
+BUDGET & STOPPING CONDITIONS -- read this before your first tool call:
 - You have at most {turns} turns. One turn is one reply, whether or not it calls
   a tool.
 - Plan to finish querying by turn {last_query_turn} and spend your final turn
@@ -165,8 +176,7 @@ HOW TO WORK:
   it showed the subject to be clean, absent, or benign.
 {family_specialization}
 WHEN YOU ARE DONE, report:
-- queries_run: every query you ran, each tagged with the category it was
-  retrieving. Do NOT restate the rows -- they are captured for you.
+- queries_run: every query you ran, each tagged with its exact CIM category ('dns_resolutions', 'connections', 'processes', 'auth_events'). Do NOT restate the rows -- they are captured for you.
 - assessment: which categories you covered and which you did not. An empty
   result is a covered category, not a missing one.
 - status: ok if you retrieved something relevant, no_data if the domain
@@ -389,15 +399,16 @@ def _prompt_for(mission: SubagentMission) -> str:
 
 
 def _estimated_input_tokens(prompt: str, *, turns: int, tool_count: int) -> int:
-    """Worst-case input estimate for one subagent run.
+    """Estimated input token reservation for one subagent run.
 
-    Same shape as the Broker's: every turn re-sends the system prompt, all tool
-    schemas, and the whole prior conversation, so cost grows with the square of
-    the turn count. Tool schemas are counted because a SIEM server exposing ten
-    tools is a materially bigger fixed cost than four family wrappers.
+    Subagents terminate early on finding evidence (average ~4-8 turns). Sizing the
+    initial hold for realistic expected exploration (capped at 8 turns) rather than
+    the 25-turn triangular worst-case prevents parallel subagent holds from colliding
+    under tight budgets ($10-$15 USD) while dynamic settlement settles actual usage.
     """
     per_turn = _SYSTEM_PROMPT_TOKEN_FLOOR + (tool_count * 200) + len(prompt) // 4
-    return per_turn * turns * (turns + 1) // 2
+    expected_turns = min(turns, 8)
+    return per_turn * expected_turns * (expected_turns + 1) // 2
 
 
 async def investigate(
