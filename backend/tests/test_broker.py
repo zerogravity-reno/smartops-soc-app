@@ -22,6 +22,7 @@ from smartops.broker import (
     broker_task,
     evaluate_step,
     default_broker_invoker,
+    load_run_artifacts,
     missing_step_id_refusal,
     plan_fetch,
 )
@@ -1307,6 +1308,42 @@ class TestFetchPlanAndReport:
         case_dir = _runs_dir() / "run-123"
         runs = [p for p in case_dir.iterdir() if p.is_dir()]
         assert len(runs) == 2, f"both runs must survive, found {[p.name for p in runs]}"
+
+    async def test_load_run_artifacts_round_trips_typed_findings(self, tmp_path, monkeypatch):
+        # Closes the gap flagged 2026-08-23: nothing reloaded a saved report, and
+        # doing so would have silently lost every typed findings field (fixed by
+        # the `tool_family` discriminator on `SiemFindings`/`VtFindings`). This is
+        # the read half of `save_run_artifacts()`.
+        monkeypatch.chdir(tmp_path)
+        siem_findings = SiemFindings(
+            auth_events=[ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}])]
+        )
+        outcome = await broker_task(
+            make_task(task_id="run-789"),
+            Budget.from_usd(1.0),
+            model=MODEL,
+            run_subagent=runner_returning(lambda m: ok_result(m, findings=siem_findings)),
+            invoke=fake_invoker(["siem"]),
+        )
+
+        case_dir = _runs_dir() / "run-789"
+        stamp = (case_dir / "latest.txt").read_text(encoding="utf-8")
+        run_dir = case_dir / stamp
+
+        reloaded = load_run_artifacts(run_dir)
+
+        assert reloaded.task_id == outcome.report.task_id
+        reloaded_findings = reloaded.results[0].findings
+        assert isinstance(reloaded_findings, SiemFindings)
+        assert reloaded_findings.auth_events[0].rows == [{"user": "bostoll"}]
+
+        # The existing Findings Pipeline (route/format/pack) needs no change at
+        # all to work against a reloaded report -- it only ever depended on
+        # BrokerReport being well-typed, live or not.
+        from smartops.subagent_analysts.routing import route
+
+        routed = route(reloaded, make_scope())
+        assert routed.identity.siem_sets  # auth_events routes to identity
 
     async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
         """The regression test for the failure this task exists to remove.

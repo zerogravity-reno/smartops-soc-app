@@ -8,18 +8,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
     Field,
-    SerializeAsAny,
     create_model,
     field_validator,
     model_validator,
 )
 
-from contracts.findings import Assessment, CimCategory, Findings
+from contracts.findings import (
+    Assessment,
+    CimCategory,
+    Findings,
+    SiemAssessment,
+    SiemFindings,
+    VtAssessment,
+    VtFindings,
+)
 
 ToolFamily = Literal["edr", "ndr", "vt", "siem"]
 
@@ -361,29 +368,34 @@ class SubtaskResult(_StatusErrorContract):
             "indistinguishable from a bug."
         ),
     )
-    findings: SerializeAsAny[Findings] | None = Field(
+    findings: Annotated[SiemFindings | VtFindings, Field(discriminator="tool_family")] | None = Field(
         default=None,
         description=(
-            "The per-family typed payload, projected from `evidence` by code. "
-            "`SerializeAsAny` is load-bearing: with a plain `Findings` annotation "
-            "pydantic dumps only the base class's fields, so every subclass field "
-            "would serialise away to `{}` -- silently, and only visibly once the "
-            "report reached the Analyst."
+            "The per-family typed payload, projected from `evidence` by code. A "
+            "discriminated union (keyed on each subclass's `tool_family`) rather than "
+            "a plain `Findings` annotation: pydantic needs the discriminator both to "
+            "dump every subclass field (a bare `Findings` annotation would dump only "
+            "the base class's, silently to `{}`) and, the newer half of this, to "
+            "reload one -- `SubtaskResult.model_validate_json()` on a saved report "
+            "otherwise cannot tell a saved entry was `SiemFindings` and silently "
+            "reconstructs the empty base class instead, which is exactly what made "
+            "`broker.load_run_artifacts()` unsafe until this was added. Extending to a "
+            "new family (edr/ndr) means adding it to this union, not a silent gap --"
+            " an unlisted subclass now fails loudly at construction, not on reload."
         ),
     )
-    assessment: SerializeAsAny[Assessment] | None = Field(
+    assessment: Annotated[SiemAssessment | VtAssessment, Field(discriminator="tool_family")] | None = Field(
         default=None,
         description=(
             "The model's own small judgement, carried over from the concrete "
-            "per-family answer model `make_answer_model()` built. Same "
-            "`SerializeAsAny` trap as `findings` above -- a plain `Assessment` "
-            "annotation would dump only the (empty) base class, silently losing "
-            "every subclass field such as `SiemAssessment.covered`. Not "
-            "decorative: a fetch plan's completion rules read `covered` / "
-            "`not_covered` to judge whether a step retrieved what was asked for, "
-            "and `BrokerReport` is assembled from `SubtaskResult`s, so anything "
-            "not carried here never reaches the Analyst. `None` for a rejected or "
-            "errored subtask, where no model ever ran."
+            "per-family answer model `make_answer_model()` built. Same discriminated-"
+            "union reasoning as `findings` above -- a plain `Assessment` annotation "
+            "would silently lose every subclass field such as `SiemAssessment.covered` "
+            "both on dump and (the newer half) on reload. Not decorative: a fetch "
+            "plan's completion rules read `covered` / `not_covered` to judge whether a "
+            "step retrieved what was asked for, and `BrokerReport` is assembled from "
+            "`SubtaskResult`s, so anything not carried here never reaches the Analyst. "
+            "`None` for a rejected or errored subtask, where no model ever ran."
         ),
     )
     queries_run: list[QueryRun] = Field(

@@ -1084,6 +1084,25 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
     return run_dir
 
 
+def load_run_artifacts(run_dir: Path | str) -> BrokerReport:
+    """Load a `BrokerReport` saved by `save_run_artifacts()`, fully typed.
+
+    The read half of `save_run_artifacts()`. Reads `report.json` straight back
+    into a `BrokerReport` -- no re-fetch, no model call. Round-tripping the
+    typed `findings`/`assessment` fields correctly (not the empty `Findings`/
+    `Assessment` base class) depends on their `tool_family` discriminator on
+    `contracts.subtask.SubtaskResult`; without it this would silently lose
+    every `SiemFindings`/`VtFindings` field, which is what made this function
+    unsafe to write before that discriminator existed.
+
+    Nothing downstream needs to change to consume a loaded report: `route()`
+    and the rest of the Findings Pipeline only ever depended on `BrokerReport`
+    being well-typed, live or not.
+    """
+    report_file = Path(run_dir) / "report.json"
+    return BrokerReport.model_validate_json(report_file.read_text(encoding="utf-8"))
+
+
 async def broker_task(
     task: AnalystTask,
     budget: Budget,

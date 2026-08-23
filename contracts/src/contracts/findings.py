@@ -67,6 +67,17 @@ class SiemAssessment(Assessment):
     reading rows.
     """
 
+    tool_family: Literal["siem"] = Field(
+        default="siem",
+        description=(
+            "Discriminator so `SubtaskResult.assessment` round-trips through JSON as "
+            "the right subclass -- a bare `Assessment` annotation has no way to tell "
+            "a saved entry was `SiemAssessment` and would silently reconstruct the "
+            "empty base class on reload. Named `tool_family` to match the vocabulary "
+            "already used on `Evidence.tool_family`, not `kind` (already means "
+            "something else on `VtVerdict`)."
+        ),
+    )
     covered: list[CimCategory] = Field(
         default_factory=list,
         description="Categories this subagent actually retrieved data for.",
@@ -98,6 +109,9 @@ class SiemFindings(Findings):
     ever retypes data it retrieved.
     """
 
+    tool_family: Literal["siem"] = Field(
+        default="siem", description="Discriminator, see `SiemAssessment.tool_family`."
+    )
     dns_resolutions: list[ResultSet] = Field(default_factory=list)
     connections: list[ResultSet] = Field(default_factory=list)
     processes: list[ResultSet] = Field(default_factory=list)
@@ -148,6 +162,9 @@ class VtVerdict(BaseModel):
 class VtAssessment(Assessment):
     """What the VT lookup asserts. Usually produced by the enricher, model-free."""
 
+    tool_family: Literal["vt"] = Field(
+        default="vt", description="Discriminator, see `SiemAssessment.tool_family`."
+    )
     looked_up: int = Field(default=0, ge=0)
     not_looked_up: list[str] = Field(
         default_factory=list,
@@ -159,6 +176,9 @@ class VtAssessment(Assessment):
 class VtFindings(Findings):
     """Verdicts, projected by code from the parsed VirusTotal response."""
 
+    tool_family: Literal["vt"] = Field(
+        default="vt", description="Discriminator, see `SiemAssessment.tool_family`."
+    )
     verdicts: list[VtVerdict] = Field(default_factory=list)
 
     def flagged(self) -> list[VtVerdict]:

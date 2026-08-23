@@ -8,8 +8,10 @@ from contracts import (
     Entity,
     Evidence,
     QueryRun,
+    ResultSet,
     Scope,
     SiemAssessment,
+    SiemFindings,
     SubagentAnswer,
     SubagentMission,
     SubtaskResult,
@@ -376,6 +378,32 @@ class TestSubtaskResult:
 
         assert dumped["assessment"]["covered"] == ["auth_events"]
         assert dumped["assessment"]["not_covered"] == ["processes"]
+
+    def test_findings_subclass_survives_a_json_round_trip(self):
+        # Dumping already worked (SerializeAsAny). Reloading did not: a bare
+        # `Findings` annotation has no discriminator, so `model_validate_json`
+        # could not tell a saved entry was `SiemFindings` and silently
+        # reconstructed the empty base class, losing every CIM bucket. This is
+        # the reload path `smartops.broker.load_run_artifacts()` depends on.
+        findings = SiemFindings(
+            auth_events=[ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}])]
+        )
+        result = SubtaskResult(task_id="t1", status=SubtaskStatus.OK, findings=findings)
+
+        reloaded = SubtaskResult.model_validate_json(result.model_dump_json())
+
+        assert isinstance(reloaded.findings, SiemFindings)
+        assert reloaded.findings.auth_events[0].rows == [{"user": "bostoll"}]
+
+    def test_assessment_subclass_survives_a_json_round_trip(self):
+        assessment = SiemAssessment(covered=["auth_events"], not_covered=["processes"])
+        result = SubtaskResult(task_id="t1", status=SubtaskStatus.OK, assessment=assessment)
+
+        reloaded = SubtaskResult.model_validate_json(result.model_dump_json())
+
+        assert isinstance(reloaded.assessment, SiemAssessment)
+        assert reloaded.assessment.covered == ["auth_events"]
+        assert reloaded.assessment.not_covered == ["processes"]
 
     def test_from_answer_carries_the_assessment_through(self):
         # `assessment` only exists on the concrete per-family model
