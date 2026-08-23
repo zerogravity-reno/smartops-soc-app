@@ -2258,6 +2258,45 @@ class TestAFailedSubagentIsNotANegativeFinding:
         assert outcome.rows_retrieved == 0
         assert outcome.confirmed_empty is True
 
+    def test_a_redispatch_that_finds_rows_clears_a_stale_confirmed_empty(self):
+        # `outcome.confirmed_empty` used to be OR'd with its own history, so once
+        # one dispatch came back empty it stayed True forever -- even across a
+        # later re-dispatch of the *same* step that found real rows. A
+        # `rows_required` step re-dispatches on an empty first attempt (nothing
+        # to satisfy `min_rows` yet), so this is reachable in production: the
+        # persisted `StepOutcome` in `BrokerReport.step_outcomes` could end up
+        # claiming `rows_retrieved=10` and `confirmed_empty=True` at once --
+        # self-contradictory in the Analyst-facing report.
+        step = FetchStep(
+            step_id="siem-1",
+            family="siem",
+            objective="Find host activity involving coinhive.com",
+            completion=CompletionRule(requires="rows_required", min_rows=1),
+        )
+        empty_result = SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(dns_resolutions=[ResultSet(query="q", row_count=0, rows=[])]),
+            queries_run=[QueryRun(query="q")],
+        )
+        outcome = evaluate_step(step, empty_result)
+        assert outcome.confirmed_empty is True
+        assert outcome.completed is False  # rows_required ignores confirmed_empty
+
+        found_result = SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(
+                dns_resolutions=[ResultSet(query="q", row_count=10, rows=[{"query": "x"}] * 10)]
+            ),
+            queries_run=[QueryRun(query="q")],
+        )
+        outcome = evaluate_step(step, found_result, prior=outcome)
+
+        assert outcome.rows_retrieved == 10
+        assert outcome.confirmed_empty is False
+        assert outcome.completed is True
+
 
 class TestAStepIsJudgedAgainstItsOwnCategory:
     """A `siem` step that names the CIM category it is responsible for is

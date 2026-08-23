@@ -557,7 +557,17 @@ def evaluate_step(
         and looked_at_named_categories
         and (len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA)
     )
-    outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty
+    # OR'd with history so one dispatch establishing "looked and empty" survives
+    # a later dispatch that looked at nothing (e.g. a budget refusal) -- but
+    # gated on the *cumulative* row count, not just this call's, because a
+    # `rows_required` step re-dispatches on an empty first attempt and a later
+    # dispatch finding real rows must clear the flag: `outcome.rows_retrieved`
+    # and `outcome.confirmed_empty` are both persisted onto the Analyst-facing
+    # `BrokerReport.step_outcomes`, and "rows_retrieved=10, confirmed_empty=True"
+    # in the same record is a claim the data both was and was not found.
+    outcome.confirmed_empty = (
+        confirmed_empty or outcome.confirmed_empty
+    ) and outcome.rows_retrieved == 0
 
     if step.completion.requires == "rows_or_confirmed_empty":
         completed = (
