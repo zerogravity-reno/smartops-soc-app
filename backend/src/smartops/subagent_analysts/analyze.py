@@ -18,6 +18,7 @@ import logging
 from contracts import (
     AnalystVerdict,
     BrokerReport,
+    DomainFinding,
     HypothesisAssessment,
     InvestigationContext,
     Scope,
@@ -26,8 +27,8 @@ from contracts import (
 
 from .model import AnalystModel
 from .packing import pack_evidence
-from .parse import VerdictParseError, parse_verdict, split_reasoning
-from .prompts import build_user_turn, system_prompt
+from .parse import FindingParseError, VerdictParseError, parse_finding, parse_verdict, split_reasoning
+from .prompts import build_facts_user_turn, build_user_turn, facts_system_prompt, system_prompt
 from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
@@ -211,4 +212,118 @@ async def analyze(
         overall_stance=overall_stance,
         confidence=confidence,
         verdicts=verdicts,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 of the hypothesis-blind redesign (see
+# docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md).
+# Mirrors run_one()'s shape but never receives the hypothesis. Not yet called
+# from analyze() -- that wiring is the Aggregator cycle, a later plan.
+# ---------------------------------------------------------------------------
+
+_FINDING_REASK = (
+    "\n\nYour previous reply did not end with the required block. "
+    "Reply again, ending with exactly:\n"
+    "OBSERVATIONS:\n- <observation> [header_id]\n"
+    "CONFIDENCE: <0.0-1.0>\n"
+    "RATIONALE: <one or two sentences>\n"
+    "CITATIONS: <comma-separated header ids>"
+)
+
+
+def gather_finding(
+    model: AnalystModel,
+    scope: Scope,
+    slice_: DomainSlice,
+) -> DomainFinding:
+    """One hypothesis-blind domain analyst, invoked synchronously.
+
+    Same empty-slice short-circuit, one-bounded-re-ask, and citation-validation
+    discipline as `run_one`, but this call never receives the hypothesis: its
+    system/user prompts come from `facts_system_prompt`/`build_facts_user_turn`,
+    which have no hypothesis parameter at all.
+    """
+    domain = slice_.domain
+
+    if not slice_.has_evidence():
+        return DomainFinding(
+            domain=domain,
+            confidence=0.0,
+            rationale=f"no {domain} evidence was retrieved",
+        )
+
+    system = facts_system_prompt(domain)
+    evidence_text, valid_ids, _ = pack_evidence(slice_)
+    user = build_facts_user_turn(scope, evidence_text)
+
+    try:
+        response = model.invoke(system, user)
+    except Exception as exc:
+        logger.warning("domain=%s | facts model call failed", domain, exc_info=True)
+        return DomainFinding(
+            domain=domain,
+            confidence=0.0,
+            rationale=f"{domain} analyst could not run: {type(exc).__name__}: {exc}",
+        )
+
+    prompt_tokens, generation_tokens = response.prompt_tokens, response.generation_tokens
+    try:
+        finding = parse_finding(response.generation, domain=domain)
+        return _finalize_finding(finding, valid_ids, prompt_tokens, generation_tokens)
+    except FindingParseError:
+        logger.info("domain=%s | first reply had no parseable finding, re-asking once", domain)
+
+    try:
+        retry = model.invoke(system, user + _FINDING_REASK)
+        prompt_tokens += retry.prompt_tokens
+        generation_tokens += retry.generation_tokens
+        finding = parse_finding(retry.generation, domain=domain)
+        return _finalize_finding(finding, valid_ids, prompt_tokens, generation_tokens)
+    except FindingParseError:
+        logger.warning("domain=%s | re-ask still produced no parseable finding", domain)
+        reasoning, _ = split_reasoning(response.generation)
+        return DomainFinding(
+            domain=domain,
+            confidence=0.0,
+            rationale=f"{domain} analyst produced no parseable finding after a re-ask",
+            reasoning_trace=reasoning,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+        )
+    except Exception as exc:
+        logger.warning("domain=%s | re-ask call failed", domain, exc_info=True)
+        return DomainFinding(
+            domain=domain,
+            confidence=0.0,
+            rationale=f"{domain} analyst re-ask failed: {type(exc).__name__}: {exc}",
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+        )
+
+
+def _finalize_finding(
+    finding: DomainFinding, valid_ids: set[str], prompt_tokens: int, generation_tokens: int
+) -> DomainFinding:
+    """Drop any citation that does not resolve to a real evidence header id.
+
+    No stance to downgrade here -- that concept doesn't exist at this layer, so
+    this is deliberately simpler than `_finalize`. The equivalent grounding gate
+    for a decided stance reappears at the Aggregator, in a later cycle.
+    """
+    kept = [c for c in finding.citations if c in valid_ids]
+    dropped = [c for c in finding.citations if c not in valid_ids]
+    if dropped:
+        logger.warning(
+            "domain=%s | dropped %d invented citation(s) from a finding: %s",
+            finding.domain,
+            len(dropped),
+            ", ".join(dropped),
+        )
+    return finding.model_copy(
+        update={
+            "citations": kept,
+            "prompt_tokens": prompt_tokens,
+            "generation_tokens": generation_tokens,
+        }
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from smartops.subagent_analysts.analyze import analyze, combine, run_one
+from smartops.subagent_analysts.analyze import analyze, combine, gather_finding, run_one
 from smartops.subagent_analysts.model import AnalystResponse
 from smartops.subagent_analysts.routing import DomainSlice
 
@@ -184,6 +184,75 @@ class TestRunOne:
         assert v.confidence == 0.0
         assert "no network evidence" in v.rationale
         assert model.calls == 0  # the model was never called
+
+
+class TestGatherFinding:
+    def test_good_finding_first_try(self):
+        gen = (
+            "</think>OBSERVATIONS:\n- clean logon for bostoll [auth_events#1]\n"
+            "CONFIDENCE: 0.6\nRATIONALE: nothing unusual.\nCITATIONS: auth_events#1"
+        )
+        model = _SequenceModel([gen])
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert finding.domain == "identity"
+        assert finding.confidence == 0.6
+        assert finding.citations == ["auth_events#1"]
+        assert model.calls == 1
+
+    def test_reask_recovers_a_malformed_first_reply(self):
+        good = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCITATIONS: auth_events#1"
+        model = _SequenceModel(["no recognisable block here", good])
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert finding.citations == ["auth_events#1"]
+        assert model.calls == 2
+
+    def test_both_attempts_unparseable_yields_empty_finding(self):
+        model = _SequenceModel(["prose one", "prose two"])
+        slice_ = DomainSlice(
+            domain="network",
+            siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[{"dest": "1.2.3.4"}]))],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert finding.confidence == 0.0
+        assert "no parseable finding" in finding.rationale
+        assert model.calls == 2
+
+    def test_invented_citation_is_dropped(self):
+        gen = (
+            "</think>OBSERVATIONS:\n- x [auth_events#1]\n- y [auth_events#99]\n"
+            "CITATIONS: auth_events#1, auth_events#99"
+        )
+        model = _SequenceModel([gen])
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert finding.citations == ["auth_events#1"]
+
+    def test_empty_slice_short_circuits_without_a_model_call(self):
+        model = _SequenceModel([])  # would IndexError if invoked
+        finding = gather_finding(model, _scope(), DomainSlice(domain="endpoint"))
+        assert finding.confidence == 0.0
+        assert "no endpoint evidence" in finding.rationale
+        assert model.calls == 0
+
+    def test_model_exception_is_contained(self):
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+        finding = gather_finding(_RaisingModel(), _scope(), slice_)
+        assert finding.confidence == 0.0
+        assert "could not run" in finding.rationale
 
 
 class TestAnalyze:
