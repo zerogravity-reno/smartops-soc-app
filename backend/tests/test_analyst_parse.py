@@ -53,6 +53,17 @@ class TestParseVerdict:
         assert parse_verdict("VERDICT: Refuted", domain="network").stance == "refutes"
         assert parse_verdict("VERDICT: insufficient evidence", domain="network").stance == "inconclusive"
 
+    def test_a_hedge_that_uses_the_other_stances_word_is_not_misread(self):
+        # `_normalise_stance` used to scan for "support" before "refut" or
+        # "inconclusive", anywhere in the line -- so a verbose 8B-model line
+        # that leads with the real stance but mentions the *other* word in
+        # passing got misclassified as the wrong stance entirely.
+        out = "VERDICT: inconclusive - insufficient support for compromise"
+        assert parse_verdict(out, domain="identity").stance == "inconclusive"
+
+        out2 = "VERDICT: refutes, there is no support for the hypothesis"
+        assert parse_verdict(out2, domain="identity").stance == "refutes"
+
     def test_missing_stance_raises(self):
         with pytest.raises(VerdictParseError):
             parse_verdict("</think>I think the host looks fine, no clear format here.", domain="endpoint")
@@ -63,6 +74,17 @@ class TestParseVerdict:
         assert v.rationale == ""
         assert v.key_observations == []
         assert v.citations == []
+
+    def test_confidence_without_a_value_does_not_grab_a_digit_from_a_citation(self):
+        # `\D*` crosses newlines, so with no numeric confidence given it used
+        # to walk past every intervening field and lock onto the "1" in
+        # `auth_events#1`, manufacturing confidence=1.0 from a reply that gave
+        # none.
+        out = (
+            "</think>VERDICT: inconclusive\nCONFIDENCE: unclear\n"
+            "RATIONALE: no clear pattern.\nCITATIONS: auth_events#1"
+        )
+        assert parse_verdict(out, domain="identity").confidence == 0.0
 
     def test_markdown_bolded_block_parses(self):
         # Real observed 8B output: the whole verdict block wrapped in ** emphasis.
@@ -126,6 +148,13 @@ class TestParseFinding:
         assert f.confidence == 0.0
         assert f.rationale == ""
         assert f.citations == []
+
+    def test_confidence_without_a_value_does_not_grab_a_digit_from_a_citation(self):
+        out = (
+            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "CONFIDENCE: unclear\nCITATIONS: auth_events#1"
+        )
+        assert parse_finding(out, domain="identity").confidence == 0.0
 
     def test_markdown_bolded_block_parses(self):
         out = (

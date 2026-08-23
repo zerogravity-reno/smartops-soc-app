@@ -20,8 +20,12 @@ _THINK_CLOSE = "</think>"
 
 _STANCE_RE = re.compile(r"VERDICT\s*:\s*(.+)", re.IGNORECASE)
 # `CONFIDENCE` and its value can be separated by markdown emphasis the 8B model
-# adds (`**CONFIDENCE:** 0.7`), so allow non-digit noise between them.
-_CONFIDENCE_RE = re.compile(r"CONFIDENCE\D*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+# adds (`**CONFIDENCE:** 0.7`), so allow non-digit noise between them -- but
+# `[^\n\d]` rather than `\D`, so that noise cannot cross a newline. `\D*` used
+# to walk straight past a valueless `CONFIDENCE: unclear` into the next digit
+# anywhere later in the text, including inside a citation like
+# `auth_events#1`, manufacturing confidence=1.0 from a reply that gave none.
+_CONFIDENCE_RE = re.compile(r"CONFIDENCE[^\n\d]*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 # A field stops at the next LABEL line, which the model may bold/emphasise
 # (`\n**OBSERVATIONS:**`). Allow leading emphasis/space before the label word.
 _RATIONALE_RE = re.compile(
@@ -30,6 +34,14 @@ _RATIONALE_RE = re.compile(
 _CITATIONS_RE = re.compile(r"CITATIONS\s*:\s*(.+)", re.IGNORECASE)
 _OBSERVATIONS_RE = re.compile(
     r"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*CITATIONS\s*:|\Z)", re.IGNORECASE | re.DOTALL
+)
+# `parse_finding`'s own OBSERVATIONS pattern, module-level like every other
+# pattern here rather than recompiled on every call. Deliberately not
+# `_OBSERVATIONS_RE`: that one assumes OBSERVATIONS immediately precedes
+# CITATIONS, but a hypothesis-blind finding's OBSERVATIONS may come before
+# CONFIDENCE/RATIONALE, so this stops at any subsequent label instead.
+_FINDING_OBSERVATIONS_RE = re.compile(
+    r"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*[A-Z][A-Z ]+\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 
 
@@ -62,14 +74,30 @@ def split_reasoning(generation: str) -> tuple[str | None, str]:
     return None, generation.strip()
 
 
+_STANCE_KEYWORDS: tuple[tuple[str, Stance], ...] = (
+    ("inconclusive", "inconclusive"),
+    ("insufficient", "inconclusive"),
+    ("unclear", "inconclusive"),
+    ("refut", "refutes"),
+    ("support", "supports"),
+)
+
+
 def _normalise_stance(raw: str) -> Stance | None:
     text = raw.strip().lower()
-    if "support" in text:
-        return "supports"
-    if "refut" in text:
-        return "refutes"
-    if "inconclusive" in text or "insufficient" in text or "unclear" in text:
-        return "inconclusive"
+    # The model is prompted to lead the VERDICT line with the stance word
+    # itself, so check the leading word first, before falling back to a
+    # substring scan over the whole line. Substring-only used to misclassify a
+    # verbose line where the *other* stance word appears in passing --
+    # `VERDICT: refutes, there is no support for the hypothesis` scanned
+    # "support" first and registered as `supports`.
+    leading = re.split(r"[\s,.;:\-]+", text, maxsplit=1)[0] if text else ""
+    for needle, stance in _STANCE_KEYWORDS:
+        if needle in leading:
+            return stance
+    for needle, stance in _STANCE_KEYWORDS:
+        if needle in text:
+            return stance
     return None
 
 
@@ -147,12 +175,7 @@ def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
     reasoning, raw_answer = split_reasoning(generation)
     answer = _strip_md(raw_answer)
 
-    # For findings, OBSERVATIONS may come before CONFIDENCE/RATIONALE, so use a
-    # pattern that stops at any subsequent label, not just CITATIONS.
-    observations_re = re.compile(
-        r"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*[A-Z][A-Z ]+\s*:|\Z)", re.IGNORECASE | re.DOTALL
-    )
-    observations_match = observations_re.search(answer)
+    observations_match = _FINDING_OBSERVATIONS_RE.search(answer)
     observations = []
     if observations_match:
         for line in observations_match.group(1).splitlines():
