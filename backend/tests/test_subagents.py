@@ -818,6 +818,50 @@ class TestTheAnswerSurvivesTheTurnCap:
 
         assert reserved["max_output_tokens"] == 12000 + subagents.RECOVERY_OUTPUT_TOKENS
 
+    async def test_a_failed_recovery_call_falls_back_to_the_first_calls_result(
+        self, monkeypatch
+    ):
+        # The recovery call is a bonus attempt riding on an already-billed first
+        # call. If it raises (e.g. throttled), that must not propagate out of
+        # `_build_agent_and_invoke` -- `investigate()`'s
+        # `except BaseException: await budget.release(reservation)` releases the
+        # FULL reservation, refunding the first call's real spend as if nothing
+        # happened.
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                self._calls = 0
+
+            async def invoke_async(self, prompt, **kwargs):
+                self._calls += 1
+                if self._calls == 1:
+                    capped = _Result(
+                        None, usage={"inputTokens": 500, "outputTokens": 200}
+                    )
+                    capped.stop_reason = "limit_turns"
+                    return capped
+                raise RuntimeError("throttled")
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        result = await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        assert result.structured_output is None
+        assert result.stop_reason == "limit_turns"
+        # The first call's real, already-billed usage -- not lost, not doubled.
+        assert result.metrics.accumulated_usage == {
+            "inputTokens": 500,
+            "outputTokens": 200,
+        }
+
     async def test_a_loop_that_answered_is_not_billed_for_a_second_call(
         self, monkeypatch
     ):

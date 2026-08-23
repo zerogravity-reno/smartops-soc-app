@@ -667,10 +667,31 @@ async def _build_agent_and_invoke(
     # cost overrun surfacing as a spurious domain failure is the worst way for
     # this to be discovered. Reporting an answer over evidence already gathered
     # needs a fraction of an exploration loop's output.
-    recovered = await agent.invoke_async(
-        _REPORT_WHAT_YOU_HAVE,
-        limits=Limits(turns=1, output_tokens=min(RECOVERY_OUTPUT_TOKENS, max_output_tokens)),
-    )
+    try:
+        recovered = await agent.invoke_async(
+            _REPORT_WHAT_YOU_HAVE,
+            limits=Limits(turns=1, output_tokens=min(RECOVERY_OUTPUT_TOKENS, max_output_tokens)),
+        )
+    except Exception as exc:
+        # This bonus call rides on an already-billed first call: `result` (and
+        # its `metrics`, shared with `agent.event_loop_metrics`) already carry
+        # that real spend. Letting this exception propagate would reach
+        # `investigate()`'s `except BaseException: await budget.release(...)`,
+        # which releases the FULL reservation -- refunding the first call's
+        # real spend as if nothing had happened. Falling back to the first
+        # call's `result` instead keeps it settleable, exactly like a recovery
+        # call that ran and still produced no answer.
+        # `Exception`, not `BaseException`: a genuine cancellation must still
+        # propagate and be released, not be swallowed as a normal failure.
+        logger.warning(
+            "task_id=%s family=%s | recovery call failed (%s: %s); falling back "
+            "to the first call's result",
+            mission.task_id,
+            family,
+            type(exc).__name__,
+            exc,
+        )
+        return result
 
     # Report why the *first* loop failed. The recovery call carries its own
     # `turns=1` cap, so when it fails too it reports `limit_turns` almost every
