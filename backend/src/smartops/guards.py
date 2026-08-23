@@ -20,8 +20,17 @@ _INDEX_TERM = re.compile(r"\bindex\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s()|,]+)", re.IG
 
 # Whether a string is a search at all. A tool that lists indexes or describes a
 # sourcetype takes no SPL and must not be required to pin an index.
+#
+# `datamodel=`/`tag=`/`eventtype=` are here for the same reason `sourcetype=`
+# is: rule 2 below accepts any of the four CIM predicates in place of a literal
+# index, but a bare Splunk base search using only one of them (Splunk implies
+# `search` on a bare filter, so it needs no pipe and no literal `search`
+# keyword) used to match none of the other alternatives -- so `_reject_reason`
+# treated it as "not a search at all" and exempted it from scoping entirely,
+# rather than reaching rule 2 to actually validate it.
 _LOOKS_LIKE_SEARCH = re.compile(
-    r"\bindex\s*=|\bsourcetype\s*=|\bearliest\s*=|\blatest\s*=|\|\s*\w|^\s*search\b",
+    r"\bindex\s*=|\bsourcetype\s*=|\bdatamodel\s*=|\btag\s*=|\beventtype\s*="
+    r"|\bearliest\s*=|\blatest\s*=|\|\s*\w|^\s*search\b",
     re.IGNORECASE,
 )
 

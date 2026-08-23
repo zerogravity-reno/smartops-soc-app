@@ -129,6 +129,14 @@ class TestDisallowedQueriesAreCancelled:
 
         assert event.cancel_tool is False
 
+    def test_a_bare_cim_predicate_with_no_pipe_is_recognised_and_allowed(self):
+        """Rule 2 accepts `eventtype=`/`datamodel=`/`tag=` in place of an index,
+        but only if the search-detection gate recognises the string as a search
+        at all -- a bare predicate with no pipe used to dodge that gate."""
+        for predicate in ("eventtype=network_traffic", "datamodel=Network_Traffic", "tag=authentication"):
+            event = _run({"query": f"{predicate} dest_port=4444"})
+            assert event.cancel_tool is False, predicate
+
     def test_one_disallowed_index_among_several_still_rejects(self):
         assert isinstance(
             _run({"query": "search index=botsv3 OR index=main | head 5"}).cancel_tool, str
