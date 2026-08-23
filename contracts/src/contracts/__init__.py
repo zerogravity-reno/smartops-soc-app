@@ -13,6 +13,7 @@ from contracts.findings import (
 from contracts.reasoning import (
     AnalystDomain,
     AnalystVerdict,
+    DomainFinding,
     HypothesisAssessment,
     InvestigationContext,
     Stance,
@@ -46,6 +47,7 @@ __all__ = [
     "Assessment",
     "BrokerReport",
     "CimCategory",
+    "DomainFinding",
     "HypothesisAssessment",
     "InvestigationContext",
     "Stance",

@@ -86,6 +86,40 @@ class AnalystVerdict(BaseModel):
     )
 
 
+class DomainFinding(BaseModel):
+    """One domain analyst's evidence-grounded findings, with no hypothesis in view.
+
+    Tier 1 of the hypothesis-blind pipeline (see
+    docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md): the
+    domain analyst never sees the hypothesis, so there is no `stance` here --
+    only what the evidence itself shows. A later Aggregator cycle turns a list
+    of these plus a hypothesis into an `AnalystVerdict` per domain.
+    """
+
+    domain: AnalystDomain
+    observations: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(
+        default_factory=list,
+        description="Evidence header ids the finding rests on, e.g. 'auth_events#1'.",
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence that these observations are real and correctly grounded -- "
+            "not confidence in any stance; there is no stance at this layer."
+        ),
+    )
+    rationale: str = ""
+    reasoning_trace: str | None = Field(
+        default=None,
+        description="The model's <think> chain. Persisted for audit, never re-fed.",
+    )
+    prompt_tokens: int = Field(default=0, ge=0)
+    generation_tokens: int = Field(default=0, ge=0)
+
+
 class HypothesisAssessment(BaseModel):
     """The rolled-up conclusion for one hypothesis, from the three domain verdicts.
 
