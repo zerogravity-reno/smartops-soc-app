@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from contracts import AnalystDomain, AnalystVerdict, Stance
+from contracts import AnalystDomain, AnalystVerdict, DomainFinding, Stance
 
 _THINK_CLOSE = "</think>"
 
@@ -127,5 +127,57 @@ def parse_verdict(
         rationale=rationale,
         key_observations=_parse_observations(answer),
         citations=_parse_citations(answer),
+        reasoning_trace=reasoning,
+    )
+
+
+class FindingParseError(ValueError):
+    """The generation carried no recognisable OBSERVATIONS or CITATIONS block."""
+
+
+def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
+    """Parse a hypothesis-blind generation into a `DomainFinding`.
+
+    Unlike `parse_verdict`, there is no stance to recover here: "parseable"
+    means an OBSERVATIONS or CITATIONS block was found at all. Reuses the same
+    generic label regexes as `parse_verdict`; only the stance-specific
+    `_STANCE_RE`/`_normalise_stance` are skipped, because there is no stance at
+    this layer.
+    """
+    reasoning, raw_answer = split_reasoning(generation)
+    answer = _strip_md(raw_answer)
+
+    # For findings, OBSERVATIONS may come before CONFIDENCE/RATIONALE, so use a
+    # pattern that stops at any subsequent label, not just CITATIONS.
+    observations_re = re.compile(
+        r"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*[A-Z][A-Z ]+\s*:|\Z)", re.IGNORECASE | re.DOTALL
+    )
+    observations_match = observations_re.search(answer)
+    observations = []
+    if observations_match:
+        for line in observations_match.group(1).splitlines():
+            line = line.strip().lstrip("-*").strip()
+            if line:
+                observations.append(line)
+
+    citations = _parse_citations(answer)
+    if not observations and not citations:
+        raise FindingParseError(
+            f"no OBSERVATIONS or CITATIONS block found in {domain} analyst output"
+        )
+
+    confidence_match = _CONFIDENCE_RE.search(answer)
+    confidence = float(confidence_match.group(1)) if confidence_match else 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    rationale_match = _RATIONALE_RE.search(answer)
+    rationale = rationale_match.group(1).strip() if rationale_match else ""
+
+    return DomainFinding(
+        domain=domain,
+        observations=observations,
+        citations=citations,
+        confidence=confidence,
+        rationale=rationale,
         reasoning_trace=reasoning,
     )

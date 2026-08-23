@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 from smartops.subagent_analysts.parse import (
+    FindingParseError,
     VerdictParseError,
+    parse_finding,
     parse_verdict,
     split_reasoning,
 )
@@ -81,3 +83,61 @@ class TestParseVerdict:
         assert "CoinHive" in v.rationale
         assert "OBSERVATIONS" not in v.rationale  # rationale stops at the next label
         assert v.key_observations == ["BSTOLL-L ran chrome.exe [processes#1]"]
+
+
+_GOOD_FINDING = """the logons cluster around one account with no failures preceding \
+success, and no process or network rows are present in this slice.
+</think>
+OBSERVATIONS:
+- one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]
+CONFIDENCE: 0.65
+RATIONALE: A single successful logon with no surrounding anomaly pattern.
+CITATIONS: auth_events#1"""
+
+
+class TestParseFinding:
+    def test_parses_rich_finding(self):
+        f = parse_finding(_GOOD_FINDING, domain="identity")
+        assert f.domain == "identity"
+        assert f.confidence == 0.65
+        assert "logon" in f.rationale
+        assert len(f.observations) == 1
+        assert f.citations == ["auth_events#1"]
+        assert f.reasoning_trace and "cluster" in f.reasoning_trace
+
+    def test_confidence_is_clamped(self):
+        out = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCONFIDENCE: 3.0\nCITATIONS: auth_events#1"
+        assert parse_finding(out, domain="network").confidence == 1.0
+
+    def test_missing_observations_and_citations_raises(self):
+        with pytest.raises(FindingParseError):
+            parse_finding("</think>I looked at the evidence and it seems fine.", domain="endpoint")
+
+    def test_citations_alone_are_enough_to_parse(self):
+        # No OBSERVATIONS block, but a CITATIONS line is still a recognisable finding.
+        out = "</think>RATIONALE: nothing notable.\nCITATIONS: auth_events#1"
+        f = parse_finding(out, domain="identity")
+        assert f.citations == ["auth_events#1"]
+        assert f.observations == []
+
+    def test_defaults_when_optional_fields_absent(self):
+        out = "</think>OBSERVATIONS:\n- x [auth_events#1]"
+        f = parse_finding(out, domain="endpoint")
+        assert f.confidence == 0.0
+        assert f.rationale == ""
+        assert f.citations == []
+
+    def test_markdown_bolded_block_parses(self):
+        out = (
+            "prose...\n</think>\n"
+            "**OBSERVATIONS:**  \n"
+            "- BSTOLL-L ran chrome.exe [processes#1]  \n"
+            "**CONFIDENCE:** 0.7  \n"
+            "**RATIONALE:** Evidence shows chrome.exe referencing the CoinHive library.  \n"
+            "**CITATIONS:** processes#1"
+        )
+        f = parse_finding(out, domain="endpoint")
+        assert f.confidence == 0.7
+        assert f.citations == ["processes#1"]
+        assert "CoinHive" in f.rationale
+        assert f.observations == ["BSTOLL-L ran chrome.exe [processes#1]"]
