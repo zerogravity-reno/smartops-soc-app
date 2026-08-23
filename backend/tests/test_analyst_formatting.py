@@ -32,6 +32,19 @@ class TestFieldProjection:
         assert "user=bostoll" in line
         assert "action=success" in line
 
+    def test_auth_event_carries_eventcode_and_logon_type(self):
+        # The one discriminating pair of fields that tells a CachedInteractive
+        # unlock (EventCode 4624, Logon_Type 11) apart from a password spray:
+        # dropping them left both the old and new analyst reasoning over six
+        # near-identical rows with the actual signal stripped out.
+        line = format_row(
+            "auth_events",
+            {"_time": "2018-08-20T13:05:01Z", "user": "bostoll",
+             "EventCode": "4624", "Logon_Type": "11"},
+        )
+        assert "code=4624" in line
+        assert "logon_type=11" in line
+
     def test_connection_joins_host_and_port(self):
         line = format_row(
             "connections",

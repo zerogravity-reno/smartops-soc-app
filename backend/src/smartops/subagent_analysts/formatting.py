@@ -52,6 +52,13 @@ def _format_auth_event(row: dict[str, Any]) -> str:
         f"src={_first(row, 'src', 'src_ip', 'Source_Network_Address')} "
         f"dest={_first(row, 'dest', 'dest_host', 'Computer', 'host')} "
         f"action={_first(row, 'action', 'status', 'signature')} "
+        # `code`/`logon_type` are the discriminating pair: without them, a
+        # CachedInteractive unlock (EventCode 4624, Logon_Type 11) and a real
+        # password spray render as identical near-blank rows. Both raw Windows
+        # spellings appear across BOTS v3 sourcetypes (`Logon_Type` on some,
+        # `LogonType` on others); `logon_type` is the CIM-normalised alias.
+        f"code={_first(row, 'EventCode', 'signature_id', 'event_id')} "
+        f"logon_type={_first(row, 'Logon_Type', 'LogonType', 'logon_type')} "
         f"app={_first(row, 'app', 'sourcetype')}"
     )
 
