@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -104,6 +105,12 @@ class AnalystModel:
         self._api_key = (api_key or os.environ.get(API_KEY_ENV_VAR, "")).strip()
         self._client = client
         self._sleep = sleep  # injectable so tests do not actually wait
+        # `analyze()` runs identity/network/endpoint concurrently via
+        # `asyncio.gather(*(asyncio.to_thread(run_one, model, ...)))`, all
+        # sharing this one `AnalystModel`. `threading.Lock`, not an
+        # `asyncio.Lock`: `_get_client()` runs inside those worker threads, not
+        # on the event loop.
+        self._client_lock = threading.Lock()
 
     @staticmethod
     def format_prompt(system: str, user: str) -> str:
@@ -121,26 +128,59 @@ class AnalystModel:
         # template/parse helpers.
         import boto3
 
-        kwargs: dict[str, Any] = {"region_name": self.region}
-        if self._api_key:
-            if self._api_key.startswith("ABSK"):
-                # A Bedrock API key (bearer token): boto3's bedrock-runtime picks
-                # this up from the environment.
-                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._api_key
-            else:
-                parts = self._api_key.split(":")
-                if len(parts) >= 2:
-                    kwargs["aws_access_key_id"] = parts[0].strip()
-                    kwargs["aws_secret_access_key"] = parts[1].strip()
-                    if len(parts) >= 3:
-                        kwargs["aws_session_token"] = parts[2].strip()
+        # Double-checked locking: the env-var set/build-client/restore sequence
+        # below is not safe to run from two threads at once (one thread's
+        # `finally` restore can fire while a sibling's `boto3.client()` call is
+        # still reading the env var), and `analyze()` calls `_get_client()`
+        # from concurrent worker threads that share this one `AnalystModel`.
+        # The outer check above already short-circuits every call after the
+        # first; this one covers the callers that arrived while the lock was
+        # held building it.
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+
+            kwargs: dict[str, Any] = {"region_name": self.region}
+            # botocore reads `AWS_BEARER_TOKEN_BEDROCK` exactly once, at
+            # `boto3.client(...)` construction time
+            # (`ClientCreator._evaluate_client_specific_token`,
+            # botocore/client.py:157-160) -- never again per request, so the env
+            # var only needs to exist for the call below. `restore_bearer_env`
+            # puts back whatever was there before (or removes it) once the
+            # client is built, so this mutation does not outlive this one call:
+            # without it, a second `AnalystModel` built later in the same
+            # process with no explicit key would silently inherit this one's
+            # stale bearer token instead of falling through to the default AWS
+            # credential chain.
+            restore_bearer_env: Any = None
+            if self._api_key:
+                if self._api_key.startswith("ABSK"):
+                    # A Bedrock API key (bearer token): boto3's bedrock-runtime
+                    # picks this up from the environment.
+                    previous_bearer_env = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._api_key
+                    restore_bearer_env = previous_bearer_env
                 else:
-                    logger.warning(
-                        "%s is set but is neither an ABSK key nor ACCESS:SECRET; "
-                        "ignoring it and falling back to the default credential chain",
-                        API_KEY_ENV_VAR,
-                    )
-        self._client = boto3.client("bedrock-runtime", **kwargs)
+                    parts = self._api_key.split(":")
+                    if len(parts) >= 2:
+                        kwargs["aws_access_key_id"] = parts[0].strip()
+                        kwargs["aws_secret_access_key"] = parts[1].strip()
+                        if len(parts) >= 3:
+                            kwargs["aws_session_token"] = parts[2].strip()
+                    else:
+                        logger.warning(
+                            "%s is set but is neither an ABSK key nor ACCESS:SECRET; "
+                            "ignoring it and falling back to the default credential chain",
+                            API_KEY_ENV_VAR,
+                        )
+            try:
+                self._client = boto3.client("bedrock-runtime", **kwargs)
+            finally:
+                if self._api_key.startswith("ABSK"):
+                    if restore_bearer_env is None:
+                        os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+                    else:
+                        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = restore_bearer_env
         return self._client
 
     def invoke(self, system: str, user: str) -> AnalystResponse:

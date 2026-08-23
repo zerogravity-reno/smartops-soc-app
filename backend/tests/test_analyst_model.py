@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 
 import pytest
 from smartops.errors import NotConfigured
@@ -113,6 +116,87 @@ class TestColdStartWarmup:
         with pytest.raises(ClientError):
             model.invoke("s", "u")
         assert client.calls == 3  # initial + 2 retries
+
+
+class TestBearerTokenEnvIsScoped:
+    """`AWS_BEARER_TOKEN_BEDROCK` is process-global; botocore only ever reads it
+    at `boto3.client(...)` construction (`_evaluate_client_specific_token`), so
+    the mutation must not outlive that one call."""
+
+    def test_a_later_model_with_no_key_does_not_inherit_the_env_mutation(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.setattr("boto3.client", lambda *a, **k: object())
+
+        AnalystModel(model_arn="arn:fake", api_key="ABSK-first-secret")._get_client()
+
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
+
+    def test_a_pre_existing_bearer_token_is_restored_after_client_construction(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "pre-existing-token")
+        monkeypatch.setattr("boto3.client", lambda *a, **k: object())
+
+        AnalystModel(model_arn="arn:fake", api_key="ABSK-secret")._get_client()
+
+        assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "pre-existing-token"
+
+    def test_the_token_is_present_during_client_construction(self, monkeypatch):
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        seen = {}
+
+        def fake_client(*args, **kwargs):
+            seen["token"] = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+            return object()
+
+        monkeypatch.setattr("boto3.client", fake_client)
+
+        AnalystModel(model_arn="arn:fake", api_key="ABSK-secret")._get_client()
+
+        assert seen["token"] == "ABSK-secret"
+
+
+class TestConcurrentClientConstructionIsSerialized:
+    """`analyze()` fans identity/network/endpoint out via
+    `asyncio.gather(*(asyncio.to_thread(run_one, model, ...)))`, all three
+    sharing one `AnalystModel`. Without a lock, several worker threads can pass
+    `self._client is None` at once and each independently run the
+    set-env/build-client/restore-env sequence, so one thread's `finally` restore
+    can fire while a sibling's `boto3.client()` call is still reading the (now
+    wrong) env var."""
+
+    def test_only_one_client_is_built_and_the_env_var_ends_up_clean(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        build_count = 0
+        seen_tokens = []
+        count_lock = threading.Lock()
+
+        def fake_client(*args, **kwargs):
+            nonlocal build_count
+            with count_lock:
+                build_count += 1
+            # Widens the race window so an unsynchronized implementation is
+            # overwhelmingly likely to interleave within it.
+            time.sleep(0.05)
+            seen_tokens.append(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
+            return object()
+
+        monkeypatch.setattr("boto3.client", fake_client)
+        model = AnalystModel(model_arn="arn:fake", api_key="ABSK-shared-secret")
+
+        threads = [threading.Thread(target=model._get_client) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert build_count == 1, "the client must be built once, not once per racing thread"
+        assert seen_tokens == ["ABSK-shared-secret"]
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
 
 
 class TestFromEnv:
