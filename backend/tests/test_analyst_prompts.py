@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from smartops.subagent_analysts.packing import estimate_tokens, pack_evidence
-from smartops.subagent_analysts.prompts import build_user_turn, system_prompt
+from smartops.subagent_analysts.prompts import (
+    build_facts_user_turn,
+    build_user_turn,
+    facts_system_prompt,
+    system_prompt,
+)
 from smartops.subagent_analysts.routing import DomainSlice
 
 from contracts import Entity, InvestigationContext, ResultSet, Scope, VtVerdict
@@ -49,6 +54,41 @@ class TestUserTurn:
     def test_scope_and_evidence_are_fenced(self):
         ctx = InvestigationContext(hypothesis="h")
         turn = build_user_turn(ctx, _scope(), "# auth_events#1 · rows=1")
+        assert "<scope>" in turn and "host: BSTOLL-L" in turn
+        assert "<evidence>" in turn and "auth_events#1" in turn
+
+
+class TestFactsSystemPrompt:
+    def test_domain_focus_is_embedded(self):
+        assert "authentication" in facts_system_prompt("identity").lower()
+        assert "dns" in facts_system_prompt("network").lower()
+        assert "process" in facts_system_prompt("endpoint").lower()
+
+    def test_no_hypothesis_or_verdict_framing(self):
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+            assert "HYPOTHESIS" not in p
+            assert "VERDICT" not in p
+            assert "hypothesis" not in p.lower()
+
+    def test_states_finding_format_and_untrusted_regions(self):
+        p = facts_system_prompt("identity")
+        assert "OBSERVATIONS:" in p and "CONFIDENCE:" in p and "CITATIONS:" in p
+        assert "UNTRUSTED" in p
+
+    def test_augments_metis_persona_not_replaces_it(self):
+        p = facts_system_prompt("network")
+        assert "You are Metis" in p
+        assert p.index("You are Metis") < p.index("network detection")
+
+
+class TestFactsUserTurn:
+    def test_no_hypothesis_anywhere(self):
+        turn = build_facts_user_turn(_scope(), "# auth_events#1 · rows=1")
+        assert "hypothesis" not in turn.lower()
+
+    def test_scope_and_evidence_are_fenced(self):
+        turn = build_facts_user_turn(_scope(), "# auth_events#1 · rows=1")
         assert "<scope>" in turn and "host: BSTOLL-L" in turn
         assert "<evidence>" in turn and "auth_events#1" in turn
 
