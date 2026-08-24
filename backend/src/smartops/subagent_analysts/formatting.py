@@ -17,12 +17,43 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from smartops.guards import escape_untrusted
+
 from contracts import CimCategory, ResultSet, VtVerdict
 
 # How much of a command line survives into a line. A full command line can be
 # hundreds of characters; the reasoning signal is in its head (the binary and its
 # first arguments), and an un-truncated one would blow the row budget on one row.
 _CMDLINE_LIMIT = 200
+
+
+def _sanitise(value: str) -> str:
+    """Neutralise a value that came from telemetry before it becomes prompt text.
+
+    Every row value originates in logs an attacker can influence, and the
+    evidence region is fenced but NOT escaped (`prompts.build_user_turn`), on
+    the reasoning that the block is code-formatted. That is true of the
+    structure and false of the values -- which is how a payload in a `user`
+    field was able to close `</evidence>`, put an instruction outside the fence,
+    and forge a second evidence block under a header id that was already in
+    `valid_citation_ids()`. A verdict resting entirely on those forged rows
+    cited a resolvable id and passed the grounding gate.
+
+    Two steps, and the order matters:
+
+    1. Collapse whitespace. This is the half that closes the forgery -- without
+       a newline a payload cannot start a line that looks like a header or a
+       tag, and both the header syntax (`# category#N`) and the fence are only
+       meaningful at the start of a line. It also keeps one row on one line,
+       which the line-per-row format already assumes.
+    2. Escape `&`, `<`, `>` via the shared `guards.escape_untrusted`. Escaped
+       rather than stripped, matching that function's recorded reasoning: the
+       tampering stays legible in the artifact instead of vanishing.
+
+    Applied per value rather than to the finished block so it can never mangle
+    the structural characters the projectors emit themselves (`→`, `·`, `#`).
+    """
+    return escape_untrusted(" ".join(value.split()))
 
 
 def _first(row: dict[str, Any], *keys: str, default: str = "-") -> str:
@@ -37,7 +68,7 @@ def _first(row: dict[str, Any], *keys: str, default: str = "-") -> str:
     for key in keys:
         value = lower.get(key.lower())
         if value is not None and str(value).strip():
-            return str(value).strip()
+            return _sanitise(str(value))
     return default
 
 
@@ -155,7 +186,9 @@ def _format_generic(row: dict[str, Any]) -> str:
     retrieved and paid for -- without letting one wide row spend the whole budget.
     """
     items = list(row.items())[:8]
-    return " ".join(f"{k}={_truncate(str(v), 80)}" for k, v in items) or "(empty row)"
+    return " ".join(
+        f"{_sanitise(str(k))}={_truncate(_sanitise(str(v)), 80)}" for k, v in items
+    ) or "(empty row)"
 
 
 _FORMATTERS: dict[CimCategory, Any] = {
@@ -241,7 +274,7 @@ def format_result_set(
     and it came back empty" is a finding the analyst must be able to see.
     """
     header = (
-        f"# {category}#{index} · query=\"{_truncate(result_set.query, 160)}\" "
+        f"# {category}#{index} · query=\"{_truncate(_sanitise(result_set.query), 160)}\" "
         f"· rows={result_set.row_count}"
     )
     if not result_set.rows:
