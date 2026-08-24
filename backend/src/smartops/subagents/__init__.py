@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from contracts.subtask import evidence_id as _evidence_id
 from contracts import (
     Evidence,
     QueryRun,
@@ -295,7 +296,7 @@ class _EvidenceCollector:
     def evidence(self, task_id: str, family: str, at: datetime) -> list[Evidence]:
         return [
             Evidence(
-                id=f"{task_id}:{index}",
+                id=_evidence_id(task_id, index),
                 tool_family=family,  # type: ignore[arg-type]
                 raw={"tool": call.tool, "query": call.query, "result": call.payload},
                 collected_at=at,
@@ -530,7 +531,7 @@ async def investigate(
             ),
             # No answer means no category tags, so every result set lands in
             # `uncategorised` -- the rows were still retrieved and paid for.
-            findings=project(family, collector.calls, queries_run),
+            findings=project(family, collector.calls, queries_run, mission.task_id),
             error=None if evidence else "subagent returned no structured output and no evidence",
             queries_run=queries_run,
             blocked_queries=list(guard.blocked) if guard is not None else [],
@@ -551,7 +552,7 @@ async def investigate(
         evidence=evidence,
         # The model said which category each of its queries served; the rows come
         # from what the tools returned. Neither half can forge the other.
-        findings=project(family, collector.calls, answer.queries_run) or (project_vt(collector.calls) if family == "vt" else None),
+        findings=project(family, collector.calls, answer.queries_run, mission.task_id) or (project_vt(collector.calls, mission.task_id) if family == "vt" else None),
     )
     # `from_answer` cites nothing, because only this layer knows the evidence ids;
     # nor does it know what the guard refused, which is not the model's to report.

@@ -51,6 +51,18 @@ Context Contract Template. `process` and `url` are the least settled members.
 
 
 MAX_ENTITY_VALUE_LENGTH = 512
+
+
+def evidence_id(task_id: str, index: int) -> str:
+    """The id of the `index`-th evidence item collected under `task_id`.
+
+    One formula, one place. It was previously inlined at two minting sites
+    (`smartops.subagents._EvidenceCollector.evidence` and `smartops.broker`),
+    and the projectors are about to become a third consumer -- three copies of
+    a format string that must agree exactly, or a `ResultSet.evidence_id`
+    silently points at nothing.
+    """
+    return f"{task_id}:{index}"
 """Upper bound on an `Entity.value`. An observable is not a payload.
 
 Comfortably above every kind's realistic maximum -- SHA-512 hex is 128

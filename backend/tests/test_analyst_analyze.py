@@ -314,7 +314,7 @@ class TestInlineObservationCitations:
                 "lateral movement to DC01 [processes#3]",
             ],
         )
-        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        out = _finalize(verdict, {"auth_events#1": []}, 10, 20)
         assert out.key_observations == ["400 failed logons for bostoll [auth_events#1]"]
 
     def test_an_observation_keeps_only_its_resolving_ids(self):
@@ -323,7 +323,7 @@ class TestInlineObservationCitations:
             citations=["auth_events#1"],
             key_observations=["spray from one source [auth_events#1][auth_events#9]"],
         )
-        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        out = _finalize(verdict, {"auth_events#1": []}, 10, 20)
         assert "auth_events#9" not in out.key_observations[0]
         assert "auth_events#1" in out.key_observations[0]
 
@@ -336,7 +336,7 @@ class TestInlineObservationCitations:
             citations=[],
             key_observations=["brute force against bostoll [auth_events#1]"],
         )
-        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        out = _finalize(verdict, {"auth_events#1": []}, 10, 20)
         assert out.stance == "supports"
         assert "auth_events#1" in out.citations
 
@@ -348,7 +348,7 @@ class TestInlineObservationCitations:
             citations=["auth_events#1"],
             key_observations=["the account is a service account"],
         )
-        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        out = _finalize(verdict, {"auth_events#1": []}, 10, 20)
         assert out.key_observations == ["the account is a service account"]
 
     def test_the_hypothesis_blind_path_drops_them_too(self):
@@ -360,5 +360,19 @@ class TestInlineObservationCitations:
                 "invented claim [processes#42]",
             ],
         )
-        out = _finalize_finding(finding, {"processes#1"}, 10, 20)
+        out = _finalize_finding(finding, {"processes#1": []}, 10, 20)
         assert out.observations == ["powershell -enc observed [processes#1]"]
+
+
+def test_a_verdict_records_which_evidence_its_citations_resolve_to():
+    from contracts import AnalystVerdict
+    from smartops.subagent_analysts.analyze import _finalize
+
+    verdict = AnalystVerdict(
+        domain="network", stance="supports", confidence=0.9,
+        citations=["connections#1"], key_observations=[],
+    )
+    out = _finalize(verdict, {"connections#1": ["t:siem:x:0"]}, 10, 20)
+
+    assert out.citations == ["connections#1"]
+    assert out.citation_evidence == {"connections#1": ["t:siem:x:0"]}

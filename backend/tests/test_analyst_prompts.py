@@ -97,7 +97,7 @@ class TestPacking:
     def test_empty_slice_reports_no_evidence(self):
         text, valid_ids, truncated = pack_evidence(DomainSlice(domain="network"))
         assert "no evidence" in text.lower()
-        assert valid_ids == set()
+        assert valid_ids.keys() == set()
         assert truncated is False
 
     def test_small_slice_is_not_truncated_and_exposes_ids(self):
@@ -109,7 +109,7 @@ class TestPacking:
         text, valid_ids, truncated = pack_evidence(slice_)
         assert "bad.com" in text
         assert truncated is False
-        assert valid_ids == {"reputation#1", "dns_resolutions#1"}
+        assert valid_ids.keys() == {"reputation#1", "dns_resolutions#1"}
 
     def test_large_slice_shrinks_and_flags_truncation(self):
         big_rows = [{"user": f"u{i}", "action": "failure"} for i in range(5000)]
@@ -121,7 +121,7 @@ class TestPacking:
         text, valid_ids, truncated = pack_evidence(slice_, token_budget=200)
         assert truncated is True
         assert "auth_events#1" in text  # header (and thus the set) still present
-        assert valid_ids == {"auth_events#1"}
+        assert valid_ids.keys() == {"auth_events#1"}
         assert estimate_tokens(text) <= 400  # shrunk near the budget, not the full 5000 rows
 
 
@@ -151,3 +151,28 @@ def test_a_forged_evidence_block_cannot_reach_the_user_turn():
     assert turn.count("<evidence>") == 1
     # The payload is still legible, just inert -- escaped, not deleted.
     assert "&lt;/evidence&gt;" in turn
+
+
+def test_valid_citation_ids_maps_each_header_to_its_evidence():
+    # A citation is a POSITION (`connections#23` means 'the 23rd connections set
+    # in this slice'), minted by enumerate() at pack time and never stored. If
+    # the routing order ever changes, every stored citation silently re-targets.
+    from contracts import ResultSet, VtVerdict
+    from smartops.subagent_analysts.packing import valid_citation_ids
+    from smartops.subagent_analysts.routing import DomainSlice
+
+    slice_ = DomainSlice(
+        domain="network",
+        siem_sets=[
+            ("connections", ResultSet(query="a", row_count=0, evidence_id="t:siem:x:0")),
+            ("connections", ResultSet(query="b", row_count=0, evidence_id="t:siem:x:1")),
+        ],
+        vt_verdicts=[VtVerdict(kind="domain", value="x.com", found=True,
+                               evidence_id="t:vt:y:0")],
+    )
+    mapping = valid_citation_ids(slice_)
+
+    assert mapping["connections#1"] == ["t:siem:x:0"]
+    assert mapping["connections#2"] == ["t:siem:x:1"]
+    # One reputation header covers every VT verdict in the slice, so it is a list.
+    assert mapping["reputation#1"] == ["t:vt:y:0"]

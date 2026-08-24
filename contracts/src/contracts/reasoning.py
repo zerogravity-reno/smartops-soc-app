@@ -70,6 +70,18 @@ class AnalystVerdict(BaseModel):
         default_factory=list,
         description="Evidence header ids the verdict rests on, e.g. 'auth_events#1'.",
     )
+    citation_evidence: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Each kept citation mapped to the `Evidence.id`s it resolves to, "
+            "frozen when the verdict was finalised. This is what makes the "
+            "grounding durable rather than merely enforced at runtime: the gate "
+            "really does drop fabricated citations, but that decision was never "
+            "recorded, so a stored verdict could not be traced to the rows it "
+            "rested on without recomputing the routing. A list per citation "
+            "because one `reputation#1` header covers every VT verdict in a slice."
+        ),
+    )
     reasoning_trace: str | None = Field(
         default=None,
         description="The model's <think> chain. Persisted for audit, never re-fed.",

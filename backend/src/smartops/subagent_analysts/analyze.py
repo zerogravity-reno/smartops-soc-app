@@ -43,7 +43,7 @@ Both prompt footers ask for one per observation (`prompts.py:65`, `:238`), and
 
 
 def _resolve_observation_citations(
-    observations: list[str], valid_ids: set[str]
+    observations: list[str], valid_ids: dict[str, list[str]]
 ) -> tuple[list[str], set[str]]:
     """Drop observations whose citations are all invented; keep the valid ids.
 
@@ -65,7 +65,9 @@ def _resolve_observation_citations(
         if not cited:
             kept.append(observation)
             continue
-        resolving = cited & valid_ids
+        # `.keys()`, not the mapping: `valid_ids` carries each header id's
+        # evidence ids now, and only the ids themselves are the validity test.
+        resolving = cited & valid_ids.keys()
         if not resolving:
             logger.warning(
                 "dropped an observation citing only unresolvable id(s): %s",
@@ -165,7 +167,10 @@ def run_one(
 
 
 def _finalize(
-    verdict: AnalystVerdict, valid_ids: set[str], prompt_tokens: int, generation_tokens: int
+    verdict: AnalystVerdict,
+    valid_ids: dict[str, list[str]],
+    prompt_tokens: int,
+    generation_tokens: int,
 ) -> AnalystVerdict:
     """Anti-hallucination gate + token stamping applied to a parsed verdict.
 
@@ -198,6 +203,11 @@ def _finalize(
 
     updates: dict = {
         "citations": kept,
+        # Freeze what each kept citation resolves to. The gate already dropped
+        # the fabrications; recording the survivors is what makes that decision
+        # survive into assessment.json, instead of being reproducible only by
+        # re-running route() with identical ordering.
+        "citation_evidence": {c: list(valid_ids.get(c, [])) for c in kept},
         "key_observations": observations,
         "prompt_tokens": prompt_tokens,
         "generation_tokens": generation_tokens,
@@ -361,7 +371,10 @@ def gather_finding(
 
 
 def _finalize_finding(
-    finding: DomainFinding, valid_ids: set[str], prompt_tokens: int, generation_tokens: int
+    finding: DomainFinding,
+    valid_ids: dict[str, list[str]],
+    prompt_tokens: int,
+    generation_tokens: int,
 ) -> DomainFinding:
     """Drop any citation that does not resolve to a real evidence header id.
 

@@ -49,6 +49,17 @@ class ResultSet(BaseModel):
     query: str = Field(min_length=1)
     row_count: int = Field(ge=0)
     rows: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_id: str | None = Field(
+        default=None,
+        description=(
+            "The `Evidence.id` this result set's rows were projected from. "
+            "Without it a stored citation resolves only to a POSITION in a "
+            "recomputed routing (`connections#23` means 'the 23rd connections "
+            "set'), so if the routing order ever changes every stored citation "
+            "silently re-targets different evidence. Optional because artifacts "
+            "written before this field exist and must still load."
+        ),
+    )
 
 
 class Assessment(BaseModel):
@@ -157,6 +168,13 @@ class VtVerdict(BaseModel):
     harmless: int = 0
     undetected: int = 0
     reputation: int | None = None
+    evidence_id: str | None = Field(
+        default=None,
+        description=(
+            "The `Evidence.id` this verdict was projected from. See "
+            "`ResultSet.evidence_id`."
+        ),
+    )
 
 
 class VtAssessment(Assessment):

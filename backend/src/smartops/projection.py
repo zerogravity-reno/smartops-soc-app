@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from contracts.findings import VtFindings, VtVerdict
+from contracts.subtask import evidence_id as _evidence_id
 
 from contracts import CimCategory, Findings, QueryRun, ResultSet, SiemFindings
 
@@ -179,7 +180,7 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
     return None
 
 
-def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
+def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) -> SiemFindings:
     """Bucket each executed call's rows into the CIM category its query was tagged with."""
     by_query: dict[str, CimCategory | None] = {
         _normalise(q.query): q.category for q in queries_run
@@ -188,12 +189,17 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
     buckets: dict[str, list[ResultSet]] = {name: [] for name in _CIM_BUCKETS}
     buckets["uncategorised"] = []
 
-    for call in calls:
+    for index, call in enumerate(calls):
         rows = _rows_of(call.payload)
         result_set = ResultSet(
             query=call.query or f"<{call.tool}: query not recoverable from tool input>",
             row_count=len(rows),
             rows=rows,
+            # Index-aligned with `_EvidenceCollector.evidence()`, which mints ids
+            # from `enumerate(self.calls)` over this same list. That alignment is
+            # the entire basis of the back-reference, so both sides call the one
+            # shared formula rather than keeping two copies of a format string.
+            evidence_id=_evidence_id(task_id, index),
         )
 
         category = by_query.get(_normalise(call.query)) if call.query else None
@@ -218,10 +224,12 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun]) -> SiemFindings:
     return SiemFindings(**buckets)
 
 
-def project_vt(calls: list[Any]) -> VtFindings:
+def project_vt(calls: list[Any], task_id: str) -> VtFindings:
     """Project captured VT tool calls into VtFindings."""
     verdicts: list[VtVerdict] = []
-    for c in calls:
+    for index, c in enumerate(calls):
+        # Same index alignment as `project_siem`; see the comment there.
+        eid = _evidence_id(task_id, index)
         payload = getattr(c, "payload", c)
         tool_name = getattr(c, "tool", "vt_lookup")
         query_val = getattr(c, "query", None)
@@ -229,9 +237,13 @@ def project_vt(calls: list[Any]) -> VtFindings:
         if isinstance(payload, dict) and "verdicts" in payload:
             for v in payload["verdicts"]:
                 if isinstance(v, VtVerdict):
-                    verdicts.append(v)
+                    verdicts.append(v if v.evidence_id else v.model_copy(update={"evidence_id": eid}))
                 elif isinstance(v, dict):
-                    verdicts.append(VtVerdict(**v))
+                    # Spread the payload AFTER the default so a payload that
+                    # already carries `evidence_id` wins. Passing it as a keyword
+                    # alongside `**v` would be a duplicate-keyword TypeError the
+                    # moment such a payload appeared.
+                    verdicts.append(VtVerdict(**{"evidence_id": eid, **v}))
             continue
 
         # `finditer`, not `search`: one lookup can report several indicators, and
@@ -268,6 +280,7 @@ def project_vt(calls: list[Any]) -> VtFindings:
                         harmless=0,
                         undetected=0,
                         reputation=None,
+                        evidence_id=eid,
                     )
                 )
             else:
@@ -285,13 +298,16 @@ def project_vt(calls: list[Any]) -> VtFindings:
                         harmless=harmless,
                         undetected=0,
                         reputation=None,
+                        evidence_id=eid,
                     )
                 )
     return VtFindings(verdicts=verdicts)
 
 
-def project(family: str, calls: list[Any], queries_run: list[QueryRun]) -> Findings | None:
+def project(
+    family: str, calls: list[Any], queries_run: list[QueryRun], task_id: str
+) -> Findings | None:
     """The family's typed payload, or `None` where the family has no projector."""
     if family == "siem":
-        return project_siem(calls, queries_run)
+        return project_siem(calls, queries_run, task_id)
     return None

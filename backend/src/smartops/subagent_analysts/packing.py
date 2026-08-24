@@ -47,32 +47,46 @@ def _render(slice_: DomainSlice, row_cap: int) -> str:
     return "\n\n".join(blocks)
 
 
-def valid_citation_ids(slice_: DomainSlice) -> set[str]:
-    """The header ids emitted for this slice, i.e. the only citations that resolve.
+def valid_citation_ids(slice_: DomainSlice) -> dict[str, list[str]]:
+    """Each emitted header id mapped to the `Evidence.id`s behind it.
 
-    Mirrors `_render`'s block order/numbering exactly, so a model citation is valid
-    iff it is in this set. Used by the anti-hallucination gate in `analyze`.
+    Mirrors `_render`'s block order and numbering exactly, so a model citation
+    is valid iff it is a key here. Returns the MAP rather than a bare set, and a
+    separate parallel function was deliberately NOT added: the two would each
+    have to mirror `_render` identically and would rot the first time one
+    changed. Callers that want only validity use the keys, which is what a
+    membership test on a dict already does.
+
+    A list per id because one `reputation#1` header covers every VT verdict in
+    the slice. An entry is `[]` when the source predates `ResultSet.evidence_id`.
     """
-    ids: set[str] = set()
+    ids: dict[str, list[str]] = {}
     if slice_.vt_verdicts:
-        ids.add("reputation#1")
-    for i, (category, _rs) in enumerate(slice_.siem_sets, start=1):
-        ids.add(f"{category}#{i}")
-    for i, _rs in enumerate(slice_.untagged_sets, start=1):
-        ids.add(f"uncategorised#{i}")
+        ids["reputation#1"] = [
+            v.evidence_id for v in slice_.vt_verdicts if v.evidence_id
+        ]
+    for i, (category, result_set) in enumerate(slice_.siem_sets, start=1):
+        ids[f"{category}#{i}"] = (
+            [result_set.evidence_id] if result_set.evidence_id else []
+        )
+    for i, result_set in enumerate(slice_.untagged_sets, start=1):
+        ids[f"uncategorised#{i}"] = (
+            [result_set.evidence_id] if result_set.evidence_id else []
+        )
     return ids
 
 
 def pack_evidence(
     slice_: DomainSlice, *, token_budget: int = 20_000
-) -> tuple[str, set[str], bool]:
+) -> tuple[str, dict[str, list[str]], bool]:
     """Render a slice's evidence under `token_budget`.
 
     Returns `(evidence_text, valid_citation_ids, was_truncated)`. Tries each row cap
     in the ladder until the rendered text fits; if even header-only overflows, the
     header-only text is returned anyway (a slice that large is a signal in itself)
-    with `was_truncated=True`. `valid_citation_ids` is the set a verdict's citations
-    are checked against.
+    with `was_truncated=True`. `valid_citation_ids` is the header-id-to-evidence
+    map a verdict's citations are checked against -- membership of its keys is
+    the validity test, and the values are what a kept citation resolves to.
     """
     ids = valid_citation_ids(slice_)
     if not slice_.has_evidence():

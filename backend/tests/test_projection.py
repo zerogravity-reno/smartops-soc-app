@@ -20,7 +20,7 @@ class TestBucketing:
     def test_rows_land_in_the_category_the_model_tagged(self):
         findings = project_siem(
             [call("index=botsv3 sourcetype=dns", [{"q": "coinhive.com"}])],
-            [QueryRun(query="index=botsv3 sourcetype=dns", category="dns_resolutions")],
+            [QueryRun(query="index=botsv3 sourcetype=dns", category="dns_resolutions")], task_id="t"
         )
 
         assert findings.dns_resolutions[0].rows == [{"q": "coinhive.com"}]
@@ -30,7 +30,7 @@ class TestBucketing:
     def test_the_result_set_is_keyed_by_the_query_that_produced_it(self):
         findings = project_siem(
             [call("index=botsv3 | stats count", [{"count": 4}])],
-            [QueryRun(query="index=botsv3 | stats count", category="connections")],
+            [QueryRun(query="index=botsv3 | stats count", category="connections")], task_id="t"
         )
 
         assert findings.connections[0].query == "index=botsv3 | stats count"
@@ -40,7 +40,7 @@ class TestBucketing:
         spacing. Matching on the raw string would miss almost every time."""
         findings = project_siem(
             [call("index=botsv3   |  stats  count", [{"count": 1}])],
-            [QueryRun(query="index=botsv3 | stats count", category="processes")],
+            [QueryRun(query="index=botsv3 | stats count", category="processes")], task_id="t"
         )
 
         assert findings.processes and findings.uncategorised == []
@@ -50,7 +50,7 @@ class TestNothingIsSilentlyDropped:
     def test_an_untagged_query_is_kept_not_discarded(self):
         """Rows were retrieved and paid for. Dropping them because attribution
         failed would be the worse error, and a full bucket here is a signal."""
-        findings = project_siem([call("index=botsv3 | head 1", [{"a": 1}])], [])
+        findings = project_siem([call("index=botsv3 | head 1", [{"a": 1}])], [], task_id="t")
 
         assert findings.uncategorised[0].rows == [{"a": 1}]
         assert findings.total_rows() == 1
@@ -59,14 +59,14 @@ class TestNothingIsSilentlyDropped:
         # The model reported a different query than the one it actually ran.
         findings = project_siem(
             [call("index=botsv3 sourcetype=wineventlog", [{"a": 1}])],
-            [QueryRun(query="something else entirely", category="processes")],
+            [QueryRun(query="something else entirely", category="processes")], task_id="t"
         )
 
         assert findings.processes == []
         assert findings.uncategorised[0].rows == [{"a": 1}]
 
     def test_a_call_with_no_recoverable_query_still_appears(self):
-        findings = project_siem([_ToolCall("splunk_get_indexes", None, {"results": [{"i": "x"}]})], [])
+        findings = project_siem([_ToolCall("splunk_get_indexes", None, {"results": [{"i": "x"}]})], [], task_id="t")
 
         assert findings.uncategorised[0].row_count == 1
         assert "not recoverable" in findings.uncategorised[0].query
@@ -78,7 +78,7 @@ class TestNothingIsSilentlyDropped:
             call("index=botsv3 sourcetype=WinEventLog EventCode=4688", [{"proc": "cmd.exe"}]),
             call("index=botsv3 sourcetype=WinEventLog EventCode=4624", [{"user": "admin"}]),
         ]
-        findings = project_siem(calls, [])
+        findings = project_siem(calls, [], task_id="t")
 
         assert findings.dns_resolutions[0].row_count == 1
         assert findings.connections[0].row_count == 1
@@ -89,19 +89,19 @@ class TestNothingIsSilentlyDropped:
     def test_eventcode_inference_is_bounded_to_the_exact_code(self):
         # Sysmon EventCode 1 = process create; 11/13/15 are file/registry/other and
         # must NOT be mis-read as processes by a naive "eventcode=1" substring.
-        proc = project_siem([call("index=botsv3 EventCode=1", [{"p": 1}])], [])
+        proc = project_siem([call("index=botsv3 EventCode=1", [{"p": 1}])], [], task_id="t")
         assert proc.processes[0].row_count == 1
         assert proc.uncategorised == []
 
         for code in (11, 13, 15, 100):
-            findings = project_siem([call(f"index=botsv3 EventCode={code}", [{"e": code}])], [])
+            findings = project_siem([call(f"index=botsv3 EventCode={code}", [{"e": code}])], [], task_id="t")
             assert findings.processes == [], f"EventCode={code} wrongly inferred as processes"
             assert findings.uncategorised[0].row_count == 1
 
     def test_sysmon_network_connection_eventcode_3_infers_connections(self):
         findings = project_siem(
             [call("index=botsv3 sourcetype=xmlwineventlog EventCode=3 dest_ip=1.2.3.4", [{"c": 1}])],
-            [],
+            [], task_id="t"
         )
         assert findings.connections[0].row_count == 1
         assert findings.uncategorised == []
@@ -111,19 +111,19 @@ class TestRowExtraction:
     def test_common_envelopes_are_understood(self):
         for key in ("results", "rows", "records", "events"):
             findings = project_siem(
-                [_ToolCall("t", "index=botsv3 | head 1", {key: [{"a": 1}, {"a": 2}]})], []
+                [_ToolCall("t", "index=botsv3 | head 1", {key: [{"a": 1}, {"a": 2}]})], [], task_id="t"
             )
             assert findings.uncategorised[0].row_count == 2, key
 
     def test_a_bare_list_is_understood(self):
-        findings = project_siem([_ToolCall("t", "index=botsv3 | head 1", [{"a": 1}])], [])
+        findings = project_siem([_ToolCall("t", "index=botsv3 | head 1", [{"a": 1}])], [], task_id="t")
 
         assert findings.uncategorised[0].row_count == 1
 
     def test_an_unrecognised_payload_reports_zero_rather_than_guessing(self):
         """Giving up honestly beats reshaping an unknown envelope into something
         wrong -- a zero-row result set is visible, a mangled one is not."""
-        findings = project_siem([_ToolCall("t", "index=botsv3 | head 1", "some opaque string")], [])
+        findings = project_siem([_ToolCall("t", "index=botsv3 | head 1", "some opaque string")], [], task_id="t")
 
         assert findings.uncategorised[0].row_count == 0
         assert findings.uncategorised[0].rows == []
@@ -133,10 +133,10 @@ class TestFamilies:
     def test_vt_has_no_projector_because_its_findings_are_built_upstream(self):
         # `enrich_mission()` builds VtFindings straight from parsed Verdicts, on
         # a path that calls no model at all.
-        assert project("vt", [], []) is None
+        assert project("vt", [], [], task_id="t") is None
 
     def test_an_unknown_family_projects_nothing_rather_than_raising(self):
-        assert project("edr", [call("index=x | head 1", [{"a": 1}])], []) is None
+        assert project("edr", [call("index=x | head 1", [{"a": 1}])], [], task_id="t") is None
 
 
 class TestVtProjection:
@@ -161,7 +161,7 @@ class TestVtProjection:
         }
 
     def test_the_enricher_path_still_parses(self):
-        findings = project_vt([_ToolCall("vt_lookup_domain", "coinhive.com", self.ENRICHER_TEXT)])
+        findings = project_vt([_ToolCall("vt_lookup_domain", "coinhive.com", self.ENRICHER_TEXT)], task_id="t")
 
         assert [v.value for v in findings.verdicts] == ["coinhive.com"]
         assert findings.verdicts[0].found is True
@@ -171,7 +171,7 @@ class TestVtProjection:
         """The regression. Both paths carry the same summary, so both must yield
         the same verdict -- an anchored pattern matched only the bare string."""
         findings = project_vt(
-            [_ToolCall("vt_lookup_domain", "coinhive.com", self._wrapped(self.ENRICHER_TEXT))]
+            [_ToolCall("vt_lookup_domain", "coinhive.com", self._wrapped(self.ENRICHER_TEXT))], task_id="t"
         )
 
         assert findings.verdicts[0].value == "coinhive.com"
@@ -182,7 +182,7 @@ class TestVtProjection:
 
     def test_an_unknown_indicator_is_recorded_as_unknown(self):
         findings = project_vt(
-            [_ToolCall("vt_lookup_domain", "nope.example", self._wrapped("domain=nope.example: unknown to VirusTotal"))]
+            [_ToolCall("vt_lookup_domain", "nope.example", self._wrapped("domain=nope.example: unknown to VirusTotal"))], task_id="t"
         )
 
         assert findings.verdicts[0].found is False
@@ -200,7 +200,7 @@ class TestVtProjection:
                         "domain=b.example: unknown to VirusTotal"
                     ),
                 )
-            ]
+            ], task_id="t"
         )
 
         assert [v.value for v in findings.verdicts] == ["a.example", "b.example"]
@@ -214,7 +214,7 @@ class TestVtProjection:
         forbids exactly this: a failed lookup is not evidence the subject is
         clean. No verdict is honest; a fabricated clean one is not.
         """
-        findings = project_vt([_ToolCall("vt_lookup_domain", "coinhive.com", {"unexpected": "envelope"})])
+        findings = project_vt([_ToolCall("vt_lookup_domain", "coinhive.com", {"unexpected": "envelope"})], task_id="t")
 
         assert findings.verdicts == []
 
@@ -259,7 +259,7 @@ class TestRowsSurviveTheLiveToolEnvelope:
         rows = [{"query": "coinhive.com", "count": "21"}]
         findings = project_siem(
             [_ToolCall("splunk_run_query", "index=botsv3 sourcetype=stream:dns", self._envelope(rows))],
-            [QueryRun(query="index=botsv3 sourcetype=stream:dns", category="dns_resolutions")],
+            [QueryRun(query="index=botsv3 sourcetype=stream:dns", category="dns_resolutions")], task_id="t"
         )
 
         assert findings.dns_resolutions[0].row_count == 1
@@ -274,3 +274,70 @@ class TestRowsSurviveTheLiveToolEnvelope:
     def test_a_top_level_payload_still_works(self):
         """The enricher and the scripted path hand rows over unwrapped."""
         assert _rows_of({"results": [{"a": 1}]}) == [{"a": 1}]
+
+
+class TestEvidenceBackReference:
+    """The projected row set names the `Evidence` it came from.
+
+    Without it a stored citation resolves only to a POSITION in a recomputed
+    routing, so any change to routing order silently re-targets every citation
+    already written to disk.
+    """
+
+    def test_the_projector_and_the_collector_mint_the_same_ids(self):
+        # The whole back-reference rests on one invariant: `project_siem` and
+        # `_EvidenceCollector.evidence()` enumerate the SAME list, so index i in
+        # one is index i in the other. Nothing enforced that, so pin it here --
+        # if the two ever drift, every evidence_id points at the wrong payload
+        # while still looking perfectly well-formed.
+        from datetime import UTC, datetime
+
+        from smartops.subagents import _EvidenceCollector
+
+        calls = [
+            call("index=botsv3 sourcetype=dns", [{"q": "coinhive.com"}]),
+            call("index=botsv3 EventCode=1", [{"p": "powershell.exe"}]),
+            call("index=botsv3 EventCode=4624", [{"user": "bostoll"}]),
+        ]
+        collector = _EvidenceCollector()
+        collector.calls = calls
+        evidence = collector.evidence("t-1:siem:s0", "siem", datetime.now(UTC))
+
+        findings = project_siem(
+            calls,
+            [
+                QueryRun(query="index=botsv3 sourcetype=dns", category="dns_resolutions"),
+                QueryRun(query="index=botsv3 EventCode=1", category="processes"),
+                QueryRun(query="index=botsv3 EventCode=4624", category="auth_events"),
+            ],
+            task_id="t-1:siem:s0",
+        )
+
+        assert [e.id for e in evidence] == [
+            "t-1:siem:s0:0", "t-1:siem:s0:1", "t-1:siem:s0:2"
+        ]
+        assert findings.dns_resolutions[0].evidence_id == evidence[0].id
+        assert findings.processes[0].evidence_id == evidence[1].id
+        assert findings.auth_events[0].evidence_id == evidence[2].id
+
+    def test_a_vt_payload_carrying_its_own_evidence_id_keeps_it(self):
+        # project_vt's dict branch spreads the payload over the default rather
+        # than passing evidence_id as a keyword beside `**v`, which would be a
+        # duplicate-keyword TypeError the moment a payload carried the field.
+        findings = project_vt(
+            [_ToolCall("vt", None, {"verdicts": [
+                {"kind": "domain", "value": "a.com", "found": True,
+                 "evidence_id": "already-set"},
+            ]})],
+            task_id="t-1:vt:s0",
+        )
+        assert findings.verdicts[0].evidence_id == "already-set"
+
+    def test_a_vt_payload_without_one_is_stamped(self):
+        findings = project_vt(
+            [_ToolCall("vt", None, {"verdicts": [
+                {"kind": "domain", "value": "a.com", "found": True},
+            ]})],
+            task_id="t-1:vt:s0",
+        )
+        assert findings.verdicts[0].evidence_id == "t-1:vt:s0:0"
