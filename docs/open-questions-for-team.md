@@ -58,6 +58,34 @@ executes directly and returns real evidence. Worth confirming she is happy that
 some domains resolve without a subagent at all, rather than every domain waiting
 for the Aug-27 subagent work.
 
+**Open 2026-08-24 — who owns the Aggregator?** Parked deliberately, not decided.
+
+The hypothesis-blind redesign
+(`docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md`) splits
+the domain analysts from the thing that decides SUPPORTS/REFUTES. Tier 1 landed
+additively and is deliberately dark: `gather_finding()` returns a stance-free
+`DomainFinding` and has zero production callers, because the component that
+would consume it does not exist. Tier 2 is that component — an Aggregator that
+takes the three domain findings plus the hypothesis and emits the
+`HypothesisAssessment` directly, **deleting `combine()`**.
+
+The question is that deletion. `combine()` is already a thin roll-up of
+per-domain stances, which is the Aggregator's job description, and the Analyst
+Agent epic is Mariam's. So Tier 2 is either the natural completion of a spec we
+own, or a build into her epic — and it is not ours to assume which.
+
+Three ways it could go, in the order they were considered: raise it with her
+before building; build it and reconcile with her epic afterwards; or stop at
+Tier 1 and leave Tier 2 entirely to the Analyst Agent epic.
+
+**Also worth flagging when this is raised:** Tier 2's empirical case is
+currently unproven. The anchoring-bias demo that justified the redesign turned
+out to rest on a projector bug (`_format_auth_event` dropping
+`EventCode`/`Logon_Type`), fixed since in `8512f28`/`9576a8f` and never
+re-tested. That comparison is now cheap to re-run offline -- all 24 saved runs
+under `.smartops/runs/` load again as of `1e893ea` -- and it should happen
+before anyone commits effort to Tier 2 on either side.
+
 ## For Yousef — Context Contract Template
 
 **Updated 2026-08-11: this stopped being a question and became a proposal.**
