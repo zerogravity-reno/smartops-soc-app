@@ -16,6 +16,9 @@ edit the session file and re-run `python docs/compile_docs.py`._
 - [2026-08-12 — Strands compliance, the index guard, and closing Plan A](#strands-compliance-the-index-guard-and-closing-plan-a)
 - [2026-08-15 — The MCP failure was a race, not a teardown — and steps are judged per category](#the-mcp-failure-was-a-race-not-a-teardown--and-steps-are-judged-per-category)
 - [2026-08-13 — First live smoke run — Splunk never ran, and why](#first-live-smoke-run--splunk-never-ran-and-why)
+- [2026-08-23 — Asana epic hierarchy clarified; Findings Pipeline / Evidence Store scoped, discriminator gap fixed](#asana-epic-hierarchy-clarified-findings-pipeline--evidence-store-scoped-discriminator-gap-fixed)
+- [2026-08-23 — Hypothesis-blind Tier 1 lands, then a real run explains why the "fix" isn't proof yet](#hypothesis-blind-tier-1-lands-then-a-real-run-explains-why-the-fix-isnt-proof-yet)
+- [2026-08-24 — Findings Pipeline / Evidence Store audited by execution; 7 findings fixed, 3 gaps block closure](#findings-pipeline--evidence-store-audited-by-execution-7-findings-fixed-3-gaps-block-closure)
 
 ---
 
@@ -2462,3 +2465,603 @@ budget figure, which the re-run will supersede.
 - **Reviews earned their cost every time.** Three ran; three found experiment-
   invalidating defects. When budget forces a choice between another implementer and
   another reviewer, take the reviewer.
+
+---
+
+<a id="asana-epic-hierarchy-clarified-findings-pipeline--evidence-store-scoped-discriminator-gap-fixed"></a>
+## 2026-08-23 — Asana epic hierarchy clarified; Findings Pipeline / Evidence Store scoped, discriminator gap fixed
+
+# Handover — 2026-08-23, later session: Findings Pipeline / Evidence Store
+
+Branch `task-broker-agent`, still HEAD `e131e74` (unchanged since the earlier
+handover today, `handover_2026-08-23_hypothesis-blind-tier1.md` — read that
+one first for the Tier-1 hypothesis-blind work and its still-open code-review
+tail; this document picks up from there). **Nothing in this session has been
+committed.** `git status --short` shows the same pre-existing uncommitted
+files that handover already flagged (`bench.py`, and the code-review-in-flight
+edits to `broker.py`, `guards.py`, `subagent_analysts/{formatting,model,parse}.py`,
+`subagents/__init__.py`, plus their tests) **plus** this session's new changes to
+`contracts/src/contracts/findings.py`, `contracts/src/contracts/subtask.py`,
+`contracts/tests/test_subtask.py`, `backend/src/smartops/broker.py`, and
+`backend/tests/test_broker.py`. `uv run pytest` from root: **619 passed, 0
+failed** (up from 605 in the earlier handover — includes both this session's
+and the in-flight code-review session's new tests).
+
+**Note for whoever commits this:** `broker.py` now carries two unrelated sets
+of uncommitted edits layered on each other (the code-review fixes-in-progress
+from the earlier session, and this session's `load_run_artifacts()` addition).
+A plain `git add broker.py` bundles both into one commit; splitting them needs
+a manual diff review first if that matters to you.
+
+---
+
+## THE HEADLINE: three "unnamed" Asana cards turned out to belong to two different, real epics — one not yet built at all
+
+The user asked what was left on the Smartops Asana board and specifically
+about **Findings Pipeline**, **Evidence Store**, and (initially) an
+**Aggregator** concept that turned out not to exist as a card. Walking the
+actual Asana parent/child hierarchy (not just the flat task list) resolved
+this precisely:
+
+```
+Analyst Agent (epic, gid 1217013047525800 — NOT YET BUILT)
+  "Forms hypotheses, decides what to investigate and in what order, reads
+  findings, and writes the conclusion." Four responsibilities: mode selection
+  (budget/allow-list/stopping criteria), hypothesis generation (competing
+  benign/malicious explanations), task emission (describes what it needs
+  without naming tools), assessment (replan-or-stop on deterministic policy).
+  Its own "Agent Development" subtask (gid 1217013047604793) states literally:
+  "In → condensed results, contract. Out → Task description."
+      │
+      ▼  Out → Task description (an AnalystTask: question/entity/time window)
+Task Broker Agent (epic, gid 1217013047604807 — BUILT, this repo's `broker.py`)
+  "In → Task from the analyst. Out → Task plus associated results
+  ...dispatch the subtask and the results to the corresponding subagent to
+  analyze the results against the subtask."
+      │
+      │   ⟵ FINDINGS PIPELINE + EVIDENCE STORE (this session's scope)
+      │     route the Broker's raw+projected results to what each domain
+      │     analyst needs; persist raw evidence so re-answering "what did it
+      │     see" doesn't mean re-running the Broker.
+      ▼
+SubAgents (epic, gid 1217013047604819): identity / network / endpoint
+  "It receives a subtask, and condenses its own findings before returning.
+  Nothing summarizes on its behalf." Out → (condensed finding, full result).
+      │
+      │   ⟵ "Summary condensed finding contract/template/criteria"
+      │     (gid 1217013047604821, sibling under SubAgents — NOT this
+      │     session's scope) — defines the shape of that condensed finding.
+      ▼
+Analyst Agent (closes the loop — its own Agent Development subtask's
+  "In → condensed results, contract" is this exact hand-off)
+```
+
+**What this resolves:** the Aggregator-shaped work (judge 3 domain verdicts
+against the hypothesis, decide replan-or-stop, write the conclusion) is not
+missing from Asana — it lives entirely inside the **Analyst Agent** epic,
+which is a real, separate, currently-unbuilt epic, not a SubAgents subtask.
+`architecture.md` §11's *"a richer downstream Aggregator is future work"* and
+`DomainFinding`'s docstring (*"a later Aggregator cycle turns a list of these
+plus a hypothesis into an AnalystVerdict per domain"*) both describe work that
+belongs under Analyst Agent, not under today's SubAgents/Findings-Pipeline
+scope. **Also worth registering as a live tension, not resolved this
+session:** `contracts/subtask.py`'s docstrings on `Evidence`/`SubtaskResult`
+still say *"the aggregator... writes them into the case file's evidence
+store"* and `SubtaskResult` is *"consumed only by the aggregator"* — leftover
+language from the original architecture sketch that contradicts the SubAgents
+epic's current note (*"nothing summarizes on its behalf"*, edited today,
+2026-08-23). Nobody has gone back to correct those docstrings yet.
+
+---
+
+## What landed this session
+
+Scoped down from "Findings Pipeline + Evidence Store" to a much smaller real
+gap, via `/superpowers:brainstorming` (classified bounded, not architectural,
+once the actual gap size was clear — approved by the user before
+implementation):
+
+| Claimed need | Actual state found | What shipped |
+|---|---|---|
+| Findings Pipeline (Broker → domain analysts) | Already fully built: `route()` / `formatting.py` / `packing.py` (architecture.md §5) | No code change needed |
+| Evidence Store, write side | Already fully built: `broker.save_run_artifacts()` writes `report.json` + `evidence.json` per run, collision-safe, timestamped | No code change needed |
+| Evidence Store, read side | **Did not exist at all** — no `load_run_artifacts()`, and it would have silently lost every typed `findings`/`assessment` field if built naively | New `broker.load_run_artifacts(run_dir) -> BrokerReport` |
+| Reload fidelity | `SubtaskResult.findings`/`.assessment` used `SerializeAsAny[Findings/Assessment]` — correct for *dumping* a subclass, but a bare `Findings`/`Assessment` annotation has no discriminator for *reading one back*, so `model_validate_json()` silently reconstructed the empty base class | Added a `tool_family: Literal[...]` discriminator to `SiemFindings`/`VtFindings`/`SiemAssessment`/`VtAssessment`; `SubtaskResult.findings`/`.assessment` are now proper discriminated unions (`Annotated[SiemFindings \| VtFindings, Field(discriminator="tool_family")]`) instead of `SerializeAsAny` |
+
+Named `tool_family` (not `kind`) deliberately: `VtVerdict` already has a
+`kind` field meaning something unrelated (ip/domain/url/hash), and
+`tool_family` reuses the vocabulary already established on `Evidence.tool_family`.
+
+**Tests added** (TDD — each written and confirmed failing before its fix):
+- `contracts/tests/test_subtask.py::TestSubtaskResult::test_findings_subclass_survives_a_json_round_trip`
+- `contracts/tests/test_subtask.py::TestSubtaskResult::test_assessment_subclass_survives_a_json_round_trip`
+- `backend/tests/test_broker.py::TestFetchPlanAndReport::test_load_run_artifacts_round_trips_typed_findings`
+  (also confirms `route()` works unchanged against a reloaded report — the
+  Findings Pipeline needed zero code change once loading worked)
+
+**Deliberately out of scope, discriminated union tradeoff worth knowing:**
+adding `edr`/`ndr` findings later means adding them to the
+`SiemFindings | VtFindings` union explicitly — an unlisted subclass now fails
+loudly at construction (a `ValidationError`), not silently on reload. This is
+a closed-union tradeoff versus the old `SerializeAsAny[Findings]`'s
+open-ended-but-broken-on-reload behavior. Both `edr`/`ndr` are withheld today
+regardless (no MCP server configured), so this has no live effect yet.
+
+**Also checked and confirmed non-duplicative:** `smartops/replay.py` already
+reloads `evidence.json` (only, not `report.json`), but for a different job —
+replaying individual recorded tool calls into a *live, offline re-run* of a
+subagent (for bench/eval/prompt-tuning), never a finished `BrokerReport`
+directly. `load_run_artifacts()` is a new, complementary capability (skip
+re-running anything at all), not a rebuild of what `replay.py` does.
+
+---
+
+## Loose ends worth knowing about
+
+- **This session's diff is entirely uncommitted**, layered into an already-
+  dirty `broker.py`/tests from the prior code-review session. See the note at
+  the top of this document before committing either.
+- **The `contracts/subtask.py` docstring contradiction** (aggregator-writes-
+  evidence-store vs. subagent-condenses-itself) is flagged above but not
+  fixed. Small doc-only correction, whenever someone next touches that file.
+- **"Summary condensed finding contract/template/criteria"** (Asana, sibling
+  under SubAgents) was explicitly *not* scoped into this session — it defines
+  the shape of a domain analyst's condensed finding, which is a prerequisite
+  for the Analyst Agent epic's "In → condensed results, contract" but not for
+  anything done here.
+- **The Analyst Agent epic itself does not exist in code at all yet** — no
+  `analyst_agent.py`, no hypothesis-generation, no replan/stop policy. Per its
+  own Asana notes it is a fourth agent in this system (Analyst Agent, Task
+  Broker Agent, SubAgents' three domain analysts, and — separately — the
+  siem/vt fetch subagents), not something `main.py`'s current direct
+  `Broker → analyze()` orchestration provides today.
+- **An earlier brainstorm this session** ("should the domain analysts be
+  spawned as Broker tool calls, agentic-style?") was put on hold by the user
+  before a design was reached. Worth revisiting once the Analyst Agent epic
+  is real, since that epic — not the Broker — is the one the Asana notes
+  describe as actually reading findings and deciding what to do next; making
+  domain analysis a *Broker* tool call would hand hypothesis-aware context to
+  the Broker, which is a different (and not obviously wanted) architectural
+  move than making it an *Analyst Agent* tool call.
+
+## Ranked queue for the next session
+
+1. **Commit this session's work** (`contracts/findings.py`, `contracts/subtask.py`,
+   their tests, `broker.py`'s `load_run_artifacts()`, `test_broker.py`) —
+   split from the code-review-fixes diff first if you want them as separate
+   commits.
+2. Everything already ranked in `handover_2026-08-23_hypothesis-blind-tier1.md`
+   is still outstanding and unchanged by this session: finish the in-flight
+   code review, fix `_format_auth_event`'s dropped `EventCode`/`Logon_Type`,
+   fix `_CONFIDENCE_RE`, the `AWS_BEARER_TOKEN_BEDROCK` env leak, the budget
+   over-refund bug.
+3. **"Summary condensed finding contract/template/criteria"** — the next
+   natural Asana card, since it's the one prerequisite the Analyst Agent epic
+   names directly ("In → condensed results, contract").
+4. **Analyst Agent epic** — genuinely new work, not yet started in code at
+   all: mode selection, hypothesis generation, task emission, and the
+   replan-or-stop assessment loop that reads all 3 domain analysts' condensed
+   findings. This is where the "Aggregator" work everyone kept looking for
+   actually belongs.
+5. Correct the stale "aggregator writes the evidence store" language in
+   `contracts/subtask.py`'s docstrings once someone is back in that file.
+
+## Process lessons worth keeping
+
+- **Asana's parent/child hierarchy carried real information the flat task
+  list did not.** "Findings Pipeline" and "Evidence Store" looked like
+  Aggregator-adjacent work until fetching their actual parents (`Data
+  Connector` → `SubAgents`) and siblings (`Summary condensed finding...`,
+  `Agent Development`) — plus the epic-level notes fields, which nobody had
+  been reading — showed they were something else entirely, and that the
+  thing being described as "the Aggregator" was a fourth, unbuilt epic.
+- **A scope that starts architectural can shrink to bounded mid-brainstorm,
+  and that's worth naming out loud rather than plowing through a spec for a
+  one-file fix.** The user was asked and explicitly chose to downgrade the
+  process once investigation showed the real gap was a discriminator field
+  plus one loader function, not a persistence subsystem.
+- **Checking for an existing, non-obvious module before designing a "new"
+  one paid off twice today**: `save_run_artifacts()` already existed (cut the
+  Evidence Store scope by half), and `replay.py` already existed (confirmed
+  the new `load_run_artifacts()` wasn't duplicating a reload path that was
+  already there for a different purpose).
+
+---
+
+<a id="hypothesis-blind-tier-1-lands-then-a-real-run-explains-why-the-fix-isnt-proof-yet"></a>
+## 2026-08-23 — Hypothesis-blind Tier 1 lands, then a real run explains why the "fix" isn't proof yet
+
+# Handover — 2026-08-23, Tier 1 redesign + a real-run deep dive + code review in flight
+
+Branch `task-broker-agent`, no `origin/main` tracking ref configured locally (push
+status unknown from here — check before assuming anything is or isn't upstream).
+HEAD is `e131e74`. Tree has **one unrelated pre-existing modification**
+(`backend/src/smartops/bench.py`, a benchmark-case addition from earlier this
+session, deliberately left uncommitted — see "Loose ends" below) plus several
+untracked docs/report artifacts. `uv run pytest` from root: **605 passed, 0
+failed** as of the last full run (before this session's code-review pass — that
+review did NOT re-run the suite, it read code).
+
+The authoritative trail for the Tier-1 work is
+`docs/superpowers/plans/2026-08-23-hypothesis-blind-analysts-tier1.md` +
+`docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md` (both
+now committed, `e131e74`). This document covers what happened after the plan
+finished: a real run, a deep-dive into *why* it looked interesting, and a
+still-in-progress code review.
+
+---
+
+## THE HEADLINE: the anchoring-bias demo is real, but its own root cause is a bug, not model insight
+
+Tier 1 of the hypothesis-blind redesign (`gather_finding`/`facts_system_prompt`/
+`parse_finding`/`DomainFinding`) is implemented, task-reviewed, whole-branch
+reviewed (opus, APPROVE), and landed additively across 5 commits
+(`5caf246`..`8512f28`) — the old hypothesis-shown path (`run_one`/`analyze`/
+`combine`) is untouched and still what `main.py --hypothesis` actually runs.
+Tier 1 is **not wired into production** on purpose; that's the Aggregator
+cycle, still deferred.
+
+To see it do something, I ran a fresh, live, non-scripted investigation
+(`cli-20260823T112627`, same BSTOLL-L/coinhive.com BOTS v3 case, real VT+SIEM
+fetch, ~$1.50) and, on the exact same evidence, ran the OLD path (production)
+side by side with the NEW path (`gather_finding`, via a standalone comparison
+script — nothing production calls it yet). Same record, `auth_events#6`:
+
+- **Old (hypothesis-shown):** "legitimate local logins" → contributed to
+  overall **REFUTES, confidence 0.85**.
+- **New (hypothesis-blind):** "potential password spraying attempt" →
+  **confidence 0.90**.
+
+That's a real, reproducible anchoring-bias demonstration and it's why Tier 1
+exists. Built a report on it: `docs/hard-test-new-run.html`.
+
+**Then the user asked me to dig into why, and the answer is a code bug, not
+proof either analyst reasoned better:**
+
+`backend/src/smartops/subagent_analysts/formatting.py:48-56`
+(`_format_auth_event`) only projects `time/user/src/dest/action/app` per row —
+it silently drops `EventCode` and `Logon_Type`, even when the SIEM subagent's
+own SPL explicitly fetched them (confirmed by re-running the *actual*
+`pack_evidence()` call against this run's real report — see
+`docs/hard-test-new-run.html`'s footnotes for the literal packed text). The
+real raw row behind `auth_events#6` is `EventCode 4624, Logon_Type 11`
+(CachedInteractive) followed by `EventCode 4624→4648, Logon_Type 7` (Unlock)
+ten seconds later — the textbook signature of a laptop being unlocked by its
+own user. Both analysts saw six near-blank rows with the one discriminating
+field already stripped. The old analyst, finding nothing that matched its
+checklist, called it clean. The new analyst pattern-matched "same account, six
+times, ten seconds" onto "password spraying" — a label its *own prompt*
+defines as "one source failing across many accounts" (verified: that
+definition is in both `_IDENTITY_BODY` and `_IDENTITY_FACTS_BODY`,
+`prompts.py:81,257`), which doesn't match one account with no visible
+failures either. Neither verdict is trustworthy proof of anything; both are
+downstream of the same missing fields.
+
+**Two more things the deep-dive turned up, digging into `evidence.json`
+directly:**
+
+1. **Identity never gets reconciled across log sources.** Auth events use
+   `bstoll@froth.ly` (WORKGROUP UPN); the process/network activity that
+   actually matters (the coinhive-bound Chrome connection, the encoded
+   PowerShell) is all under `AzureAD\BudStoll`. Several of the SIEM
+   subagent's own higher-fidelity auth queries hard-filter on the literal
+   string `bstoll@froth.ly`, which structurally excludes `BudStoll` — so
+   identity's finding and network/endpoint's findings are, mechanically,
+   about two different-looking identities nothing ties together.
+2. **The test case's own hypothesis overstates a causal link the evidence
+   doesn't show.** The raw `nvzFlow` record for the 217.182.164.14
+   connection is `chrome.exe` (parent `explorer.exe`) talking to
+   `ws001.coinhive.com` — real, documented BOTS v3 browser cryptomining. The
+   encoded PowerShell (disabling its own `ScriptBlockLogging`) is a *separate*
+   process spawned by `browser_broker.exe`. Nothing in the evidence ties the
+   two into one "PowerShell payload → C2" chain, which tracks with the named
+   file hash coming back completely unknown to VirusTotal, both times it was
+   checked.
+
+---
+
+## What landed this session
+
+| Item | Commits / files | Result |
+|---|---|---|
+| Tier 1 Task 1 — `DomainFinding` contract | `1305805` | reviewed clean |
+| Tier 1 Task 2 — facts-only prompts | `4f389fa` | reviewed clean; 1 ruling (`_FACTS_SECURITY_BLOCK`, see below), 1 minor deferred |
+| Tier 1 Task 3 — `parse_finding`/`FindingParseError` | `b86a0a8` | reviewed clean; 1 ruling (local observations regex, see below), 1 minor deferred |
+| Tier 1 Task 4 — `gather_finding`/`_finalize_finding` | `8512f28` | reviewed clean, zero findings |
+| Tier 1 Task 5 — full regression | (verification only) | 605/605, confirmed no plan-unrelated files touched |
+| Final whole-branch review (opus) | range `5caf246..8512f28` | **APPROVE**, only Minor findings |
+| Spec + plan committed | `e131e74` | were untracked despite being cited by docstrings |
+| Real end-to-end run + comparison | `cli-20260823T112627` | old-vs-new side by side, real evidence |
+| `docs/hard-test-new-run.html` | new | the auth_events#6 diptych report |
+| Root-cause deep dive | (this session, no commit yet) | traced the flip to `formatting.py`'s dropped fields — **not yet fixed** |
+
+**Two rulings made during the SDD process, both already re-confirmed by the
+final whole-branch review, worth knowing before re-litigating them in
+code review:**
+- `_FACTS_SECURITY_BLOCK` deliberately duplicates `_SECURITY_BLOCK` (the
+  original mentions "hypothesis," which Tier 1 must never say) — accepted,
+  not a bug.
+- `parse_finding`'s local observations regex deliberately doesn't reuse
+  `_OBSERVATIONS_RE` (which assumes OBSERVATIONS immediately precedes
+  CITATIONS; Tier 1's field order is different) — accepted, not a bug.
+
+## Code review — in flight, not yet finalized
+
+`/code-review` ran 8 finder angles in the background; all 8 reported. I was
+mid-verification (checking the strongest candidates directly against code,
+not just trusting the angle reports) when this handover was requested — **no
+`ReportFindings` call has happened yet, nothing has been fixed.**
+
+**Confirmed by direct code inspection (real bugs, not yet fixed):**
+- `parse.py:24` `_CONFIDENCE_RE = re.compile(r"CONFIDENCE\D*([0-9]*\.?[0-9]+)")`
+  — `\D*` crosses newlines and other fields. A reply with no numeric
+  confidence (e.g. `CONFIDENCE: unclear`) can lock onto a digit anywhere
+  later in the text, including inside a citation like `auth_events#1`,
+  manufacturing `confidence=1.0` from a reply that gave none. Affects both
+  `parse_verdict` and `parse_finding`.
+- `model.py:129` `os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._api_key` —
+  mutates process-global env with no cleanup. A second `AnalystModel` built
+  later in the same process with no explicit key silently inherits the
+  first one's stale bearer token instead of falling through to the default
+  AWS credential chain.
+- `subagents/__init__.py:465-480` + `:670-682` — `investigate()`'s
+  `except BaseException: await budget.release(reservation)` releases the
+  **full** reservation on any exception, but `_build_agent_and_invoke` can
+  make a real, billable second ("recovery") model call *after* the first one
+  already succeeded and spent tokens. If that second call throws, the whole
+  reservation — including the first call's real spend — is refunded as if
+  nothing happened. Two angles converged on this independently.
+- `subagent_analysts/model.py` / `main.py:658` — analyst-model spend never
+  goes through `Budget.reserve()`/`settle()` at all; `analyze()` takes no
+  `Budget` argument. No admission control on analyst calls, and
+  `budget.spend_by_role()` — the thing the whole Budget module exists to
+  report — silently under-reports total investigation cost by the analyst
+  share. Two angles (reuse, my own earlier report footnote) converged.
+- `projection.py` `project_vt` — an unparseable VT payload now emits **no**
+  verdict at all (silent `continue` + log line) instead of the old
+  synthesized "unknown" verdict. Two angles converged independently. Real
+  fix for a worse bug (was: "unknown" masqueraded as "clean"), but the new
+  failure mode is invisible downstream — a `DomainSlice` just looks like
+  "nothing was queried."
+
+**Plausible, not yet fully chased down:**
+- `broker.py:560` `outcome.confirmed_empty = confirmed_empty or outcome.confirmed_empty`
+  is monotonic — checked the surrounding code; completion (`rows_or_confirmed_empty`)
+  is likely unaffected in practice because `rows_retrieved` growing past
+  `min_rows` satisfies completion independently of the stale flag. Whether
+  anything else reads `confirmed_empty` as a standalone "we can assert zero
+  data" claim (report rendering, gap analysis) is not yet checked.
+- `subagents/__init__.py` `_estimated_input_tokens` caps `expected_turns` at
+  8 while `main.py --subagent-turns` defaults to 25 — two angles converged;
+  plausible under-reservation on long SIEM runs, not yet traced to an actual
+  observed budget-negative incident.
+- `formatting.py`'s dropped `EventCode`/`Logon_Type` fields (this session's
+  own finding, above) — not raised by any of the 8 angles, since it's a
+  semantic/data-quality gap rather than a diff-visible defect pattern. Worth
+  folding into the same fix pass since it's the same file family.
+
+**Already-settled, filtered out rather than re-flagged:** several angles
+independently re-discovered the two SDD rulings above, the deliberate
+`broker_flat.py` removal (documented in `docs/PROJECT_DOCS.md`), and the
+deliberate "Tier 1 lands unwired" sequencing decision (explicit in the plan's
+own "Sequencing Decision" section, and in the user's own direction to get
+prompts/output right before building the Aggregator). None of those are
+fresh defects — re-raising them would contradict CLAUDE.md's own governance
+note about not re-litigating settled decisions.
+
+**Not yet done:** dedup the ~35 raw candidate findings down to a final
+verified list, decide fix-vs-park per item, and call `ReportFindings`
+(or hand a fix list to the next session).
+
+## Loose ends worth knowing about
+
+- `backend/src/smartops/bench.py` has an uncommitted, pre-existing
+  modification (`BOTSV3_HARD_MULTI_VECTOR_TASK`) from earlier this session's
+  Splunk test-case exploration — deliberately left uncommitted, out of scope
+  for the Tier-1 plan. Several untracked `docs/*.html` report artifacts and
+  `graphify-out/` are similarly pre-existing and unrelated.
+- Reloading a persisted `report.json` from disk via a plain
+  `BrokerReport.model_validate_json()` silently loses every typed SIEM/VT
+  field (`SubtaskResult.findings` has no discriminator between `Findings`
+  subtypes) — found while building the comparison script, worked around
+  there, **not fixed in production** (nothing in the live pipeline reloads a
+  persisted report today, so it's latent, not active).
+- CLAUDE.md's Tests section claims "no `filterwarnings` is configured
+  anywhere" — the CLAUDE.md conventions review angle found the root
+  `pyproject.toml` already contradicts this
+  (`filterwarnings = ["error::DeprecationWarning", ...]`), and a new
+  `README.md` line in this diff documents the true (opposite) state. Worth a
+  CLAUDE.md correction — its own governing clause says to raise this again
+  once its stated premise is no longer true.
+
+## Ranked queue for the next session
+
+1. **Finish the code review**: dedup the confirmed findings above, verify
+   the two "plausible" items, call `ReportFindings` or write the fix list.
+2. **Fix `_format_auth_event`** (`formatting.py:48-56`) — add `EventCode`/
+   `Logon_Type` to the projection. Small, surgical, in the existing
+   field-alias pattern. This is the actual root cause behind the whole
+   auth_events#6 story — worth doing before treating any future
+   old-vs-new comparison as meaningful.
+3. **Fix `_CONFIDENCE_RE`** — anchor it so it can't cross into a citation's
+   digits. Affects both the live production path and Tier 1.
+4. **Fix the `AWS_BEARER_TOKEN_BEDROCK` env leak** and the **budget
+   over-refund on recovery-call exception** — both are real correctness
+   bugs in already-shipped code, independent of Tier 1.
+5. **Decide what to do about analyst spend never entering `Budget`** — this
+   is a design question (does `analyze()`/`gather_finding` need a `Budget`
+   argument?), not a one-line fix; flag for Mohamed rather than just doing
+   it.
+6. Once the above is settled: the Aggregator (Tier 2), the condensed-finding
+   contract/pipeline docs, and formalizing a clean `bench.py` test case —
+   all still explicitly deferred, per the user's own direction this session.
+
+## Process lessons worth keeping
+
+- **"What do you think of this run?" and "dig into why" are different
+  questions, and the second one is where the real bug was.** The narrative
+  critique (old path overconfident on absence-of-evidence, new path
+  suspiciously uniform-high-confidence) was directionally right but the
+  actual root cause only showed up from re-running the real `pack_evidence()`
+  call and reading the raw Splunk rows directly — inference from the verdict
+  text alone would have missed it.
+- **Two independent angles converging on the same bug is a strong signal** —
+  used it here (`project_vt` silent-drop, the 8-turn budget cap, the
+  analyst-spend-not-in-Budget gap) to prioritize verification effort instead
+  of chasing all ~35 raw candidates equally.
+- **Check the SDD ledger before treating a code-review finding as new.**
+  Several of the 8 angles re-discovered decisions already ruled on during
+  Tier 1's own implementation — re-flagging those would have been noise, not
+  signal.
+
+---
+
+<a id="findings-pipeline--evidence-store-audited-by-execution-7-findings-fixed-3-gaps-block-closure"></a>
+## 2026-08-24 — Findings Pipeline / Evidence Store audited by execution; 7 findings fixed, 3 gaps block closure
+
+# Handover — 2026-08-24: Findings Pipeline & Evidence Store
+
+Single continuation document for this work. Branch `task-broker-agent`, HEAD
+`f9bc706` (started the session at `072beb8`). `uv run pytest` from the repo
+root: **637 passed, 0 failed**.
+
+## Pick this up here
+
+1. Read `docs/superpowers/plans/2026-08-24-artifact-contract-integrity.md`.
+2. Execute its **Task 1 on its own** — it commits work that is currently only in
+   the working tree, which is the largest standing risk in the repo.
+3. Then Tasks 2–4, then the Asana cards can close. Details in
+   *What to do next* below.
+
+Do **not** close the Asana cards yet. The session opened by asking whether to
+tick "Findings Pipeline", "Evidence Store" and their parent "Data Connector",
+and the answer is still no, on the three counts in *Gaps blocking closure*.
+
+## What this session established
+
+Every prior claim that these two subsystems worked had been made by **reading**
+the code. Executing them against the 22 real BOTS v3 runs saved under
+`.smartops/runs/` found three critical defects that no test caught and no
+inspection-based review had found — including one where the analyst was shown
+entirely blank rows while the grounding gate still accepted citations to them.
+
+**The lesson worth carrying forward:** for this codebase, "the tests pass" and
+"I read the code" are not evidence that a data-handling path works. The saved
+run artifacts are the fixture that tells the truth, and they should be the
+default way any evidence-path change is validated.
+
+## The seven findings
+
+All seven confirmed by execution. **1–3 are committed; 4–7 are green but
+uncommitted.**
+
+| # · Component | Status | Root cause & resolution | Files |
+| :--- | :--- | :--- | :--- |
+| **1 · Row projectors rendered blank** <br> *(Findings Pipeline)* | **committed `9576a8f`** | Candidate lists used CIM names (`process_name`) while real BOTS v3 rows carry Windows/Stream spellings (`New_Process_Name`, `Creator_Process_Name`, `Account_Name`, `Process_Command_Line`, `cmd_line`, `query{}`) and aggregates (`count`). Measured: 1,648 of 1,887 `processes` rows lost data; ~97% rendered effectively blank. **Critical, not cosmetic** — the header still said `rows=N` and the id stayed in `valid_citation_ids()`, so a fabricated claim citing `processes#1` passed the grounding gate. Added the real spellings, `_count_suffix()`, both byte directions, and a fallback to `_format_generic` when a projector recognises nothing. | `subagent_analysts/formatting.py` <br> `tests/test_analyst_formatting.py` |
+| **2 · Evidence fence forgeable** <br> *(Findings Pipeline)* | **committed `9b0ab08`** | Log values could contain newlines and `</evidence>`, closing the fence, placing an instruction outside it, and forging a second block **under a header id already in `valid_citation_ids()`** — so a verdict resting on forged rows cited a resolvable id and passed the gate. Added `_sanitise()` (collapse whitespace, then `guards.escape_untrusted`) in `_first`, `_format_generic`, and the result-set header. | `subagent_analysts/formatting.py` <br> `tests/test_analyst_formatting.py` <br> `tests/test_analyst_prompts.py` |
+| **3 · Inline citations unvalidated** <br> *(Findings Pipeline)* | **committed `f9bc706`** | `_finalize` filtered only the trailing `CITATIONS:` line, so `[header_id]` citations inside observations went unchecked — a verdict returned `supports`/0.95 citing `auth_events#7` (nonexistent) and `processes#3` (wrong domain), both reaching the operator and `assessment.json`. Added `_resolve_observation_citations()`: drop observations resting solely on unresolvable ids, strip invented ids from mixed ones, union valid inline ids into the verdict's citations — which also fixes the converse, where a verdict citing correctly inline was downgraded for omitting the `CITATIONS:` line. | `subagent_analysts/analyze.py` <br> `tests/test_analyst_analyze.py` |
+| **4 · edr/ndr broken at construction** <br> *(Evidence Store)* | **⚠ UNCOMMITTED** | `DomainSpec.assessment_model` defaulted to bare `Assessment` (no `tool_family`) for edr/ndr, so `SubtaskResult.from_answer()` raised `ValidationError` the moment either subagent returned — surfacing as a generic "subagent failed". A regression introduced by `4461652`; every test passed because nothing covered that path. Added `EdrAssessment`/`NdrAssessment` to the union and to `DomainSpec`. | `contracts/findings.py` <br> `contracts/subtask.py` <br> `smartops/domains.py` <br> `tests/test_domains.py` |
+| **5 · `classification` degraded to `dict`** <br> *(Evidence Store)* | **⚠ UNCOMMITTED** | Typed `Any`, so `load_run_artifacts()` returned a plain dict and `main.py:394/397/403` plus `bench.py:580-582` raised `AttributeError`. The same silent degradation the `tool_family` discriminator existed to eliminate, missed on the sibling field. The round-trip test passed only because it exercised `route()`, which never touches `classification`. Retyped to `TaskClassification`. | `contracts/subtask.py` <br> `tests/test_broker.py` |
+| **6 · `scope` never persisted** <br> *(Evidence Store)* | **⚠ UNCOMMITTED** | `BrokerReport` carried no `scope`, but `route()` and `analyze()` both require one — a reloaded report structurally could not drive the pipeline the reload path exists to feed. The test masked it by supplying `make_scope()` from its own fixture. Added `scope`, populated at construction. | `contracts/subtask.py` <br> `smartops/broker.py` <br> `tests/test_broker.py` |
+| **7 · Assessments filed into the wrong run** <br> *(Evidence Store)* | **⚠ UNCOMMITTED** | `latest.txt` is written at save time but its stamp comes from `report.created_at`, so overlapping runs of one case disagree about which directory is newest. `_persist_assessment()` resolved through that stale pointer and filed run B's assessment into run A's folder — confirmed by execution, and undetectable afterwards because `assessment.json` carries no join key. `BrokerOutcome.run_dir` is now carried out and passed in. | `smartops/broker.py` <br> `smartops/main.py` <br> `tests/test_broker.py` |
+
+## Verification evidence
+
+Each re-confirmed by running it, not by reading the diff:
+
+| Check | Result |
+| :--- | :--- |
+| `from_answer()` across all four families | siem/edr/vt/ndr all construct; `EdrAssessment`/`NdrAssessment` resolve |
+| save → `load_run_artifacts()` round trip | `classification` returns `TaskClassification`; `.tool_families` works |
+| `BrokerReport.scope` | present, survives reload, `route(reloaded, reloaded.scope)` → `RoutedEvidence` |
+| `BrokerOutcome.run_dir` | present, and `main.py:672` passes it into `_persist_assessment` |
+| `uv run pytest` | **637 passed, 0 failed, 6 warnings** |
+
+## Gaps blocking closure
+
+Verified this session; none are in the findings table.
+
+1. **Findings 4–7 are uncommitted.** `broker.py`, `main.py`, `domains.py`,
+   `contracts/*` and their tests are modified in the working tree.
+2. **22 of the 24 saved reports fail to load.** They predate the `tool_family`
+   discriminator, so `load_run_artifacts()` raises `union_tag_not_found`. An
+   evidence store that cannot read what it wrote is the hardest thing to defend
+   when closing "Evidence Store".
+3. **The artifact-linking work is unstarted.** No `ResultSet.evidence_id`, no
+   `HypothesisAssessment.task_id`, no `AnalystVerdict.citation_evidence`. A
+   stored citation is still a *position* — `connections#23` means "the 23rd
+   connections set in this slice" — so it silently re-targets if routing order
+   ever changes, and `assessment.json` is joined to `report.json` by nothing but
+   its directory path. All nine assessments on disk carry the same hardcoded
+   `hypothesis_id: "cli-hypothesis"`.
+
+## Plans
+
+| Plan | State |
+| :--- | :--- |
+| `docs/superpowers/specs/2026-08-24-analyst-grounding-integrity-design.md` <br> `docs/superpowers/plans/2026-08-24-analyst-grounding-integrity.md` | **complete** — both tasks committed (findings 2 and 3) |
+| `docs/superpowers/plans/2026-08-24-artifact-contract-integrity.md` | **written, not started** — 4 tasks, ends at 642 tests |
+
+## What to do next, in order
+
+1. **Task 1 of the artifact-contract plan, alone.** Commits findings 4–7. Costs
+   nothing but a diff review and removes the biggest risk in the tree.
+2. **Task 2**, then confirm `loadable 24  failing 0` against `.smartops/runs/`.
+   That single fact is what moves "Evidence Store" from indefensible to
+   closeable. The approach — a callable pydantic `Discriminator` resolving
+   untagged legacy payloads by shape — was spiked against pydantic 2.13.4 and
+   confirmed working before the plan was written.
+3. **Tasks 3 and 4** — the assessment join key, then citations that resolve to
+   evidence.
+4. **Then close the Asana cards**: "Findings Pipeline", "Evidence Store", parent
+   "Data Connector", under the SubAgents epic.
+5. **Recompile the decision record**: run `docs/compile_docs.py` so this file
+   reaches `PROJECT_DOCS.md`. Never hand-edit `PROJECT_DOCS.md`.
+
+## Unscheduled — the review's Important tier
+
+Found and confirmed, no plan covers them:
+
+- `_parse_citations` splits on commas only, so `CITATIONS: a#1 a#2` yields zero
+  valid ids and downgrades a correctly-grounded verdict to `inconclusive`.
+- Citation numbering is global rather than per-category, emitting
+  `connections#2` with no `connections#1` — hostile to a model the prompts hand
+  `connections#1` as the worked example.
+- `combine()` can return a decisive stance at ~0.00 confidence with no floor
+  back to `inconclusive`.
+- `_EvidenceCollector` records the structured-output call (`SiemAnswer`,
+  `VtAnswer`) as `Evidence`, so the store holds model-authored content and a
+  citation can point at the model quoting itself.
+- `replay.py` cannot read VT evidence from the current enricher path — every VT
+  record replays as `None`, silently.
+
+## Landmines
+
+- **Never stage `backend/src/smartops/bench.py`.** It carries 20 lines of
+  deliberate, pre-existing, out-of-scope work that predates all of this.
+- **Never delete or rewrite anything under `.smartops/runs/`.** Those are real
+  run artifacts and they are the fixture the whole audit rests on.
+- Task 4 Step 5 of the plan says to pass `evidence_id=` into every
+  `VtVerdict(...)` in `project_vt`. One of the three is `VtVerdict(**v)`, so if
+  a payload dict ever carried `evidence_id` that is a duplicate-keyword error.
+  It cannot happen with today's VT payloads; it will fail loudly if it ever does.
+
+## Standing architectural threads
+
+Raised and deliberately left open, not decided:
+
+- **Multi-hypothesis investigations.** Direction set, not designed: the Broker
+  *should* see the hypotheses (plural — competing benign/malicious
+  explanations), each gets its own end-to-end run, parallel where possible, and
+  the domain analysts still never see any hypothesis. This does not contradict
+  the recorded decision — `contracts/reasoning.py` excluded hypothesis prose
+  *"until a consumer needed them"*, and the Broker is now that consumer. The
+  selection-bias risk it introduces is mitigated by the plural itself: fetching
+  to *discriminate between* competing explanations forces broader retrieval than
+  confirming one.
+- **`hypothesis_id` is a dead constant** — `main.py:558` hardcodes
+  `"cli-hypothesis"` on every CLI run. Any hypothesis store starts here.
+- **`combine()` is pre-built Analyst Agent territory.** It already implements a
+  thin version of the Aggregator that the Analyst Agent epic (Mariam's, unbuilt)
+  claims as its own responsibility. Worth flagging so it is absorbed or replaced
+  deliberately rather than rebuilt blind.
