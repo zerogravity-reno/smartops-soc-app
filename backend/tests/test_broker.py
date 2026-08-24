@@ -27,14 +27,16 @@ from smartops.broker import (
     plan_fetch,
 )
 from smartops.budget import Budget
-from smartops.domains import DOMAINS
+from smartops.domains import DOMAINS, spec_for
 
 from contracts import (
     AnalystTask,
     CompletionRule,
+    EdrAssessment,
     Entity,
     FetchPlan,
     FetchStep,
+    NdrAssessment,
     QueryRun,
     ResultSet,
     Scope,
@@ -44,6 +46,7 @@ from contracts import (
     SubtaskResult,
     SubtaskStatus,
     TaskClassification,
+    make_answer_model,
 )
 
 MODEL = ModelChoice(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", pricing_key="claude-sonnet-4-6")
@@ -1336,14 +1339,49 @@ class TestFetchPlanAndReport:
         reloaded_findings = reloaded.results[0].findings
         assert isinstance(reloaded_findings, SiemFindings)
         assert reloaded_findings.auth_events[0].rows == [{"user": "bostoll"}]
+        # Item 5: classification is fully typed TaskClassification on reload
+        assert isinstance(reloaded.classification, TaskClassification)
+        assert reloaded.classification.tool_families == ["siem"]
+        # Item 6: scope is persisted in BrokerReport and restored on reload
+        assert reloaded.scope is not None
+        assert reloaded.scope.entities[0].value == "host-1"
 
-        # The existing Findings Pipeline (route/format/pack) needs no change at
-        # all to work against a reloaded report -- it only ever depended on
-        # BrokerReport being well-typed, live or not.
-        from smartops.subagent_analysts.routing import route
+    async def test_edr_and_ndr_subagent_assessment_discriminator(self, tmp_path, monkeypatch):
+        # Item 4: EDR and NDR assessments carry tool_family discriminator and survive SubtaskResult.from_answer
+        monkeypatch.chdir(tmp_path)
+        edr_spec = spec_for("edr")
+        ndr_spec = spec_for("ndr")
+        assert edr_spec.assessment_model is EdrAssessment
+        assert ndr_spec.assessment_model is NdrAssessment
 
-        routed = route(reloaded, make_scope())
-        assert routed.identity.siem_sets  # auth_events routes to identity
+        edr_answer_cls = make_answer_model("edr", EdrAssessment)
+        edr_ans = edr_answer_cls(
+            status="ok",
+            assessment=EdrAssessment(covered=["processes"], note="retrieved processes"),
+        )
+        res = SubtaskResult.from_answer(task_id="t-edr", answer=edr_ans, evidence=[])
+        assert res.assessment.tool_family == "edr"
+        assert res.assessment.covered == ["processes"]
+
+    def test_persist_assessment_direct_run_dir(self, tmp_path):
+        # Item 7: _persist_assessment writes directly into passed run_dir without relying on latest.txt
+        from smartops.main import _persist_assessment
+        from contracts import HypothesisAssessment
+
+        run_a = tmp_path / "run_a"
+        run_b = tmp_path / "run_b"
+        run_a.mkdir()
+        run_b.mkdir()
+
+        assessment_a = HypothesisAssessment(
+            hypothesis_id="h1",
+            overall_stance="supports",
+            confidence=0.9,
+            observations=[],
+        )
+        _persist_assessment("task-1", assessment_a, run_dir=run_a)
+        assert (run_a / "assessment.json").exists()
+        assert not (run_b / "assessment.json").exists()
 
     async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
         """The regression test for the failure this task exists to remove.

@@ -205,6 +205,7 @@ class BrokerOutcome:
     dispatched: list[ToolFamily]
     plan: FetchPlan | None = None
     report: BrokerReport | None = None
+    run_dir: Path | None = None
 
 
 class BrokerInvokerResult(Protocol):
@@ -1252,11 +1253,12 @@ async def _run_broker_task(
         results=list(request.collected),
         dispatched=dispatched,
         classification=classification,
+        scope=task.scope,
         cost=cost_summary,
         queries_run=queries_run,
     )
 
-    save_run_artifacts(report)
+    run_dir = save_run_artifacts(report)
 
     return BrokerOutcome(
         results=list(request.collected),
@@ -1264,5 +1266,6 @@ async def _run_broker_task(
         dispatched=dispatched,
         plan=plan,
         report=report,
+        run_dir=run_dir,
     )
 

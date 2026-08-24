@@ -15,7 +15,9 @@ from smartops.tools.native import virustotal
 
 from contracts import (
     Assessment,
+    EdrAssessment,
     Findings,
+    NdrAssessment,
     SiemAssessment,
     SiemFindings,
     ToolFamily,
@@ -114,12 +116,11 @@ class TestPayloadModelParity:
         assert DOMAINS["vt"].assessment_model is VtAssessment
         assert DOMAINS["vt"].findings_model is VtFindings
 
-    def test_disabled_domains_fall_back_to_the_minimal_default(self):
-        # edr and ndr have no reachable server and no vendor picked, so there is
-        # no retrieval shape yet to model a judgement over.
-        for family in ("edr", "ndr"):
-            assert DOMAINS[family].assessment_model is Assessment
-            assert DOMAINS[family].findings_model is None
+    def test_edr_and_ndr_use_their_typed_assessment_models(self):
+        assert DOMAINS["edr"].assessment_model is EdrAssessment
+        assert DOMAINS["ndr"].assessment_model is NdrAssessment
+        assert DOMAINS["edr"].findings_model is None
+        assert DOMAINS["ndr"].findings_model is None
 
     def test_every_family_declares_an_assessment_model(self):
         # Unlike findings_model, this one must never be None: it is what

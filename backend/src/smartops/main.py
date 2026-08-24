@@ -445,22 +445,28 @@ def _print_assessment(assessment: HypothesisAssessment) -> None:
     print("  (per-call context ceiling is 32,768 tokens; imported-model cost is per warm-minute, not per token)")
 
 
-def _persist_assessment(task_id: str, assessment: HypothesisAssessment) -> None:
-    """Write assessment.json beside the broker's run artifacts, if that dir exists.
+def _persist_assessment(
+    task_id: str,
+    assessment: HypothesisAssessment,
+    run_dir: Path | str | None = None,
+) -> None:
+    """Write assessment.json beside the broker's run artifacts.
 
-    The Broker already timestamped a run directory and recorded its name in
-    `latest.txt`; the assessment for the same run belongs next to its
-    `report.json`. Best-effort: a missing run dir means the report was not
-    persisted (e.g. a fully rejected scripted run), so there is nothing to sit
-    beside and we skip silently rather than inventing a location.
+    If `run_dir` is passed directly (from `save_run_artifacts`), it writes straight
+    there to avoid pointer race conditions. Otherwise falls back to resolving via
+    `latest.txt`. Best-effort: missing dir skips silently.
     """
-    base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
-    latest = Path(base) / task_id / "latest.txt"
-    if not latest.exists():
-        return
-    run_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
-    if run_dir.is_dir():
-        (run_dir / "assessment.json").write_text(
+    if run_dir is not None:
+        target_dir = Path(run_dir)
+    else:
+        base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        latest = Path(base) / task_id / "latest.txt"
+        if not latest.exists():
+            return
+        target_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
+
+    if target_dir.is_dir():
+        (target_dir / "assessment.json").write_text(
             assessment.model_dump_json(indent=2), encoding="utf-8"
         )
 
@@ -663,7 +669,7 @@ async def _run(argv: list[str] | None = None) -> int:
                 logging.getLogger(__name__).debug("analyze failed", exc_info=True)
             else:
                 _print_assessment(assessment)
-                _persist_assessment(task.task_id, assessment)
+                _persist_assessment(task.task_id, assessment, run_dir=getattr(outcome, "run_dir", None))
 
     return 0
 

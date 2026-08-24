@@ -23,8 +23,10 @@ from typing import Any
 
 from contracts import (
     Assessment,
+    EdrAssessment,
     EntityKind,
     Findings,
+    NdrAssessment,
     SiemAssessment,
     SiemFindings,
     ToolFamily,
@@ -158,6 +160,7 @@ EDR = DomainSpec(
     required_kinds=frozenset({"host", "process", "user"}),
     time_scoped=True,
     mcp_servers=("edr",),
+    assessment_model=EdrAssessment,
 )
 
 VT = DomainSpec(
@@ -192,6 +195,7 @@ NDR = DomainSpec(
     required_kinds=frozenset({"ip", "domain", "url"}),
     time_scoped=True,
     mcp_servers=("ndr",),
+    assessment_model=NdrAssessment,
 )
 
 # Order matters: it is the order the Broker sees the tools in, and the default
