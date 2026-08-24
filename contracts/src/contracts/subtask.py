@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
+    Discriminator,
     Field,
+    Tag,
     create_model,
     field_validator,
     model_validator,
@@ -357,6 +359,47 @@ def make_answer_model(family: ToolFamily, assessment_model: type[Assessment]) ->
     )
 
 
+def _findings_tag(value: Any) -> str | None:
+    """Resolve which `Findings` subclass a payload is, tag or no tag.
+
+    A plain string discriminator refuses any payload without `tool_family`,
+    which is every artifact written before that field existed -- 22 of the 24
+    runs saved under `.smartops/runs/`. They fail with `union_tag_not_found`,
+    and an evidence store that cannot read what it wrote is not one.
+
+    So: trust the tag when it is there, and fall back to the shape when it is
+    not. The shapes are unambiguous and always have been -- `VtFindings` is the
+    only member carrying `verdicts`, `SiemFindings` the only one carrying CIM
+    buckets -- so this recovers the subclass exactly rather than guessing.
+    Newly written artifacts always carry the tag and never reach the fallback.
+    """
+    if isinstance(value, dict):
+        tagged = value.get("tool_family")
+        if tagged:
+            return str(tagged)
+        return "vt" if "verdicts" in value else "siem"
+    return getattr(value, "tool_family", None)
+
+
+def _assessment_tag(value: Any) -> str | None:
+    """Resolve which `Assessment` subclass a payload is. See `_findings_tag`.
+
+    The legacy shapes are distinguishable the same way: `VtAssessment` is the
+    only member carrying `looked_up`, `SiemAssessment` the only one carrying
+    `covered`. `EdrAssessment`/`NdrAssessment` postdate the discriminator
+    entirely, so they always arrive tagged -- an untagged payload predates them
+    by construction and can never need to resolve to one.
+    """
+    if isinstance(value, dict):
+        tagged = value.get("tool_family")
+        if tagged:
+            return str(tagged)
+        if "looked_up" in value:
+            return "vt"
+        return "siem"
+    return getattr(value, "tool_family", None)
+
+
 class SubtaskResult(_StatusErrorContract):
     """Full result returned by a subagent, consumed only by the aggregator."""
 
@@ -372,7 +415,10 @@ class SubtaskResult(_StatusErrorContract):
             "indistinguishable from a bug."
         ),
     )
-    findings: Annotated[SiemFindings | VtFindings, Field(discriminator="tool_family")] | None = Field(
+    findings: Annotated[
+        Annotated[SiemFindings, Tag("siem")] | Annotated[VtFindings, Tag("vt")],
+        Discriminator(_findings_tag),
+    ] | None = Field(
         default=None,
         description=(
             "The per-family typed payload, projected from `evidence` by code. A "
@@ -385,10 +431,19 @@ class SubtaskResult(_StatusErrorContract):
             "reconstructs the empty base class instead, which is exactly what made "
             "`broker.load_run_artifacts()` unsafe until this was added. Extending to a "
             "new family (edr/ndr) means adding it to this union, not a silent gap --"
-            " an unlisted subclass now fails loudly at construction, not on reload."
+            " an unlisted subclass now fails loudly at construction, not on reload. "
+            "The discriminator is CALLABLE rather than the field name, so a payload "
+            "written before `tool_family` existed is resolved by its shape instead of "
+            "rejected outright; see `_findings_tag`."
         ),
     )
-    assessment: Annotated[SiemAssessment | VtAssessment | EdrAssessment | NdrAssessment, Field(discriminator="tool_family")] | None = Field(
+    assessment: Annotated[
+        Annotated[SiemAssessment, Tag("siem")]
+        | Annotated[VtAssessment, Tag("vt")]
+        | Annotated[EdrAssessment, Tag("edr")]
+        | Annotated[NdrAssessment, Tag("ndr")],
+        Discriminator(_assessment_tag),
+    ] | None = Field(
         default=None,
         description=(
             "The model's own small judgement, carried over from the concrete "
@@ -399,7 +454,8 @@ class SubtaskResult(_StatusErrorContract):
             "plan's completion rules read `covered` / `not_covered` to judge whether a "
             "step retrieved what was asked for, and `BrokerReport` is assembled from "
             "`SubtaskResult`s, so anything not carried here never reaches the Analyst. "
-            "`None` for a rejected or errored subtask, where no model ever ran."
+            "`None` for a rejected or errored subtask, where no model ever ran. Same "
+            "callable-discriminator reasoning as `findings` above; see `_assessment_tag`."
         ),
     )
     queries_run: list[QueryRun] = Field(

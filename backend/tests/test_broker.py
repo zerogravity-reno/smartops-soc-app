@@ -40,12 +40,15 @@ from contracts import (
     QueryRun,
     ResultSet,
     Scope,
+    SiemAssessment,
     SiemFindings,
     StepOutcome,
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
     TaskClassification,
+    VtAssessment,
+    VtFindings,
     make_answer_model,
 )
 
@@ -1410,6 +1413,50 @@ class TestFetchPlanAndReport:
         (step_outcome,) = outcome.report.step_outcomes
         assert step_outcome.completed is False
         assert step_outcome.evaluated is False
+
+    def test_a_report_saved_before_the_discriminator_still_loads(self, tmp_path):
+        # 22 of the 24 real artifacts under .smartops/runs/ predate the
+        # tool_family discriminator and raise `union_tag_not_found` on load. An
+        # evidence store that cannot read what it wrote is not one, so untagged
+        # payloads are resolved by shape instead.
+        import json
+
+        legacy = {
+            "schema_version": 1,
+            "task_id": "legacy-1",
+            "hypothesis_id": "h1",
+            "classification": {"tool_families": ["siem"], "rationale": "why"},
+            "cost": {"spend_by_role": {}, "total_spend_micro_usd": 0,
+                     "budget_remaining_micro_usd": 0},
+            "results": [
+                {
+                    "task_id": "legacy-1:siem:t0", "status": "ok",
+                    # No tool_family on either payload -- this is the legacy shape.
+                    "findings": {"auth_events": [{"query": "q", "row_count": 1,
+                                                  "rows": [{"user": "bostoll"}]}]},
+                    "assessment": {"covered": ["auth_events"], "not_covered": []},
+                    "evidence": [],
+                },
+                {
+                    "task_id": "legacy-1:vt:t1", "status": "ok",
+                    "findings": {"verdicts": [{"kind": "domain", "value": "x.com",
+                                               "found": True, "malicious": 3}]},
+                    "assessment": {"looked_up": 1, "not_looked_up": []},
+                    "evidence": [],
+                },
+            ],
+        }
+        run_dir = tmp_path / "legacy-1" / "20260101T000000000"
+        run_dir.mkdir(parents=True)
+        (run_dir / "report.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+        report = load_run_artifacts(run_dir)
+
+        assert isinstance(report.results[0].findings, SiemFindings)
+        assert report.results[0].findings.auth_events[0].rows == [{"user": "bostoll"}]
+        assert isinstance(report.results[0].assessment, SiemAssessment)
+        assert isinstance(report.results[1].findings, VtFindings)
+        assert isinstance(report.results[1].assessment, VtAssessment)
 
 
 class TestCompletionIsCodeEvaluated:
