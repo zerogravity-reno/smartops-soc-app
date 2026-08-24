@@ -45,13 +45,29 @@ def _truncate(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:limit] + "…"
 
 
+def _count_suffix(row: dict[str, Any]) -> str:
+    """` count=N` when the row is an aggregate, otherwise nothing.
+
+    `| stats count by ...` is the dominant triage SPL shape -- `count` appears
+    on 1,260 of 1,887 `processes` rows and 138 `auth_events` rows across the
+    saved runs. Dropping it left the identity analyst asked to spot "many
+    failures for one account" from rows whose only quantity had been deleted.
+
+    Appended rather than given a fixed column because it is present on roughly
+    two thirds of rows, not all of them, and a `count=-` on every single-event
+    row would spend budget saying nothing.
+    """
+    value = _first(row, "count", default="")
+    return f" count={value}" if value not in ("", "-") else ""
+
+
 def _format_auth_event(row: dict[str, Any]) -> str:
     return (
         f"{_first(row, 'time', '_time', 'timestamp')} "
-        f"user={_first(row, 'user', 'src_user', 'Account_Name')} "
-        f"src={_first(row, 'src', 'src_ip', 'Source_Network_Address')} "
+        f"user={_first(row, 'user', 'src_user', 'Account_Name', 'AccountName', 'userPrincipalName')} "
+        f"src={_first(row, 'src', 'src_ip', 'Source_Network_Address', 'ipAddress', 'Workstation_Name')} "
         f"dest={_first(row, 'dest', 'dest_host', 'Computer', 'host')} "
-        f"action={_first(row, 'action', 'status', 'signature')} "
+        f"action={_first(row, 'action', 'status', 'signature', 'failureReason')} "
         # `code`/`logon_type` are the discriminating pair: without them, a
         # CachedInteractive unlock (EventCode 4624, Logon_Type 11) and a real
         # password spray render as identical near-blank rows. Both raw Windows
@@ -60,15 +76,23 @@ def _format_auth_event(row: dict[str, Any]) -> str:
         f"code={_first(row, 'EventCode', 'signature_id', 'event_id')} "
         f"logon_type={_first(row, 'Logon_Type', 'LogonType', 'logon_type')} "
         f"app={_first(row, 'app', 'sourcetype')}"
+        f"{_count_suffix(row)}"
     )
 
 
 def _format_dns_resolution(row: dict[str, Any]) -> str:
+    # `query{}` / `name{}` / `answer{}` are Splunk Stream's multivalue field
+    # spellings -- the literal braces are part of the JSON key, so a candidate
+    # list naming only `query` misses every Stream DNS row (66 of them across
+    # the saved runs).
     return (
         f"{_first(row, 'time', '_time', 'timestamp')} "
-        f"query={_first(row, 'query', 'domain', 'name')}"
-        f"→{_first(row, 'answer', 'answers', 'ip', 'dest_ip')} "
-        f"rtype={_first(row, 'record_type', 'query_type', 'type')}"
+        f"src={_first(row, 'src', 'src_ip', 'host')} "
+        f"query={_first(row, 'query', 'query{}', 'domain', 'name', 'name{}')}"
+        f"→{_first(row, 'answer', 'answer{}', 'answers', 'ip', 'dest_ip')} "
+        f"rtype={_first(row, 'record_type', 'query_type', 'type')} "
+        f"rcode={_first(row, 'reply_code', 'response_code', 'rcode')}"
+        f"{_count_suffix(row)}"
     )
 
 
@@ -79,23 +103,46 @@ def _format_connection(row: dict[str, Any]) -> str:
     dest_port = _first(row, "dest_port", default="")
     src_full = f"{src}:{src_port}" if src_port not in ("", "-") else src
     dest_full = f"{dest}:{dest_port}" if dest_port not in ("", "-") else dest
+    # Both directions, never one. `bytes_in` and `bytes_out` co-occur on real
+    # rows, and collapsing them to whichever candidate matched first rendered
+    # `bytes=12` for a row carrying 900,000 inbound -- inverting the very
+    # exfiltration signal the network prompt asks the analyst to look for.
+    volume = " ".join(
+        f"{label}={value}"
+        for label, value in (
+            ("bytes_in", _first(row, "bytes_in", default="")),
+            ("bytes_out", _first(row, "bytes_out", default="")),
+        )
+        if value not in ("", "-")
+    ) or f"bytes={_first(row, 'bytes')}"
     return (
         f"{_first(row, 'time', '_time', 'timestamp')} "
         f"{src_full}→{dest_full} "
         f"proto={_first(row, 'transport', 'protocol', 'proto')} "
-        f"bytes={_first(row, 'bytes', 'bytes_out', 'bytes_in')} "
-        f"action={_first(row, 'action', 'status')}"
+        f"{volume} "
+        f"uri={_truncate(_first(row, 'uri_path', 'uri', 'url', 'site'), 120)} "
+        f"action={_first(row, 'action', 'status', 'http_method')}"
+        f"{_count_suffix(row)}"
     )
 
 
 def _format_process(row: dict[str, Any]) -> str:
+    # Windows Security 4688 writes `New_Process_Name` / `Creator_Process_Name` /
+    # `Account_Name`, and the same event arrives under three casings depending
+    # on sourcetype (`New_Process_Name`, `NewProcessName`, `new_process_name`).
+    # None were candidates, which is why 1,648 of 1,887 real process rows lost
+    # data -- while `projection.py:_infer_cim_category` already matched on
+    # `new_process_name` to decide the row WAS a process event. The categoriser
+    # and the projector disagreed about the shape of the same record.
     return (
         f"{_first(row, 'time', '_time', 'timestamp')} "
-        f"host={_first(row, 'dest', 'host', 'Computer')} "
-        f"user={_first(row, 'user', 'User')} "
-        f"process={_first(row, 'process_name', 'process_exec', 'Image')} "
-        f"parent={_first(row, 'parent_process_name', 'parent_process', 'ParentImage')} "
-        f"cmdline={_truncate(_first(row, 'process', 'command_line', 'CommandLine'), _CMDLINE_LIMIT)}"
+        f"host={_first(row, 'dest', 'host', 'Computer', 'ComputerName')} "
+        f"user={_first(row, 'user', 'User', 'Account_Name', 'AccountName', 'SubjectUserName')} "
+        f"process={_first(row, 'process_name', 'New_Process_Name', 'NewProcessName', 'new_process_name', 'process_exec', 'Image')} "
+        f"parent={_first(row, 'parent_process_name', 'Creator_Process_Name', 'ParentProcessName', 'creator_process_name', 'parent_process', 'ParentImage')} "
+        f"code={_first(row, 'EventCode', 'signature_id', 'event_id')} "
+        f"cmdline={_truncate(_first(row, 'process', 'Process_Command_Line', 'process_command_line', 'command_line', 'cmd_line', 'CommandLine'), _CMDLINE_LIMIT)}"
+        f"{_count_suffix(row)}"
     )
 
 
@@ -119,9 +166,67 @@ _FORMATTERS: dict[CimCategory, Any] = {
 }
 
 
+_PLACEHOLDER_CHARS = frozenset("-→:")
+"""Characters a projector emits as pure structure, carrying no row data.
+
+`-` is `_first`'s default and `→`/`:` are the joiners in the connection and DNS
+lines, so a token built only from these (`-→-`) is an empty column pair rather
+than content.
+"""
+
+
+def _projection_is_empty(line: str) -> bool:
+    """True when a projector filled none of its columns from the row.
+
+    Checks the rendered line rather than the row's keys, for two reasons: the
+    candidate lists stay the single source of truth (no second copy to drift),
+    and a *recognised* key carrying an empty value renders exactly as blank as
+    an unrecognised one -- both should fall back.
+
+    Two subtleties, both learned from a test failure rather than guessed:
+
+    - The leading timestamp is dropped before the check. A row that projected
+      nothing but `_time` has had its substance dropped just the same, and that
+      was the single most common real `processes` shape.
+    - Not all content is a `key=value` pair. `_format_connection` carries its
+      most important field as the bare `src:port→dest:port` tuple, so an
+      earlier version of this check saw only `proto=-`/`bytes=-`/`action=-`,
+      declared a fully populated connection row empty, and discarded the tuple
+      by falling back. A bare token counts as content unless it is built
+      purely from `_PLACEHOLDER_CHARS`.
+    """
+    tokens = line.split()[1:]
+    if not tokens:
+        return True
+    for token in tokens:
+        _, sep, value = token.partition("=")
+        if sep:
+            if value not in ("", "-"):
+                return False
+        elif set(token) - _PLACEHOLDER_CHARS:
+            return False
+    return True
+
+
 def format_row(category: str, row: dict[str, Any]) -> str:
-    """One line for one row, using the projector for its CIM category."""
-    return _FORMATTERS.get(category, _format_generic)(row)
+    """One line for one row, using the projector for its CIM category.
+
+    Falls back to `_format_generic` when the category's projector recognised
+    nothing in the row. **This fallback is the fix for a silent-loss bug, not a
+    convenience.** A categorised row whose field names were all unknown used to
+    render as a structurally valid, entirely empty line (`- host=- user=-
+    process=- parent=- cmdline=-`) while the header above it still advertised
+    `rows=20`. The analyst was shown blanks, and because the grounding gate
+    verifies only that a citation's header id was *emitted* -- never that the
+    block beneath it had content -- a fabricated claim citing that block passed
+    the gate. Degrading to key=value keeps such rows visible and auditable
+    instead of vanishing, for whatever sourcetype arrives next.
+    """
+    formatter = _FORMATTERS.get(category)
+    if formatter is None:
+        return _format_generic(row)
+    line = formatter(row)
+    return _format_generic(row) if _projection_is_empty(line) else line
 
 
 def format_result_set(

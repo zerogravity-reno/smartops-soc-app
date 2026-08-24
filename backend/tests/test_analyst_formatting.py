@@ -64,6 +64,102 @@ class TestFieldProjection:
         assert "foo=bar" in line
 
 
+class TestRealSplunkFieldNames:
+    """Rows taken verbatim from `.smartops/runs/*/report.json`.
+
+    The candidate lists in `formatting.py` were written against CIM-normalised
+    field names, but real BOTS v3 data overwhelmingly carries the raw source
+    spellings -- Windows Security (`New_Process_Name`), Splunk Stream
+    (`query{}`), and the `count` that `| stats count by ...` produces. Measured
+    across all 22 saved runs, 1,648 of 1,887 `processes` rows carried data that
+    never reached the rendered line, and the header above them still advertised
+    `rows=N`, so the grounding gate accepted citations to blocks the analyst had
+    been shown as blank.
+    """
+
+    def test_windows_process_creation_row_projects_its_real_field_names(self):
+        # The dominant real `processes` shape. `New_Process_Name` and
+        # `Process_Command_Line` are the two the old candidate lists missed --
+        # `projection.py:_infer_cim_category` already matches on both to decide
+        # this row IS a process event, so the categoriser and the projector
+        # disagreed about what a process row looks like.
+        line = format_row(
+            "processes",
+            {
+                "user": "BudStoll",
+                "New_Process_Name": "C:\\Windows\\System32\\backgroundTaskHost.exe",
+                "Process_Command_Line": '"C:\\Windows\\system32\\backgroundTaskHost.exe" -ServerName:App.X',
+                "count": "56",
+            },
+        )
+        assert "backgroundTaskHost.exe" in line
+        assert "process=-" not in line
+
+    def test_parent_process_uses_the_windows_creator_spelling(self):
+        line = format_row(
+            "processes",
+            {
+                "Account_Name": "bostoll",
+                "Creator_Process_Name": "C:\\Windows\\explorer.exe",
+                "New_Process_Name": "C:\\Windows\\System32\\cmd.exe",
+            },
+        )
+        assert "explorer.exe" in line
+        assert "parent=-" not in line
+
+    def test_stats_count_is_carried_into_the_line(self):
+        # `| stats count by ...` is the dominant triage SPL shape: `count`
+        # appears on 1,260 of 1,887 real process rows and 138 auth rows. The
+        # identity prompt asks the model to spot "many failures for one account"
+        # -- which is unanswerable once the quantity has been dropped.
+        line = format_row(
+            "auth_events",
+            {"Account_Name": "BSTOLL-L$", "Logon_Type": "5", "count": "164"},
+        )
+        assert "count=164" in line
+
+    def test_connection_renders_both_byte_directions(self):
+        # Both fields co-occur on real rows. Rendering only one direction
+        # inverts the exfil signal the network prompt asks the model to find.
+        line = format_row(
+            "connections",
+            {
+                "src_ip": "192.168.247.131", "src_port": "49844",
+                "dest_ip": "37.187.167.47", "dest_port": "443",
+                "bytes_in": "28170", "bytes_out": "21383",
+            },
+        )
+        assert "28170" in line
+        assert "21383" in line
+
+    def test_lowercase_cmd_line_spelling_is_projected(self):
+        # 102 real rows use `cmd_line` rather than `command_line`, and every one
+        # of them is a PowerShell execution -- the single highest-signal record
+        # the endpoint analyst can be shown. They rendered `cmdline=-`.
+        line = format_row(
+            "processes",
+            {
+                "account_name": "BudStoll",
+                "new_process_name": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "creator_process_name": "C:\\Windows\\System32\\browser_broker.exe",
+                "cmd_line": "powershell.exe -enc SQBFAFgA",
+            },
+        )
+        assert "-enc SQBFAFgA" in line
+        assert "cmdline=-" not in line
+
+    def test_a_row_with_no_recognised_field_falls_back_to_key_values(self):
+        # The mechanism fix, and the reason this class of bug was silent: a
+        # categorised row whose field names are all unknown produced a
+        # structurally valid, entirely empty line rather than degrading to the
+        # generic key=value renderer that already existed for `uncategorised`.
+        line = format_row(
+            "processes", {"reply_code": "NoError", "transport": "udp"}
+        )
+        assert "NoError" in line
+        assert "udp" in line
+
+
 class TestResultSetRendering:
     def test_header_is_citation_anchor(self):
         rs = ResultSet(query="sourcetype=stream:dns", row_count=1,
@@ -99,3 +195,4 @@ class TestVtRendering:
     def test_no_indicators(self):
         out = format_vt_verdicts([])
         assert "no indicators looked up" in out
+
