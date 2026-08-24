@@ -130,6 +130,27 @@ class HypothesisAssessment(BaseModel):
     """
 
     schema_version: int = 1
+    task_id: str = Field(
+        min_length=1,
+        description=(
+            "The `BrokerReport.task_id` this assessment was drawn from -- the join "
+            "key back to `report.json`. Required, and deliberately so: every "
+            "assessment.json written before this field carried only a hardcoded "
+            "`hypothesis_id` of 'cli-hypothesis', which left co-location in a "
+            "directory as the sole link between a verdict and its evidence. An "
+            "assessment that cannot name its report is not auditable."
+        ),
+    )
+    run_id: str | None = Field(
+        default=None,
+        description=(
+            "The timestamped run directory this assessment belongs to, stamped by "
+            "`smartops.main._persist_assessment` at write time. Optional because "
+            "`analyze()` legitimately does not know it -- the run directory is "
+            "chosen by the persistence layer, not the analysis layer. It makes the "
+            "artifact self-describing if it is ever copied out of its folder."
+        ),
+    )
     hypothesis_id: str = Field(min_length=1)
     overall_stance: Stance
     confidence: float = Field(ge=0.0, le=1.0)

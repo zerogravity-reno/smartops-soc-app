@@ -61,6 +61,7 @@ class TestAnalystVerdict:
 class TestHypothesisAssessment:
     def test_rolls_up_domain_verdicts(self):
         assessment = HypothesisAssessment(
+            task_id="t-1",
             hypothesis_id="h-1",
             overall_stance="supports",
             confidence=0.7,
@@ -74,4 +75,29 @@ class TestHypothesisAssessment:
 
     def test_hypothesis_id_is_required(self):
         with pytest.raises(ValidationError):
-            HypothesisAssessment(hypothesis_id="", overall_stance="refutes", confidence=0.1)
+            HypothesisAssessment(
+                task_id="t-1", hypothesis_id="", overall_stance="refutes", confidence=0.1
+            )
+
+
+class TestAssessmentJoinKey:
+    def test_task_id_is_required(self):
+        # Every assessment.json on disk carried hypothesis_id "cli-hypothesis" --
+        # a hardcoded constant -- and no task_id, so the directory path was the
+        # only link back to the report. That is what made a misfiled assessment
+        # undetectable.
+        with pytest.raises(ValidationError):
+            HypothesisAssessment(
+                hypothesis_id="h1", overall_stance="supports", confidence=0.5
+            )
+
+    def test_run_id_defaults_to_none_and_round_trips(self):
+        a = HypothesisAssessment(
+            task_id="cli-1", hypothesis_id="h1",
+            overall_stance="supports", confidence=0.5,
+        )
+        assert a.run_id is None
+        stamped = a.model_copy(update={"run_id": "20260101T000000000"})
+        back = HypothesisAssessment.model_validate_json(stamped.model_dump_json())
+        assert back.task_id == "cli-1"
+        assert back.run_id == "20260101T000000000"

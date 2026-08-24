@@ -466,8 +466,13 @@ def _persist_assessment(
         target_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
 
     if target_dir.is_dir():
+        # Stamp the run directory onto the artifact. The analysis layer cannot
+        # know it -- the persistence layer chooses it -- so it is set here, and
+        # it makes the file self-describing if it is ever copied out of its
+        # folder.
+        stamped = assessment.model_copy(update={"run_id": target_dir.name})
         (target_dir / "assessment.json").write_text(
-            assessment.model_dump_json(indent=2), encoding="utf-8"
+            stamped.model_dump_json(indent=2), encoding="utf-8"
         )
 
 

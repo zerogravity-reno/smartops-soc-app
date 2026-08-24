@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -1377,6 +1378,7 @@ class TestFetchPlanAndReport:
         run_b.mkdir()
 
         assessment_a = HypothesisAssessment(
+            task_id="task-1",
             hypothesis_id="h1",
             overall_stance="supports",
             confidence=0.9,
@@ -1385,6 +1387,13 @@ class TestFetchPlanAndReport:
         _persist_assessment("task-1", assessment_a, run_dir=run_a)
         assert (run_a / "assessment.json").exists()
         assert not (run_b / "assessment.json").exists()
+
+        # The join key is what makes a misfiling detectable at all: before it,
+        # a verdict in the wrong folder was indistinguishable from one in the
+        # right folder. run_id is stamped here, by the only layer that knows it.
+        written = json.loads((run_a / "assessment.json").read_text(encoding="utf-8"))
+        assert written["task_id"] == "task-1"
+        assert written["run_id"] == "run_a"
 
     async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
         """The regression test for the failure this task exists to remove.

@@ -265,6 +265,7 @@ async def analyze(
     verdicts = list(verdicts)
     overall_stance, confidence = combine(verdicts)
     return HypothesisAssessment(
+        task_id=report.task_id,
         hypothesis_id=report.hypothesis_id,
         overall_stance=overall_stance,
         confidence=confidence,
