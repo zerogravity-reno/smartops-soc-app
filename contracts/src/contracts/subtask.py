@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -18,10 +18,14 @@ from pydantic import (
     model_validator,
 )
 
+if TYPE_CHECKING:
+    from contracts.analyst_task import TaskClassification
 from contracts.findings import (
     Assessment,
     CimCategory,
+    EdrAssessment,
     Findings,
+    NdrAssessment,
     SiemAssessment,
     SiemFindings,
     VtAssessment,
@@ -384,7 +388,7 @@ class SubtaskResult(_StatusErrorContract):
             " an unlisted subclass now fails loudly at construction, not on reload."
         ),
     )
-    assessment: Annotated[SiemAssessment | VtAssessment, Field(discriminator="tool_family")] | None = Field(
+    assessment: Annotated[SiemAssessment | VtAssessment | EdrAssessment | NdrAssessment, Field(discriminator="tool_family")] | None = Field(
         default=None,
         description=(
             "The model's own small judgement, carried over from the concrete "
@@ -644,7 +648,8 @@ class BrokerReport(BaseModel):
     step_outcomes: list[StepOutcome] = Field(default_factory=list)
     results: list[SubtaskResult] = Field(default_factory=list)
     dispatched: list[ToolFamily] = Field(default_factory=list)
-    classification: Any
+    classification: TaskClassification
+    scope: Scope | None = None
     cost: CostSummary
     queries_run: list[QueryRun] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

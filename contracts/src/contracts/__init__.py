@@ -2,7 +2,9 @@ from contracts.analyst_task import AnalystTask, TaskClassification
 from contracts.findings import (
     Assessment,
     CimCategory,
+    EdrAssessment,
     Findings,
+    NdrAssessment,
     ResultSet,
     SiemAssessment,
     SiemFindings,
@@ -39,6 +41,8 @@ from contracts.subtask import (
     make_answer_model,
 )
 
+BrokerReport.model_rebuild()
+
 __all__ = [
     "MAX_ENTITY_VALUE_LENGTH",
     "AnalystDomain",
@@ -48,8 +52,10 @@ __all__ = [
     "BrokerReport",
     "CimCategory",
     "DomainFinding",
+    "EdrAssessment",
     "HypothesisAssessment",
     "InvestigationContext",
+    "NdrAssessment",
     "Stance",
     "CompletionRule",
     "CostSummary",

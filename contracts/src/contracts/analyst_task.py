@@ -14,8 +14,6 @@ Until an Analyst agent exists, `smartops.main` mimics this handover, which is
 what the `schema_version` below is for.
 """
 
-from __future__ import annotations
-
 from pydantic import BaseModel, Field
 
 from contracts.subtask import Scope, ToolFamily

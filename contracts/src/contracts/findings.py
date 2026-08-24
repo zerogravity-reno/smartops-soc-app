@@ -183,3 +183,26 @@ class VtFindings(Findings):
 
     def flagged(self) -> list[VtVerdict]:
         return [v for v in self.verdicts if v.malicious > 0 or v.suspicious > 0]
+
+
+class EdrAssessment(Assessment):
+    """What the EDR subagent asserts about host-level process/entity retrieval."""
+
+    tool_family: Literal["edr"] = Field(
+        default="edr", description="Discriminator, see `SiemAssessment.tool_family`."
+    )
+    covered: list[CimCategory] = Field(default_factory=list)
+    not_covered: list[CimCategory] = Field(default_factory=list)
+    note: str = Field(default="", max_length=400)
+
+
+class NdrAssessment(Assessment):
+    """What the NDR subagent asserts about network telemetry retrieval."""
+
+    tool_family: Literal["ndr"] = Field(
+        default="ndr", description="Discriminator, see `SiemAssessment.tool_family`."
+    )
+    covered: list[CimCategory] = Field(default_factory=list)
+    not_covered: list[CimCategory] = Field(default_factory=list)
+    note: str = Field(default="", max_length=400)
+
