@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from contracts import (
     AnalystVerdict,
@@ -32,6 +33,51 @@ from .prompts import build_facts_user_turn, build_user_turn, facts_system_prompt
 from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
+
+_OBSERVATION_CITE_RE = re.compile(r"\[([A-Za-z_]+#\d+)\]")
+"""A `[header_id]` citation embedded in an observation line.
+
+Both prompt footers ask for one per observation (`prompts.py:65`, `:238`), and
+`parse._parse_observations` keeps the line verbatim, brackets included.
+"""
+
+
+def _resolve_observation_citations(
+    observations: list[str], valid_ids: set[str]
+) -> tuple[list[str], set[str]]:
+    """Drop observations whose citations are all invented; keep the valid ids.
+
+    Returns `(surviving_observations, valid_ids_found_inline)`.
+
+    An observation whose cited ids ALL fail to resolve is dropped outright
+    rather than kept-and-flagged: it is supported only by a fabrication, it is
+    exactly what the grounding gate exists to stop, and `main._print_assessment`
+    plus `_persist_assessment` would otherwise make it the durable,
+    operator-facing record. An observation with a mix keeps only the ids that
+    resolve. An observation citing nothing at all is left untouched -- the
+    trailing `CITATIONS:` line may still ground the verdict as a whole, and
+    dropping uncited prose is a different (and unmade) decision.
+    """
+    kept: list[str] = []
+    found: set[str] = set()
+    for observation in observations:
+        cited = set(_OBSERVATION_CITE_RE.findall(observation))
+        if not cited:
+            kept.append(observation)
+            continue
+        resolving = cited & valid_ids
+        if not resolving:
+            logger.warning(
+                "dropped an observation citing only unresolvable id(s): %s",
+                ", ".join(sorted(cited)),
+            )
+            continue
+        text = observation
+        for invented in sorted(cited - resolving):
+            text = text.replace(f"[{invented}]", "").replace("  ", " ").strip()
+        kept.append(text)
+        found |= resolving
+    return kept, found
 
 _REASK = (
     "\n\nYour previous reply did not end with the required VERDICT block. "
@@ -140,8 +186,19 @@ def _finalize(
             ", ".join(dropped),
         )
 
+    # Observation-level citations are checked too, and their valid ids count
+    # toward grounding. Filtering only the trailing CITATIONS: line let a
+    # fabricated `[auth_events#7]` reach the operator and assessment.json, and
+    # -- the converse -- downgraded a verdict that had cited correctly inline
+    # but omitted the CITATIONS: line entirely.
+    observations, inline_ids = _resolve_observation_citations(
+        list(verdict.key_observations), valid_ids
+    )
+    kept = sorted(set(kept) | inline_ids)
+
     updates: dict = {
         "citations": kept,
+        "key_observations": observations,
         "prompt_tokens": prompt_tokens,
         "generation_tokens": generation_tokens,
     }
@@ -320,9 +377,13 @@ def _finalize_finding(
             len(dropped),
             ", ".join(dropped),
         )
+    observations, inline_ids = _resolve_observation_citations(
+        list(finding.observations), valid_ids
+    )
     return finding.model_copy(
         update={
-            "citations": kept,
+            "citations": sorted(set(kept) | inline_ids),
+            "observations": observations,
             "prompt_tokens": prompt_tokens,
             "generation_tokens": generation_tokens,
         }

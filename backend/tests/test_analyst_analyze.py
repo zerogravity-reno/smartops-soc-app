@@ -5,13 +5,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from smartops.subagent_analysts.analyze import analyze, combine, gather_finding, run_one
+from smartops.subagent_analysts.analyze import (
+    _finalize,
+    _finalize_finding,
+    analyze,
+    combine,
+    gather_finding,
+    run_one,
+)
 from smartops.subagent_analysts.model import AnalystResponse
 from smartops.subagent_analysts.routing import DomainSlice
 
 from contracts import (
     AnalystVerdict,
     BrokerReport,
+    DomainFinding,
     CostSummary,
     Entity,
     InvestigationContext,
@@ -285,3 +293,72 @@ class TestAnalyze:
         assert assessment.overall_stance == "supports"
         domains = {v.domain for v in assessment.verdicts}
         assert domains == {"identity", "network", "endpoint"}
+
+
+class TestInlineObservationCitations:
+    """`_finalize` filtered only the trailing CITATIONS: line.
+
+    Both prompt footers tell the model to attach a `[header_id]` to every
+    observation, and those went unchecked -- so a verdict came back
+    supports/0.95 whose observations cited `auth_events#7` (does not exist) and
+    `processes#3` (wrong domain), and both were printed to the operator and
+    written into assessment.json.
+    """
+
+    def test_an_observation_citing_only_an_invalid_id_is_dropped(self):
+        verdict = AnalystVerdict(
+            domain="identity", stance="supports", confidence=0.95,
+            citations=["auth_events#1"],
+            key_observations=[
+                "400 failed logons for bostoll [auth_events#1]",
+                "lateral movement to DC01 [processes#3]",
+            ],
+        )
+        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        assert out.key_observations == ["400 failed logons for bostoll [auth_events#1]"]
+
+    def test_an_observation_keeps_only_its_resolving_ids(self):
+        verdict = AnalystVerdict(
+            domain="identity", stance="supports", confidence=0.9,
+            citations=["auth_events#1"],
+            key_observations=["spray from one source [auth_events#1][auth_events#9]"],
+        )
+        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        assert "auth_events#9" not in out.key_observations[0]
+        assert "auth_events#1" in out.key_observations[0]
+
+    def test_a_valid_inline_citation_counts_toward_grounding(self):
+        # The converse failure: a verdict that cited correctly INLINE but omitted
+        # the CITATIONS: line resolved to zero citations and was downgraded to
+        # inconclusive -- a grounded claim discarded on a formatting technicality.
+        verdict = AnalystVerdict(
+            domain="identity", stance="supports", confidence=0.9,
+            citations=[],
+            key_observations=["brute force against bostoll [auth_events#1]"],
+        )
+        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        assert out.stance == "supports"
+        assert "auth_events#1" in out.citations
+
+    def test_an_uncited_observation_is_left_alone(self):
+        # Dropping uncited prose is a different (and unmade) decision -- the
+        # trailing CITATIONS: line may still ground the verdict as a whole.
+        verdict = AnalystVerdict(
+            domain="identity", stance="supports", confidence=0.9,
+            citations=["auth_events#1"],
+            key_observations=["the account is a service account"],
+        )
+        out = _finalize(verdict, {"auth_events#1"}, 10, 20)
+        assert out.key_observations == ["the account is a service account"]
+
+    def test_the_hypothesis_blind_path_drops_them_too(self):
+        finding = DomainFinding(
+            domain="endpoint", confidence=0.8,
+            citations=["processes#1"],
+            observations=[
+                "powershell -enc observed [processes#1]",
+                "invented claim [processes#42]",
+            ],
+        )
+        out = _finalize_finding(finding, {"processes#1"}, 10, 20)
+        assert out.observations == ["powershell -enc observed [processes#1]"]
