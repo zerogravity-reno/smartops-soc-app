@@ -206,6 +206,102 @@ class TestEvidenceAssembly:
 
         assert collector.calls == []
 
+    def test_the_structured_output_call_is_not_recorded_as_evidence(self):
+        """Strands implements `structured_output_model` as a TOOL, so the model's
+        own answer arrives at this hook looking like any other tool result.
+
+        Recording it put model-authored content in the evidence store: 6 of the 55
+        records in `.smartops/runs/cli-20260823T112627` are `SiemAnswer`/`VtAnswer`.
+        Worse, `_query_of` scrapes the longest search-looking string out of the
+        answer's own `queries_run`, so the phantom reached `project_siem` wearing a
+        legitimate SPL query and was filed into a real CIM bucket -- becoming a
+        citable `auth_events#N` whose evidence is the model quoting itself.
+        """
+        collector = subagents._EvidenceCollector(answer_tool="SiemAnswer")
+        collector._record(
+            _Event(
+                {
+                    "name": "SiemAnswer",
+                    # The real shape: the answer carries the model's own report of
+                    # the queries it ran, which is what `_query_of` latched onto.
+                    "input": {
+                        "queries_run": [
+                            {
+                                "query": "index=botsv3 sourcetype=WinEventLog EventCode=4624",
+                                "category": "auth_events",
+                            }
+                        ]
+                    },
+                },
+                {"status": "success", "content": [{"json": {"summary": "..."}}]},
+            )
+        )
+
+        assert collector.calls == []
+
+    def test_a_domain_tool_sharing_the_answer_model_s_shape_is_still_recorded(self):
+        """The skip is by tool NAME, so a real tool is never caught by it."""
+        collector = subagents._EvidenceCollector(answer_tool="SiemAnswer")
+        collector._record(
+            _Event(
+                {"name": "splunk_run_query", "input": {"query": "index=botsv3"}},
+                {"status": "success", "content": [{"json": {"results": [1]}}]},
+            )
+        )
+
+        assert len(collector.calls) == 1
+
+    def test_an_indicator_lookup_records_the_indicator_as_its_query(self):
+        """A VT lookup's input is a bare indicator, which is not search-shaped.
+
+        `_LOOKS_LIKE_SEARCH` matches SPL (`index=`, a leading pipe, ...), so
+        `vt_lookup_domain(domain="coinhive.com")` produced `query=None` and every
+        VT evidence record in a real run carried no query at all. `ReplayToolset`
+        then fell through to its match-on-tool-name-alone branch and returned the
+        FIRST record for that tool -- so replaying `vt_lookup_domain` for any
+        domain answered with coinhive.com's "11 malicious" verdict. Verified
+        against `.smartops/runs/cli-20260825T100434`: 7 of 72 records, all VT,
+        had `query=None`.
+        """
+        collector = subagents._EvidenceCollector(answer_tool="VtAnswer")
+        collector._record(
+            _Event(
+                {"name": "vt_lookup_domain", "input": {"domain": "coinhive.com"}},
+                {"status": "success", "content": [{"text": "domain=coinhive.com: 11 malicious"}]},
+            )
+        )
+
+        assert collector.calls[0].query == "coinhive.com"
+
+    def test_a_real_spl_query_still_wins_over_a_shorter_argument(self):
+        """The indicator fallback must not outrank a genuine search string."""
+        collector = subagents._EvidenceCollector()
+        collector._record(
+            _Event(
+                {
+                    "name": "splunk_run_query",
+                    "input": {"earliest": "-24h", "query": "index=botsv3 | head 1"},
+                },
+                {"status": "success", "content": [{"json": {"results": []}}]},
+            )
+        )
+
+        assert collector.calls[0].query == "index=botsv3 | head 1"
+
+    def test_the_answer_tool_name_matches_what_strands_exposes(self):
+        """The skip is worthless if the name drifts from the model's `__name__`.
+
+        Strands derives the tool name from `model.__name__` with no sanitisation,
+        so these two must agree by construction rather than by coincidence.
+        """
+        from contracts.subtask import answer_tool_name, make_answer_model
+
+        from smartops.domains import DOMAINS
+
+        for family in ("siem", "vt"):
+            built = make_answer_model(family, DOMAINS[family].assessment_model)
+            assert answer_tool_name(family) == built.__name__
+
     def test_a_successful_tool_call_is_recorded(self):
         collector = subagents._EvidenceCollector()
         collector._record(
@@ -561,6 +657,42 @@ class TestNoStructuredAnswerStillReportsItsQueries:
 
         assert result.queries_run
         assert check_index_scoping([result]) is False
+
+    async def test_a_vt_subagent_that_loses_its_answer_still_reports_its_verdicts(
+        self, monkeypatch
+    ):
+        """The same loss, one family over, and it went the other way for longer.
+
+        `project()` only dispatched siem, so the vt case was appended at the
+        success call site as `or project_vt(...)`. This branch called bare
+        `project()` and so reported `findings=None` while holding a real,
+        already-paid-for VirusTotal verdict -- nothing then routed it to the
+        analysts. Fixed by dispatching vt inside `project()` itself.
+        """
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            self._invoke_recording(
+                [
+                    subagents._ToolCall(
+                        "vt_lookup_domain",
+                        "coinhive.com",
+                        "domain=coinhive.com: 11 malicious / 1 suspicious of 91 engines",
+                    )
+                ]
+            ),
+        )
+
+        result = await investigate(
+            mission("vt", kinds=("domain",)),
+            model=MODEL,
+            budget=Budget.from_usd(1.0),
+            tools=["t"],
+        )
+
+        assert result.findings is not None
+        assert [v.value for v in result.findings.verdicts] == ["coinhive.com"]
+        assert result.findings.verdicts[0].malicious == 11
 
 
 def _async_returning(value):

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from contracts.findings import VtFindings, VtVerdict
+from contracts.subtask import evidence_id
 from pydantic import ValidationError
 from strands import ToolContext, tool
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
@@ -234,6 +235,21 @@ def _usage_from_accumulated(accumulated: dict) -> Usage:
     )
 
 
+def _vt_lookup_tool_name(kind: str) -> str:
+    """The `@tool` the subagent path would have called for this indicator kind.
+
+    The enricher calls VirusTotal directly, with no tool and no model, so nothing
+    names the call in its evidence record. Naming it after the real tool is what
+    lets one evidence store serve both paths: `replay.ReplayToolset` matches on
+    the tool name, so an enricher-made record can answer a replayed
+    `vt_lookup_domain` exactly as a subagent-made one would.
+
+    Mirrors `virustotal.TOOLS`, whose members are `vt_lookup_<kind>` for the four
+    kinds VirusTotal can answer for.
+    """
+    return f"vt_lookup_{kind}"
+
+
 async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -> SubtaskResult:
     """Run a model-free lookup and assemble its result plus raw evidence.
 
@@ -298,14 +314,36 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
     # nothing. Status reflects the findings; the gap goes in `reason`, because
     # the contract forbids `error` on any non-ERROR status.
     collected_at = datetime.now(UTC)
+    # One id per verdict, minted once and used by BOTH the evidence record and
+    # the typed verdict below. They were previously two independent
+    # comprehensions over the same list with nothing joining them, so
+    # `VtVerdict.evidence_id` was None on every verdict this path ever produced
+    # -- the back-reference `projection.project_vt` implements for the subagent
+    # path had no counterpart here, and a stored citation to a VT verdict
+    # resolved to nothing.
+    #
+    # `evidence_id()` rather than an inlined f-string: its own docstring names
+    # this module as one of the two sites the shared formula exists to replace,
+    # and this was the one still holding a copy.
+    ids = [evidence_id(mission.task_id, index) for index in range(len(outcome.verdicts))]
     evidence = [
         Evidence(
-            id=f"{mission.task_id}:{index}",
+            id=eid,
             tool_family=family,
-            raw=verdict.raw,
+            # The collector's shape -- `{tool, query, result}` -- not the bare
+            # response. `replay.ReplayToolset` reads `raw["tool"]`/`raw["result"]`,
+            # so a bare `verdict.raw` carried neither key and every VT record
+            # replayed as a cache miss, silently. One shape in the store, and the
+            # tool named as the subagent path would have called it, so a replay of
+            # an enricher-made record answers the same tool.
+            raw={
+                "tool": _vt_lookup_tool_name(verdict.entity.kind),
+                "query": verdict.entity.value,
+                "result": verdict.raw,
+            },
             collected_at=collected_at,
         )
-        for index, verdict in enumerate(outcome.verdicts)
+        for eid, verdict in zip(ids, outcome.verdicts, strict=True)
     ]
     flagged = [v for v in outcome.verdicts if v.is_flagged]
 
@@ -320,8 +358,9 @@ async def enrich_mission(mission: SubagentMission, enrich: Callable[..., Any]) -
                 harmless=v.harmless,
                 undetected=v.undetected,
                 reputation=v.reputation,
+                evidence_id=eid,
             )
-            for v in outcome.verdicts
+            for eid, v in zip(ids, outcome.verdicts, strict=True)
         ]
     )
 

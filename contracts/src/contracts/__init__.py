@@ -38,6 +38,7 @@ from contracts.subtask import (
     SubtaskResult,
     SubtaskStatus,
     ToolFamily,
+    answer_tool_name,
     make_answer_model,
 )
 
@@ -80,6 +81,7 @@ __all__ = [
     "VtAssessment",
     "VtFindings",
     "VtVerdict",
+    "answer_tool_name",
     "make_answer_model",
 ]
 

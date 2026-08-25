@@ -38,13 +38,14 @@ from contracts import (
     SubagentMission,
     SubtaskResult,
     SubtaskStatus,
+    answer_tool_name,
     make_answer_model,
 )
 from smartops.broker import BUDGET_REFUSAL_ERROR, SubagentRunner, enrich_mission
 from smartops.budget import Budget, ModelChoice, Usage
 from smartops.domains import DOMAINS
 from smartops.guards import IndexScopeGuard, escape_untrusted, fenced
-from smartops.projection import project, project_vt
+from smartops.projection import project
 from smartops.telemetry import record_cost, trace_attributes_for
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
@@ -231,18 +232,31 @@ class _ToolCall:
 
 
 def _query_of(tool_use: Any) -> str | None:
-    """The search string a tool call carried, if it carried one.
+    """What this tool call was asking about, if it can be recovered.
 
     The tool schema comes from whichever MCP server is configured, so the
     parameter name is not knowable here. Reuses the same whole-input scan the
     index guard uses, and takes the longest search-looking string -- a query is
     reliably longer than an index name or a sourcetype argument beside it.
+
+    **Falls back to the longest plain string** when nothing looks like a search,
+    because not every domain queries with a search. A reputation lookup's input is
+    a bare indicator (`vt_lookup_domain(domain="coinhive.com")`), which matches
+    none of `_LOOKS_LIKE_SEARCH`'s SPL patterns -- so every VT evidence record was
+    written with `query=None` (7 of 72 in `cli-20260825T100434`). That is not
+    cosmetic: `replay.ReplayToolset.match()` falls through to matching on tool
+    name alone and returns the FIRST record for that tool, so replaying
+    `vt_lookup_domain` for *any* domain answered with coinhive.com's "11
+    malicious" verdict. A silent wrong answer, not a miss.
+
+    Search-shaped strings still win outright, so a query is never displaced by a
+    shorter argument sitting beside it.
     """
     from smartops.guards import _LOOKS_LIKE_SEARCH, _strings_in
 
-    candidates = [
-        s for s in _strings_in((tool_use or {}).get("input")) if _LOOKS_LIKE_SEARCH.search(s)
-    ]
+    strings = [s for s in _strings_in((tool_use or {}).get("input")) if s.strip()]
+    searches = [s for s in strings if _LOOKS_LIKE_SEARCH.search(s)]
+    candidates = searches or strings
     return max(candidates, key=len) if candidates else None
 
 
@@ -254,10 +268,17 @@ class _EvidenceCollector:
     directly", and `SubagentAnswer` deliberately has no `evidence` field for the
     same reason. A Strands `HookProvider` on `AfterToolCallEvent` is how we see
     what the tool actually returned without asking the model to repeat it back.
+
+    `answer_tool` is the name of this family's structured-output tool, and passing
+    it is what keeps the model's own answer OUT of the store -- see `_record`.
+    `None` disables the skip, which is only correct for a collector that will
+    never see a structured-output call (test doubles, and the recovery path that
+    has no answer model).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, answer_tool: str | None = None) -> None:
         self.calls: list[_ToolCall] = []
+        self.answer_tool = answer_tool
 
     def register_hooks(self, registry: Any, **kwargs: Any) -> None:
         from strands.hooks import AfterToolCallEvent, HookOrder
@@ -273,6 +294,27 @@ class _EvidenceCollector:
     def _record(self, event: Any) -> None:
         name = (event.tool_use or {}).get("name", "unknown")
         result = event.result
+
+        # Strands implements `structured_output_model` as a tool, so the model's
+        # own answer arrives here indistinguishable in shape from a real tool
+        # result. It is not evidence -- it is the model's account of the evidence,
+        # which is exactly what `contracts.Evidence` and `_EvidenceCollector`
+        # exist to keep separate ("assembled by code rather than authored by the
+        # model").
+        #
+        # Skipping it here, in the one shared list, is deliberate: both
+        # `self.evidence()` and `projection.project_*` enumerate this list and
+        # mint ids from the index, so filtering in only one of them would slide
+        # every id onto the wrong payload while leaving each one well-formed.
+        # Before this, the answer became a `ResultSet` filed under a real CIM
+        # category -- `_query_of` lifts the longest search-looking string out of
+        # the tool input, and the answer's own `queries_run` supplied one -- so it
+        # reached the analysts as a citable `auth_events#N` backed by the model's
+        # own words.
+        if self.answer_tool is not None and name == self.answer_tool:
+            logger.debug("tool=%s | structured output, not evidence", name)
+            return
+
         # Failure arrives two ways: an exception the tool raised, or -- the case
         # every MCP tool takes, since `isError` maps to a status rather than
         # raising -- an error-status `ToolResult`. `result` itself is always a
@@ -460,7 +502,11 @@ async def investigate(
             error=BUDGET_REFUSAL_ERROR,
         )
 
-    collector = _EvidenceCollector()
+    # The answer tool's name, not the built model: `answer_tool_name` is the one
+    # formula `make_answer_model` itself names the model from, so the collector's
+    # skip cannot drift from the model `_build_agent_and_invoke` forces the
+    # subagent into.
+    collector = _EvidenceCollector(answer_tool=answer_tool_name(family))
     guard = _guard_for(family)
     try:
         result = await _build_agent_and_invoke(
@@ -552,7 +598,7 @@ async def investigate(
         evidence=evidence,
         # The model said which category each of its queries served; the rows come
         # from what the tools returned. Neither half can forge the other.
-        findings=project(family, collector.calls, answer.queries_run, mission.task_id) or (project_vt(collector.calls, mission.task_id) if family == "vt" else None),
+        findings=project(family, collector.calls, answer.queries_run, mission.task_id),
     )
     # `from_answer` cites nothing, because only this layer knows the evidence ids;
     # nor does it know what the guard refused, which is not the model's to report.

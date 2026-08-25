@@ -51,6 +51,13 @@ Context Contract Template. `process` and `url` are the least settled members.
 
 
 MAX_ENTITY_VALUE_LENGTH = 512
+"""Upper bound on an `Entity.value`. An observable is not a payload.
+
+Comfortably above every kind's realistic maximum -- SHA-512 hex is 128
+characters, IPv6 with an embedded IPv4 is 45, a DNS name caps at 253 -- and far
+below the room an injected instruction wants. `url` is the only kind for which
+this is a judgement rather than a fact.
+"""
 
 
 def evidence_id(task_id: str, index: int) -> str:
@@ -61,15 +68,13 @@ def evidence_id(task_id: str, index: int) -> str:
     and the projectors are about to become a third consumer -- three copies of
     a format string that must agree exactly, or a `ResultSet.evidence_id`
     silently points at nothing.
+
+    The shape of this id, and what it does and does not guarantee, is recorded in
+    `docs/superpowers/specs/2026-08-25-evidence-link-contract-design.md`. The
+    trailing `index` is positional; whether that should become content-addressed
+    is open question A there. Do not change the formula without settling it.
     """
     return f"{task_id}:{index}"
-"""Upper bound on an `Entity.value`. An observable is not a payload.
-
-Comfortably above every kind's realistic maximum -- SHA-512 hex is 128
-characters, IPv6 with an embedded IPv4 is 45, a DNS name caps at 253 -- and far
-below the room an injected instruction wants. `url` is the only kind for which
-this is a judgement rather than a fact.
-"""
 
 _FORBIDDEN_IN_ENTITY_VALUE = frozenset("<>")
 """The two characters checked first, for a message more specific than "not
@@ -350,6 +355,20 @@ class SubagentAnswer(_StatusErrorContract):
     )
 
 
+def answer_tool_name(family: ToolFamily) -> str:
+    """The tool name Strands exposes for this family's structured-output model.
+
+    One formula, one place, for the same reason as `evidence_id()`. Strands derives
+    the tool name from `model.__name__`, so this is also the name that arrives at
+    `AfterToolCallEvent` when the model produces its answer -- and
+    `_EvidenceCollector` needs it to tell the model's own answer apart from a real
+    tool result. Two copies of the format string would let the collector's skip
+    drift silently out of step with the model it is meant to match, which is a
+    failure that looks exactly like no failure at all.
+    """
+    return f"{family.capitalize()}Answer"
+
+
 def make_answer_model(family: ToolFamily, assessment_model: type[Assessment]) -> type[SubagentAnswer]:
     """Build the concrete answer model a family's subagent is forced into.
 
@@ -365,7 +384,7 @@ def make_answer_model(family: ToolFamily, assessment_model: type[Assessment]) ->
     registry rather than a hand-written class per family.
     """
     return create_model(
-        f"{family.capitalize()}Answer",
+        answer_tool_name(family),
         __base__=SubagentAnswer,
         assessment=(assessment_model, ...),
     )

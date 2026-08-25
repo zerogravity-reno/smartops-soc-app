@@ -16,6 +16,9 @@ def call(query, rows, tool="splunk_run_query"):
     return _ToolCall(tool=tool, query=query, payload={"results": rows})
 
 
+VT_SUMMARY = "domain=coinhive.com: 11 malicious / 1 suspicious of 91 engines"
+
+
 class TestBucketing:
     def test_rows_land_in_the_category_the_model_tagged(self):
         findings = project_siem(
@@ -130,10 +133,25 @@ class TestRowExtraction:
 
 
 class TestFamilies:
-    def test_vt_has_no_projector_because_its_findings_are_built_upstream(self):
-        # `enrich_mission()` builds VtFindings straight from parsed Verdicts, on
-        # a path that calls no model at all.
-        assert project("vt", [], [], task_id="t") is None
+    def test_vt_projects_here_not_only_at_the_call_site(self):
+        """`project()` must dispatch vt itself, not leave it to its callers.
+
+        This used to assert the opposite -- that vt had no projector, because
+        `enrich_mission()` builds `VtFindings` straight from parsed Verdicts on a
+        path that calls no model. True of the *enricher*, but the vt *subagent*
+        goes through `investigate()`, which needs a projector like any other
+        family. `893f587` supplied one by appending `or project_vt(...)` at the
+        success call site, which left the no-answer branch calling bare
+        `project()` and reporting `findings=None` while holding real evidence.
+
+        Dispatching here is what makes both branches -- and any third -- correct
+        by construction.
+        """
+        findings = project(
+            "vt", [_ToolCall("vt_lookup_domain", "coinhive.com", VT_SUMMARY)], [], task_id="t"
+        )
+        assert findings is not None
+        assert [v.value for v in findings.verdicts] == ["coinhive.com"]
 
     def test_an_unknown_family_projects_nothing_rather_than_raising(self):
         assert project("edr", [call("index=x | head 1", [{"a": 1}])], [], task_id="t") is None
@@ -341,3 +359,108 @@ class TestEvidenceBackReference:
             task_id="t-1:vt:s0",
         )
         assert findings.verdicts[0].evidence_id == "t-1:vt:s0:0"
+
+
+class TestTheModelsOwnAnswerIsNotEvidence:
+    """The end-to-end property: no citable header is ever backed by the model.
+
+    Reproduced from `.smartops/runs/cli-20260823T112627`, where the SIEM subagent
+    made 9 real queries and the pipeline emitted 10 result sets. The extra one was
+    the `SiemAnswer` structured-output call: Strands runs it as a tool, so the
+    collector recorded it, and `_query_of` lifted the longest search-looking
+    string out of the answer's own `queries_run` -- which meant it arrived here
+    wearing a real SPL query and was filed under `auth_events`. It became
+    `auth_events#8` in the packed evidence, a header the analysts could and did
+    cite, whose evidence resolved to the model quoting itself.
+
+    Written against the whole chain rather than any one function because every
+    stage behaved correctly in isolation; only the composition was wrong.
+    """
+
+    def _events(self, names_and_queries):
+        class _Event:
+            def __init__(self, tool_use, result):
+                self.tool_use = tool_use
+                self.result = result
+                self.exception = None
+
+        return [
+            _Event(
+                {"name": name, "input": {"query": query} if query else {}},
+                {"status": "success", "content": [{"json": {"results": [{"user": "bostoll"}]}}]},
+            )
+            for name, query in names_and_queries
+        ]
+
+    def test_the_answer_call_produces_no_result_set_and_no_header(self):
+        from datetime import UTC, datetime
+
+        from smartops.subagent_analysts.packing import valid_citation_ids
+        from smartops.subagent_analysts.routing import route
+        from smartops.subagents import _EvidenceCollector
+
+        from contracts import (
+            BrokerReport,
+            CostSummary,
+            Entity,
+            Scope,
+            SubtaskResult,
+            SubtaskStatus,
+            TaskClassification,
+        )
+
+        task_id = "t-1:siem:s0"
+        real = [
+            ("splunk_run_query", "index=botsv3 sourcetype=WinEventLog EventCode=4624"),
+            ("splunk_run_query", "index=botsv3 sourcetype=WinEventLog EventCode=4625"),
+        ]
+        # The answer call, carrying a query string exactly as `_query_of` scraped
+        # one from the real run's `SiemAnswer` input.
+        answer = [("SiemAnswer", "index=botsv3 sourcetype=WinEventLog EventCode=4672")]
+
+        collector = _EvidenceCollector(answer_tool="SiemAnswer")
+        for event in self._events(real + answer):
+            collector._record(event)
+
+        # One list, two consumers -- the alignment the back-reference rests on.
+        evidence = collector.evidence(task_id, "siem", datetime.now(UTC))
+        findings = project_siem(
+            collector.calls,
+            [QueryRun(query=q, category="auth_events") for _n, q in real],
+            task_id=task_id,
+        )
+
+        assert len(collector.calls) == len(real), "the answer call is not a tool result"
+        assert len(findings.auth_events) == len(real), "no phantom result set"
+        assert len(evidence) == len(real)
+        assert not any(e.raw["tool"] == "SiemAnswer" for e in evidence)
+
+        # And nothing downstream can cite what was never emitted.
+        report = BrokerReport(
+            task_id="t-1",
+            hypothesis_id="h-1",
+            results=[
+                SubtaskResult(
+                    task_id=task_id,
+                    family="siem",
+                    status=SubtaskStatus.OK,
+                    findings=findings,
+                )
+            ],
+            classification=TaskClassification(tool_families=["siem"], rationale="x"),
+            cost=CostSummary(),
+        )
+        scope = Scope(
+            entities=[Entity(kind="user", value="bostoll")],
+            time_window=(datetime(2018, 8, 20, tzinfo=UTC), datetime(2018, 8, 21, tzinfo=UTC)),
+        )
+        ids = valid_citation_ids(route(report, scope).identity)
+
+        assert list(ids) == ["auth_events#1", "auth_events#2"]
+        assert "auth_events#3" not in ids
+        # Every header resolves to a real tool result, not to the model's answer.
+        collected = {e.id: e.raw["tool"] for e in evidence}
+        for header, evidence_ids in ids.items():
+            assert evidence_ids, f"{header} resolves to nothing"
+            for eid in evidence_ids:
+                assert collected[eid] == "splunk_run_query"

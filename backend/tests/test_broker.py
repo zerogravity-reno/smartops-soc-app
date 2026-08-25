@@ -2619,3 +2619,121 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
 
         assert second.rows_retrieved == 20
         assert second.completed is True
+
+
+class TestTheEnricherConnectsItsVerdictsToItsEvidence:
+    """The VT enricher path runs with no subagent and no model, and it was the
+    half of the back-reference nobody wired.
+
+    `projection.project_vt` stamps `VtVerdict.evidence_id` on the *subagent* path.
+    This function is the other path, and it built its `Evidence` list and its
+    `VtFindings` in two separate comprehensions with nothing joining them -- so
+    `evidence_id` was `None` on every verdict it ever produced, even on a run made
+    after the back-reference landed. A stored citation to a VT verdict resolved to
+    nothing.
+    """
+
+    @staticmethod
+    def _mission(kind="domain", value="coinhive.com"):
+        return SubagentMission(
+            task_id="t-1:vt:s0",
+            hypothesis_id="h-1",
+            tool_family="vt",
+            goal="check reputation",
+            scope=Scope(
+                entities=[Entity(kind=kind, value=value)],
+                time_window=(
+                    datetime(2018, 8, 20, tzinfo=UTC),
+                    datetime(2018, 8, 21, tzinfo=UTC),
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _outcome(*entities):
+        from smartops.tools.native.virustotal import Verdict
+
+        @dataclass
+        class _Outcome:
+            verdicts: list
+            failure: str | None = None
+
+        return _Outcome(
+            verdicts=[
+                Verdict(
+                    entity=entity,
+                    malicious=11,
+                    suspicious=1,
+                    harmless=79,
+                    undetected=0,
+                    reputation=-40,
+                    found=True,
+                    raw={"data": {"id": entity.value}},
+                )
+                for entity in entities
+            ]
+        )
+
+    async def _run(self, *entities):
+        outcome = self._outcome(*entities)
+
+        async def enrich(_scope):
+            return outcome
+
+        return await broker_module.enrich_mission(self._mission(), enrich)
+
+    async def test_every_verdict_names_the_evidence_it_came_from(self):
+        result = await self._run(
+            Entity(kind="domain", value="coinhive.com"),
+            Entity(kind="ip", value="217.182.164.14"),
+        )
+
+        collected = {e.id for e in result.evidence}
+        assert len(result.findings.verdicts) == 2
+        for verdict in result.findings.verdicts:
+            assert verdict.evidence_id, f"{verdict.value} names no evidence"
+            assert verdict.evidence_id in collected
+
+    async def test_verdict_and_evidence_are_index_aligned(self):
+        """Not merely present -- pointing at the RIGHT record. Both are built from
+        the same ordered verdict list, so verdict i must resolve to evidence i."""
+        result = await self._run(
+            Entity(kind="domain", value="coinhive.com"),
+            Entity(kind="ip", value="217.182.164.14"),
+        )
+
+        by_id = {e.id: e for e in result.evidence}
+        for verdict in result.findings.verdicts:
+            assert by_id[verdict.evidence_id].raw["result"]["data"]["id"] == verdict.value
+
+    async def test_the_id_comes_from_the_shared_formula(self):
+        from contracts.subtask import evidence_id
+
+        result = await self._run(Entity(kind="domain", value="coinhive.com"))
+
+        assert result.findings.verdicts[0].evidence_id == evidence_id("t-1:vt:s0", 0)
+
+    async def test_the_evidence_is_shaped_so_replay_can_read_it(self):
+        """`ReplayToolset` reads `raw["tool"]` and `raw["result"]`. This path wrote
+        `raw=verdict.raw` -- neither key -- so every VT record replayed as `None`,
+        silently, and an offline replay of a VT lookup returned a cache miss."""
+        from smartops.replay import ReplayToolset
+
+        result = await self._run(Entity(kind="domain", value="coinhive.com"))
+        replayed = ReplayToolset(result.evidence).match(
+            "vt_lookup_domain", query="coinhive.com"
+        )
+
+        assert replayed is not None
+        assert replayed.get("replay") is not True, "resolved to a cache miss"
+        assert replayed["data"]["id"] == "coinhive.com"
+
+    async def test_the_recorded_tool_name_matches_the_real_lookup_tool(self):
+        """So a replay of an enricher-made record answers the tool the SUBAGENT
+        path would have called for that indicator kind."""
+        from smartops.tools.native.virustotal import TOOLS
+
+        result = await self._run(Entity(kind="domain", value="coinhive.com"))
+
+        names = {getattr(t, "tool_name", getattr(t, "__name__", "")) for t in TOOLS}
+        assert result.evidence[0].raw["tool"] in names

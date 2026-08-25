@@ -307,7 +307,19 @@ def project_vt(calls: list[Any], task_id: str) -> VtFindings:
 def project(
     family: str, calls: list[Any], queries_run: list[QueryRun], task_id: str
 ) -> Findings | None:
-    """The family's typed payload, or `None` where the family has no projector."""
+    """The family's typed payload, or `None` where the family has no projector.
+
+    Every family with a projector dispatches HERE. `project_vt` used to be
+    appended at one call site instead (`or project_vt(...)` in `investigate`'s
+    success path), which is why the sibling no-answer branch -- calling this
+    function plainly, as documented -- reported `findings=None` for a vt subagent
+    that still held real evidence. A dispatcher that only half-dispatches makes
+    every caller responsible for knowing which half.
+    """
     if family == "siem":
         return project_siem(calls, queries_run, task_id)
+    if family == "vt":
+        # `queries_run` is unused: a reputation lookup has no query to categorise,
+        # so the verdicts come straight off the calls.
+        return project_vt(calls, task_id)
     return None
