@@ -26,10 +26,20 @@ _STANCE_RE = re.compile(r"VERDICT\s*:\s*(.+)", re.IGNORECASE)
 # anywhere later in the text, including inside a citation like
 # `auth_events#1`, manufacturing confidence=1.0 from a reply that gave none.
 _CONFIDENCE_RE = re.compile(r"CONFIDENCE[^\n\d]*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+# The five labels the prompt actually emits (`prompts.py:61-66` for a verdict,
+# `prompts.py:237-241` for a hypothesis-blind finding). Closed on purpose: the
+# terminator used to be a generic uppercase run, `[A-Z][A-Z ]+:`, which under
+# IGNORECASE matches any ordinary prose line ending in a colon -- so a rationale
+# reading "Note the following: ..." was cut at "Note the following", and an
+# un-bulleted observation line containing a colon ended the OBSERVATIONS capture
+# and took every later observation with it. Enumerating the labels is what makes
+# a colon in prose just a colon.
+_LABEL = r"(?:VERDICT|CONFIDENCE|RATIONALE|OBSERVATIONS|CITATIONS)"
+
 # A field stops at the next LABEL line, which the model may bold/emphasise
 # (`\n**OBSERVATIONS:**`). Allow leading emphasis/space before the label word.
 _RATIONALE_RE = re.compile(
-    r"RATIONALE\s*:\s*(.+?)(?:\n[*_`\s]*[A-Z][A-Z ]+:|\Z)", re.IGNORECASE | re.DOTALL
+    rf"RATIONALE\s*:\s*(.+?)(?:\n[*_`\s]*{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 _CITATIONS_RE = re.compile(r"CITATIONS\s*:\s*(.+)", re.IGNORECASE)
 _OBSERVATIONS_RE = re.compile(
@@ -39,9 +49,10 @@ _OBSERVATIONS_RE = re.compile(
 # pattern here rather than recompiled on every call. Deliberately not
 # `_OBSERVATIONS_RE`: that one assumes OBSERVATIONS immediately precedes
 # CITATIONS, but a hypothesis-blind finding's OBSERVATIONS may come before
-# CONFIDENCE/RATIONALE, so this stops at any subsequent label instead.
+# CONFIDENCE/RATIONALE, so this stops at any subsequent label instead -- any
+# subsequent *known* label, per `_LABEL`.
 _FINDING_OBSERVATIONS_RE = re.compile(
-    r"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*[A-Z][A-Z ]+\s*:|\Z)", re.IGNORECASE | re.DOTALL
+    rf"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 
 

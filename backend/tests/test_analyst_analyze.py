@@ -262,6 +262,36 @@ class TestGatherFinding:
         assert finding.confidence == 0.0
         assert "could not run" in finding.rationale
 
+    def test_a_prose_colon_does_not_cost_a_later_observations_inline_citation(self):
+        """The parse layer is upstream of the grounding gate, and used to starve it.
+
+        `_finalize_finding` unions the valid inline ids found inside observations
+        into `citations` -- the fix committed as `f9bc706`. But
+        `_FINDING_OBSERVATIONS_RE` ended the capture at any prose line looking
+        like a label, so observations dropped before the gate ever saw them took
+        their inline citations with them. Here the trailing `CITATIONS:` line
+        names only `auth_events#1`; `auth_events#2` exists solely inline, on an
+        observation sitting after an un-bulleted line containing a colon.
+        """
+        gen = (
+            "</think>OBSERVATIONS:\n"
+            "- 14 failed logons for bostoll [auth_events#1]\n"
+            "The pattern was: burst, pause, burst\n"
+            "- then a success from the same source [auth_events#2]\n"
+            "CITATIONS: auth_events#1"
+        )
+        model = _SequenceModel([gen])
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[
+                ("auth_events", ResultSet(query="q1", row_count=1, rows=[{"user": "bostoll"}])),
+                ("auth_events", ResultSet(query="q2", row_count=1, rows=[{"user": "bostoll"}])),
+            ],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert len(finding.observations) == 3
+        assert finding.citations == ["auth_events#1", "auth_events#2"]
+
 
 class TestAnalyze:
     async def test_full_pipeline_produces_assessment(self):

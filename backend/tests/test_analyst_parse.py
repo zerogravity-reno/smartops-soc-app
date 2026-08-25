@@ -106,6 +106,28 @@ class TestParseVerdict:
         assert "OBSERVATIONS" not in v.rationale  # rationale stops at the next label
         assert v.key_observations == ["BSTOLL-L ran chrome.exe [processes#1]"]
 
+    def test_a_rationale_sentence_ending_in_a_colon_is_not_a_label(self):
+        # The terminator used to be a generic uppercase run (`[A-Z][A-Z ]+:`) under
+        # IGNORECASE, so any prose line ending in a colon looked like the next
+        # label and truncated the rationale. Only the five real labels end it.
+        out = (
+            "</think>VERDICT: supports\n"
+            "RATIONALE: The host beaconed to a known C2.\n"
+            "Note the following: the interval was fixed at 60s, machine-like.\n"
+            "CITATIONS: connections#1"
+        )
+        v = parse_verdict(out, domain="network")
+        assert "machine-like" in v.rationale
+        assert "CITATIONS" not in v.rationale  # a real label still terminates it
+
+    def test_rationale_still_stops_at_each_real_label(self):
+        # Guards against over-correcting: bounding the terminator must not stop it
+        # terminating, in either the bare or the emphasised spelling.
+        for label in ("OBSERVATIONS", "CITATIONS", "CONFIDENCE", "VERDICT"):
+            for line in (f"{label}: x", f"**{label}:** x"):
+                out = f"</think>VERDICT: supports\nRATIONALE: kept.\n{line}"
+                assert parse_verdict(out, domain="identity").rationale == "kept."
+
 
 _GOOD_FINDING = """the logons cluster around one account with no failures preceding \
 success, and no process or network rows are present in this slice.
@@ -170,3 +192,31 @@ class TestParseFinding:
         assert f.citations == ["processes#1"]
         assert "CoinHive" in f.rationale
         assert f.observations == ["BSTOLL-L ran chrome.exe [processes#1]"]
+
+    def test_an_observation_containing_a_colon_does_not_drop_the_ones_after_it(self):
+        # Worse here than in a rationale: the OBSERVATIONS capture ended at the
+        # first prose colon, so every LATER observation vanished -- and with them
+        # the inline citations `_finalize_finding` unions into `citations`.
+        #
+        # The line has to be UN-bulleted to trigger it: a leading `-` is outside
+        # the terminator's `[*_`\s]*` prefix class and blocks the match by
+        # accident. The 8B model does not reliably bullet every line, so relying
+        # on that is relying on a typo.
+        out = (
+            "</think>OBSERVATIONS:\n"
+            "- 14 failed logons in 3 minutes [auth_events#1]\n"
+            "The pattern was: burst, pause, burst [auth_events#1]\n"
+            "- then a success from the same source [auth_events#2]\n"
+            "CITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert len(f.observations) == 3
+        assert "auth_events#2" in f.observations[2]
+
+    def test_finding_observations_still_stop_at_each_real_label(self):
+        for label in ("CONFIDENCE", "RATIONALE", "CITATIONS", "VERDICT"):
+            for line in (f"{label}: x", f"**{label}:** x"):
+                out = f"</think>OBSERVATIONS:\n- kept [auth_events#1]\n{line}"
+                assert parse_finding(out, domain="identity").observations == [
+                    "kept [auth_events#1]"
+                ]
