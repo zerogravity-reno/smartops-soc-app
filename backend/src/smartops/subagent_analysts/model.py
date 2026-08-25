@@ -37,6 +37,14 @@ REGION_ENV_VAR = "AWS_REGION"
 # credential chain (env, profile, role) is used.
 API_KEY_ENV_VAR = "SMARTOPS_ANALYST_API_KEY"
 
+_BEARER_ENV_VAR = "AWS_BEARER_TOKEN_BEDROCK"
+"""The variable name botocore derives for bedrock's bearer token.
+
+`utils._get_bearer_env_var_name` builds it from the service's signing name
+(`bedrock`), so this must stay in step with that derivation -- it is the key of the
+private mapping handed to `ScopedEnvTokenProvider`, never written to `os.environ`.
+"""
+
 # Confirmed defaults from the model's generation_config.json. Temperature is
 # configurable; drop toward 0.3 for steadier verdicts, keep 0.6 for the reasoning
 # diversity the model was tuned for.
@@ -128,60 +136,85 @@ class AnalystModel:
         # template/parse helpers.
         import boto3
 
-        # Double-checked locking: the env-var set/build-client/restore sequence
-        # below is not safe to run from two threads at once (one thread's
-        # `finally` restore can fire while a sibling's `boto3.client()` call is
-        # still reading the env var), and `analyze()` calls `_get_client()`
-        # from concurrent worker threads that share this one `AnalystModel`.
-        # The outer check above already short-circuits every call after the
-        # first; this one covers the callers that arrived while the lock was
-        # held building it.
+        # Double-checked locking so two concurrent worker threads sharing one
+        # `AnalystModel` -- which is what `analyze()`'s
+        # `asyncio.gather(*(asyncio.to_thread(run_one, model, ...)))` produces --
+        # cannot each build a client. The outer check above already short-circuits
+        # every call after the first; this one covers the callers that arrived
+        # while the lock was held building it.
         with self._client_lock:
             if self._client is not None:
                 return self._client
 
             kwargs: dict[str, Any] = {"region_name": self.region}
-            # botocore reads `AWS_BEARER_TOKEN_BEDROCK` exactly once, at
-            # `boto3.client(...)` construction time
-            # (`ClientCreator._evaluate_client_specific_token`,
-            # botocore/client.py:157-160) -- never again per request, so the env
-            # var only needs to exist for the call below. `restore_bearer_env`
-            # puts back whatever was there before (or removes it) once the
-            # client is built, so this mutation does not outlive this one call:
-            # without it, a second `AnalystModel` built later in the same
-            # process with no explicit key would silently inherit this one's
-            # stale bearer token instead of falling through to the default AWS
-            # credential chain.
-            restore_bearer_env: Any = None
             if self._api_key:
                 if self._api_key.startswith("ABSK"):
-                    # A Bedrock API key (bearer token): boto3's bedrock-runtime
-                    # picks this up from the environment.
-                    previous_bearer_env = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
-                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self._api_key
-                    restore_bearer_env = previous_bearer_env
+                    self._client = self._bearer_client(boto3, self._api_key)
+                    return self._client
+                parts = self._api_key.split(":")
+                if len(parts) >= 2:
+                    kwargs["aws_access_key_id"] = parts[0].strip()
+                    kwargs["aws_secret_access_key"] = parts[1].strip()
+                    if len(parts) >= 3:
+                        kwargs["aws_session_token"] = parts[2].strip()
                 else:
-                    parts = self._api_key.split(":")
-                    if len(parts) >= 2:
-                        kwargs["aws_access_key_id"] = parts[0].strip()
-                        kwargs["aws_secret_access_key"] = parts[1].strip()
-                        if len(parts) >= 3:
-                            kwargs["aws_session_token"] = parts[2].strip()
-                    else:
-                        logger.warning(
-                            "%s is set but is neither an ABSK key nor ACCESS:SECRET; "
-                            "ignoring it and falling back to the default credential chain",
-                            API_KEY_ENV_VAR,
-                        )
-            try:
-                self._client = boto3.client("bedrock-runtime", **kwargs)
-            finally:
-                if self._api_key.startswith("ABSK"):
-                    if restore_bearer_env is None:
-                        os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
-                    else:
-                        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = restore_bearer_env
+                    logger.warning(
+                        "%s is set but is neither an ABSK key nor ACCESS:SECRET; "
+                        "ignoring it and falling back to the default credential chain",
+                        API_KEY_ENV_VAR,
+                    )
+            self._client = boto3.client("bedrock-runtime", **kwargs)
         return self._client
+
+    def _bearer_client(self, boto3: Any, api_key: str) -> Any:
+        """A bedrock-runtime client authenticated by an `ABSK...` Bedrock API key.
+
+        Built WITHOUT touching `os.environ`, which took three attempts to get
+        right and is worth recording, because both obvious approaches are wrong:
+
+        1. Setting `AWS_BEARER_TOKEN_BEDROCK` and leaving it set leaks a
+           credential into the process. A second `AnalystModel` built later with
+           no key of its own silently inherits this one's token instead of
+           falling through to the default AWS credential chain.
+        2. Setting it only around `boto3.client(...)` and restoring it after --
+           which is what this did until now -- does not work at all. The claim it
+           rested on (that botocore reads the variable once, at client
+           construction) is false: `handlers._should_prefer_bearer_auth` calls
+           `get_token_from_environment(signing_name)` on EVERY request
+           (botocore/handlers.py:1462, botocore 1.43.65) and that helper reads
+           the real `os.environ`, ignoring any injected mapping. With the
+           variable restored away, bearer was never chosen, every call fell back
+           to sigv4 on the default chain, and a cross-account ARN answered
+           `AccessDeniedException: The provided resource ARN is from a different
+           account.` -- surfacing as "analyst could not run", i.e. as a model
+           failure rather than a credential one.
+
+        So the token is supplied through botocore's own injection point instead:
+        `ScopedEnvTokenProvider` accepts the mapping it reads (botocore/tokens.py:
+        `__init__(self, session, environ=None)`), so a private mapping holding
+        just this key reaches the signer with no global state involved.
+
+        `auth_scheme_preference` is the other half and is NOT optional.
+        `InvokeModel` carries no auth trait of its own (`operation_model.auth` is
+        `None`), so botocore falls back to the service default -- sigv4 -- unless
+        either the env probe above fires or the preference names bearer
+        explicitly. Naming it here is what makes the injected token actually get
+        used, and it is set on this client only.
+        """
+        import botocore.session
+        from botocore.config import Config
+        from botocore.tokens import ScopedEnvTokenProvider
+
+        session = botocore.session.get_session()
+        session.register_component(
+            "token_provider",
+            ScopedEnvTokenProvider(session, environ={_BEARER_ENV_VAR: api_key}),
+        )
+        return boto3.Session(botocore_session=session).client(
+            "bedrock-runtime",
+            region_name=self.region,
+            config=Config(auth_scheme_preference="httpBearerAuth"),
+        )
 
     def invoke(self, system: str, user: str) -> AnalystResponse:
         client = self._get_client()

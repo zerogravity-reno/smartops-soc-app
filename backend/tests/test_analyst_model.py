@@ -118,74 +118,99 @@ class TestColdStartWarmup:
         assert client.calls == 3  # initial + 2 retries
 
 
-class TestBearerTokenEnvIsScoped:
-    """`AWS_BEARER_TOKEN_BEDROCK` is process-global; botocore only ever reads it
-    at `boto3.client(...)` construction (`_evaluate_client_specific_token`), so
-    the mutation must not outlive that one call."""
+class TestBearerTokenNeverTouchesTheEnvironment:
+    """An `ABSK` key must reach the signer without any process-global mutation.
 
-    def test_a_later_model_with_no_key_does_not_inherit_the_env_mutation(
-        self, monkeypatch
-    ):
+    Both of the obvious implementations are wrong, and this class pins the way
+    out of both. Setting `AWS_BEARER_TOKEN_BEDROCK` and leaving it set leaks a
+    credential to every later client in the process. Setting it only around
+    `boto3.client(...)` and restoring it -- which is what this did until
+    2026-08-25 -- does not authenticate at all: botocore's
+    `_should_prefer_bearer_auth` re-reads the real `os.environ` on EVERY request
+    (botocore/handlers.py:1462), so with the variable restored away every call
+    silently fell back to sigv4 on the default credential chain. Against a
+    cross-account model ARN that answered `AccessDeniedException`, which
+    `run_one`/`gather_finding` contain as "analyst could not run" -- a credential
+    fault wearing a model fault's clothes.
+    """
+
+    def test_the_variable_is_never_set_at_any_point(self, monkeypatch):
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-        monkeypatch.setattr("boto3.client", lambda *a, **k: object())
+        seen: list[bool] = []
 
-        AnalystModel(model_arn="arn:fake", api_key="ABSK-first-secret")._get_client()
+        class _Session:
+            def __init__(self, *_a, **_k):
+                pass
 
+            def client(self, *_a, **_k):
+                seen.append("AWS_BEARER_TOKEN_BEDROCK" in os.environ)
+                return object()
+
+        monkeypatch.setattr("boto3.Session", _Session)
+
+        AnalystModel(model_arn="arn:fake", api_key="ABSK-secret")._get_client()
+
+        assert seen == [False], "the token must not be in os.environ during construction"
         assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
 
-    def test_a_pre_existing_bearer_token_is_restored_after_client_construction(
-        self, monkeypatch
-    ):
+    def test_a_pre_existing_bearer_token_is_left_exactly_as_it_was(self, monkeypatch):
         monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "pre-existing-token")
-        monkeypatch.setattr("boto3.client", lambda *a, **k: object())
+        monkeypatch.setattr(
+            "boto3.Session", lambda *a, **k: type("S", (), {"client": lambda *a, **k: object()})()
+        )
 
         AnalystModel(model_arn="arn:fake", api_key="ABSK-secret")._get_client()
 
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "pre-existing-token"
 
-    def test_the_token_is_present_during_client_construction(self, monkeypatch):
+    def test_the_token_and_the_scheme_preference_both_reach_the_real_client(
+        self, monkeypatch
+    ):
+        """The two halves of the fix, checked against real botocore, no network.
+
+        The token alone is not enough: `InvokeModel` carries no auth trait
+        (`operation_model.auth is None`), so botocore resolves the service default
+        -- sigv4 -- unless the preference names bearer. Asserting only that the
+        token is attached would pass while every request still signed sigv4.
+        """
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-        seen = {}
+        # A region and dummy sigv4 creds so client construction never consults an
+        # ambient profile or instance metadata; the bearer path ignores them.
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAFAKE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret")
 
-        def fake_client(*args, **kwargs):
-            seen["token"] = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
-            return object()
+        client = AnalystModel(
+            model_arn="arn:aws:bedrock:us-east-1:111122223333:imported-model/abc",
+            region="us-east-1",
+            api_key="ABSK-secret",
+        )._get_client()
 
-        monkeypatch.setattr("boto3.client", fake_client)
-
-        AnalystModel(model_arn="arn:fake", api_key="ABSK-secret")._get_client()
-
-        assert seen["token"] == "ABSK-secret"
+        assert client._request_signer._auth_token.token == "ABSK-secret"
+        assert client.meta.config.auth_scheme_preference == "httpBearerAuth"
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
 
 
 class TestConcurrentClientConstructionIsSerialized:
     """`analyze()` fans identity/network/endpoint out via
     `asyncio.gather(*(asyncio.to_thread(run_one, model, ...)))`, all three
     sharing one `AnalystModel`. Without a lock, several worker threads can pass
-    `self._client is None` at once and each independently run the
-    set-env/build-client/restore-env sequence, so one thread's `finally` restore
-    can fire while a sibling's `boto3.client()` call is still reading the (now
-    wrong) env var."""
+    `self._client is None` at once and each build their own client -- so the
+    model would hold a different client than the one some callers were handed."""
 
-    def test_only_one_client_is_built_and_the_env_var_ends_up_clean(
-        self, monkeypatch
-    ):
-        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    def test_only_one_client_is_built(self, monkeypatch):
         build_count = 0
-        seen_tokens = []
         count_lock = threading.Lock()
 
-        def fake_client(*args, **kwargs):
+        def fake_bearer_client(self, _boto3, api_key):
             nonlocal build_count
             with count_lock:
                 build_count += 1
             # Widens the race window so an unsynchronized implementation is
             # overwhelmingly likely to interleave within it.
             time.sleep(0.05)
-            seen_tokens.append(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
             return object()
 
-        monkeypatch.setattr("boto3.client", fake_client)
+        monkeypatch.setattr(AnalystModel, "_bearer_client", fake_bearer_client)
         model = AnalystModel(model_arn="arn:fake", api_key="ABSK-shared-secret")
 
         threads = [threading.Thread(target=model._get_client) for _ in range(6)]
@@ -195,8 +220,6 @@ class TestConcurrentClientConstructionIsSerialized:
             t.join()
 
         assert build_count == 1, "the client must be built once, not once per racing thread"
-        assert seen_tokens == ["ABSK-shared-secret"]
-        assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
 
 
 class TestFromEnv:
