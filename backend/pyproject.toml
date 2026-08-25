@@ -37,6 +37,7 @@ dependencies = [
 [project.scripts]
 smartops-broker = "smartops.main:run"
 smartops-bench = "smartops.bench:run"
+smartops-blind-compare = "smartops.blind_compare:run"
 
 
 
