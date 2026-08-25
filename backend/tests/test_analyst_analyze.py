@@ -595,3 +595,78 @@ class TestGather:
             run_id="20260825T100741262",
         )
         assert findings.run_id == "20260825T100741262"
+
+
+class TestFindingGroundingGate:
+    """The blind path's equivalent of `_finalize`'s grounding downgrade."""
+
+    def _finding(self, disposition, citations, observations=()):
+        return DomainFinding(
+            domain="identity",
+            disposition=disposition,
+            confidence=0.95,
+            rationale="a confident read.",
+            observations=list(observations),
+            citations=list(citations),
+        )
+
+    def test_a_decisive_disposition_with_no_resolving_citation_is_downgraded(self):
+        out = _finalize_finding(self._finding("malicious", ["auth_events#9"]), {}, 1, 1)
+        assert out.disposition == "inconclusive"
+        assert out.confidence <= 0.3
+        assert "downgraded" in out.rationale
+
+    def test_inconclusive_needs_no_citation(self):
+        out = _finalize_finding(self._finding("inconclusive", []), {}, 1, 1)
+        assert out.disposition == "inconclusive"
+        assert out.confidence == 0.95  # not capped; nothing was claimed
+
+    def test_a_grounded_disposition_survives(self):
+        out = _finalize_finding(
+            self._finding("malicious", ["auth_events#1"]), {"auth_events#1": ["e:0"]}, 1, 1
+        )
+        assert out.disposition == "malicious"
+        assert out.confidence == 0.95
+
+    def test_an_inline_citation_alone_is_enough_to_keep_it(self):
+        """Same converse `_finalize` guards: cited correctly inline, no CITATIONS line."""
+        out = _finalize_finding(
+            self._finding("suspicious", [], ["odd logon [auth_events#1]"]),
+            {"auth_events#1": ["e:0"]},
+            1,
+            1,
+        )
+        assert out.disposition == "suspicious"
+
+
+class TestEmptyCitedBlocksAreSurfacedNotPunished:
+    async def test_a_disposition_resting_only_on_empty_blocks_warns(self, caplog):
+        """Defect (b): visible, deliberately not downgraded."""
+        siem = SubtaskResult(
+            task_id="t1:siem:1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(
+                auth_events=[ResultSet(query="auth", row_count=0, rows=[])],
+            ),
+        )
+        report = BrokerReport(
+            task_id="t1", hypothesis_id="h-42", results=[siem],
+            classification=TaskClassification(tool_families=["siem"], rationale="x"),
+            cost=CostSummary(),
+        )
+        gen = (
+            "</think>OBSERVATIONS:\n- bostoll logged on [auth_events#1]\n"
+            "DISPOSITION: benign\nCONFIDENCE: 0.72\nCITATIONS: auth_events#1"
+        )
+        with caplog.at_level("WARNING"):
+            findings = await gather(report, _scope(), _DomainModel({
+                "identity": gen, "network": gen, "endpoint": gen,
+            }))
+
+        identity = next(f for f in findings.findings if f.domain == "identity")
+        # Surfaced to the consumer...
+        assert identity.exhibits[0].row_count == 0
+        assert any("zero rows" in r.getMessage() for r in caplog.records)
+        # ...but NOT downgraded: an empty set is legitimate negative evidence.
+        assert identity.disposition == "benign"
+        assert identity.confidence == 0.72

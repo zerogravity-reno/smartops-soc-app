@@ -173,7 +173,7 @@
       <div class="n">one per domain</div></div>
     <div class="stat"><div class="k">Leaked terms</div><div class="v ok">0</div>
       <div class="n">of 4 searched</div></div>
-    <div class="stat"><div class="k">Test suite</div><div class="v">706</div>
+    <div class="stat"><div class="k">Test suite</div><div class="v">715</div>
       <div class="n">passed, 0 failed</div></div>
   </div>
 </section>
@@ -231,7 +231,7 @@
     <div class="banner" style="background:var(--suspicious-bg);border-color:var(--suspicious);margin-top:14px">
       <span class="icon" aria-hidden="true">!</span>
       <p><strong style="color:var(--suspicious)">The exhibit earns its place here.</strong>
-      A confident <code>benign / 0.72</code> resting on a set with <strong>zero rows</strong>.
+      A confident <code>benign / 0.72</code> resting on a set with <strong>zero rows</strong> — and it is not alone: <strong>two of the three domains</strong> in this run rest entirely on empty blocks.
       The grounding gate checks that a cited id <em>exists</em>, not that it <em>contains</em>
       anything — so this passes today, and from an <code>Evidence.id</code> alone the Analyst
       Agent could never have seen it. The rows make it obvious on sight.</p>
@@ -255,7 +255,12 @@
 
 # reputation#1 · source=virustotal · indicators=4
 domain=coinhive.com FOUND mal=11 susp=1 harmless=79 rep=-
-…</pre>
+domain=coinhive.com FOUND mal=11 susp=1 harmless=79 rep=-
+ip=217.182.164.14 FOUND mal=1 susp=0 harmless=90 rep=-
+ip=217.182.164.14 FOUND mal=1 susp=0 harmless=90 rep=-</pre>
+    <p class="note">Each indicator appears twice — two Broker dispatches looked up the same
+      observables, which is why there are four evidence ids for two indicators. The only domain
+      here whose judgement rests on rows that actually exist.</p>
     <p class="note">One citation, four evidence ids — the <code>reputation#1</code> many-to-one problem,
       open question C in the evidence-link design note. The exhibit softens it in practice: the
       Analyst Agent can at least read all four indicators rather than guessing which one the
@@ -271,10 +276,14 @@ domain=coinhive.com FOUND mal=11 susp=1 harmless=79 rep=-
     <h3>Rationale</h3>
     <p>Browser process referencing a miner library, no persistence seen.</p>
     <h3>Exhibit — the rows this judgement rests on</h3>
-    <pre>« processes#1 · 1 evidence id · row_count = 1
+    <pre>« processes#1 · 1 evidence id · <strong>row_count = 0</strong>
 
-# processes#1 · query="…" · rows=1
-…</pre>
+# processes#1 · query="index=botsv3 (host="BSTOLL-L" OR host="bstoll-l") sourcetype=sysmon
+    EventCode=1 | stats count by host, User, Image, ParentImage, CommandLine…" · rows=0
+(no rows returned)</pre>
+    <p class="note">The second empty-block case, and one I had missed by eye — the warning found it.
+      A <code>suspicious / 0.64</code> claiming “chrome.exe launched with a CoinHive script
+      reference” against a set that returned nothing.</p>
   </div>
 </section>
 
@@ -496,8 +505,8 @@ cli-20260825T100434 : siem : tooluse_xphZd4kUv8vxMKHX7gdbk0 : 0</pre>
         citations:["processes#1"],
         exhibits:[{ citation:"processes#1",
           evidence_ids:["cli-20260825T100434:siem:tooluse_RG9Gs7pZPf9tum4nBTIqQF:1"],
-          row_count:1,
-          rows:"# processes#1 · query=\"…\" · rows=1\n…" }] }
+          row_count:0,
+          rows:"# processes#1 · query=\"index=botsv3 (host=\"BSTOLL-L\" OR host=\"bstoll-l\") sourcetype=sysmon EventCode=1 | stats count by host, User, Image, ParentImage, CommandLine, Hashes, ParentComm…\" · rows=0\n(no rows returned)" }] }
     ]
   };
 

@@ -390,11 +390,18 @@ def _finalize_finding(
     prompt_tokens: int,
     generation_tokens: int,
 ) -> DomainFinding:
-    """Drop any citation that does not resolve to a real evidence header id.
+    """Drop any citation that does not resolve, and downgrade what is left ungrounded.
 
-    No stance to downgrade here -- that concept doesn't exist at this layer, so
-    this is deliberately simpler than `_finalize`. The equivalent grounding gate
-    for a decided stance reappears at the Aggregator, in a later cycle.
+    Mirrors `_finalize`'s grounding gate on the blind path. This used to say
+    there was "no stance to downgrade here" and defer the equivalent gate to the
+    Aggregator -- true while a `DomainFinding` carried only observations, and
+    false since it gained a `disposition`. A confident `malicious` resting on
+    nothing is exactly the claim `_finalize` refuses to let stand for a verdict,
+    and deferring it was doubly wrong: the Aggregator is the Analyst Agent, which
+    is not ours, and a component that never sees evidence cannot check grounding
+    anyway.
+
+    `inconclusive` is exempt, needing no citation, same as in `_finalize`.
     """
     kept = [c for c in finding.citations if c in valid_ids]
     dropped = [c for c in finding.citations if c not in valid_ids]
@@ -409,19 +416,31 @@ def _finalize_finding(
         list(finding.observations), valid_ids
     )
     citations = sorted(set(kept) | inline_ids)
-    return finding.model_copy(
-        update={
-            "citations": citations,
-            "observations": observations,
-            # Freeze the resolution now, exactly as `_finalize` does for a
-            # verdict. Without it a stored finding's citation resolves only by
-            # recomputing the routing, and `HypothesisFindings` exists so its
-            # consumer can trace a judgement to rows without doing that.
-            "citation_evidence": {c: list(valid_ids.get(c, ())) for c in citations},
-            "prompt_tokens": prompt_tokens,
-            "generation_tokens": generation_tokens,
-        }
-    )
+    updates: dict = {
+        "citations": citations,
+        "observations": observations,
+        # Freeze the resolution now, exactly as `_finalize` does for a
+        # verdict. Without it a stored finding's citation resolves only by
+        # recomputing the routing, and `HypothesisFindings` exists so its
+        # consumer can trace a judgement to rows without doing that.
+        "citation_evidence": {c: list(valid_ids.get(c, ())) for c in citations},
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+    }
+    if finding.disposition != "inconclusive" and not citations:
+        logger.warning(
+            "domain=%s | disposition '%s' had no citation that resolves; "
+            "downgrading to inconclusive",
+            finding.domain,
+            finding.disposition,
+        )
+        note = "downgraded: no cited evidence resolved"
+        updates["disposition"] = "inconclusive"
+        updates["confidence"] = min(finding.confidence, 0.3)
+        updates["rationale"] = (
+            f"{finding.rationale} [{note}]".strip() if finding.rationale else note
+        )
+    return finding.model_copy(update=updates)
 
 
 def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:
@@ -430,6 +449,42 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
     The projection is where `reasoning_trace` and the token counts stop: they are
     our audit record, not the Analyst Agent's input. See `DomainJudgement`.
     """
+    exhibits = [
+        Exhibit(
+            citation=block.header_id,
+            evidence_ids=list(block.evidence_ids),
+            row_count=block.row_count,
+            rows=block.text,
+        )
+        # Driven by `finding.citations`, which `_finalize_finding` has already
+        # stripped of anything unresolvable -- so an exhibit cannot exist for a
+        # citation the grounding gate refused.
+        for block in exhibits_for(slice_, finding.citations)
+    ]
+
+    # A decisive disposition whose every cited block is EMPTY. Warned about, not
+    # downgraded, and the distinction is the point: an empty result set is
+    # legitimate negative evidence -- "no failed logons in the window" genuinely
+    # supports `benign` -- so penalising it would punish correct reasoning about
+    # an absence. What it cannot support is a claim that something was observed,
+    # and telling those two apart requires reading the claim against the rows,
+    # which is defect (c) and is not decidable here. So this surfaces the case
+    # rather than judging it; `Exhibit.row_count` carries it to the consumer,
+    # which now has the rows and can.
+    if (
+        finding.disposition != "inconclusive"
+        and exhibits
+        and all(e.row_count == 0 for e in exhibits)
+    ):
+        logger.warning(
+            "domain=%s | disposition '%s' at confidence %.2f rests entirely on "
+            "cited block(s) with zero rows: %s",
+            finding.domain,
+            finding.disposition,
+            finding.confidence,
+            ", ".join(e.citation for e in exhibits),
+        )
+
     return DomainJudgement(
         domain=finding.domain,
         disposition=finding.disposition,
@@ -437,18 +492,7 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
         rationale=finding.rationale,
         observations=list(finding.observations),
         citations=list(finding.citations),
-        exhibits=[
-            Exhibit(
-                citation=block.header_id,
-                evidence_ids=list(block.evidence_ids),
-                row_count=block.row_count,
-                rows=block.text,
-            )
-            # Driven by `finding.citations`, which `_finalize_finding` has already
-            # stripped of anything unresolvable -- so an exhibit cannot exist for a
-            # citation the grounding gate refused.
-            for block in exhibits_for(slice_, finding.citations)
-        ],
+        exhibits=exhibits,
     )
 
 
