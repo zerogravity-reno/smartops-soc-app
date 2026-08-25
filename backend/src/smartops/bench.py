@@ -243,6 +243,25 @@ BOTSV3_USER_AUTH_TASK = AnalystTask(
     ),
 )
 
+BOTSV3_HARD_MULTI_VECTOR_TASK = AnalystTask(
+    task_id="botsv3_hard_multivector",
+    hypothesis_id="multivector-compromise-bstoll",
+    goal="Investigate full-spectrum compromise on host BSTOLL-L involving user bostoll: check VirusTotal reputation for domain coinhive.com, C2 IP 217.182.164.14, and powershell payload hash e2ac36894c2560d2b277ff9618b76c8c. Correlate user authentication logs, network connections, and endpoint process executions in SIEM index botsv3.",
+    scope=Scope(
+        entities=[
+            Entity(kind="user", value="bostoll"),
+            Entity(kind="host", value="BSTOLL-L"),
+            Entity(kind="domain", value="coinhive.com"),
+            Entity(kind="ip", value="217.182.164.14"),
+            Entity(kind="file_hash", value="e2ac36894c2560d2b277ff9618b76c8c"),
+        ],
+        time_window=(
+            datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
+            datetime(2018, 8, 21, 0, 0, 0, tzinfo=UTC),
+        ),
+    ),
+)
+
 BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
     "botsv3_coinhive": (DEFAULT_BOTSV3_TASK, ["siem", "vt"]),
     "botsv3_powershell_hash": (BOTSV3_POWERSHELL_TASK, ["siem", "vt"]),
@@ -254,6 +273,7 @@ BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
     "botsv3_exfil_ip": (BOTSV3_EXFIL_IP_TASK, ["siem", "vt"]),
     "botsv3_ransomware_note": (BOTSV3_RANSOMWARE_TASK, ["siem", "vt"]),
     "botsv3_suspicious_user_auth": (BOTSV3_USER_AUTH_TASK, ["siem"]),
+    "botsv3_hard_multivector": (BOTSV3_HARD_MULTI_VECTOR_TASK, ["siem", "vt"]),
 }
 
 
