@@ -254,3 +254,139 @@ class TestResultLineRendersEveryFindingsShape:
         )
 
         assert "dns_resolutions:28" in line
+
+
+class TestTheCliRunsTheAnalystsBlind:
+    """The production guarantee, asserted at the CLI rather than the unit.
+
+    `main.py` used to call `analyze()`, which passes an `InvestigationContext`
+    straight into every domain prompt -- so every real run was anchored while the
+    blind path sat unreachable. Nothing covered this path, which is why the
+    switch could not have been caught by the suite either way.
+    """
+
+    SECRET = "bostoll ran a crypto-miner on BSTOLL-L"
+
+    @staticmethod
+    def _outcome():
+        from smartops.broker import BrokerOutcome
+        from contracts import (
+            BrokerReport, CostSummary, ResultSet, SiemFindings,
+            SubtaskResult, SubtaskStatus, TaskClassification,
+        )
+
+        classification = TaskClassification(tool_families=["siem"], rationale="x")
+        siem = SubtaskResult(
+            task_id="cli:siem:1",
+            status=SubtaskStatus.OK,
+            # All three domains, so all three analysts actually run a model call
+            # -- an empty slice short-circuits without one, which would leave the
+            # blindness assertion below covering only identity.
+            findings=SiemFindings(
+                auth_events=[
+                    ResultSet(query="auth", row_count=1, rows=[{"user": "bostoll"}])
+                ],
+                dns_resolutions=[
+                    ResultSet(query="dns", row_count=1, rows=[{"query": "x.com"}])
+                ],
+                processes=[
+                    ResultSet(query="proc", row_count=1, rows=[{"process": "cmd.exe"}])
+                ],
+            ),
+        )
+        report = BrokerReport(
+            task_id="cli",
+            hypothesis_id="cli-hypothesis",
+            results=[siem],
+            classification=classification,
+            cost=CostSummary(),
+        )
+        return BrokerOutcome(
+            results=[siem],
+            classification=classification,
+            dispatched=["siem"],
+            report=report,
+        )
+
+    async def test_the_hypothesis_never_reaches_an_analyst_model(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from smartops.subagent_analysts.model import AnalystResponse
+        import smartops.main as main_mod
+
+        seen: list[tuple[str, str]] = []
+
+        class Recording:
+            def invoke(self, system, user):
+                seen.append((system, user))
+                return AnalystResponse(
+                    generation=(
+                        "</think>OBSERVATIONS:\n- a logon [auth_events#1]\n"
+                        "DISPOSITION: benign\nCONFIDENCE: 0.5\nCITATIONS: auth_events#1"
+                    ),
+                    prompt_tokens=1,
+                    generation_tokens=1,
+                    stop_reason="stop",
+                )
+
+        outcome = self._outcome()
+
+        async def fake_broker_task(*a, **k):
+            return outcome
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(main_mod, "broker_task", fake_broker_task)
+        monkeypatch.setattr(main_mod, "analyst_model_from_env", lambda: Recording())
+        monkeypatch.setattr(main_mod, "load_mcp_servers", lambda *a, **k: None)
+
+        rc = await main_mod._run([
+            "--goal", "what happened",
+            "--entity", "user:bostoll",
+            "--families", "siem",
+            "--hypothesis", self.SECRET,
+        ])
+
+        assert rc == 0
+        assert len(seen) == 3, "all three domain analysts should have run"
+        for system, user in seen:
+            assert self.SECRET not in system and self.SECRET not in user
+            assert "crypto-miner" not in user.lower()
+            assert "hypothesis" not in user.lower()
+
+    async def test_the_cli_prints_dispositions_and_no_overall_stance(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """No verdict is printed because none is ours to make."""
+        from smartops.subagent_analysts.model import AnalystResponse
+        import smartops.main as main_mod
+
+        class Stub:
+            def invoke(self, system, user):
+                return AnalystResponse(
+                    generation=(
+                        "</think>OBSERVATIONS:\n- a logon [auth_events#1]\n"
+                        "DISPOSITION: suspicious\nCONFIDENCE: 0.8\nCITATIONS: auth_events#1"
+                    ),
+                    prompt_tokens=1, generation_tokens=1, stop_reason="stop",
+                )
+
+        outcome = self._outcome()
+
+        async def fake_broker_task(*a, **k):
+            return outcome
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(main_mod, "broker_task", fake_broker_task)
+        monkeypatch.setattr(main_mod, "analyst_model_from_env", lambda: Stub())
+        monkeypatch.setattr(main_mod, "load_mcp_servers", lambda *a, **k: None)
+
+        await main_mod._run([
+            "--goal", "what happened", "--entity", "user:bostoll",
+            "--families", "siem", "--hypothesis", self.SECRET,
+        ])
+
+        out = capsys.readouterr().out
+        assert "analysts were blind" in out
+        assert "suspicious" in out
+        assert "no overall stance" in out
+        assert "SUPPORTS" not in out and "REFUTES" not in out

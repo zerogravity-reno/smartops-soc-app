@@ -36,6 +36,7 @@ from contracts import (
     EntityKind,
     FetchStep,
     HypothesisAssessment,
+    HypothesisFindings,
     InvestigationContext,
     Scope,
     SubtaskResult,
@@ -52,7 +53,7 @@ from smartops.broker import (
 )
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
-from smartops.subagent_analysts.analyze import analyze
+from smartops.subagent_analysts.analyze import analyze, gather
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
 from smartops.telemetry import configure_telemetry
@@ -417,6 +418,67 @@ def _print_outcome(outcome, budget: Budget) -> None:
     print(f"budget remaining: {budget.remaining} micro-USD")
 
 
+def _print_findings(findings: HypothesisFindings) -> None:
+    """Operator view of the blind path.
+
+    Deliberately prints no overall verdict: there isn't one. Each domain judged
+    its own evidence without seeing the hypothesis, and rolling those into
+    SUPPORTS/REFUTES is the Analyst Agent's job. Printing a stance here would be
+    inventing the very thing this path exists to keep separate.
+
+    `rows=N` per citation is shown because it is the cheapest way to see the
+    failure the exhibits exposed: a confident judgement resting on a cited block
+    that returned nothing.
+    """
+    print(f"\ndomain findings for hypothesis {findings.hypothesis_id} (analysts were blind):")
+    for judgement in findings.findings:
+        print(
+            f"  [{judgement.domain:<8}] {judgement.disposition:<12} "
+            f"conf={judgement.confidence:.2f}"
+        )
+        if judgement.rationale:
+            print(f"             {judgement.rationale}")
+        for observation in judgement.observations:
+            print(f"               - {observation}")
+        for exhibit in judgement.exhibits:
+            flag = "  <- EMPTY" if exhibit.row_count == 0 else ""
+            print(f"             cited: {exhibit.citation} (rows={exhibit.row_count}){flag}")
+
+    print(
+        "\nno overall stance: deciding whether this supports or refutes the "
+        "hypothesis is the Analyst Agent's call, not this layer's."
+    )
+
+
+def _persist_findings(
+    task_id: str, findings: HypothesisFindings, run_dir: Path | str | None = None
+) -> None:
+    """Write findings.json beside the broker's run artifacts.
+
+    Same resolution rules as `_persist_assessment`, and beside it rather than
+    replacing it: `assessment.json` is the shape that carries a decided stance,
+    and this one deliberately does not.
+    """
+    if run_dir is not None:
+        target_dir = Path(run_dir)
+    else:
+        base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        latest = Path(base) / task_id / "latest.txt"
+        if not latest.exists():
+            return
+        target_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
+
+    if target_dir.is_dir():
+        # `gather()` already set run_id where the caller knew it; fill it in when
+        # it did not, so the artifact still names its own directory.
+        stamped = (
+            findings if findings.run_id else findings.model_copy(update={"run_id": target_dir.name})
+        )
+        (target_dir / "findings.json").write_text(
+            stamped.model_dump_json(indent=2), encoding="utf-8"
+        )
+
+
 def _print_assessment(assessment: HypothesisAssessment) -> None:
     print(
         f"\nhypothesis assessment: {assessment.overall_stance.upper()} "
@@ -664,17 +726,34 @@ async def _run(argv: list[str] | None = None) -> int:
         elif outcome.report is None:
             print("\nanalysis: skipped (the broker produced no report)")
         else:
-            context = InvestigationContext(hypothesis=args.hypothesis)
+            # The BLIND path. The analysts never receive `args.hypothesis` --
+            # `gather` takes no `InvestigationContext` and `build_facts_user_turn`
+            # has no hypothesis parameter, so it cannot reach them. The hypothesis
+            # is carried on the result only, as the attachment point where three
+            # independent judgements are joined to the claim they were formed
+            # without.
+            #
+            # `analyze()`/`combine()` still exist and still produce a decided
+            # stance, but nothing calls them here any more: a stance formed by an
+            # analyst that was shown the hypothesis is the anchoring this path
+            # exists to remove.
+            run_dir = getattr(outcome, "run_dir", None)
             try:
-                assessment = await analyze(outcome.report, context, scope, analyst_model)
+                findings = await gather(
+                    outcome.report,
+                    scope,
+                    analyst_model,
+                    run_id=Path(run_dir).name if run_dir else None,
+                    hypothesis=args.hypothesis,
+                )
             except Exception as exc:
                 print(
                     f"\nanalysis failed: {type(exc).__name__}: {exc}", file=sys.stderr
                 )
-                logging.getLogger(__name__).debug("analyze failed", exc_info=True)
+                logging.getLogger(__name__).debug("gather failed", exc_info=True)
             else:
-                _print_assessment(assessment)
-                _persist_assessment(task.task_id, assessment, run_dir=getattr(outcome, "run_dir", None))
+                _print_findings(findings)
+                _persist_findings(task.task_id, findings, run_dir=run_dir)
 
     return 0
 
