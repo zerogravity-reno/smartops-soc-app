@@ -268,3 +268,54 @@ class TestFindingDisposition:
         f = parse_finding(out, domain="identity")
         assert f.rationale == "kept."
         assert f.disposition == "benign"
+
+
+class TestMarkdownHeadingLabels:
+    """A label written as a markdown heading must still be a label.
+
+    Observed on blind draw #4 of the 2026-08-25 re-measurement: the model wrote
+    `### CONFIDENCE: 0.85`, which neither terminated the OBSERVATIONS block nor
+    registered as a field, so the observation list ended -- literally -- with the
+    label line. It then travels to the Analyst Agent as if it were a finding.
+
+    The fix is in the terminator's prefix class, NOT in `_strip_md`: `#` is
+    load-bearing inside header ids (`auth_events#1`), so stripping it globally
+    would destroy every citation in the file.
+    """
+
+    def test_a_heading_label_terminates_finding_observations(self):
+        out = (
+            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "### DISPOSITION: benign\n### CONFIDENCE: 0.85\n"
+            "CITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert f.observations == ["one clean logon [auth_events#1]"]
+        assert f.disposition == "benign"
+        assert f.confidence == 0.85
+
+    def test_a_heading_label_terminates_a_rationale(self):
+        out = (
+            "</think>VERDICT: supports\nRATIONALE: kept.\n"
+            "### CITATIONS: auth_events#1"
+        )
+        assert parse_verdict(out, domain="identity").rationale == "kept."
+
+    def test_a_heading_label_terminates_verdict_observations(self):
+        out = (
+            "</think>VERDICT: supports\nOBSERVATIONS:\n- x [auth_events#1]\n"
+            "### CITATIONS: auth_events#1"
+        )
+        v = parse_verdict(out, domain="identity")
+        assert v.key_observations == ["x [auth_events#1]"]
+        assert v.citations == ["auth_events#1"]
+
+    def test_a_hash_inside_a_header_id_is_untouched(self):
+        """The reason this is not fixed in `_strip_md`."""
+        out = (
+            "</think>OBSERVATIONS:\n- rows seen [auth_events#1], [processes#12]\n"
+            "CITATIONS: auth_events#1, processes#12"
+        )
+        f = parse_finding(out, domain="identity")
+        assert f.citations == ["auth_events#1", "processes#12"]
+        assert "auth_events#1" in f.observations[0]

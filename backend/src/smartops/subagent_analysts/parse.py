@@ -46,14 +46,26 @@ _CONFIDENCE_RE = re.compile(r"CONFIDENCE[^\n\d]*([0-9]*\.?[0-9]+)", re.IGNORECAS
 # and not added here silently stops terminating.
 _LABEL = r"(?:VERDICT|DISPOSITION|CONFIDENCE|RATIONALE|OBSERVATIONS|CITATIONS)"
 
-# A field stops at the next LABEL line, which the model may bold/emphasise
-# (`\n**OBSERVATIONS:**`). Allow leading emphasis/space before the label word.
+# What may sit between the newline and the label word. The model emphasises
+# (`**OBSERVATIONS:**`) and, on a real blind draw, writes the label as a markdown
+# heading (`### CONFIDENCE: 0.85`) -- which used to neither terminate the
+# OBSERVATIONS block nor register as a field, so the observation list ended,
+# literally, with the label line.
+#
+# `#` belongs HERE and not in `_strip_md`: header ids are `auth_events#1`, so
+# stripping `#` globally would destroy every citation in the file. Same reasoning
+# that keeps underscores out of `_strip_md`. Safe in this position because the
+# match is anchored to a newline and must still be followed by a known label and
+# a colon -- which is a heading label, not prose.
+_LABEL_PREFIX = r"[*_`#\s]*"
+
+# A field stops at the next LABEL line.
 _RATIONALE_RE = re.compile(
-    rf"RATIONALE\s*:\s*(.+?)(?:\n[*_`\s]*{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
+    rf"RATIONALE\s*:\s*(.+?)(?:\n{_LABEL_PREFIX}{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 _CITATIONS_RE = re.compile(r"CITATIONS\s*:\s*(.+)", re.IGNORECASE)
 _OBSERVATIONS_RE = re.compile(
-    r"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*CITATIONS\s*:|\Z)", re.IGNORECASE | re.DOTALL
+    rf"OBSERVATIONS\s*:\s*(.+?)(?:\n{_LABEL_PREFIX}CITATIONS\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 # `parse_finding`'s own OBSERVATIONS pattern, module-level like every other
 # pattern here rather than recompiled on every call. Deliberately not
@@ -62,7 +74,7 @@ _OBSERVATIONS_RE = re.compile(
 # CONFIDENCE/RATIONALE, so this stops at any subsequent label instead -- any
 # subsequent *known* label, per `_LABEL`.
 _FINDING_OBSERVATIONS_RE = re.compile(
-    rf"OBSERVATIONS\s*:\s*(.+?)(?:\n[*_`\s]*{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
+    rf"OBSERVATIONS\s*:\s*(.+?)(?:\n{_LABEL_PREFIX}{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 
 
