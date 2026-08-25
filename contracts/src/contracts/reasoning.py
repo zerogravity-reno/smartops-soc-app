@@ -17,6 +17,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from contracts.findings import CimCategory
+from contracts.subtask import ToolFamily
+
 AnalystDomain = Literal["identity", "network", "endpoint"]
 """The three analysis domains, distinct from the fetch-side `ToolFamily`.
 
@@ -240,10 +243,26 @@ class Exhibit(BaseModel):
     `rows` is the same projected, `_sanitise`d text the domain analyst read, not
     a re-render: an exhibit that formatted the rows differently from the evidence
     the judgement was formed on would be a different exhibit.
+
+    `query` is the one thing here the analyst did *not* see, and deliberately so
+    -- see `formatting.format_result_set`.
     """
 
     citation: str = Field(
         min_length=1, description="The header id, e.g. 'auth_events#1'."
+    )
+    query: str = Field(
+        default="",
+        description=(
+            "The query that retrieved this set. Carried HERE rather than in "
+            "`rows` because the two consumers differ: the domain analyst is "
+            "blind to the hypothesis and a query written to test it leaks it "
+            "(see `formatting.format_result_set`), while the Analyst Agent is "
+            "not blind and cannot judge an empty set without knowing what was "
+            "asked. Empty for a `reputation#N` exhibit, which is a reputation "
+            "lookup rather than a search, and for exhibits written before this "
+            "field existed."
+        ),
     )
     evidence_ids: list[str] = Field(
         default_factory=list,
@@ -293,6 +312,76 @@ class DomainJudgement(BaseModel):
     exhibits: list[Exhibit] = Field(
         default_factory=list,
         description="The cited evidence, one entry per kept citation.",
+    )
+
+
+class StepSummary(BaseModel):
+    """What became of one planned fetch step, as the Analyst Agent needs to see it.
+
+    A projection of `contracts.subtask.StepOutcome`, code-assembled, carrying the
+    four facts that change how a judgement should be weighed and nothing else.
+    Dropped: `dispatches`, `refused_for_budget`, `status`, `reason` and the full
+    `FetchStep` -- dispatch counts and budget refusals are our operational
+    concern, not an input to reasoning about evidence.
+
+    `evaluated` is here and is load-bearing: `completed=False, evaluated=False`
+    means nobody ever judged this step, which is a different fact from
+    `completed=False, evaluated=True` ("ran and fell short"). See
+    `StepOutcome.evaluated`.
+    """
+
+    step_id: str = Field(min_length=1)
+    family: ToolFamily
+    objective: str = Field(min_length=1)
+    completed: bool = False
+    evaluated: bool = True
+    confirmed_empty: bool = False
+    rows_retrieved: int = Field(default=0, ge=0)
+
+
+class RetrievalSummary(BaseModel):
+    """What was looked for, and what the looking turned up.
+
+    The fetch side, projected for the consumer of `HypothesisFindings`. Without
+    it that contract carried three judgements and no account of the retrieval
+    behind them, so an `inconclusive` was unreadable: a domain reports it both
+    when the rows genuinely decide nothing and when nothing was ever retrieved
+    for it, and only the fetch record tells those apart. Deciding which one
+    happened is exactly the kind of call this contract exists to leave to the
+    Analyst Agent -- so it has to be given the facts to make it.
+
+    Deliberately not the whole `BrokerReport`: the consumer needs to know what
+    was asked and what came back, not to be able to re-run the fetch. Costs,
+    per-query records, raw `SubtaskResult`s and the classification stay in
+    `report.json`, joined by `HypothesisFindings.task_id`.
+    """
+
+    dispatched: list[ToolFamily] = Field(
+        default_factory=list,
+        description="Families actually dispatched, observed at dispatch time.",
+    )
+    steps: list[StepSummary] = Field(default_factory=list)
+    covered: list[CimCategory] = Field(
+        default_factory=list,
+        description=(
+            "Categories at least one subagent asserted it retrieved data for, "
+            "unioned across dispatches. Model-authored (see "
+            "`SiemAssessment.covered`) -- a claim about coverage, not a count of "
+            "rows."
+        ),
+    )
+    not_covered: list[CimCategory] = Field(
+        default_factory=list,
+        description=(
+            "Categories that were asked for and that NO dispatch retrieved. "
+            "Disjoint from `covered` by construction, and that subtraction is the "
+            "point: a plain union of every subagent's own `not_covered` is noise, "
+            "because a step scoped to one category honestly reports the other "
+            "three as not covered. On `cli-20260825T100434` -- four siem steps, "
+            "one category each -- the union put all four categories in BOTH "
+            "lists, which tells a consumer nothing. One dispatch retrieving a "
+            "category settles it for the investigation."
+        ),
     )
 
 
@@ -363,9 +452,21 @@ class HypothesisFindings(BaseModel):
         default_factory=list,
         description="One per analysis domain, including domains that saw no evidence.",
     )
+    retrieval: RetrievalSummary | None = Field(
+        default=None,
+        description=(
+            "What the fetch side looked for and turned up. See `RetrievalSummary`: "
+            "without it an `inconclusive` judgement cannot be told apart from a "
+            "domain that was never given anything to read. Optional because "
+            "artifacts written before this field exist and must still load."
+        ),
+    )
 
-    def total_prompt_tokens(self) -> int:
-        return sum(v.prompt_tokens for v in self.verdicts)
-
-    def total_generation_tokens(self) -> int:
-        return sum(v.generation_tokens for v in self.verdicts)
+    # No token totals here, deliberately. Two such methods stood on this model
+    # and both summed `self.verdicts` -- a field of `HypothesisAssessment`, not of
+    # this one -- so either raised `AttributeError` on call. Copied across with
+    # the rest of the shape and never exercised, because the only caller
+    # (`main._print_assessment`) is on the shown path. Not repaired against
+    # `findings` either: `DomainJudgement` drops the token counts on purpose (see
+    # its docstring), so there is nothing on this side of the wire to sum. Token
+    # spend is our telemetry, and it stays on `DomainFinding`.

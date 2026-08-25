@@ -717,6 +717,19 @@ class BrokerReport(BaseModel):
     schema_version: int = 1
     task_id: str = Field(min_length=1)
     hypothesis_id: str = Field(min_length=1)
+    trace_id: str | None = Field(
+        default=None,
+        description=(
+            "The OTel trace id of this investigation's root span, as 32 lowercase "
+            "hex characters. `telemetry.investigation_span` already stamps "
+            "`task_id`/`hypothesis_id` onto every span, so trace -> run resolved; "
+            "nothing recorded the id the other way, so run -> trace did not, and "
+            "an operator holding a saved report had no way to reach the trace that "
+            "produced it. `None` when telemetry was never configured -- the span "
+            "is then non-recording and there is no real id to claim, which is a "
+            "different fact from a run that had one."
+        ),
+    )
     plan: FetchPlan | None = None
     plan_repairs: int = 0
     """How many `depends_on` defects a code scheduler had to repair before the

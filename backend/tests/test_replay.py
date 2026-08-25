@@ -322,3 +322,54 @@ def _siem_replay_mission() -> SubagentMission:
             ),
         ),
     )
+
+
+class TestEvidenceById:
+    """A `ResultSet.evidence_id` / `Exhibit.evidence_ids` entry must be resolvable.
+
+    Those ids are the whole point of the link contract, and the store could only
+    hand back a list for the caller to scan itself.
+    """
+
+    @staticmethod
+    def _run(tmp_path, *ids: str):
+        run_dir = tmp_path / "run_x"
+        run_dir.mkdir(parents=True)
+        (run_dir / "evidence.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": eid,
+                        "tool_family": "siem",
+                        "raw": {"tool": "splunk_search", "query": eid, "result": {"rows": 1}},
+                        "collected_at": "2026-08-25T10:07:00Z",
+                    }
+                    for eid in ids
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return run_dir
+
+    def test_keys_are_evidence_ids(self, tmp_path):
+        from smartops.replay import evidence_by_id
+
+        run_dir = self._run(tmp_path, "t:siem:a:0", "t:siem:a:1")
+
+        by_id = evidence_by_id(run_dir)
+
+        assert by_id.keys() == {"t:siem:a:0", "t:siem:a:1"}
+        assert by_id["t:siem:a:1"].raw["query"] == "t:siem:a:1"
+
+    def test_a_duplicate_id_warns_and_keeps_the_later_record(self, tmp_path, caplog):
+        import logging
+
+        from smartops.replay import evidence_by_id
+
+        run_dir = self._run(tmp_path, "t:siem:a:0", "t:siem:a:0")
+
+        with caplog.at_level(logging.WARNING, logger="smartops.replay"):
+            by_id = evidence_by_id(run_dir)
+
+        assert len(by_id) == 1
+        assert "appears more than once" in caplog.text

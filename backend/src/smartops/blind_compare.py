@@ -767,7 +767,7 @@ def describe_evidence(slice_: DomainSlice) -> DomainEvidence:
     themselves with the same default budget -- so packing once here for the record
     reproduces exactly what each arm was shown. `test_blind_compare` pins that.
     """
-    evidence_text, valid_ids, truncated = pack_evidence(slice_)
+    evidence_text, valid_ids, truncated, _row_cap = pack_evidence(slice_)
     rows = sum(rs.row_count for _, rs in slice_.siem_sets) + sum(
         rs.row_count for rs in slice_.untagged_sets
     )

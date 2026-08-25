@@ -104,6 +104,26 @@ def investigation_span(task: AnalystTask) -> Iterator[trace.Span]:
         yield span
 
 
+def current_trace_id() -> str | None:
+    """The active span's trace id as 32 lowercase hex characters, or `None`.
+
+    The reverse of `investigation_span`'s span attributes. Those make trace ->
+    run resolvable; this is what makes run -> trace resolvable, by giving
+    `BrokerReport.trace_id` something to record. Without it a saved report named
+    no trace at all, so an operator holding `report.json` could not reach the
+    spans that produced it.
+
+    `None` rather than a zero id when telemetry was never configured: the tracer
+    is then non-recording and its context carries the all-zero invalid trace id,
+    which would be a real-looking value pointing at nothing. Same no-op
+    discipline as `record_cost`.
+    """
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return None
+    return format(context.trace_id, "032x")
+
+
 def trace_attributes_for(mission: SubagentMission) -> dict[str, str]:
     """Business-level identifiers to pass as `Agent(trace_attributes=...)`
     when constructing a subagent's `Agent` for this mission, so every span

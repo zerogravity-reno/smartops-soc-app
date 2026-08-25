@@ -22,7 +22,9 @@ from contracts.reasoning import (
     HypothesisAssessment,
     HypothesisFindings,
     InvestigationContext,
+    RetrievalSummary,
     Stance,
+    StepSummary,
 )
 from contracts.subtask import (
     MAX_ENTITY_VALUE_LENGTH,
@@ -65,7 +67,9 @@ __all__ = [
     "HypothesisFindings",
     "InvestigationContext",
     "NdrAssessment",
+    "RetrievalSummary",
     "Stance",
+    "StepSummary",
     "CompletionRule",
     "CostSummary",
     "Entity",

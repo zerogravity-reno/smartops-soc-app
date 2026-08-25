@@ -319,3 +319,43 @@ class TestMarkdownHeadingLabels:
         f = parse_finding(out, domain="identity")
         assert f.citations == ["auth_events#1", "processes#12"]
         assert "auth_events#1" in f.observations[0]
+
+
+class TestCitationSeparators:
+    """A separator no header id can contain is safe to be generous about.
+
+    `_parse_citations` split on commas only, so `CITATIONS: auth_events#1
+    auth_events#2` -- a model following the *spirit* of the prompt and missing
+    its punctuation -- became the single token `auth_events#1 auth_events#2`,
+    matched nothing in `valid_citation_ids()`, and had its whole finding
+    downgraded to `inconclusive` by `_finalize_finding`. Flagged as unscheduled
+    in the 2026-08-24 review.
+    """
+
+    @staticmethod
+    def _cites(line: str) -> list[str]:
+        return parse_finding(
+            f"</think>OBSERVATIONS:\n- x [auth_events#1]\n{line}", domain="identity"
+        ).citations
+
+    def test_comma_separated(self):
+        assert self._cites("CITATIONS: auth_events#1, auth_events#2") == [
+            "auth_events#1",
+            "auth_events#2",
+        ]
+
+    def test_space_separated(self):
+        assert self._cites("CITATIONS: auth_events#1 auth_events#2") == [
+            "auth_events#1",
+            "auth_events#2",
+        ]
+
+    def test_mixed_and_bracketed(self):
+        assert self._cites("CITATIONS: [auth_events#1], auth_events#2  auth_events#3") == [
+            "auth_events#1",
+            "auth_events#2",
+            "auth_events#3",
+        ]
+
+    def test_a_single_citation_is_unaffected(self):
+        assert self._cites("CITATIONS: auth_events#1") == ["auth_events#1"]

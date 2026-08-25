@@ -110,7 +110,7 @@ class TestFactsUserTurn:
 
 class TestPacking:
     def test_empty_slice_reports_no_evidence(self):
-        text, valid_ids, truncated = pack_evidence(DomainSlice(domain="network"))
+        text, valid_ids, truncated, row_cap = pack_evidence(DomainSlice(domain="network"))
         assert "no evidence" in text.lower()
         assert valid_ids.keys() == set()
         assert truncated is False
@@ -121,10 +121,11 @@ class TestPacking:
             vt_verdicts=[VtVerdict(kind="domain", value="bad.com", found=True, malicious=9)],
             siem_sets=[("dns_resolutions", ResultSet(query="q", row_count=1, rows=[{"query": "bad.com"}]))],
         )
-        text, valid_ids, truncated = pack_evidence(slice_)
+        text, valid_ids, truncated, row_cap = pack_evidence(slice_)
         assert "bad.com" in text
         assert truncated is False
         assert valid_ids.keys() == {"reputation#1", "dns_resolutions#1"}
+        assert row_cap == 20  # the ladder's first rung; nothing shrank
 
     def test_large_slice_shrinks_and_flags_truncation(self):
         big_rows = [{"user": f"u{i}", "action": "failure"} for i in range(5000)]
@@ -133,11 +134,14 @@ class TestPacking:
             siem_sets=[("auth_events", ResultSet(query="q", row_count=5000, rows=big_rows))],
         )
         # a tiny budget forces the row-cap ladder down
-        text, valid_ids, truncated = pack_evidence(slice_, token_budget=200)
+        text, valid_ids, truncated, row_cap = pack_evidence(slice_, token_budget=200)
         assert truncated is True
         assert "auth_events#1" in text  # header (and thus the set) still present
         assert valid_ids.keys() == {"auth_events#1"}
         assert estimate_tokens(text) <= 400  # shrunk near the budget, not the full 5000 rows
+        # The rung it settled on is returned, so `exhibits_for` can render the
+        # exhibit at the cap the analyst actually read rather than a fixed one.
+        assert row_cap < 20
 
 
 def test_a_forged_evidence_block_cannot_reach_the_user_turn():
@@ -159,7 +163,7 @@ def test_a_forged_evidence_block_cannot_reach_the_user_turn():
             ("auth_events", ResultSet(query="real", row_count=1, rows=[{"user": payload}]))
         ],
     )
-    evidence_text, _ids, _truncated = pack_evidence(slice_)
+    evidence_text, _ids, _truncated, _cap = pack_evidence(slice_)
     turn = build_user_turn(InvestigationContext(hypothesis="h"), _scope(), evidence_text)
 
     assert turn.count("</evidence>") == 1
@@ -191,3 +195,170 @@ def test_valid_citation_ids_maps_each_header_to_its_evidence():
     assert mapping["connections#2"] == ["t:siem:x:1"]
     # One reputation header covers every VT verdict in the slice, so it is a list.
     assert mapping["reputation#1"] == ["t:vt:y:0"]
+
+
+class TestCitationNumberingIsPerCategory:
+    """Regression for the defect confirmed against a real saved run.
+
+    `blocks()` used one counter over `siem_sets`, so a multi-category slice
+    numbered by position: the network slice of `cli-20260825T100434` emitted
+    `connections#1..#9` and then `dns_resolutions#10..`, with no
+    `dns_resolutions#1` -- which is the exact worked example
+    `prompts._FINDING_FOOTER` hands the model. A model citing it failed
+    `valid_citation_ids`, lost the observation to
+    `_resolve_observation_citations`, and had its disposition downgraded to
+    `inconclusive`. That reads as a cautious analyst, not a bug, which is what
+    let it survive to production.
+    """
+
+    @staticmethod
+    def _multi_category_slice() -> DomainSlice:
+        return DomainSlice(
+            domain="network",
+            vt_verdicts=[VtVerdict(kind="domain", value="bad.com", found=True, malicious=9)],
+            siem_sets=[
+                ("connections", ResultSet(query="c1", row_count=1, rows=[{"src_ip": "1.1.1.1"}])),
+                ("connections", ResultSet(query="c2", row_count=0, rows=[])),
+                ("dns_resolutions", ResultSet(query="d1", row_count=1, rows=[{"query": "bad.com"}])),
+                ("dns_resolutions", ResultSet(query="d2", row_count=0, rows=[])),
+            ],
+        )
+
+    def test_every_category_starts_at_one(self):
+        from smartops.subagent_analysts.packing import valid_citation_ids
+
+        ids = valid_citation_ids(self._multi_category_slice())
+
+        assert ids.keys() == {
+            "reputation#1",
+            "connections#1",
+            "connections#2",
+            "dns_resolutions#1",
+            "dns_resolutions#2",
+        }
+
+    def test_the_prompts_worked_example_is_citable(self):
+        """Each id the footer offers as an example must exist when its category does."""
+        from smartops.subagent_analysts.packing import valid_citation_ids
+
+        ids = valid_citation_ids(self._multi_category_slice())
+
+        # `_FINDING_FOOTER` names these verbatim.
+        assert "connections#1" in ids
+        assert "dns_resolutions#1" in ids
+
+    def test_untagged_sets_keep_their_own_sequence(self):
+        from smartops.subagent_analysts.packing import valid_citation_ids
+
+        slice_ = DomainSlice(
+            domain="endpoint",
+            siem_sets=[("processes", ResultSet(query="p", row_count=0, rows=[]))],
+            untagged_sets=[
+                ResultSet(query="u1", row_count=0, rows=[]),
+                ResultSet(query="u2", row_count=0, rows=[]),
+            ],
+        )
+
+        ids = valid_citation_ids(slice_)
+
+        assert ids.keys() == {"processes#1", "uncategorised#1", "uncategorised#2"}
+
+
+class TestTheBlindPromptCarriesNoQuery:
+    """The query is how the hypothesis reached an analyst blind to it.
+
+    See `formatting.format_result_set`. Asserted at the packed-evidence level,
+    not just the single-block level, because the pack is what reaches the prompt.
+    """
+
+    def test_no_rendered_header_carries_a_query(self):
+        slice_ = DomainSlice(
+            domain="network",
+            siem_sets=[
+                (
+                    "dns_resolutions",
+                    ResultSet(
+                        query='index=botsv3 sourcetype=stream:dns query="*coinhive*"',
+                        row_count=0,
+                        rows=[],
+                    ),
+                )
+            ],
+            untagged_sets=[
+                ResultSet(query='index=botsv3 "*coinhive*" | stats count', row_count=0, rows=[])
+            ],
+        )
+
+        text, _ids, _truncated, _cap = pack_evidence(slice_)
+
+        # Scoped to headers, not the whole pack: `query=` is also the DNS
+        # query-name FIELD on a `dns_resolutions` row (`query=coinhive.com→…`),
+        # which is evidence the network analyst is meant to read. Forbidding the
+        # substring outright would forbid the data along with the leak.
+        headers = [line for line in text.splitlines() if line.startswith("# ")]
+        assert headers
+        assert not any("query=" in h for h in headers)
+        assert not any("coinhive" in h for h in headers)
+        # Two sets were asked for and both came back empty. That must survive.
+        assert text.count("rows=0") == 2
+
+    def test_the_query_still_reaches_the_analyst_agent(self):
+        """Big A is not blind, and cannot weigh a rows=0 exhibit without it."""
+        from smartops.subagent_analysts.packing import exhibits_for
+
+        query = 'index=botsv3 sourcetype=stream:dns query="*coinhive*"'
+        slice_ = DomainSlice(
+            domain="network",
+            siem_sets=[("dns_resolutions", ResultSet(query=query, row_count=0, rows=[]))],
+        )
+
+        blocks = exhibits_for(slice_, ["dns_resolutions#1"])
+
+        assert len(blocks) == 1
+        assert blocks[0].query == query
+        assert "coinhive" not in blocks[0].text
+
+
+class TestExhibitsRenderAtTheAnalystsOwnCap:
+    """`Exhibit.rows` is contracted as "the same text the domain analyst read".
+
+    `exhibits_for` used a fixed `row_cap=8` while the analyst read at whatever
+    `pack_evidence`'s ladder settled on, so an exhibit could show rows that never
+    informed the judgement the consumer is checking.
+    """
+
+    def test_shrunk_pack_yields_a_shrunk_exhibit(self):
+        from smartops.subagent_analysts.packing import exhibits_for, fitted_row_cap
+
+        big_rows = [{"user": f"u{i}", "action": "failure"} for i in range(5000)]
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=5000, rows=big_rows))],
+        )
+
+        _text, _ids, truncated, row_cap = pack_evidence(slice_, token_budget=200)
+        assert truncated is True
+
+        # Derived, not passed: no caller can get it wrong.
+        assert fitted_row_cap(slice_, token_budget=20_000) == 20
+        exhibit = exhibits_for(slice_, ["auth_events#1"], row_cap=row_cap)[0]
+        rendered_rows = [line for line in exhibit.text.splitlines() if line.startswith("2018")]
+        assert len(rendered_rows) <= row_cap
+        # The underlying count is carried separately, so an empty-looking exhibit
+        # is still traceable to 5000 rows in the store.
+        assert exhibit.row_count == 5000
+
+    def test_unshrunk_pack_uses_the_ladders_first_rung(self):
+        from smartops.subagent_analysts.packing import exhibits_for
+
+        rows = [{"user": f"u{i}", "action": "failure"} for i in range(12)]
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=12, rows=rows))],
+        )
+
+        exhibit = exhibits_for(slice_, ["auth_events#1"])[0]
+
+        # All 12 fit under the cap of 20, so nothing is withheld -- which the old
+        # fixed cap of 8 would have hidden behind "4 more rows not shown".
+        assert "more rows not shown" not in exhibit.text

@@ -37,12 +37,19 @@ def estimate_tokens(text: str) -> int:
 
 @dataclass(frozen=True)
 class Block:
-    """One rendered evidence block, with the header id the analyst may cite it by."""
+    """One rendered evidence block, with the header id the analyst may cite it by.
+
+    `query` is carried alongside `text` rather than inside it: it is kept OUT of
+    what the blind analyst reads (see `formatting.format_result_set`) and put
+    back for the Analyst Agent via `contracts.Exhibit.query`. Empty for the
+    `reputation#1` block, which is a lookup rather than a search.
+    """
 
     header_id: str
     evidence_ids: list[str]
     row_count: int
     text: str
+    query: str = ""
 
 
 def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Block]:
@@ -57,6 +64,16 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
 
     Ordering puts the highest-signal evidence first so it survives any shrink:
     VirusTotal reputation, then SIEM categories, then untagged sets.
+
+    **Numbering is per category, not per slice.** One counter over `siem_sets`
+    numbered by position instead, so the network slice of
+    `cli-20260825T100434` emitted `connections#1..#9` and then
+    `dns_resolutions#10..` -- with no `dns_resolutions#1`, which is the exact
+    worked example `prompts._FINDING_FOOTER` hands the model. A model citing it
+    failed `valid_citation_ids`, lost the observation to
+    `_resolve_observation_citations`, and had its disposition downgraded to
+    `inconclusive` by `_finalize_finding`. That reads as a cautious analyst,
+    not as a bug, which is what made it survive.
     """
     out: list[Block] = []
     if slice_.vt_verdicts:
@@ -70,13 +87,16 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
                 text=format_vt_verdicts(slice_.vt_verdicts, index=1),
             )
         )
-    for i, (category, result_set) in enumerate(slice_.siem_sets, start=1):
+    seen_per_category: dict[str, int] = {}
+    for category, result_set in slice_.siem_sets:
+        i = seen_per_category[category] = seen_per_category.get(category, 0) + 1
         out.append(
             Block(
                 header_id=f"{category}#{i}",
                 evidence_ids=[result_set.evidence_id] if result_set.evidence_id else [],
                 row_count=result_set.row_count,
                 text=format_result_set(category, result_set, index=i, row_cap=row_cap),
+                query=result_set.query,
             )
         )
     for i, result_set in enumerate(slice_.untagged_sets, start=1):
@@ -86,6 +106,7 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
                 evidence_ids=[result_set.evidence_id] if result_set.evidence_id else [],
                 row_count=result_set.row_count,
                 text=format_result_set("uncategorised", result_set, index=i, row_cap=row_cap),
+                query=result_set.query,
             )
         )
     return out
@@ -96,7 +117,7 @@ def _render(slice_: DomainSlice, row_cap: int) -> str:
 
 
 def exhibits_for(
-    slice_: DomainSlice, citations: list[str], *, row_cap: int = 8
+    slice_: DomainSlice, citations: list[str], *, row_cap: int | None = None
 ) -> list[Block]:
     """Only the blocks a finding actually cited, for handing to the Analyst Agent.
 
@@ -105,11 +126,22 @@ def exhibits_for(
     is what makes it possible to show the Analyst Agent the real rows rather than
     ids it would have to resolve against an evidence store it may not have.
 
-    `row_cap` is tighter than the analyst's own default (8 vs 20) because the
-    consumer needs enough rows to check a judgement, not enough to redo it --
-    and `format_result_set` appends "(N more rows not shown)", so what was
-    withheld stays visible.
+    **`row_cap=None` means "whatever the analyst's own pack settled on"**, which
+    is the only value for which `Exhibit.rows` is what its contract says it is:
+    "the same projected text the domain analyst read". It used to default to a
+    fixed 8 while the analyst read at whatever the ladder chose (20 down to 0),
+    so an exhibit could show rows the analyst never saw -- and the consumer
+    checking a judgement was checking it against evidence that did not inform
+    it. Derived here rather than threaded in by the caller so no caller can get
+    it wrong; pass an explicit cap only to render a deliberately different view.
+
+    A consequence, and the honest one: where the pack DID shrink, the exhibit
+    carries as little as a bare header. That is what the analyst read, so it is
+    what the judgement rests on; `Block.row_count` and `Block.evidence_ids` are
+    how a consumer holding the store gets the rest.
     """
+    if row_cap is None:
+        row_cap = fitted_row_cap(slice_)
     wanted = set(citations)
     return [b for b in blocks(slice_, row_cap=row_cap) if b.header_id in wanted]
 
@@ -134,19 +166,26 @@ def valid_citation_ids(slice_: DomainSlice) -> dict[str, list[str]]:
 
 def pack_evidence(
     slice_: DomainSlice, *, token_budget: int = 20_000
-) -> tuple[str, dict[str, list[str]], bool]:
+) -> tuple[str, dict[str, list[str]], bool, int]:
     """Render a slice's evidence under `token_budget`.
 
-    Returns `(evidence_text, valid_citation_ids, was_truncated)`. Tries each row cap
-    in the ladder until the rendered text fits; if even header-only overflows, the
-    header-only text is returned anyway (a slice that large is a signal in itself)
-    with `was_truncated=True`. `valid_citation_ids` is the header-id-to-evidence
-    map a verdict's citations are checked against -- membership of its keys is
-    the validity test, and the values are what a kept citation resolves to.
+    Returns `(evidence_text, valid_citation_ids, was_truncated, row_cap)`. Tries
+    each row cap in the ladder until the rendered text fits; if even header-only
+    overflows, the header-only text is returned anyway (a slice that large is a
+    signal in itself) with `was_truncated=True`. `valid_citation_ids` is the
+    header-id-to-evidence map a verdict's citations are checked against --
+    membership of its keys is the validity test, and the values are what a kept
+    citation resolves to.
+
+    `row_cap` is the rung this call settled on. It is returned rather than left
+    implicit because `exhibits_for` has to render at the SAME cap for
+    `Exhibit.rows` to be what the analyst read; deriving it a second time would
+    put the ladder in two places, which is the mirroring `blocks()` exists to
+    prevent.
     """
     ids = valid_citation_ids(slice_)
     if not slice_.has_evidence():
-        return "(no evidence was retrieved for this domain)", ids, False
+        return "(no evidence was retrieved for this domain)", ids, False, _ROW_CAP_LADDER[0]
 
     for row_cap in _ROW_CAP_LADDER:
         text = _render(slice_, row_cap)
@@ -158,10 +197,22 @@ def pack_evidence(
                     slice_.domain,
                     row_cap,
                 )
-            return text, ids, truncated
+            return text, ids, truncated, row_cap
 
     logger.warning(
         "domain=%s | evidence exceeds budget even at header-only; sending headers",
         slice_.domain,
     )
-    return _render(slice_, 0), ids, True
+    return _render(slice_, 0), ids, True, 0
+
+
+def fitted_row_cap(slice_: DomainSlice, *, token_budget: int = 20_000) -> int:
+    """The row cap `pack_evidence` settles on for this slice.
+
+    A reading of `pack_evidence` rather than its own walk of `_ROW_CAP_LADDER`,
+    for the same reason `valid_citation_ids` is a reading of `blocks()`: a second
+    copy of the ladder would rot the first time one changed. It re-renders to
+    measure, which is string formatting over at most a few dozen blocks against a
+    call that is about to spend a model inference -- not a cost worth a cache.
+    """
+    return pack_evidence(slice_, token_budget=token_budget)[3]

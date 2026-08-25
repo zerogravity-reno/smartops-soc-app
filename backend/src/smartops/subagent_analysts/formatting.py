@@ -267,16 +267,30 @@ def format_result_set(
 ) -> str:
     """Render one `ResultSet` as a citable header plus its projected rows.
 
-    The header `# {category}#{index} · query="…" · rows=N` is the citation anchor:
-    the analyst is told to cite evidence as `[{category}#{index}]`. `row_cap`
-    bounds how many rows are shown; an over-cap set says how many it withheld
-    rather than truncating silently. An empty set is still rendered -- "we asked
-    and it came back empty" is a finding the analyst must be able to see.
+    The header `# {category}#{index} · rows=N` is the citation anchor: the
+    analyst is told to cite evidence as `[{category}#{index}]`. `row_cap` bounds
+    how many rows are shown; an over-cap set says how many it withheld rather
+    than truncating silently. An empty set is still rendered -- "we asked and it
+    came back empty" is a finding the analyst must be able to see, and `rows=0`
+    is what says so.
+
+    **The query is deliberately NOT in the header.** It used to be, and it was
+    the channel through which the hypothesis reached an analyst that is
+    structurally blind to it: the fetch subagent writes its SPL *to test the
+    hypothesis*, so `query="… site="coinhive.com""` tells the analyst exactly
+    what someone was hunting. Measured on `cli-20260825T100434`, 11 of the
+    network slice's 35 headers named the hypothesis subject -- and so did 2 of
+    the identity slice's, a domain with no business knowing that theory existed.
+    `blind_compare.py`'s anchoring experiment could not see it: it holds evidence
+    fixed across arms, so the leak was a constant in every arm including the
+    blind control.
+
+    The query is untouched in `ResultSet.query`, `report.json`, `evidence.json`,
+    and `contracts.Exhibit.query` -- it left the prompt, not the audit trail. The
+    Analyst Agent, which is not blind and is the party checking a judgement,
+    still gets it via the exhibit.
     """
-    header = (
-        f"# {category}#{index} · query=\"{_truncate(_sanitise(result_set.query), 160)}\" "
-        f"· rows={result_set.row_count}"
-    )
+    header = f"# {category}#{index} · rows={result_set.row_count}"
     if not result_set.rows:
         return f"{header}\n(no rows returned)"
 

@@ -62,7 +62,12 @@ from smartops.budget import Budget, ModelChoice, Usage
 from smartops.domains import DOMAINS, DomainSpec
 from smartops.errors import NotConfigured
 from smartops.guards import escape_untrusted, fenced
-from smartops.telemetry import investigation_span, record_cost, record_result_status
+from smartops.telemetry import (
+    current_trace_id,
+    investigation_span,
+    record_cost,
+    record_result_status,
+)
 from smartops.tools.registry import enricher_for, server_count, tools_for
 
 logger = logging.getLogger(__name__)
@@ -1287,6 +1292,10 @@ async def _run_broker_task(
     report = BrokerReport(
         task_id=task.task_id,
         hypothesis_id=task.hypothesis_id,
+        # Read inside `investigation_span` (this runs under it, via
+        # `broker_task`), so it names the investigation's root span rather than
+        # whatever span happens to be current at write time.
+        trace_id=current_trace_id(),
         plan=plan,
         step_outcomes=step_outcomes,
         results=list(request.collected),

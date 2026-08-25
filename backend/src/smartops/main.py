@@ -444,6 +444,35 @@ def _print_findings(findings: HypothesisFindings) -> None:
             flag = "  <- EMPTY" if exhibit.row_count == 0 else ""
             print(f"             cited: {exhibit.citation} (rows={exhibit.row_count}){flag}")
 
+    # The retrieval side, because an `inconclusive` above is unreadable without
+    # it: a domain reports it both when the rows decide nothing and when nothing
+    # was ever retrieved for it. `not evaluated` is called out separately from
+    # `incomplete` for the reason `StepOutcome.evaluated` exists.
+    if findings.retrieval is not None:
+        retrieval = findings.retrieval
+        print(f"\nretrieval (dispatched: {', '.join(retrieval.dispatched) or 'nothing'}):")
+        # Widened to the longest id rather than a fixed column: real step ids are
+        # model-authored ("siem-connections") and overran a hardcoded width,
+        # leaving the states unaligned in exactly the readout meant to be scanned.
+        id_width = max((len(s.step_id) for s in retrieval.steps), default=0)
+        for step in retrieval.steps:
+            if not step.evaluated:
+                state = "not evaluated"
+            elif step.completed:
+                state = "complete"
+            elif step.confirmed_empty:
+                state = "empty (confirmed)"
+            else:
+                state = "incomplete"
+            print(
+                f"  [{step.family:<5}] {step.step_id:<{id_width}} {state:<17} "
+                f"rows={step.rows_retrieved}"
+            )
+        if retrieval.covered:
+            print(f"  covered:     {', '.join(retrieval.covered)}")
+        if retrieval.not_covered:
+            print(f"  not covered: {', '.join(retrieval.not_covered)}")
+
     print(
         "\nno overall stance: deciding whether this supports or refutes the "
         "hypothesis is the Analyst Agent's call, not this layer's."
@@ -496,8 +525,14 @@ def _print_assessment(assessment: HypothesisAssessment) -> None:
         if verdict.citations:
             print(f"             cited: {', '.join(verdict.citations)}")
 
-    total_p = assessment.total_prompt_tokens()
-    total_g = assessment.total_generation_tokens()
+    # Summed here rather than through a contract method. Two such methods existed
+    # on `HypothesisFindings` and both read a `verdicts` field that model does not
+    # have, so calling either raised `AttributeError`; `HypothesisAssessment`,
+    # which does have `verdicts`, never had them at all -- so these two lines have
+    # been an `AttributeError` waiting on the shown path, unreached only because
+    # production moved to the blind path and stopped calling this function.
+    total_p = sum(v.prompt_tokens for v in assessment.verdicts)
+    total_g = sum(v.generation_tokens for v in assessment.verdicts)
     print(
         f"\nanalyst tokens: {total_p} prompt + {total_g} generation = {total_p + total_g} total"
     )

@@ -182,11 +182,22 @@ def _parse_observations(answer: str) -> list[str]:
 
 
 def _parse_citations(answer: str) -> list[str]:
+    """The header ids on the trailing `CITATIONS:` line.
+
+    Split on commas *or* whitespace. Commas alone -- which is what the prompt
+    asks for and what this used to assume -- turned `CITATIONS: auth_events#1
+    auth_events#2` into the single token `auth_events#1 auth_events#2`, which
+    matches no id in `valid_citation_ids()`. So a correctly grounded finding
+    lost every citation and `_finalize_finding` downgraded it to
+    `inconclusive`: the model's only mistake was punctuation, and the penalty
+    was its whole judgement. A separator no id can contain is safe to be
+    generous about.
+    """
     match = _CITATIONS_RE.search(answer)
     if not match:
         return []
     raw = match.group(1).strip()
-    cleaned = (c.strip().strip("[]").strip() for c in raw.split(","))
+    cleaned = (c.strip("[]").strip() for c in re.split(r"[,\s]+", raw))
     return [c for c in cleaned if c]
 
 

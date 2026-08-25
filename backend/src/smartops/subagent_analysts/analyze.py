@@ -30,14 +30,17 @@ import re
 from contracts import (
     AnalystVerdict,
     BrokerReport,
+    CimCategory,
     DomainFinding,
     DomainJudgement,
     Exhibit,
     HypothesisAssessment,
     HypothesisFindings,
     InvestigationContext,
+    RetrievalSummary,
     Scope,
     Stance,
+    StepSummary,
 )
 
 from .model import AnalystModel
@@ -128,7 +131,7 @@ def run_one(
         )
 
     system = system_prompt(domain)
-    evidence_text, valid_ids, _ = pack_evidence(slice_)
+    evidence_text, valid_ids, _, _ = pack_evidence(slice_)
     user = build_user_turn(context, scope, evidence_text)
 
     try:
@@ -336,7 +339,7 @@ def gather_finding(
         )
 
     system = facts_system_prompt(domain)
-    evidence_text, valid_ids, _ = pack_evidence(slice_)
+    evidence_text, valid_ids, _, _ = pack_evidence(slice_)
     user = build_facts_user_turn(scope, evidence_text)
 
     try:
@@ -455,6 +458,12 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
             evidence_ids=list(block.evidence_ids),
             row_count=block.row_count,
             rows=block.text,
+            # Carried here, not inside `rows`: the query is kept out of what the
+            # blind analyst reads (it leaks the hypothesis -- see
+            # `formatting.format_result_set`) and put back for the Analyst Agent,
+            # which is not blind and cannot weigh a rows=0 exhibit without
+            # knowing what was asked.
+            query=block.query,
         )
         # Driven by `finding.citations`, which `_finalize_finding` has already
         # stripped of anything unresolvable -- so an exhibit cannot exist for a
@@ -548,4 +557,51 @@ async def gather(
         findings=[
             _as_judgement(f, s) for f, s in zip(findings, slices, strict=True)
         ],
+        retrieval=_retrieval_summary(report),
+    )
+
+
+def _retrieval_summary(report: BrokerReport) -> RetrievalSummary:
+    """Project the fetch side of the report for the Analyst Agent.
+
+    Code-assembled from what the Broker recorded, so nothing here is a fresh
+    judgement -- `completed`/`evaluated` come from `broker.evaluate_step()` and
+    `covered`/`not_covered` from each subagent's own `Assessment`.
+
+    `covered` is the union across dispatches; `not_covered` is the union MINUS
+    that, so the two are disjoint. Carrying both unions was the first cut and
+    real data killed it: on `cli-20260825T100434` four siem steps each scoped to
+    one category honestly reported the other three as not covered, so all four
+    categories landed in both lists and the field said nothing. One dispatch
+    retrieving a category settles it for the investigation.
+    """
+    covered: list[CimCategory] = []
+    unmet: list[CimCategory] = []
+    for result in report.results:
+        assessment = result.assessment
+        # `VtAssessment` has no CIM buckets -- a reputation lookup is not
+        # categorised that way (see `SiemAssessment.covered`), so `getattr`
+        # rather than a type test per family.
+        for source, target in (("covered", covered), ("not_covered", unmet)):
+            for category in getattr(assessment, source, ()) or ():
+                if category not in target:
+                    target.append(category)
+    not_covered = [category for category in unmet if category not in covered]
+
+    return RetrievalSummary(
+        dispatched=list(report.dispatched),
+        steps=[
+            StepSummary(
+                step_id=outcome.step.step_id,
+                family=outcome.step.family,
+                objective=outcome.step.objective,
+                completed=outcome.completed,
+                evaluated=outcome.evaluated,
+                confirmed_empty=outcome.confirmed_empty,
+                rows_retrieved=outcome.rows_retrieved,
+            )
+            for outcome in report.step_outcomes
+        ],
+        covered=covered,
+        not_covered=not_covered,
     )

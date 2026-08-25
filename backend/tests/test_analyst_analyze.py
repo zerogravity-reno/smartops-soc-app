@@ -670,3 +670,140 @@ class TestEmptyCitedBlocksAreSurfacedNotPunished:
         # ...but NOT downgraded: an empty set is legitimate negative evidence.
         assert identity.disposition == "benign"
         assert identity.confidence == 0.72
+
+
+class TestGatherCarriesTheRetrievalRecord:
+    """`HypothesisFindings.retrieval` -- see `RetrievalSummary`.
+
+    Without it the contract carried three judgements and no account of the
+    retrieval behind them, so an `inconclusive` was unreadable: a domain reports
+    it both when the rows genuinely decide nothing and when nothing was ever
+    retrieved for it. Telling those apart is the Analyst Agent's call, which
+    means it has to be handed the facts to make it.
+    """
+
+    _GENS = {
+        "identity": (
+            "</think>OBSERVATIONS:\n- one logon for bostoll [auth_events#1]\n"
+            "DISPOSITION: suspicious\nCONFIDENCE: 0.7\nCITATIONS: auth_events#1"
+        ),
+        "network": (
+            "</think>OBSERVATIONS:\n- a lookup of x.com [dns_resolutions#1]\n"
+            "DISPOSITION: benign\nCONFIDENCE: 0.4\nCITATIONS: dns_resolutions#1"
+        ),
+        "endpoint": (
+            "</think>OBSERVATIONS:\n- cmd.exe ran [processes#1]\n"
+            "DISPOSITION: malicious\nCONFIDENCE: 0.9\nCITATIONS: processes#1"
+        ),
+    }
+
+    @staticmethod
+    def _report() -> BrokerReport:
+        from contracts import FetchPlan, FetchStep, SiemAssessment, StepOutcome
+
+        step_done = FetchStep(step_id="siem-1", family="siem", objective="get auth events")
+        step_unplanned = FetchStep(step_id="siem-2", family="siem", objective="get dns")
+        siem = SubtaskResult(
+            task_id="t1:siem:1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(
+                auth_events=[ResultSet(query="auth", row_count=1, rows=[{"user": "bostoll"}])],
+                dns_resolutions=[ResultSet(query="dns", row_count=1, rows=[{"query": "x.com"}])],
+                processes=[ResultSet(query="proc", row_count=1, rows=[{"process": "cmd.exe"}])],
+            ),
+            assessment=SiemAssessment(
+                covered=["auth_events", "dns_resolutions"], not_covered=["connections"]
+            ),
+        )
+        return BrokerReport(
+            task_id="t1",
+            hypothesis_id="h-42",
+            plan=FetchPlan(steps=[step_done, step_unplanned], rationale="r"),
+            step_outcomes=[
+                StepOutcome(step=step_done, completed=True, rows_retrieved=3, evaluated=True),
+                # Planned, never dispatched: `completed=False, evaluated=False`.
+                StepOutcome(step=step_unplanned, completed=False, evaluated=False),
+            ],
+            results=[siem],
+            dispatched=["siem"],
+            classification=TaskClassification(tool_families=["siem"], rationale="x"),
+            cost=CostSummary(),
+        )
+
+    async def test_steps_carry_completion_and_whether_it_was_judged(self):
+        findings = await gather(self._report(), _scope(), _RecordingDomainModel(self._GENS))
+
+        assert findings.retrieval is not None
+        assert findings.retrieval.dispatched == ["siem"]
+
+        by_id = {s.step_id: s for s in findings.retrieval.steps}
+        assert by_id["siem-1"].completed is True
+        assert by_id["siem-1"].evaluated is True
+        assert by_id["siem-1"].rows_retrieved == 3
+        # The distinction `StepOutcome.evaluated` exists for: nobody judged this
+        # one, which is not the same fact as "ran and fell short".
+        assert by_id["siem-2"].completed is False
+        assert by_id["siem-2"].evaluated is False
+
+    async def test_coverage_comes_from_the_subagents_own_assessment(self):
+        findings = await gather(self._report(), _scope(), _RecordingDomainModel(self._GENS))
+
+        assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
+        assert findings.retrieval.not_covered == ["connections"]
+
+    async def test_a_category_one_dispatch_retrieved_is_not_reported_unmet(self):
+        """The two lists are disjoint, and the subtraction is load-bearing.
+
+        A step scoped to one category honestly reports the other three as not
+        covered. On `cli-20260825T100434` -- four siem steps, one category each --
+        a plain union of both fields put all four categories in BOTH lists, which
+        tells the consumer nothing.
+        """
+        from contracts import SiemAssessment
+
+        report = self._report()
+        # A second dispatch that got `connections`, which the first declared unmet.
+        report.results.append(
+            SubtaskResult(
+                task_id="t1:siem:2",
+                status=SubtaskStatus.OK,
+                findings=SiemFindings(
+                    connections=[ResultSet(query="conn", row_count=2, rows=[{"src_ip": "1.1.1.1"}])]
+                ),
+                assessment=SiemAssessment(
+                    covered=["connections"], not_covered=["auth_events", "processes"]
+                ),
+            )
+        )
+
+        findings = await gather(report, _scope(), _RecordingDomainModel(self._GENS))
+
+        covered = findings.retrieval.covered
+        not_covered = findings.retrieval.not_covered
+        assert set(covered) == {"auth_events", "dns_resolutions", "connections"}
+        # `processes` is the only category nobody retrieved.
+        assert not_covered == ["processes"]
+        assert not set(covered) & set(not_covered)
+
+    async def test_a_vt_assessment_contributes_no_categories(self):
+        """A reputation lookup is not bucketed by CIM category."""
+        from contracts import VtAssessment, VtFindings, VtVerdict
+
+        report = self._report()
+        report.results.append(
+            SubtaskResult(
+                task_id="t1:vt:1",
+                status=SubtaskStatus.OK,
+                findings=VtFindings(
+                    verdicts=[VtVerdict(kind="domain", value="x.com", found=True, malicious=3)]
+                ),
+                assessment=VtAssessment(looked_up=1),
+            )
+        )
+
+        findings = await gather(report, _scope(), _RecordingDomainModel(self._GENS))
+
+        # Unchanged by the vt result -- no spurious category, and no crash on an
+        # assessment that has no `covered` field at all.
+        assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
+        assert findings.retrieval.not_covered == ["connections"]

@@ -14,6 +14,7 @@ untagged. They are never dropped: they were retrieved and paid for.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from contracts import (
@@ -26,6 +27,8 @@ from contracts import (
     VtFindings,
     VtVerdict,
 )
+
+logger = logging.getLogger(__name__)
 
 # CIM category -> the analysis domain that owns it.
 _CATEGORY_DOMAIN: dict[CimCategory, AnalystDomain] = {
@@ -112,7 +115,29 @@ def route(report: BrokerReport, scope: Scope) -> RoutedEvidence:
                 domain = _VT_KIND_DOMAIN.get(verdict.kind)
                 if domain is not None:
                     slices[domain].vt_verdicts.append(verdict)
-        # findings is None (edr/ndr, or a rejected/errored result): no rows to route.
+        elif result.evidence:
+            # `findings is None` while the subagent DID capture evidence. Today
+            # that means edr or ndr: `projection.project()` has projectors for
+            # siem and vt only, so an edr subagent can retrieve rows, have them
+            # stored as `Evidence`, and contribute nothing to any analyst.
+            #
+            # Latent while both families are always REJECTED for want of an MCP
+            # server -- a rejection captures no evidence, so this branch does not
+            # fire -- and live the day a connector lands. Logged rather than
+            # raised, and logged rather than passed over silently, because silence
+            # is the actual defect: the analysts would simply see less, with
+            # nothing anywhere saying so. A projector per family is the fix, and
+            # it belongs with the connector that defines the row shape rather
+            # than ahead of it.
+            logger.warning(
+                "task_id=%s | %d evidence item(s) captured with no typed findings to "
+                "route; no projector exists for this family, so no analyst will see "
+                "them (smartops.projection.project)",
+                result.task_id,
+                len(result.evidence),
+            )
+        # findings is None with no evidence: a rejected or errored result. Nothing
+        # to route and nothing lost.
 
     return RoutedEvidence(
         identity=slices["identity"],

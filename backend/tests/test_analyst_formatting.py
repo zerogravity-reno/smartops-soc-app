@@ -166,8 +166,29 @@ class TestResultSetRendering:
                        rows=[{"query": "coinhive.com", "answer": "1.2.3.4"}])
         out = format_result_set("dns_resolutions", rs, index=1)
         assert "# dns_resolutions#1" in out
-        assert 'query="sourcetype=stream:dns"' in out
+        assert "rows=1" in out
         assert "coinhive.com" in out
+
+    def test_header_does_not_carry_the_query(self):
+        """The query is how the hypothesis reached a blind analyst.
+
+        The fetch subagent writes its SPL to test the hypothesis, so rendering it
+        into the header told an analyst that is structurally blind exactly what
+        someone was hunting -- on `cli-20260825T100434`, 11 of the network
+        slice's 35 headers, and 2 of the identity slice's. It stays in
+        `ResultSet.query`, `report.json` and `Exhibit.query`; it leaves the
+        prompt.
+        """
+        rs = ResultSet(
+            query='index=botsv3 sourcetype=stream:dns query="*coinhive*"',
+            row_count=0,
+            rows=[],
+        )
+        out = format_result_set("dns_resolutions", rs, index=1)
+        assert "query=" not in out
+        assert "coinhive" not in out
+        # But the fact that we asked and got nothing must survive.
+        assert "rows=0" in out
 
     def test_empty_result_set_is_still_reported(self):
         rs = ResultSet(query="sourcetype=x", row_count=0, rows=[])

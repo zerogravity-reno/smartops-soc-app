@@ -81,6 +81,35 @@ def load_evidence_from_run(
     return load_evidence_from_file(path)
 
 
+def evidence_by_id(
+    run_id_or_path: Path | str, base_dir: Path | str | None = None
+) -> dict[str, Evidence]:
+    """One run's evidence keyed by `Evidence.id`, for resolving a citation.
+
+    `load_evidence_from_run` returns a list, so every consumer wanting the rows
+    behind one `ResultSet.evidence_id` or `Exhibit.evidence_ids` entry scanned it
+    itself. Those ids are the whole point of the link contract
+    (`docs/superpowers/specs/2026-08-25-evidence-link-contract-design.md`) and
+    the store had no way to answer one directly.
+
+    A later record wins on a duplicate id. `SubtaskResult` already forbids
+    duplicates within one result (`_evidence_ids_are_unique`) and `evidence_id()`
+    namespaces by mission `task_id`, so a collision across a run means two
+    missions shared a `toolUseId` -- worth logging, not worth raising over, since
+    the caller wants the rows for the one id it asked about.
+    """
+    by_id: dict[str, Evidence] = {}
+    for item in load_evidence_from_run(run_id_or_path, base_dir):
+        if item.id in by_id:
+            logger.warning(
+                "evidence id %s appears more than once in %s; keeping the later record",
+                item.id,
+                run_id_or_path,
+            )
+        by_id[item.id] = item
+    return by_id
+
+
 def _newest_run_in(case_dir: Path) -> Path:
     """The most recent run directory under a case directory."""
     latest = case_dir / "latest.txt"
