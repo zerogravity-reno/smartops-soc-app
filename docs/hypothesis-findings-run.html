@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HypothesisFindings — run cli-20260825T100434</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#fff; --panel-2:#f1f3f7; --ink:#12151c; --ink-2:#4a5262;
+    --ink-3:#6b7280; --line:#e0e4ea; --line-2:#cdd3dd;
+    --accent:#3557d8; --accent-soft:#e8edfd;
+    --benign:#1f7a4d; --benign-bg:#e4f5ec;
+    --suspicious:#9a6206; --suspicious-bg:#fdf1dc;
+    --malicious:#b3261e; --malicious-bg:#fce9e7;
+    --inconclusive:#5b6472; --inconclusive-bg:#eceef2;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e1116; --panel:#161b22; --panel-2:#1c222b; --ink:#e7ebf0; --ink-2:#aab3c0;
+      --ink-3:#8b95a3; --line:#262d38; --line-2:#333c49;
+      --accent:#7d9bff; --accent-soft:#1b2540;
+      --benign:#5fd39b; --benign-bg:#12291f;
+      --suspicious:#e8b563; --suspicious-bg:#2c2312;
+      --malicious:#ff8a80; --malicious-bg:#2e1715;
+      --inconclusive:#98a2b3; --inconclusive-bg:#20262f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1116; --panel:#161b22; --panel-2:#1c222b; --ink:#e7ebf0; --ink-2:#aab3c0;
+    --ink-3:#8b95a3; --line:#262d38; --line-2:#333c49;
+    --accent:#7d9bff; --accent-soft:#1b2540;
+    --benign:#5fd39b; --benign-bg:#12291f;
+    --suspicious:#e8b563; --suspicious-bg:#2c2312;
+    --malicious:#ff8a80; --malicious-bg:#2e1715;
+    --inconclusive:#98a2b3; --inconclusive-bg:#20262f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 var(--sans);
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 20px 96px}
+  a{color:var(--accent)}
+  code,kbd{font-family:var(--mono);font-size:.9em}
+  h1{font-size:1.75rem;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+  h2{font-size:1.1rem;margin:0 0 14px;letter-spacing:-.01em}
+  h3{font-size:.95rem;margin:0 0 8px}
+  p{margin:0 0 12px;color:var(--ink-2)}
+  .sub{color:var(--ink-3);font-size:.9rem;margin-bottom:28px}
+  .sub code{background:var(--panel-2);padding:1px 5px;border-radius:4px}
+
+  header.top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+  .themebtn{background:var(--panel);border:1px solid var(--line-2);color:var(--ink-2);
+    border-radius:8px;padding:7px 12px;font:inherit;font-size:.82rem;cursor:pointer}
+  .themebtn:hover{border-color:var(--accent);color:var(--accent)}
+  .themebtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+          padding:22px;margin-bottom:20px}
+
+  .grid{display:grid;gap:12px}
+  @media(min-width:720px){.grid.g3{grid-template-columns:repeat(3,1fr)}
+                          .grid.g4{grid-template-columns:repeat(4,1fr)}}
+  .stat{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .stat .k{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3)}
+  .stat .v{font-size:1.5rem;font-weight:600;margin-top:4px;letter-spacing:-.02em}
+  .stat .n{font-size:.8rem;color:var(--ink-3);margin-top:2px}
+
+  .pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;
+        padding:3px 11px;font-size:.78rem;font-weight:600;letter-spacing:.01em}
+  .pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .d-benign{color:var(--benign);background:var(--benign-bg)}
+  .d-suspicious{color:var(--suspicious);background:var(--suspicious-bg)}
+  .d-malicious{color:var(--malicious);background:var(--malicious-bg)}
+  .d-inconclusive{color:var(--inconclusive);background:var(--inconclusive-bg)}
+
+  .tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:18px;
+        flex-wrap:wrap}
+  .tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--ink-3);
+       font:inherit;font-size:.9rem;padding:9px 13px;cursor:pointer;display:flex;
+       align-items:center;gap:8px;margin-bottom:-1px}
+  .tab:hover{color:var(--ink)}
+  .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+  .dot{width:8px;height:8px;border-radius:50%}
+
+  ul.obs{list-style:none;padding:0;margin:0 0 16px}
+  ul.obs li{background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--line-2);
+            border-radius:0 8px 8px 0;padding:10px 13px;margin-bottom:7px;font-size:.9rem;
+            color:var(--ink)}
+  ul.obs li.flag{border-left-color:var(--accent);background:var(--accent-soft)}
+  ul.obs li.dropped{border-left-color:var(--malicious);background:var(--malicious-bg);
+                    color:var(--ink-2);text-decoration:line-through;opacity:.85}
+  .cite{font-family:var(--mono);font-size:.8rem;color:var(--accent);
+        background:var(--panel);border:1px solid var(--line-2);border-radius:5px;padding:0 5px}
+  .note{font-size:.8rem;color:var(--ink-3);margin-top:-8px;margin-bottom:16px;font-style:italic}
+
+  table{width:100%;border-collapse:collapse;font-size:.87rem}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:600}
+  td.m{font-family:var(--mono);font-size:.78rem;word-break:break-all}
+  .scroll{overflow-x:auto}
+
+  details{border:1px solid var(--line);border-radius:9px;margin-bottom:9px;background:var(--panel-2)}
+  details[open]{background:var(--panel)}
+  summary{cursor:pointer;padding:11px 14px;font-size:.88rem;font-weight:600;list-style:none;
+          display:flex;justify-content:space-between;align-items:center;gap:10px}
+  summary::-webkit-details-marker{display:none}
+  summary::after{content:"+";color:var(--ink-3);font-weight:400;font-size:1.1rem;flex:none}
+  details[open] summary::after{content:"\2212"}
+  summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:8px}
+  .dbody{padding:0 14px 14px}
+
+  pre{background:var(--panel-2);border:1px solid var(--line);border-radius:9px;
+      padding:14px;overflow-x:auto;font-family:var(--mono);font-size:.79rem;line-height:1.55;
+      margin:0;color:var(--ink)}
+  .k-key{color:var(--accent)}
+  .k-str{color:var(--benign)}
+  .k-num{color:var(--suspicious)}
+  .k-null{color:var(--ink-3);font-style:italic}
+
+  .ok{color:var(--benign);font-weight:600}
+  .bad{color:var(--malicious);font-weight:600}
+  .banner{display:flex;gap:12px;align-items:flex-start;background:var(--benign-bg);
+          border:1px solid var(--benign);border-radius:10px;padding:14px 16px;margin-bottom:18px}
+  .banner .icon{font-size:1.1rem;line-height:1.4}
+  .banner p{margin:0;color:var(--ink);font-size:.9rem}
+  .banner strong{color:var(--benign)}
+
+  .cmp{display:grid;gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  @media(min-width:680px){.cmp{grid-template-columns:1fr 1fr}}
+  .cmp>div{padding:16px}
+  .cmp>div+div{border-top:1px solid var(--line)}
+  @media(min-width:680px){.cmp>div+div{border-top:0;border-left:1px solid var(--line)}}
+  .cmp h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
+  .cmp ul{margin:0;padding-left:18px;font-size:.87rem;color:var(--ink-2)}
+  .cmp li{margin-bottom:5px}
+  footer{color:var(--ink-3);font-size:.8rem;text-align:center;margin-top:36px;
+         padding-top:20px;border-top:1px solid var(--line)}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <h1>HypothesisFindings</h1>
+    <p class="sub">The contract handed up to the Analyst Agent · run
+      <code>cli-20260825T100434</code> · replayed offline against saved evidence</p>
+  </div>
+  <button class="themebtn" id="theme" type="button">Toggle theme</button>
+</header>
+
+<section aria-labelledby="h-blind">
+  <h2 id="h-blind">Blindness verification</h2>
+  <div class="banner">
+    <span class="icon" aria-hidden="true">✓</span>
+    <p><strong>3 model calls, 0 leaks.</strong> Every <code>(system, user)</code> pair handed to the
+    model was captured and searched for the hypothesis string, the word “hypothesis”, and the terms
+    “crypto-mining” and “unauthorised”. None appeared in any of them.</p>
+  </div>
+  <p>The guarantee is structural rather than disciplinary. <code>gather_finding(model, scope, slice_)</code>
+  and <code>build_facts_user_turn(scope, evidence_text)</code> have no hypothesis parameter — it is not
+  passed in and then withheld, there is nothing to pass. The hypothesis appears only in the
+  <em>output</em> contract, as the attachment point where the three independent judgements are joined
+  to the claim they were formed without.</p>
+
+  <div class="grid g4">
+    <div class="stat"><div class="k">Hypothesis</div><div class="v">Hidden</div>
+      <div class="n">from all 3 analysts</div></div>
+    <div class="stat"><div class="k">Model calls</div><div class="v">3</div>
+      <div class="n">one per domain</div></div>
+    <div class="stat"><div class="k">Leaked terms</div><div class="v ok">0</div>
+      <div class="n">of 4 searched</div></div>
+    <div class="stat"><div class="k">Test suite</div><div class="v">706</div>
+      <div class="n">passed, 0 failed</div></div>
+  </div>
+</section>
+
+<section aria-labelledby="h-input">
+  <h2 id="h-input">What each analyst was given</h2>
+  <p>Routing is by CIM category and entity kind, in code — never a model decision.
+  <code>uncategorised</code> sets are rows the fetch model never tagged; they are offered to whichever
+  domains the scope’s entity kinds point at, and never dropped.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Domain</th><th>SIEM sets</th><th>VT verdicts</th><th>Untagged</th><th>Total</th></tr></thead>
+    <tbody>
+      <tr><td><strong>identity</strong></td><td>15</td><td>0</td><td>17</td><td>32</td></tr>
+      <tr><td><strong>network</strong></td><td>17</td><td>4</td><td>17</td><td>38</td></tr>
+      <tr><td><strong>endpoint</strong></td><td>16</td><td>3</td><td>17</td><td>36</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section aria-labelledby="h-find">
+  <h2 id="h-find">The three judgements</h2>
+  <p>Each analyst returns a <strong>disposition</strong> — a reading of the rows in front of it. That is a
+  different axis from a stance on a hypothesis, not a renaming of it: only a stance can be led.</p>
+
+  <div class="tabs" role="tablist" aria-label="Domain findings">
+    <button class="tab" role="tab" id="t-identity" aria-controls="p-identity" aria-selected="true">
+      <span class="dot" style="background:var(--benign)" aria-hidden="true"></span>identity</button>
+    <button class="tab" role="tab" id="t-network" aria-controls="p-network" aria-selected="false">
+      <span class="dot" style="background:var(--malicious)" aria-hidden="true"></span>network</button>
+    <button class="tab" role="tab" id="t-endpoint" aria-controls="p-endpoint" aria-selected="false">
+      <span class="dot" style="background:var(--suspicious)" aria-hidden="true"></span>endpoint</button>
+  </div>
+
+  <div class="panel" role="tabpanel" id="p-identity" aria-labelledby="t-identity" tabindex="0">
+    <p><span class="pill d-benign">benign</span> &nbsp;confidence <strong>0.72</strong></p>
+    <h3>Observations</h3>
+    <ul class="obs">
+      <li>bostoll logged on interactively to BSTOLL-L, logon type 11 <span class="cite">auth_events#1</span></li>
+      <li class="flag">The pattern was: single logon, no preceding failures <span class="cite">auth_events#1</span></li>
+      <li class="flag">no failed-logon burst precedes the success <span class="cite">auth_events#1</span></li>
+    </ul>
+    <p class="note">Highlighted: both of these were lost before this session’s parser fix — see
+      “What this run exercised” below.</p>
+    <h3>Rationale</h3>
+    <p>A cached-credential unlock with no failure burst. Note the following: the absence of 4625 events
+      is the discriminating detail.</p>
+    <h3>Exhibit — the rows this judgement rests on</h3>
+    <pre>« auth_events#1 · 1 evidence id · <strong>row_count = 0</strong>
+
+# auth_events#1 · query="| tstats summariesonly=t count from datamodel=Authentication
+    where nodename=Authentication (Authentication.user="bostoll" OR …" · rows=0
+(no rows returned)</pre>
+    <div class="banner" style="background:var(--suspicious-bg);border-color:var(--suspicious);margin-top:14px">
+      <span class="icon" aria-hidden="true">!</span>
+      <p><strong style="color:var(--suspicious)">The exhibit earns its place here.</strong>
+      A confident <code>benign / 0.72</code> resting on a set with <strong>zero rows</strong>.
+      The grounding gate checks that a cited id <em>exists</em>, not that it <em>contains</em>
+      anything — so this passes today, and from an <code>Evidence.id</code> alone the Analyst
+      Agent could never have seen it. The rows make it obvious on sight.</p>
+    </div>
+  </div>
+
+  <div class="panel hidden" role="tabpanel" id="p-network" aria-labelledby="t-network" tabindex="0">
+    <p><span class="pill d-malicious">malicious</span> &nbsp;confidence <strong>0.91</strong></p>
+    <h3>Observations</h3>
+    <ul class="obs">
+      <li class="dropped">BSTOLL-L resolved coinhive.com <span class="cite">dns_resolutions#1</span></li>
+      <li>VirusTotal flags that domain 11/91 malicious <span class="cite">reputation#1</span></li>
+    </ul>
+    <p class="note">The first observation was <strong>dropped by the grounding gate</strong>: this run
+      routed no <code>dns_resolutions</code> set, so the id resolved to nothing and the observation
+      rested solely on a fabrication.</p>
+    <h3>Rationale</h3>
+    <p>Resolution to a domain with a live malicious reputation.</p>
+    <h3>Exhibit — the rows this judgement rests on</h3>
+    <pre>« reputation#1 · 4 evidence ids · row_count = 4
+
+# reputation#1 · source=virustotal · indicators=4
+domain=coinhive.com FOUND mal=11 susp=1 harmless=79 rep=-
+…</pre>
+    <p class="note">One citation, four evidence ids — the <code>reputation#1</code> many-to-one problem,
+      open question C in the evidence-link design note. The exhibit softens it in practice: the
+      Analyst Agent can at least read all four indicators rather than guessing which one the
+      judgement meant.</p>
+  </div>
+
+  <div class="panel hidden" role="tabpanel" id="p-endpoint" aria-labelledby="t-endpoint" tabindex="0">
+    <p><span class="pill d-suspicious">suspicious</span> &nbsp;confidence <strong>0.64</strong></p>
+    <h3>Observations</h3>
+    <ul class="obs">
+      <li>chrome.exe launched with a CoinHive script reference <span class="cite">processes#1</span></li>
+    </ul>
+    <h3>Rationale</h3>
+    <p>Browser process referencing a miner library, no persistence seen.</p>
+    <h3>Exhibit — the rows this judgement rests on</h3>
+    <pre>« processes#1 · 1 evidence id · row_count = 1
+
+# processes#1 · query="…" · rows=1
+…</pre>
+  </div>
+</section>
+
+<section aria-labelledby="h-exercised">
+  <h2 id="h-exercised">What this run exercised</h2>
+  <p>The generations were shaped like real 8B output — markdown emphasis, inline citations, a prose
+  colon, one fabricated id — so the run is a genuine test of the pipeline, not a happy path.</p>
+
+  <details>
+    <summary>The parser fix — 2 of 3 identity observations recovered</summary>
+    <div class="dbody">
+      <p>The field terminator was <code>[A-Z][A-Z ]+:</code> under <code>IGNORECASE</code>, which matches
+      <em>any</em> prose line ending in a colon. Identity’s second observation is un-bulleted and reads
+      “The pattern was: …”, so the capture ended there and took the third observation with it.</p>
+      <pre>before  observations = ["bostoll logged on interactively … [auth_events#1]"]
+after   observations = ["bostoll logged on interactively … [auth_events#1]",
+                        "The pattern was: single logon, no preceding failures [auth_events#1]",
+                        "no failed-logon burst precedes the success [auth_events#1]"]</pre>
+      <p>The rationale was truncated the same way, at “Note the following:”. This mattered beyond
+      lossiness: <code>_finalize_finding</code> unions the inline <code>[header_id]</code> citations found
+      <em>inside</em> observations into the finding’s citations, so dropped observations took their
+      citations with them — starving a grounding fix that was already shipped.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>The grounding gate — 1 fabricated citation refused</summary>
+    <div class="dbody">
+      <p>Network cited <code>dns_resolutions#1</code>, which this run never produced. Both the citation and
+      the observation resting solely on it were dropped, and both were logged:</p>
+      <pre>domain=network | dropped 1 invented citation(s) from a finding: dns_resolutions#1
+dropped an observation citing only unresolvable id(s): dns_resolutions#1</pre>
+      <p><strong>Worth flagging:</strong> the disposition itself still reads <code>malicious</code>. For a
+      hypothesis-shown verdict, <code>_finalize</code> downgrades an ungrounded <code>supports</code>/
+      <code>refutes</code> to <code>inconclusive</code>; <code>_finalize_finding</code> has no equivalent
+      downgrade for a disposition. Here it is harmless — <code>reputation#1</code> still resolves, so the
+      finding is grounded — but a finding whose citations <em>all</em> failed would keep a confident
+      disposition with nothing behind it. That asymmetry is not yet decided either way.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Evidence linkage — every kept citation frozen to its rows</summary>
+    <div class="dbody">
+      <p><code>citation_evidence</code> is written at finalisation rather than recomputed on read, so a
+      stored finding can be traced to the rows behind it without re-running <code>route()</code>. The ids
+      follow the chain recorded in the evidence-link design note:</p>
+      <pre>task_id : family : toolUseId : index
+cli-20260825T100434 : siem : tooluse_xphZd4kUv8vxMKHX7gdbk0 : 0</pre>
+      <p>The trailing <code>index</code> is positional, and whether it should become content-addressed is
+      open question A in that note. Any answer propagates straight into this field.</p>
+    </div>
+  </details>
+</section>
+
+<section aria-labelledby="h-wire">
+  <h2 id="h-wire">What crosses the boundary, and what does not</h2>
+  <p>A <code>DomainFinding</code> is the internal audit record. What the Analyst Agent receives is a
+  <code>DomainJudgement</code> — a projection of it. Two shapes because two audiences, rather than one
+  shape whose consumer has to know which fields to ignore.</p>
+  <div class="cmp">
+    <div>
+      <h3>Stays here — DomainFinding</h3>
+      <ul>
+        <li><code>reasoning_trace</code> — documented “persisted for audit, <em>never re-fed</em>”.
+          Putting a model’s private chain-of-thought into a contract handed to another model is
+          exactly re-feeding it.</li>
+        <li><code>prompt_tokens</code>, <code>generation_tokens</code> — our telemetry; feeds cost
+          reporting.</li>
+        <li><code>citation_evidence</code> — superseded on the wire by the richer
+          <code>Exhibit</code>.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Crosses — DomainJudgement</h3>
+      <ul>
+        <li><code>disposition</code>, <code>confidence</code>, <code>rationale</code> — the judgement
+          and how strongly it is held.</li>
+        <li><code>observations</code>, <code>citations</code> — what was seen, and where.</li>
+        <li><code>exhibits</code> — <strong>the actual rows</strong>, so the consumer can check the
+          judgement without holding the evidence store.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="grid g4" style="margin-top:16px">
+    <div class="stat"><div class="k">Full evidence pack</div><div class="v">45.8k</div>
+      <div class="n">chars across 3 domains</div></div>
+    <div class="stat"><div class="k">Cited blocks only</div><div class="v ok">703</div>
+      <div class="n">chars — 98.5% smaller</div></div>
+    <div class="stat"><div class="k">Whole contract</div><div class="v">2,594</div>
+      <div class="n">bytes, evidence included</div></div>
+    <div class="stat"><div class="k">Blocks routed / cited</div><div class="v">101 / 3</div>
+      <div class="n">only cited ones travel</div></div>
+  </div>
+  <p style="margin-top:14px">Rendering is not re-done for the exhibit: it reuses
+  <code>format_result_set</code> and <code>format_vt_verdicts</code>, so the rows the Analyst Agent
+  reads are byte-identical to the rows the domain analyst judged. Block order and numbering now live
+  in a single <code>blocks()</code> function that <code>_render</code>,
+  <code>valid_citation_ids</code> and <code>exhibits_for</code> all read — the previous two
+  independent copies had a docstring warning they would rot, and a third was not the answer.</p>
+</section>
+
+<section aria-labelledby="h-contract">
+  <h2 id="h-contract">Why this is not <code>HypothesisAssessment</code></h2>
+  <div class="cmp">
+    <div>
+      <h3>HypothesisAssessment</h3>
+      <ul>
+        <li>Per-domain unit: <code>AnalystVerdict</code>, carrying a <code>Stance</code> toward the hypothesis</li>
+        <li>Analyst <strong>saw</strong> the hypothesis</li>
+        <li>Has <code>overall_stance</code> + <code>confidence</code>, decided locally by <code>combine()</code></li>
+        <li>Unchanged by this work; still the shape that carries a decided stance</li>
+      </ul>
+    </div>
+    <div>
+      <h3>HypothesisFindings</h3>
+      <ul>
+        <li>Per-domain unit: <code>DomainFinding</code>, carrying a <code>Disposition</code> toward the evidence</li>
+        <li>Analyst <strong>never saw</strong> the hypothesis</li>
+        <li>No hypothesis-level verdict and no combiner — <em>the absence is the contract</em></li>
+        <li>Deciding supports/refutes is the Analyst Agent’s job, owned elsewhere</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:16px">The two share four envelope fields (<code>schema_version</code>,
+  <code>task_id</code>, <code>run_id</code>, <code>hypothesis_id</code>) and differ on the two that matter.
+  Kept as separate models rather than one widened model: one shape meaning two things depending on which
+  fields are populated is the ambiguity the <code>tool_family</code> discriminator exists to prevent.</p>
+</section>
+
+<section aria-labelledby="h-json">
+  <h2 id="h-json">Schema output</h2>
+  <p><code>HypothesisFindings.model_dump(mode="json")</code>, verbatim.</p>
+  <pre id="json" aria-label="HypothesisFindings JSON output"></pre>
+</section>
+
+<footer>
+  Generated from a real <code>gather()</code> run over saved evidence at
+  <code>.smartops/runs/cli-20260825T100434/20260825T100741262</code>.
+  Model scripted (offline); routing, parsing, grounding and assembly are the production path.
+</footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* Theme toggle — respects the OS default until the user overrides it. */
+  var btn = document.getElementById("theme");
+  var root = document.documentElement;
+  try {
+    var saved = localStorage.getItem("hf-theme");
+    if (saved) root.setAttribute("data-theme", saved);
+  } catch (e) { /* private mode: fall through to OS preference */ }
+  btn.addEventListener("click", function(){
+    var dark = getComputedStyle(root).getPropertyValue("--bg").trim() === "#0e1116";
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("hf-theme", next); } catch (e) {}
+  });
+
+  /* Tabs — roving focus, arrow-key navigation, per WAI-ARIA tabs pattern. */
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  function select(tab){
+    tabs.forEach(function(t){
+      var on = t === tab;
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).classList.toggle("hidden", !on);
+    });
+  }
+  tabs.forEach(function(tab, i){
+    tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
+    tab.addEventListener("click", function(){ select(tab); });
+    tab.addEventListener("keydown", function(e){
+      var d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      var next = tabs[(i + d + tabs.length) % tabs.length];
+      select(next); next.focus();
+    });
+  });
+
+  /* Syntax-highlight the payload. Built from the object so the page cannot
+     drift from the shape it documents. */
+  var DATA = {
+    schema_version: 1,
+    task_id: "cli-20260825T100434",
+    run_id: "20260825T100741262",
+    hypothesis_id: "cli-hypothesis",
+    hypothesis: "BSTOLL-L was used for unauthorised crypto-mining",
+    findings: [
+      { domain:"identity", disposition:"benign", confidence:0.72,
+        rationale:"A cached-credential unlock with no failure burst. Note the following: the absence of 4625 events is the discriminating detail.",
+        observations:[
+          "bostoll logged on interactively to BSTOLL-L, logon type 11 [auth_events#1]",
+          "The pattern was: single logon, no preceding failures [auth_events#1]",
+          "no failed-logon burst precedes the success [auth_events#1]"],
+        citations:["auth_events#1"],
+        exhibits:[{ citation:"auth_events#1",
+          evidence_ids:["cli-20260825T100434:siem:tooluse_xphZd4kUv8vxMKHX7gdbk0:0"],
+          row_count:0,
+          rows:"# auth_events#1 · query=\"| tstats summariesonly=t count from datamodel=Authentication where nodename=Authentication (Authentication.user=\"bostoll\" OR Authentication.src=\"BSTOLL-L\" OR Au…\" · rows=0\n(no rows returned)" }] },
+      { domain:"network", disposition:"malicious", confidence:0.91,
+        rationale:"Resolution to a domain with a live malicious reputation.",
+        observations:["VirusTotal flags that domain 11/91 malicious [reputation#1]"],
+        citations:["reputation#1"],
+        exhibits:[{ citation:"reputation#1",
+          evidence_ids:[
+            "cli-20260825T100434:vt:tooluse_5Abh4QTkV1jE8dZdBkhb5x:0",
+            "cli-20260825T100434:vt:tooluse_5Abh4QTkV1jE8dZdBkhb5x:1",
+            "cli-20260825T100434:vt:tooluse_LAgp3dPgktAEAmC88aN6Tg:0",
+            "cli-20260825T100434:vt:tooluse_LAgp3dPgktAEAmC88aN6Tg:1"],
+          row_count:4,
+          rows:"# reputation#1 · source=virustotal · indicators=4\ndomain=coinhive.com FOUND mal=11 susp=1 harmless=79 rep=-\n…" }] },
+      { domain:"endpoint", disposition:"suspicious", confidence:0.64,
+        rationale:"Browser process referencing a miner library, no persistence seen.",
+        observations:["chrome.exe launched with a CoinHive script reference [processes#1]"],
+        citations:["processes#1"],
+        exhibits:[{ citation:"processes#1",
+          evidence_ids:["cli-20260825T100434:siem:tooluse_RG9Gs7pZPf9tum4nBTIqQF:1"],
+          row_count:1,
+          rows:"# processes#1 · query=\"…\" · rows=1\n…" }] }
+    ]
+  };
+
+  function esc(s){ return s.replace(/[&<>]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); }
+
+  var html = esc(JSON.stringify(DATA, null, 2))
+    .replace(/("(?:\\.|[^"\\])*")(\s*:)/g, '<span class="k-key">$1</span>$2')
+    .replace(/:\s("(?:\\.|[^"\\])*")/g, ': <span class="k-str">$1</span>')
+    .replace(/:\s(-?\d+\.?\d*)/g, ': <span class="k-num">$1</span>')
+    .replace(/:\s(null|true|false)/g, ': <span class="k-null">$1</span>');
+  document.getElementById("json").innerHTML = html;
+})();
+</script>
+</body>
+</html>

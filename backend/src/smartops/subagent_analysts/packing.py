@@ -14,6 +14,7 @@ VirusTotal reputation, then SIEM categories, then untagged sets.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from .formatting import format_result_set, format_vt_verdicts
 from .routing import DomainSlice
@@ -34,46 +35,101 @@ def estimate_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
 
 
-def _render(slice_: DomainSlice, row_cap: int) -> str:
-    blocks: list[str] = []
+@dataclass(frozen=True)
+class Block:
+    """One rendered evidence block, with the header id the analyst may cite it by."""
+
+    header_id: str
+    evidence_ids: list[str]
+    row_count: int
+    text: str
+
+
+def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Block]:
+    """Every block this slice renders, in the order the analyst sees them.
+
+    **The single place block order and numbering are defined.** `_render`,
+    `valid_citation_ids` and `exhibits_for` are all thin readings of this list
+    rather than three functions each mirroring the same enumeration --
+    `valid_citation_ids` used to warn that a second parallel implementation
+    "would rot the first time one changed", and the way to honour that as a
+    third consumer arrives is to remove the mirroring, not to add to it.
+
+    Ordering puts the highest-signal evidence first so it survives any shrink:
+    VirusTotal reputation, then SIEM categories, then untagged sets.
+    """
+    out: list[Block] = []
     if slice_.vt_verdicts:
-        blocks.append(format_vt_verdicts(slice_.vt_verdicts, index=1))
-    for i, (category, result_set) in enumerate(slice_.siem_sets, start=1):
-        blocks.append(format_result_set(category, result_set, index=i, row_cap=row_cap))
-    for i, result_set in enumerate(slice_.untagged_sets, start=1):
-        blocks.append(
-            format_result_set("uncategorised", result_set, index=i, row_cap=row_cap)
+        out.append(
+            Block(
+                header_id="reputation#1",
+                # A list because one `reputation#1` header covers every VT
+                # verdict in the slice -- see `HypothesisFindings` open question C.
+                evidence_ids=[v.evidence_id for v in slice_.vt_verdicts if v.evidence_id],
+                row_count=len(slice_.vt_verdicts),
+                text=format_vt_verdicts(slice_.vt_verdicts, index=1),
+            )
         )
-    return "\n\n".join(blocks)
+    for i, (category, result_set) in enumerate(slice_.siem_sets, start=1):
+        out.append(
+            Block(
+                header_id=f"{category}#{i}",
+                evidence_ids=[result_set.evidence_id] if result_set.evidence_id else [],
+                row_count=result_set.row_count,
+                text=format_result_set(category, result_set, index=i, row_cap=row_cap),
+            )
+        )
+    for i, result_set in enumerate(slice_.untagged_sets, start=1):
+        out.append(
+            Block(
+                header_id=f"uncategorised#{i}",
+                evidence_ids=[result_set.evidence_id] if result_set.evidence_id else [],
+                row_count=result_set.row_count,
+                text=format_result_set("uncategorised", result_set, index=i, row_cap=row_cap),
+            )
+        )
+    return out
+
+
+def _render(slice_: DomainSlice, row_cap: int) -> str:
+    return "\n\n".join(b.text for b in blocks(slice_, row_cap=row_cap))
+
+
+def exhibits_for(
+    slice_: DomainSlice, citations: list[str], *, row_cap: int = 8
+) -> list[Block]:
+    """Only the blocks a finding actually cited, for handing to the Analyst Agent.
+
+    The reduction is the point: on `cli-20260825T100434` each domain was routed
+    32-35 blocks and cited one, so this is ~2% of `pack_evidence`'s output. That
+    is what makes it possible to show the Analyst Agent the real rows rather than
+    ids it would have to resolve against an evidence store it may not have.
+
+    `row_cap` is tighter than the analyst's own default (8 vs 20) because the
+    consumer needs enough rows to check a judgement, not enough to redo it --
+    and `format_result_set` appends "(N more rows not shown)", so what was
+    withheld stays visible.
+    """
+    wanted = set(citations)
+    return [b for b in blocks(slice_, row_cap=row_cap) if b.header_id in wanted]
 
 
 def valid_citation_ids(slice_: DomainSlice) -> dict[str, list[str]]:
     """Each emitted header id mapped to the `Evidence.id`s behind it.
 
-    Mirrors `_render`'s block order and numbering exactly, so a model citation
-    is valid iff it is a key here. Returns the MAP rather than a bare set, and a
-    separate parallel function was deliberately NOT added: the two would each
-    have to mirror `_render` identically and would rot the first time one
-    changed. Callers that want only validity use the keys, which is what a
+    A model citation is valid iff it is a key here. Returns the MAP rather than a
+    bare set; callers that want only validity use the keys, which is what a
     membership test on a dict already does.
+
+    Now a reading of `blocks()` rather than its own enumeration -- it used to
+    re-implement `_render`'s order and numbering and warn in this docstring that
+    a second copy "would rot the first time one changed". `exhibits_for` was
+    about to be the third, so the enumeration moved into one function instead.
 
     A list per id because one `reputation#1` header covers every VT verdict in
     the slice. An entry is `[]` when the source predates `ResultSet.evidence_id`.
     """
-    ids: dict[str, list[str]] = {}
-    if slice_.vt_verdicts:
-        ids["reputation#1"] = [
-            v.evidence_id for v in slice_.vt_verdicts if v.evidence_id
-        ]
-    for i, (category, result_set) in enumerate(slice_.siem_sets, start=1):
-        ids[f"{category}#{i}"] = (
-            [result_set.evidence_id] if result_set.evidence_id else []
-        )
-    for i, result_set in enumerate(slice_.untagged_sets, start=1):
-        ids[f"uncategorised#{i}"] = (
-            [result_set.evidence_id] if result_set.evidence_id else []
-        )
-    return ids
+    return {b.header_id: b.evidence_ids for b in blocks(slice_)}
 
 
 def pack_evidence(

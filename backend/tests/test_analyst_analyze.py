@@ -558,4 +558,40 @@ class TestGather:
         findings = await gather(report, _scope(), _DomainModel(self._GENS))
 
         identity = next(f for f in findings.findings if f.domain == "identity")
-        assert identity.citation_evidence == {"auth_events#1": ["t1:siem:1:0"]}
+        assert [e.citation for e in identity.exhibits] == ["auth_events#1"]
+        assert identity.exhibits[0].evidence_ids == ["t1:siem:1:0"]
+
+    async def test_the_cited_rows_travel_with_the_judgement(self):
+        """The Analyst Agent must be able to check a judgement without the store."""
+        findings = await gather(_report_with_all_three_domains(), _scope(), _DomainModel(self._GENS))
+
+        identity = next(f for f in findings.findings if f.domain == "identity")
+        exhibit = identity.exhibits[0]
+        assert exhibit.citation == "auth_events#1"
+        assert exhibit.row_count == 1
+        assert "auth_events#1" in exhibit.rows  # the `# header` line
+        assert "bostoll" in exhibit.rows  # the actual row
+
+    async def test_only_cited_blocks_travel(self):
+        """Identity is routed dns/process sets too; it cited neither."""
+        findings = await gather(_report_with_all_three_domains(), _scope(), _DomainModel(self._GENS))
+
+        identity = next(f for f in findings.findings if f.domain == "identity")
+        assert [e.citation for e in identity.exhibits] == ["auth_events#1"]
+        assert "x.com" not in "".join(e.rows for e in identity.exhibits)
+
+    async def test_audit_fields_do_not_cross_the_boundary(self):
+        """`reasoning_trace` is documented "never re-fed"; the tokens are our telemetry."""
+        findings = await gather(_report_with_all_three_domains(), _scope(), _DomainModel(self._GENS))
+
+        for judgement in findings.findings:
+            for field in ("reasoning_trace", "prompt_tokens", "generation_tokens"):
+                assert not hasattr(judgement, field)
+        assert "reasoning_trace" not in findings.model_dump_json()
+
+    async def test_run_id_is_set_at_construction_not_left_for_the_writer(self):
+        findings = await gather(
+            _report_with_all_three_domains(), _scope(), _DomainModel(self._GENS),
+            run_id="20260825T100741262",
+        )
+        assert findings.run_id == "20260825T100741262"

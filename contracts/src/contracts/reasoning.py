@@ -225,6 +225,77 @@ class HypothesisAssessment(BaseModel):
     verdicts: list[AnalystVerdict] = Field(default_factory=list)
 
 
+class Exhibit(BaseModel):
+    """The actual rows behind one citation, rendered as the analyst saw them.
+
+    An `Evidence.id` is a pointer, and a pointer is only useful to a consumer
+    holding the evidence store. The Analyst Agent is a separate component and may
+    hold nothing; without the rows it can weigh a judgement only by trusting it.
+
+    Carrying every routed block instead would be the other failure -- on
+    `cli-20260825T100434` each domain was routed 32-35 blocks and cited one, so
+    the full pack is ~13-19k characters per domain against ~250 for the cited
+    blocks. Only what was cited travels.
+
+    `rows` is the same projected, `_sanitise`d text the domain analyst read, not
+    a re-render: an exhibit that formatted the rows differently from the evidence
+    the judgement was formed on would be a different exhibit.
+    """
+
+    citation: str = Field(
+        min_length=1, description="The header id, e.g. 'auth_events#1'."
+    )
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The `Evidence.id`s this block was projected from, for a consumer that "
+            "does hold the store and wants the untruncated rows."
+        ),
+    )
+    row_count: int = Field(
+        ge=0,
+        description=(
+            "Rows in the underlying set, which is NOT the number rendered in "
+            "`rows` -- exhibits are row-capped. Carried separately so a consumer "
+            "can see that a cited set was empty, which is invisible from an id "
+            "alone and which the grounding gate does not check for."
+        ),
+    )
+    rows: str = Field(
+        default="",
+        description="The rendered block: its `# header` line and the capped rows beneath it.",
+    )
+
+
+class DomainJudgement(BaseModel):
+    """One domain's judgement as it crosses to the Analyst Agent.
+
+    The wire projection of a `DomainFinding`. Same judgement, minus what is ours
+    rather than the consumer's, plus the evidence needed to check it.
+
+    Dropped from `DomainFinding`: `reasoning_trace`, `prompt_tokens`,
+    `generation_tokens`. The token counts are our telemetry. The trace is stronger
+    than that -- it is documented "persisted for audit, never re-fed", and putting
+    a model's private chain-of-thought into a contract handed to another model is
+    exactly re-feeding it. A projection rather than a `model_dump(exclude=...)` so
+    the published schema does not advertise fields the consumer must know to
+    ignore.
+
+    Added: `exhibits`. See `Exhibit`.
+    """
+
+    domain: AnalystDomain
+    disposition: Disposition
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = ""
+    observations: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    exhibits: list[Exhibit] = Field(
+        default_factory=list,
+        description="The cited evidence, one entry per kept citation.",
+    )
+
+
 class HypothesisFindings(BaseModel):
     """Three blind domain judgements, attached to the hypothesis they never saw.
 
@@ -267,10 +338,15 @@ class HypothesisFindings(BaseModel):
     run_id: str | None = Field(
         default=None,
         description=(
-            "The timestamped run directory these findings belong to, stamped by "
-            "the persistence layer at write time. Optional for the same reason as "
-            "`HypothesisAssessment.run_id`: the analysis layer does not choose the "
-            "run directory, but the artifact should name it if it is copied out."
+            "The timestamped run directory these findings belong to. Unlike "
+            "`HypothesisAssessment.run_id`, `gather()` sets this at construction "
+            "wherever the caller knows it, rather than leaving it for the "
+            "persistence layer to stamp on write. Stamping on write is fine for an "
+            "artifact whose next stop is our own disk; this one is handed to "
+            "another system and may never be persisted here at all, so a null "
+            "`run_id` would make it unidentifiable at exactly the moment it "
+            "crosses the boundary. Still optional, because a caller genuinely may "
+            "not know it -- but it should be the exception now, not the default."
         ),
     )
     hypothesis_id: str = Field(min_length=1)
@@ -283,7 +359,7 @@ class HypothesisFindings(BaseModel):
             "before it reaches any prompt."
         ),
     )
-    findings: list[DomainFinding] = Field(
+    findings: list[DomainJudgement] = Field(
         default_factory=list,
         description="One per analysis domain, including domains that saw no evidence.",
     )

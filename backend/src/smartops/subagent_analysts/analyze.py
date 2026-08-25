@@ -31,6 +31,8 @@ from contracts import (
     AnalystVerdict,
     BrokerReport,
     DomainFinding,
+    DomainJudgement,
+    Exhibit,
     HypothesisAssessment,
     HypothesisFindings,
     InvestigationContext,
@@ -39,7 +41,7 @@ from contracts import (
 )
 
 from .model import AnalystModel
-from .packing import pack_evidence
+from .packing import exhibits_for, pack_evidence
 from .parse import FindingParseError, VerdictParseError, parse_finding, parse_verdict, split_reasoning
 from .prompts import build_facts_user_turn, build_user_turn, facts_system_prompt, system_prompt
 from .routing import DomainSlice, route
@@ -422,11 +424,40 @@ def _finalize_finding(
     )
 
 
+def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:
+    """Project one finding onto the wire, attaching the evidence it cited.
+
+    The projection is where `reasoning_trace` and the token counts stop: they are
+    our audit record, not the Analyst Agent's input. See `DomainJudgement`.
+    """
+    return DomainJudgement(
+        domain=finding.domain,
+        disposition=finding.disposition,
+        confidence=finding.confidence,
+        rationale=finding.rationale,
+        observations=list(finding.observations),
+        citations=list(finding.citations),
+        exhibits=[
+            Exhibit(
+                citation=block.header_id,
+                evidence_ids=list(block.evidence_ids),
+                row_count=block.row_count,
+                rows=block.text,
+            )
+            # Driven by `finding.citations`, which `_finalize_finding` has already
+            # stripped of anything unresolvable -- so an exhibit cannot exist for a
+            # citation the grounding gate refused.
+            for block in exhibits_for(slice_, finding.citations)
+        ],
+    )
+
+
 async def gather(
     report: BrokerReport,
     scope: Scope,
     model: AnalystModel,
     *,
+    run_id: str | None = None,
     hypothesis_id: str | None = None,
     hypothesis: str | None = None,
 ) -> HypothesisFindings:
@@ -444,21 +475,33 @@ async def gather(
       refute anything. That is the Analyst Agent's job, and `HypothesisFindings`
       carries no field for it.
 
+    Each finding is projected to a `DomainJudgement` before it leaves: the audit
+    fields stay here, and the rows behind each kept citation travel with it, so
+    the consumer can check a judgement without holding the evidence store.
+
     `hypothesis_id` defaults to the report's, which is the normal case; both it
     and `hypothesis` are accepted explicitly for a caller assessing a report
     against a hypothesis other than the one it was fetched for. The prose is
-    attacker-influenceable and is only carried, never rendered here.
+    attacker-influenceable and is only carried, never rendered here. Pass
+    `run_id` whenever it is known -- see the field's own note on why this
+    contract sets it here rather than at write time.
     """
     routed = route(report, scope)
+    slices = routed.slices()
     findings = await asyncio.gather(
-        *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in routed.slices())
+        *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
     )
     return HypothesisFindings(
         task_id=report.task_id,
+        run_id=run_id,
         hypothesis_id=hypothesis_id or report.hypothesis_id,
         hypothesis=hypothesis,
-        # `routed.slices()` is always the three domains in a fixed order, and
-        # `gather_finding` returns a finding for an empty slice rather than
-        # None -- so all three are always present, which the contract requires.
-        findings=list(findings),
+        # `slices` is always the three domains in a fixed order and
+        # `gather_finding` returns a finding for an empty slice rather than None,
+        # so all three are always present, which the contract requires. Zipped
+        # strictly: a finding paired with the wrong slice would attach another
+        # domain's rows to this domain's judgement.
+        findings=[
+            _as_judgement(f, s) for f, s in zip(findings, slices, strict=True)
+        ],
     )
