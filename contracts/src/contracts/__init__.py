@@ -15,8 +15,10 @@ from contracts.findings import (
 from contracts.reasoning import (
     AnalystDomain,
     AnalystVerdict,
+    Disposition,
     DomainFinding,
     HypothesisAssessment,
+    HypothesisFindings,
     InvestigationContext,
     Stance,
 )
@@ -52,9 +54,11 @@ __all__ = [
     "Assessment",
     "BrokerReport",
     "CimCategory",
+    "Disposition",
     "DomainFinding",
     "EdrAssessment",
     "HypothesisAssessment",
+    "HypothesisFindings",
     "InvestigationContext",
     "NdrAssessment",
     "Stance",

@@ -12,9 +12,18 @@ present: a recognisable stance. A generation with no stance raises
 
 from __future__ import annotations
 
+import logging
 import re
 
-from contracts import AnalystDomain, AnalystVerdict, DomainFinding, Stance
+from contracts import (
+    AnalystDomain,
+    AnalystVerdict,
+    Disposition,
+    DomainFinding,
+    Stance,
+)
+
+logger = logging.getLogger(__name__)
 
 _THINK_CLOSE = "</think>"
 
@@ -26,15 +35,16 @@ _STANCE_RE = re.compile(r"VERDICT\s*:\s*(.+)", re.IGNORECASE)
 # anywhere later in the text, including inside a citation like
 # `auth_events#1`, manufacturing confidence=1.0 from a reply that gave none.
 _CONFIDENCE_RE = re.compile(r"CONFIDENCE[^\n\d]*([0-9]*\.?[0-9]+)", re.IGNORECASE)
-# The five labels the prompt actually emits (`prompts.py:61-66` for a verdict,
-# `prompts.py:237-241` for a hypothesis-blind finding). Closed on purpose: the
-# terminator used to be a generic uppercase run, `[A-Z][A-Z ]+:`, which under
-# IGNORECASE matches any ordinary prose line ending in a colon -- so a rationale
-# reading "Note the following: ..." was cut at "Note the following", and an
-# un-bulleted observation line containing a colon ended the OBSERVATIONS capture
-# and took every later observation with it. Enumerating the labels is what makes
-# a colon in prose just a colon.
-_LABEL = r"(?:VERDICT|CONFIDENCE|RATIONALE|OBSERVATIONS|CITATIONS)"
+# Every label the prompts emit: `_VERDICT_FOOTER` for a hypothesis-shown verdict,
+# `_FINDING_FOOTER` for a blind finding. Closed on purpose: the terminator used to
+# be a generic uppercase run, `[A-Z][A-Z ]+:`, which under IGNORECASE matches any
+# ordinary prose line ending in a colon -- so a rationale reading "Note the
+# following: ..." was cut at "Note the following", and an un-bulleted observation
+# line containing a colon ended the OBSERVATIONS capture and took every later
+# observation with it. Enumerating the labels is what makes a colon in prose just
+# a colon. Closed also means it must be kept in step: a label added to a footer
+# and not added here silently stops terminating.
+_LABEL = r"(?:VERDICT|DISPOSITION|CONFIDENCE|RATIONALE|OBSERVATIONS|CITATIONS)"
 
 # A field stops at the next LABEL line, which the model may bold/emphasise
 # (`\n**OBSERVATIONS:**`). Allow leading emphasis/space before the label word.
@@ -83,6 +93,41 @@ def split_reasoning(generation: str) -> tuple[str | None, str]:
         reasoning = reasoning.replace("<think>", "").strip()
         return (reasoning or None), answer.strip()
     return None, generation.strip()
+
+
+_DISPOSITION_RE = re.compile(r"DISPOSITION\s*:\s*(.+)", re.IGNORECASE)
+
+# Ordered longest-discriminator-first for the same reason `_STANCE_KEYWORDS` is:
+# a line may mention more than one word, and the leading word is checked before
+# any substring scan. `inconclusive`/`insufficient`/`unclear` come first so that
+# "inconclusive, though some rows look suspicious" does not register as
+# `suspicious`.
+_DISPOSITION_KEYWORDS: tuple[tuple[str, Disposition], ...] = (
+    ("inconclusive", "inconclusive"),
+    ("insufficient", "inconclusive"),
+    ("unclear", "inconclusive"),
+    ("malicious", "malicious"),
+    ("suspicious", "suspicious"),
+    ("benign", "benign"),
+)
+
+
+def _normalise_disposition(raw: str) -> Disposition | None:
+    """Same leading-word-then-substring discipline as `_normalise_stance`.
+
+    Returns None rather than a default so the caller decides what a missing
+    disposition means -- `parse_finding` treats it as `inconclusive`, which is
+    the honest reading of "the analyst did not say".
+    """
+    text = raw.strip().lower()
+    leading = re.split(r"[\s,.;:\-]+", text, maxsplit=1)[0] if text else ""
+    for needle, disposition in _DISPOSITION_KEYWORDS:
+        if needle in leading:
+            return disposition
+    for needle, disposition in _DISPOSITION_KEYWORDS:
+        if needle in text:
+            return disposition
+    return None
 
 
 _STANCE_KEYWORDS: tuple[tuple[str, Stance], ...] = (
@@ -177,11 +222,13 @@ class FindingParseError(ValueError):
 def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
     """Parse a hypothesis-blind generation into a `DomainFinding`.
 
-    Unlike `parse_verdict`, there is no stance to recover here: "parseable"
-    means an OBSERVATIONS or CITATIONS block was found at all. Reuses the same
-    generic label regexes as `parse_verdict`; only the stance-specific
-    `_STANCE_RE`/`_normalise_stance` are skipped, because there is no stance at
-    this layer.
+    "Parseable" means an OBSERVATIONS or CITATIONS block was found at all --
+    deliberately laxer than `parse_verdict`, which raises without a stance. A
+    missing DISPOSITION is not fatal here: the observations are still grounded
+    evidence worth keeping, and `inconclusive` states the gap honestly rather
+    than discarding a good read over a missing label. A missing *stance* has no
+    such fallback, because `supports`/`refutes` cannot be defaulted without
+    inventing a position.
     """
     reasoning, raw_answer = split_reasoning(generation)
     answer = _strip_md(raw_answer)
@@ -207,8 +254,20 @@ def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
     rationale_match = _RATIONALE_RE.search(answer)
     rationale = rationale_match.group(1).strip() if rationale_match else ""
 
+    disposition_match = _DISPOSITION_RE.search(answer)
+    disposition = (
+        _normalise_disposition(disposition_match.group(1)) if disposition_match else None
+    )
+    if disposition is None:
+        logger.info(
+            "domain=%s | no recognisable DISPOSITION in analyst output; recording "
+            "'inconclusive' rather than assuming a reading",
+            domain,
+        )
+
     return DomainFinding(
         domain=domain,
+        disposition=disposition or "inconclusive",
         observations=observations,
         citations=citations,
         confidence=confidence,

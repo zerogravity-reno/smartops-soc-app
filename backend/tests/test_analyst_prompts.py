@@ -76,6 +76,21 @@ class TestFactsSystemPrompt:
         assert "OBSERVATIONS:" in p and "CONFIDENCE:" in p and "CITATIONS:" in p
         assert "UNTRUSTED" in p
 
+    def test_asks_for_a_disposition_on_the_evidence(self):
+        """Blind does not mean silent: the analyst judges what it sees."""
+        p = facts_system_prompt("network")
+        assert "DISPOSITION:" in p
+        for word in ("benign", "suspicious", "malicious", "inconclusive"):
+            assert word in p
+
+    def test_the_disposition_never_implies_a_hypothesis_exists(self):
+        """Naming one invites the model to guess at it -- the same reason the
+        bodies avoid saying "you are not told the hypothesis"."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain).lower()
+            assert "hypothesis" not in p
+            assert "supports" not in p and "refutes" not in p
+
     def test_augments_metis_persona_not_replaces_it(self):
         p = facts_system_prompt("network")
         assert "You are Metis" in p

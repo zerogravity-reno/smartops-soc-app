@@ -33,6 +33,27 @@ too little evidence must say so rather than guess, and the combiner treats it
 differently from a genuine `supports`/`refutes`.
 """
 
+Disposition = Literal["benign", "suspicious", "malicious", "inconclusive"]
+"""What a slice of evidence shows, judged without reference to any hypothesis.
+
+Deliberately a different axis from `Stance`, not a renaming of it. A `Stance` is
+relative to a claim -- and a claim shown to the analyst is a claim the analyst can
+be led by ("20 auth events means malicious" plus 20 auth events reliably yields
+`supports`). A `Disposition` is a reading of the rows themselves, which is
+answerable from the evidence alone and so cannot be anchored by a hypothesis the
+analyst never saw.
+
+The two are not convertible in either direction, and nothing here should try:
+benign evidence can refute one hypothesis and support another, and the mapping
+depends on the hypothesis. Making that call is the Analyst Agent's job, which is
+exactly the separation `HypothesisFindings` exists to preserve.
+
+`inconclusive` is first-class for the same reason it is in `Stance`: an analyst
+handed too little to read must say so rather than guess. It is also the default,
+so a finding that failed to parse or had no evidence cannot silently read as
+`benign`.
+"""
+
 
 class InvestigationContext(BaseModel):
     """The "why" handed to the analysts, alongside the fetched evidence.
@@ -99,28 +120,63 @@ class AnalystVerdict(BaseModel):
 
 
 class DomainFinding(BaseModel):
-    """One domain analyst's evidence-grounded findings, with no hypothesis in view.
+    """One domain analyst's judgement of its evidence, with no hypothesis in view.
 
-    Tier 1 of the hypothesis-blind pipeline (see
-    docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md): the
-    domain analyst never sees the hypothesis, so there is no `stance` here --
-    only what the evidence itself shows. A later Aggregator cycle turns a list
-    of these plus a hypothesis into an `AnalystVerdict` per domain.
+    The blind half of the pipeline (see
+    docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md). The
+    analyst never sees the hypothesis -- told "20 auth events means malicious",
+    a model shown 20 auth events reports malicious, and that is the hypothesis
+    talking, not the evidence.
+
+    Blind does **not** mean silent. The analyst still judges: it reads the rows
+    and says what they are. What it cannot do is judge the *hypothesis*, which
+    is why `disposition` is a reading of the evidence (benign/suspicious/
+    malicious) and not a `Stance` (supports/refutes). Those are different axes,
+    and only the second one can be led. `HypothesisFindings` attaches these
+    judgements to the hypothesis they were formed without.
     """
 
     domain: AnalystDomain
+    disposition: Disposition = Field(
+        default="inconclusive",
+        description=(
+            "What this domain's evidence shows, judged on its own terms. NOT a "
+            "position on any hypothesis -- see `Disposition`."
+        ),
+    )
     observations: list[str] = Field(default_factory=list)
     citations: list[str] = Field(
         default_factory=list,
         description="Evidence header ids the finding rests on, e.g. 'auth_events#1'.",
+    )
+    citation_evidence: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Each kept citation mapped to the `Evidence.id`s it resolves to, "
+            "frozen when the finding was finalised. Same role as "
+            "`AnalystVerdict.citation_evidence`: it is what makes the grounding "
+            "durable rather than merely enforced at runtime. Deferred in the "
+            "2026-08-24 artifact-contract work as speculative because nothing "
+            "consumed a `DomainFinding` yet; `HypothesisFindings` now does, and "
+            "the whole point of that contract is that its consumer can trace a "
+            "judgement to the rows behind it."
+        ),
     )
     confidence: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "Confidence that these observations are real and correctly grounded -- "
-            "not confidence in any stance; there is no stance at this layer."
+            "Confidence in `disposition`, given the evidence seen. While this "
+            "layer had no judgement to be confident about, the field measured "
+            "grounding quality instead ('these observations are real and "
+            "correctly grounded'); it now means what a consumer actually "
+            "weighs. Safe to redefine rather than version because "
+            "`gather_finding()` had no production callers, so no `DomainFinding` "
+            "has ever been persisted. A second field for grounding confidence "
+            "was considered and dropped: an 8B model asked for two calibrated "
+            "numbers returns one number twice, and grounding quality is now "
+            "separately observable from whether `citation_evidence` resolves."
         ),
     )
     rationale: str = ""
@@ -167,6 +223,70 @@ class HypothesisAssessment(BaseModel):
     overall_stance: Stance
     confidence: float = Field(ge=0.0, le=1.0)
     verdicts: list[AnalystVerdict] = Field(default_factory=list)
+
+
+class HypothesisFindings(BaseModel):
+    """Three blind domain judgements, attached to the hypothesis they never saw.
+
+    **The contract handed up to the Analyst Agent.** That agent is a separate
+    component, owned elsewhere; this is the boundary, and everything about the
+    shape follows from which side of it a decision belongs on.
+
+    What is here: what each domain's evidence shows, judged on the evidence
+    alone, and the means to verify that judgement against the rows behind it.
+
+    What is deliberately NOT here: any position on the hypothesis. There is no
+    `overall_stance` and no combiner, because deciding whether these findings
+    support or refute the hypothesis is the Analyst Agent's job. That absence is
+    the contract, not an omission -- `HypothesisAssessment` is the shape that
+    carries a decided stance, and it is a different shape for that reason.
+
+    The hypothesis appears here only as an id and, optionally, its prose. It is
+    the *attachment point*: the analysts formed their judgements without it, and
+    this is where the two are joined. A consumer that renders `hypothesis` into
+    a prompt MUST fence and escape it -- it is attacker-influenceable, the same
+    as `InvestigationContext.hypothesis`.
+
+    All three domains always appear in `findings`, including ones that got no
+    evidence. An empty domain is reported as `inconclusive` with no
+    observations, never silently omitted: "we looked and found nothing" and "we
+    did not look" are different facts, and the consumer cannot recover the
+    difference from a missing entry.
+    """
+
+    schema_version: int = 1
+    task_id: str = Field(
+        min_length=1,
+        description=(
+            "The `BrokerReport.task_id` these findings were drawn from -- the join "
+            "key back to `report.json`, and the prefix every `Evidence.id` in "
+            "`citation_evidence` is built from. See "
+            "docs/superpowers/specs/2026-08-25-evidence-link-contract-design.md."
+        ),
+    )
+    run_id: str | None = Field(
+        default=None,
+        description=(
+            "The timestamped run directory these findings belong to, stamped by "
+            "the persistence layer at write time. Optional for the same reason as "
+            "`HypothesisAssessment.run_id`: the analysis layer does not choose the "
+            "run directory, but the artifact should name it if it is copied out."
+        ),
+    )
+    hypothesis_id: str = Field(min_length=1)
+    hypothesis: str | None = Field(
+        default=None,
+        description=(
+            "The hypothesis prose, if the producer had it. Carried so the artifact "
+            "is self-describing rather than resolvable only against a live "
+            "`InvestigationContext`. Attacker-influenceable -- fence and escape it "
+            "before it reaches any prompt."
+        ),
+    )
+    findings: list[DomainFinding] = Field(
+        default_factory=list,
+        description="One per analysis domain, including domains that saw no evidence.",
+    )
 
     def total_prompt_tokens(self) -> int:
         return sum(v.prompt_tokens for v in self.verdicts)

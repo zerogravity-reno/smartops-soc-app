@@ -10,6 +10,7 @@ from smartops.subagent_analysts.analyze import (
     _finalize_finding,
     analyze,
     combine,
+    gather,
     gather_finding,
     run_one,
 )
@@ -75,8 +76,13 @@ class _DomainModel:
         self._by_domain = by_domain
 
     def invoke(self, system: str, user: str) -> AnalystResponse:
+        # Whitespace-normalised: the blind bodies wrap at a different column, so
+        # the network marker spans a line break in `facts_system_prompt` while
+        # sitting on one line in `system_prompt`. Matching the wrapped text is a
+        # property of the prompt's formatting, not of which domain it addresses.
+        flat = " ".join(system.split())
         for domain, gen in self._by_domain.items():
-            if self._MARKERS[domain] in system:
+            if self._MARKERS[domain] in flat:
                 return AnalystResponse(generation=gen, prompt_tokens=1, generation_tokens=1, stop_reason="stop")
         raise AssertionError("no domain matched the system prompt")
 
@@ -406,3 +412,150 @@ def test_a_verdict_records_which_evidence_its_citations_resolve_to():
 
     assert out.citations == ["connections#1"]
     assert out.citation_evidence == {"connections#1": ["t:siem:x:0"]}
+
+
+class _RecordingDomainModel(_DomainModel):
+    """`_DomainModel` that keeps every (system, user) pair it was handed.
+
+    The blindness test needs to inspect what actually reached the model, not
+    what a prompt builder returns in isolation.
+    """
+
+    def __init__(self, by_domain: dict[str, str]):
+        super().__init__(by_domain)
+        self.seen: list[tuple[str, str]] = []
+
+    def invoke(self, system: str, user: str) -> AnalystResponse:
+        self.seen.append((system, user))
+        return super().invoke(system, user)
+
+
+def _report_with_all_three_domains() -> BrokerReport:
+    siem = SubtaskResult(
+        task_id="t1:siem:1",
+        status=SubtaskStatus.OK,
+        findings=SiemFindings(
+            auth_events=[ResultSet(query="auth", row_count=1, rows=[{"user": "bostoll"}])],
+            dns_resolutions=[ResultSet(query="dns", row_count=1, rows=[{"query": "x.com"}])],
+            processes=[ResultSet(query="proc", row_count=1, rows=[{"process": "cmd.exe"}])],
+        ),
+    )
+    return BrokerReport(
+        task_id="t1",
+        hypothesis_id="h-42",
+        results=[siem],
+        classification=TaskClassification(tool_families=["siem"], rationale="x"),
+        cost=CostSummary(),
+    )
+
+
+class TestGather:
+    """`gather()` -- the blind path's producer, and the Analyst Agent's contract."""
+
+    _GENS = {
+        "identity": (
+            "</think>OBSERVATIONS:\n- one logon for bostoll [auth_events#1]\n"
+            "DISPOSITION: suspicious\nCONFIDENCE: 0.7\nCITATIONS: auth_events#1"
+        ),
+        "network": (
+            "</think>OBSERVATIONS:\n- a lookup of x.com [dns_resolutions#1]\n"
+            "DISPOSITION: benign\nCONFIDENCE: 0.4\nCITATIONS: dns_resolutions#1"
+        ),
+        "endpoint": (
+            "</think>OBSERVATIONS:\n- cmd.exe ran [processes#1]\n"
+            "DISPOSITION: malicious\nCONFIDENCE: 0.9\nCITATIONS: processes#1"
+        ),
+    }
+
+    async def test_the_hypothesis_never_reaches_the_model(self):
+        """The guarantee, tested end to end rather than per prompt builder.
+
+        `gather_finding` and `build_facts_user_turn` have no hypothesis
+        parameter, so this cannot fail without someone adding one -- which is
+        exactly the change this test exists to catch.
+        """
+        secret = "bostoll was brute-forced on BSTOLL-L"
+        model = _RecordingDomainModel(self._GENS)
+
+        await gather(
+            _report_with_all_three_domains(),
+            _scope(),
+            model,
+            hypothesis=secret,
+        )
+
+        assert len(model.seen) == 3
+        for system, user in model.seen:
+            assert secret not in system and secret not in user
+            assert "hypothesis" not in system.lower()
+            assert "hypothesis" not in user.lower()
+            assert "brute" not in user.lower()
+
+    async def test_carries_all_three_domains_and_their_dispositions(self):
+        findings = await gather(_report_with_all_three_domains(), _scope(), _DomainModel(self._GENS))
+
+        assert findings.task_id == "t1"
+        assert findings.hypothesis_id == "h-42"
+        assert {f.domain: f.disposition for f in findings.findings} == {
+            "identity": "suspicious",
+            "network": "benign",
+            "endpoint": "malicious",
+        }
+
+    async def test_the_contract_carries_no_hypothesis_level_stance(self):
+        """The absence is the contract -- that call belongs to the Analyst Agent."""
+        findings = await gather(_report_with_all_three_domains(), _scope(), _DomainModel(self._GENS))
+
+        assert not hasattr(findings, "overall_stance")
+        assert not any(hasattr(f, "stance") for f in findings.findings)
+
+    async def test_a_domain_with_no_evidence_is_reported_not_omitted(self):
+        """"we looked and found nothing" and "we did not look" are different facts."""
+        siem = SubtaskResult(
+            task_id="t1:siem:1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(
+                auth_events=[ResultSet(query="auth", row_count=1, rows=[{"user": "bostoll"}])],
+            ),
+        )
+        report = BrokerReport(
+            task_id="t1",
+            hypothesis_id="h-42",
+            results=[siem],
+            classification=TaskClassification(tool_families=["siem"], rationale="x"),
+            cost=CostSummary(),
+        )
+        findings = await gather(report, _scope(), _DomainModel(self._GENS))
+
+        assert {f.domain for f in findings.findings} == {"identity", "network", "endpoint"}
+        network = next(f for f in findings.findings if f.domain == "network")
+        assert network.disposition == "inconclusive"
+        assert "no network evidence" in network.rationale
+
+    async def test_citations_are_frozen_to_their_evidence_ids(self):
+        """The consumer must be able to trace a judgement without recomputing routing."""
+        siem = SubtaskResult(
+            task_id="t1:siem:1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(
+                auth_events=[
+                    ResultSet(
+                        query="auth",
+                        row_count=1,
+                        rows=[{"user": "bostoll"}],
+                        evidence_id="t1:siem:1:0",
+                    )
+                ],
+            ),
+        )
+        report = BrokerReport(
+            task_id="t1",
+            hypothesis_id="h-42",
+            results=[siem],
+            classification=TaskClassification(tool_families=["siem"], rationale="x"),
+            cost=CostSummary(),
+        )
+        findings = await gather(report, _scope(), _DomainModel(self._GENS))
+
+        identity = next(f for f in findings.findings if f.domain == "identity")
+        assert identity.citation_evidence == {"auth_events#1": ["t1:siem:1:0"]}

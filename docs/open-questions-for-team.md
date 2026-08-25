@@ -78,6 +78,38 @@ Three ways it could go, in the order they were considered: raise it with her
 before building; build it and reconcile with her epic afterwards; or stop at
 Tier 1 and leave Tier 2 entirely to the Analyst Agent epic.
 
+**Resolved 2026-08-25 — none of the three, because the question was framed
+wrong.** It assumed Tier 2 was one component that someone had to own. It is two,
+and the boundary between them is exactly the ownership line:
+
+- **The Analyst Agent** decides whether the findings support or refute the
+  hypothesis. Not ours, not built here, and `combine()` is a local stand-in for
+  it rather than a competitor to it.
+- **The contract fed into it** is ours: the three domain judgements, each formed
+  without sight of the hypothesis, attached to that hypothesis and handed up.
+
+That is `HypothesisFindings`, landed additively alongside `HypothesisAssessment`.
+It carries no `overall_stance` and has no combiner, and that absence is the
+contract rather than an omission.
+
+So Tier 2 as originally written — "an Aggregator that emits the
+`HypothesisAssessment` directly, deleting `combine()`" — is not ours to build,
+and the deletion question does not arise. `combine()` stays until the real
+Analyst Agent replaces it.
+
+**Still to raise with Mariam,** now that there is something concrete to show:
+does `HypothesisFindings` carry what her Analyst Agent needs? Specifically the
+`Disposition` vocabulary (`benign`/`suspicious`/`malicious`/`inconclusive`), and
+whether she wants the evidence rows inline or is content resolving
+`citation_evidence` against the evidence store herself.
+
+**The anchoring premise below is separately dead** (re-measured 2026-08-25, see
+that handover), but it turns out not to matter for this: blindness is worth
+keeping on its own terms — an analyst told "20 auth events means malicious" and
+shown 20 auth events reports malicious, and that is the prompt talking. The
+re-measurement showed no *arm-level* effect between blind and shown; it did not
+show that feeding a model its expected answer is safe.
+
 **Also worth flagging when this is raised:** Tier 2's empirical case is
 currently unproven. The anchoring-bias demo that justified the redesign turned
 out to rest on a projector bug (`_format_auth_event` dropping

@@ -1,13 +1,24 @@
-"""Run the three domain analysts and combine their verdicts.
+"""Run the three domain analysts, on either of two paths.
 
-`run_one` is one analyst end to end: pack its evidence, build the prompt, invoke
-the model, parse the verdict, with one bounded re-ask if the model's first reply
-carried no parseable verdict block. `analyze` runs all three concurrently and a
-thin `combine` rolls their stances into one `HypothesisAssessment`.
+Both paths pack a domain's evidence, build a prompt, invoke the model, parse the
+reply, and re-ask once if the first reply carried no parseable block. They differ
+in what the analyst is shown and therefore in what it may conclude:
 
-Failure is contained per analyst: a call that errors or stays unparseable becomes
-an INCONCLUSIVE verdict that says why, so one domain never sinks the whole
-assessment -- the same discipline the Broker applies to a failing subagent.
+- **Hypothesis-shown** — `run_one` -> `AnalystVerdict` (a `Stance` on the
+  hypothesis), rolled up by `analyze` + `combine` into a `HypothesisAssessment`.
+- **Hypothesis-blind** — `gather_finding` -> `DomainFinding` (a `Disposition` on
+  the evidence), assembled by `gather` into `HypothesisFindings`, the contract
+  handed up to the Analyst Agent. There is no combiner on this path: deciding
+  supports/refutes is the Analyst Agent's job, not this layer's.
+
+The blind path's guarantee is structural rather than disciplinary --
+`gather_finding` and `build_facts_user_turn` have no hypothesis parameter, so
+there is nothing to leak.
+
+Failure is contained per analyst on both paths: a call that errors or stays
+unparseable becomes an `inconclusive` result that says why, so one domain never
+sinks the whole run -- the same discipline the Broker applies to a failing
+subagent.
 """
 
 from __future__ import annotations
@@ -21,6 +32,7 @@ from contracts import (
     BrokerReport,
     DomainFinding,
     HypothesisAssessment,
+    HypothesisFindings,
     InvestigationContext,
     Scope,
     Stance,
@@ -394,11 +406,59 @@ def _finalize_finding(
     observations, inline_ids = _resolve_observation_citations(
         list(finding.observations), valid_ids
     )
+    citations = sorted(set(kept) | inline_ids)
     return finding.model_copy(
         update={
-            "citations": sorted(set(kept) | inline_ids),
+            "citations": citations,
             "observations": observations,
+            # Freeze the resolution now, exactly as `_finalize` does for a
+            # verdict. Without it a stored finding's citation resolves only by
+            # recomputing the routing, and `HypothesisFindings` exists so its
+            # consumer can trace a judgement to rows without doing that.
+            "citation_evidence": {c: list(valid_ids.get(c, ())) for c in citations},
             "prompt_tokens": prompt_tokens,
             "generation_tokens": generation_tokens,
         }
+    )
+
+
+async def gather(
+    report: BrokerReport,
+    scope: Scope,
+    model: AnalystModel,
+    *,
+    hypothesis_id: str | None = None,
+    hypothesis: str | None = None,
+) -> HypothesisFindings:
+    """Run the three blind analysts and attach their judgements to the hypothesis.
+
+    The blind-path counterpart to `analyze()`, and the producer of the contract
+    handed up to the Analyst Agent. Same routing, same concurrency, same
+    per-analyst failure containment -- the differences are the two that matter:
+
+    - **No `InvestigationContext`.** `gather_finding` takes `(model, scope,
+      slice_)` and `build_facts_user_turn` takes `(scope, evidence_text)`, so
+      the hypothesis cannot reach an analyst even by mistake. It is not passed
+      in and then withheld; there is no parameter to pass it through.
+    - **No `combine()`.** Nothing here decides whether the findings support or
+      refute anything. That is the Analyst Agent's job, and `HypothesisFindings`
+      carries no field for it.
+
+    `hypothesis_id` defaults to the report's, which is the normal case; both it
+    and `hypothesis` are accepted explicitly for a caller assessing a report
+    against a hypothesis other than the one it was fetched for. The prose is
+    attacker-influenceable and is only carried, never rendered here.
+    """
+    routed = route(report, scope)
+    findings = await asyncio.gather(
+        *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in routed.slices())
+    )
+    return HypothesisFindings(
+        task_id=report.task_id,
+        hypothesis_id=hypothesis_id or report.hypothesis_id,
+        hypothesis=hypothesis,
+        # `routed.slices()` is always the three domains in a fixed order, and
+        # `gather_finding` returns a finding for an empty slice rather than
+        # None -- so all three are always present, which the contract requires.
+        findings=list(findings),
     )

@@ -220,3 +220,51 @@ class TestParseFinding:
                 assert parse_finding(out, domain="identity").observations == [
                     "kept [auth_events#1]"
                 ]
+
+
+class TestFindingDisposition:
+    """The blind analyst judges its evidence -- blind does not mean silent."""
+
+    def _finding(self, disposition_line: str):
+        out = (
+            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            f"{disposition_line}\n"
+            "CONFIDENCE: 0.6\nCITATIONS: auth_events#1"
+        )
+        return parse_finding(out, domain="identity")
+
+    def test_each_disposition_parses(self):
+        for word in ("benign", "suspicious", "malicious", "inconclusive"):
+            assert self._finding(f"DISPOSITION: {word}").disposition == word
+
+    def test_a_missing_disposition_is_inconclusive_not_benign(self):
+        out = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCITATIONS: auth_events#1"
+        assert parse_finding(out, domain="identity").disposition == "inconclusive"
+
+    def test_a_missing_disposition_does_not_discard_the_observations(self):
+        """Laxer than parse_verdict on purpose: the grounded rows are still worth keeping."""
+        out = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCITATIONS: auth_events#1"
+        assert parse_finding(out, domain="identity").observations == ["x [auth_events#1]"]
+
+    def test_a_hedge_that_mentions_another_disposition_reads_the_leading_word(self):
+        # Same failure `_normalise_stance` guards against: a substring-only scan
+        # would see "suspicious" here and mis-record a judgement the model
+        # explicitly declined to make.
+        f = self._finding("DISPOSITION: inconclusive, though some rows look suspicious")
+        assert f.disposition == "inconclusive"
+
+    def test_markdown_emphasis_does_not_break_it(self):
+        assert self._finding("**DISPOSITION:** malicious").disposition == "malicious"
+
+    def test_an_unrecognisable_disposition_falls_back_to_inconclusive(self):
+        assert self._finding("DISPOSITION: probably fine?").disposition == "inconclusive"
+
+    def test_disposition_terminates_a_preceding_rationale(self):
+        # DISPOSITION joined `_LABEL`, so it must actually end a field.
+        out = (
+            "</think>OBSERVATIONS:\n- x [auth_events#1]\n"
+            "RATIONALE: kept.\nDISPOSITION: benign\nCITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert f.rationale == "kept."
+        assert f.disposition == "benign"
