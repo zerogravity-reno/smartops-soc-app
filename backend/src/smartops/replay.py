@@ -15,11 +15,11 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from strands import tool
 
-from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily
+from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily, answer_tool_name
 from smartops.broker import DEFAULT_RUNS_DIR, RUNS_DIR_ENV_VAR, SubagentRunner
 from smartops.budget import Budget, ModelChoice
 from smartops.subagents import (
@@ -31,9 +31,54 @@ from smartops.subagents import (
 
 logger = logging.getLogger(__name__)
 
+_ANSWER_TOOL_NAMES = frozenset(answer_tool_name(family) for family in get_args(ToolFamily))
+"""The structured-output tool names, derived rather than listed.
 
-def load_evidence_from_file(path: Path | str) -> list[Evidence]:
-    """Load captured evidence records from a JSON file (e.g. `evidence.json`)."""
+`answer_tool_name()` is the one formula for these (Strands derives the tool name
+from the answer model's `__name__`), and `_EvidenceCollector` already skips them
+at capture time by comparing against it. Deriving here too means the read-side
+filter cannot drift out of step with the write-side skip -- two hand-written
+copies of "SiemAnswer", "VtAnswer", ... is exactly how that drift starts.
+"""
+
+
+def is_model_authored(tool_name: Any) -> bool:
+    """Whether a recorded call is the model's own structured answer, not a tool result.
+
+    Strands implements `structured_output_model` as a tool, so the model's answer
+    arrives at `AfterToolCallEvent` indistinguishable in shape from a real tool
+    result. `_EvidenceCollector` skips it at capture now, but 22 of the 26 runs
+    saved under `.smartops/runs/` predate that skip and hold 60 such records
+    between them -- so the read side has to know them too.
+    """
+    return tool_name in _ANSWER_TOOL_NAMES
+
+
+def load_evidence_from_file(
+    path: Path | str, *, include_model_answers: bool = False
+) -> list[Evidence]:
+    """Load captured evidence records from a JSON file (e.g. `evidence.json`).
+
+    **Model-authored answers are filtered out by default.** `contracts.Evidence`
+    is raw tool output, assembled by code and never authored by a model, and
+    `_EvidenceCollector` enforces that at capture time -- but only since the
+    `answer_tool` skip landed. 22 of the 26 runs on disk predate it and hold 60
+    `SiemAnswer`/`VtAnswer` records between them, and they do not sit there
+    harmlessly: `ReplayToolset` indexes by tool name, so `build_replay_tools`
+    minted a replay tool literally called `VtAnswer` that handed a subagent the
+    model's own prior answer as though a tool had returned it, and
+    `evidence_by_id()` would resolve a citation to the model quoting itself.
+
+    **Filtered on read, never deleted from the artifact**, and that is the whole
+    design. `evidence_id()` is `f"{task_id}:{index}"`, so removing a record from
+    `evidence.json` renumbers every record after it and silently re-targets every
+    stored citation -- the precise failure the evidence-link contract exists to
+    prevent. Ids travel inside each record and are never recomputed from
+    position, so dropping one on read re-targets nothing.
+
+    Pass `include_model_answers=True` for a forensic read of exactly what is on
+    disk. Nothing in the analysis or replay path should.
+    """
     file_path = Path(path)
     if not file_path.exists():
         raise FileNotFoundError(f"Evidence file not found: {file_path}")
@@ -43,9 +88,27 @@ def load_evidence_from_file(path: Path | str) -> list[Evidence]:
         raise ValueError(f"Expected evidence file to contain a list, got {type(raw_data).__name__}")
 
     evidence_items: list[Evidence] = []
+    skipped: list[str] = []
     for item in raw_data:
-        if isinstance(item, dict):
-            evidence_items.append(Evidence.model_validate(item))
+        if not isinstance(item, dict):
+            continue
+        record = Evidence.model_validate(item)
+        raw = record.raw if isinstance(record.raw, dict) else {}
+        if not include_model_answers and is_model_authored(raw.get("tool")):
+            skipped.append(record.id)
+            continue
+        evidence_items.append(record)
+
+    if skipped:
+        # Named, not silent: this is a property of the artifact, and an operator
+        # comparing a record count against `report.json` needs to know why they
+        # differ.
+        logger.warning(
+            "%s | dropped %d model-authored answer record(s) on read, not evidence: %s",
+            file_path,
+            len(skipped),
+            ", ".join(skipped),
+        )
     return evidence_items
 
 
@@ -173,6 +236,25 @@ class ReplayToolset:
                     })
                 elif isinstance(item, dict):
                     self.records.append(item)
+
+        # Filtered here as well as in `load_evidence_from_file`, and the two are
+        # not redundant: they guard different doors. The loader covers everything
+        # read off disk; this covers a caller that built the toolset from raw
+        # dicts or from a collector, which never touches the loader at all. It
+        # matters most for THIS class, because `build_replay_tools` mints one
+        # replay tool per recorded tool name -- so an unfiltered `VtAnswer`
+        # record does not merely sit in the index, it becomes a tool a replayed
+        # subagent can call and be handed the model's own prior answer. One
+        # shared predicate rather than two copies of the name list.
+        answers = [r for r in self.records if is_model_authored(r.get("tool"))]
+        if answers:
+            logger.warning(
+                "dropped %d model-authored answer record(s) from the replay index, "
+                "not tool output: %s",
+                len(answers),
+                ", ".join(sorted({str(r.get("tool")) for r in answers})),
+            )
+            self.records = [r for r in self.records if not is_model_authored(r.get("tool"))]
 
     def match(self, tool_name: str, query: str | None = None, **kwargs: Any) -> Any:
         """Find the best recorded tool result for a given tool name and query/args.

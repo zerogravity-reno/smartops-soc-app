@@ -373,3 +373,107 @@ class TestEvidenceById:
 
         assert len(by_id) == 1
         assert "appears more than once" in caplog.text
+
+
+class TestModelAuthoredAnswersAreFilteredOnRead:
+    """`Evidence` is raw tool output, never model-authored.
+
+    `_EvidenceCollector` enforces that at capture, but 22 of the 26 runs on disk
+    predate that skip and hold 60 `SiemAnswer`/`VtAnswer` records. They are not
+    inert: `build_replay_tools` mints one replay tool per recorded tool name, so
+    an unfiltered `VtAnswer` record becomes a tool that hands a subagent the
+    model's own prior answer as though a tool had returned it.
+    """
+
+    @staticmethod
+    def _file(tmp_path):
+        ev = tmp_path / "evidence.json"
+        ev.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "t:vt:x:0",
+                        "tool_family": "vt",
+                        "raw": {
+                            "tool": "vt_lookup_domain",
+                            "query": "coinhive.com",
+                            "result": {"malicious": 11},
+                        },
+                        "collected_at": "2026-08-20T13:36:00Z",
+                    },
+                    {
+                        "id": "t:vt:x:1",
+                        "tool_family": "vt",
+                        "raw": {
+                            "tool": "VtAnswer",
+                            "query": None,
+                            "result": {"text": "Successfully validated VtAnswer structured output"},
+                        },
+                        "collected_at": "2026-08-20T13:36:01Z",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return ev
+
+    def test_the_answer_record_is_dropped(self, tmp_path):
+        loaded = load_evidence_from_file(self._file(tmp_path))
+
+        assert [e.id for e in loaded] == ["t:vt:x:0"]
+
+    def test_surviving_ids_are_not_renumbered(self, tmp_path):
+        """The reason this is a read-time filter and not a purge.
+
+        `evidence_id()` is `f"{task_id}:{index}"`. Deleting a record from the
+        artifact renumbers every record after it and silently re-targets every
+        stored citation. Ids travel inside the record, so dropping one on read
+        re-targets nothing -- and that is what this asserts.
+        """
+        ev = tmp_path / "evidence.json"
+        records = [
+            {
+                "id": f"t:siem:x:{i}",
+                "tool_family": "siem",
+                "raw": {"tool": "SiemAnswer" if i == 1 else "splunk_run_query", "result": {}},
+                "collected_at": "2026-08-20T13:36:00Z",
+            }
+            for i in range(4)
+        ]
+        ev.write_text(json.dumps(records), encoding="utf-8")
+
+        loaded = load_evidence_from_file(ev)
+
+        # index 1 is gone; 2 and 3 keep their original ids rather than sliding down.
+        assert [e.id for e in loaded] == ["t:siem:x:0", "t:siem:x:2", "t:siem:x:3"]
+
+    def test_a_forensic_read_can_still_see_everything(self, tmp_path):
+        loaded = load_evidence_from_file(self._file(tmp_path), include_model_answers=True)
+
+        assert [e.id for e in loaded] == ["t:vt:x:0", "t:vt:x:1"]
+
+    def test_it_says_what_it_dropped(self, tmp_path, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="smartops.replay"):
+            load_evidence_from_file(self._file(tmp_path))
+
+        assert "t:vt:x:1" in caplog.text
+        assert "not evidence" in caplog.text
+
+    def test_the_replay_index_never_offers_an_answer_tool(self, tmp_path):
+        """The consequence that made this worth fixing rather than noting."""
+        from smartops.replay import ReplayToolset
+
+        # Straight from raw dicts: this path never touches the loader.
+        toolset = ReplayToolset(
+            [
+                {"tool": "vt_lookup_domain", "query": "coinhive.com", "result": {"malicious": 11}},
+                {"tool": "VtAnswer", "query": None, "result": {"text": "model's own answer"}},
+            ]
+        )
+
+        assert {r["tool"] for r in toolset.records} == {"vt_lookup_domain"}
+        # And asking for it by name is an honest cache miss, not the model's answer.
+        missed = toolset.match("VtAnswer")
+        assert missed.get("replay") is True
