@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -807,3 +808,131 @@ class TestGatherCarriesTheRetrievalRecord:
         # assessment that has no `covered` field at all.
         assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
         assert findings.retrieval.not_covered == ["connections"]
+
+
+class TestTheTwoGatesStayDistinguishable:
+    """Characterization tests, written before the shared-helper extraction.
+
+    `_finalize` and `_finalize_finding` apply the same discipline and differ in
+    exactly three ways: the observations field they read, the test for "this
+    verdict claimed something", and the note appended on a downgrade. A helper
+    that unifies any of those looks like a tidy-up and is a behaviour change, so
+    each difference is pinned here in full rather than by substring.
+    """
+
+    def _verdict(self, stance, citations):
+        return AnalystVerdict(
+            domain="identity",
+            stance=stance,
+            confidence=0.95,
+            rationale="a confident read.",
+            citations=list(citations),
+        )
+
+    def _finding(self, disposition, citations):
+        return DomainFinding(
+            domain="identity",
+            disposition=disposition,
+            confidence=0.95,
+            rationale="a confident read.",
+            citations=list(citations),
+        )
+
+    def test_the_verdict_note_is_the_verdict_note(self):
+        out = _finalize(self._verdict("supports", ["auth_events#9"]), {}, 1, 1)
+        assert out.rationale == (
+            "a confident read. "
+            "[ungrounded: no cited evidence resolved to the provided evidence]"
+        )
+
+    def test_the_finding_note_is_the_finding_note(self):
+        out = _finalize_finding(self._finding("malicious", ["auth_events#9"]), {}, 1, 1)
+        assert out.rationale == "a confident read. [downgraded: no cited evidence resolved]"
+
+    def test_a_benign_disposition_is_decisive_too(self):
+        """The finding gate tests `!= inconclusive`, not membership of a
+        decisive pair. "benign, and I am 95% sure" rests on evidence just as
+        much as "malicious" does, and an uncitable benign call is the one most
+        likely to close an investigation."""
+        out = _finalize_finding(self._finding("benign", []), {}, 1, 1)
+        assert out.disposition == "inconclusive"
+        assert out.confidence <= 0.3
+
+    def test_a_suspicious_disposition_is_decisive_too(self):
+        out = _finalize_finding(self._finding("suspicious", []), {}, 1, 1)
+        assert out.disposition == "inconclusive"
+
+    def test_the_drop_log_says_which_path_dropped_it(self, caplog):
+        """Two paths log the same event, and the artifact is the only place the
+        difference shows. Reading a log that says "a finding" tells you which
+        analyst tier you are looking at."""
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
+            _finalize(self._verdict("supports", ["auth_events#9"]), {}, 1, 1)
+        assert "dropped 1 invented citation(s): auth_events#9" in caplog.text
+        assert "from a finding" not in caplog.text
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
+            _finalize_finding(self._finding("malicious", ["auth_events#9"]), {}, 1, 1)
+        assert "dropped 1 invented citation(s) from a finding: auth_events#9" in caplog.text
+
+
+class TestTheTwoOrchestratorsStayDistinguishable:
+    """Characterization tests for `run_one` vs `gather_finding`, same reason.
+
+    Their failure paths return different types with different wording, and the
+    wording is what an operator reads out of `assessment.json` / `findings.json`
+    when a run went wrong.
+    """
+
+    @staticmethod
+    def _slice(domain="network"):
+        return DomainSlice(
+            domain=domain,
+            siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[{"dest": "1.2.3.4"}]))],
+        )
+
+    def test_the_verdicts_empty_slice_rationale_names_the_hypothesis(self):
+        """The shown path can say what it could not assess. The blind path
+        cannot -- it does not know a hypothesis exists."""
+        v = run_one(_SequenceModel([]), _ctx(), _scope(), DomainSlice(domain="network"))
+        assert v.rationale == (
+            "no network evidence was retrieved, so the hypothesis cannot be "
+            "assessed from this domain"
+        )
+
+    def test_the_findings_empty_slice_rationale_does_not(self):
+        f = gather_finding(_SequenceModel([]), _scope(), DomainSlice(domain="network"))
+        assert f.rationale == "no network evidence was retrieved"
+        assert "hypothesis" not in f.rationale
+
+    def test_the_unparseable_rationales_name_what_was_being_parsed(self):
+        v = run_one(_SequenceModel(["no", "still no"]), _ctx(), _scope(), self._slice())
+        f = gather_finding(_SequenceModel(["no", "still no"]), _scope(), self._slice())
+        assert v.rationale == "network analyst produced no parseable verdict after a re-ask"
+        assert f.rationale == "network analyst produced no parseable finding after a re-ask"
+
+    def test_the_reasoning_trace_comes_from_the_first_reply_not_the_retry(self):
+        """`split_reasoning` is applied to `response`, the first generation --
+        the retry's trace is discarded. Easy to get backwards when the two
+        invocations are folded into one helper."""
+        first = "<think>first thoughts</think> no verdict"
+        v = run_one(_SequenceModel([first, "<think>second</think> still no"]),
+                    _ctx(), _scope(), self._slice())
+        assert v.reasoning_trace == "first thoughts"
+
+        f = gather_finding(_SequenceModel([first, "<think>second</think> still no"]),
+                           _scope(), self._slice())
+        assert f.reasoning_trace == "first thoughts"
+
+    def test_both_bill_both_calls_on_a_reask(self):
+        v = run_one(_SequenceModel(["no", "still no"]), _ctx(), _scope(), self._slice())
+        f = gather_finding(_SequenceModel(["no", "still no"]), _scope(), self._slice())
+        assert v.prompt_tokens > 0 and v.generation_tokens > 0
+        assert f.prompt_tokens > 0 and f.generation_tokens > 0
+
+    def test_a_failed_first_call_bills_nothing(self):
+        v = run_one(_RaisingModel(), _ctx(), _scope(), self._slice())
+        f = gather_finding(_RaisingModel(), _scope(), self._slice())
+        assert (v.prompt_tokens, v.generation_tokens) == (0, 0)
+        assert (f.prompt_tokens, f.generation_tokens) == (0, 0)

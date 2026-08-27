@@ -1,8 +1,11 @@
 """Run the three domain analysts, on either of two paths.
 
 Both paths pack a domain's evidence, build a prompt, invoke the model, parse the
-reply, and re-ask once if the first reply carried no parseable block. They differ
-in what the analyst is shown and therefore in what it may conclude:
+reply, and re-ask once if the first reply carried no parseable block. That
+machinery is `_invoke_with_one_reask`, and the grounding gate applied to what
+comes back is `_apply_grounding`; each is defined once and used by both paths,
+so a change to either cannot land on one path and miss the other. They differ in
+what the analyst is shown and therefore in what it may conclude:
 
 - **Hypothesis-shown** — `run_one` -> `AnalystVerdict` (a `Stance` on the
   hypothesis), rolled up by `analyze` + `combine` into a `HypothesisAssessment`.
@@ -26,6 +29,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from contracts import (
     AnalystVerdict,
@@ -109,6 +115,147 @@ _REASK = (
 )
 
 
+@dataclass(frozen=True)
+class _Attempt:
+    """What one bounded analyst call produced: a parsed reply, or why not.
+
+    Carries the token counts either way, because a reply that never parsed was
+    still generated and still billed.
+    """
+
+    parsed: Any | None
+    prompt_tokens: int
+    generation_tokens: int
+    rationale: str | None = None
+    reasoning_trace: str | None = None
+
+
+def _invoke_with_one_reask(
+    model: AnalystModel,
+    *,
+    domain: str,
+    system: str,
+    user: str,
+    reask: str,
+    parse: Callable[..., Any],
+    parse_error: type[Exception],
+    call_label: str,
+    noun: str,
+) -> _Attempt:
+    """Invoke one analyst, re-asking once if the reply carries no parseable block.
+
+    Shared by both paths. It takes `user` **already built** rather than a context
+    to build it from: the blind path's guarantee is that no hypothesis parameter
+    exists anywhere on it, and a shared helper that could accept a context would
+    turn that structural property into a promise about what callers pass. The
+    prompt is assembled by each caller, from its own builder, and only the
+    finished string crosses this boundary.
+
+    Returns a `_Attempt` rather than a result object because the two paths return
+    different contracts with different fields; building them is the caller's job.
+    """
+    try:
+        response = model.invoke(system, user)
+    except Exception as exc:
+        logger.warning("domain=%s | %s model call failed", domain, call_label, exc_info=True)
+        return _Attempt(
+            None, 0, 0, f"{domain} analyst could not run: {type(exc).__name__}: {exc}"
+        )
+
+    prompt_tokens, generation_tokens = response.prompt_tokens, response.generation_tokens
+    try:
+        return _Attempt(parse(response.generation, domain=domain), prompt_tokens, generation_tokens)
+    except parse_error:
+        logger.info("domain=%s | first reply had no parseable %s, re-asking once", domain, noun)
+
+    try:
+        retry = model.invoke(system, user + reask)
+        # Bill both calls: the failed first attempt was still generated and paid for.
+        prompt_tokens += retry.prompt_tokens
+        generation_tokens += retry.generation_tokens
+        return _Attempt(parse(retry.generation, domain=domain), prompt_tokens, generation_tokens)
+    except parse_error:
+        logger.warning("domain=%s | re-ask still produced no parseable %s", domain, noun)
+        # The FIRST reply's trace, not the retry's: it is the one that shows what
+        # the analyst was thinking when it read the evidence.
+        reasoning, _ = split_reasoning(response.generation)
+        return _Attempt(
+            None,
+            prompt_tokens,
+            generation_tokens,
+            f"{domain} analyst produced no parseable {noun} after a re-ask",
+            reasoning,
+        )
+    except Exception as exc:
+        logger.warning("domain=%s | re-ask call failed", domain, exc_info=True)
+        return _Attempt(
+            None,
+            prompt_tokens,
+            generation_tokens,
+            f"{domain} analyst re-ask failed: {type(exc).__name__}: {exc}",
+        )
+
+
+def _apply_grounding(
+    reply: Any,
+    valid_ids: dict[str, list[str]],
+    prompt_tokens: int,
+    generation_tokens: int,
+    *,
+    observations_field: str,
+    stance_field: str,
+    decisive: Callable[[Any], bool],
+    drop_log: str,
+    downgrade_log: str,
+    note: str,
+) -> Any:
+    """The anti-hallucination gate, shared by both paths.
+
+    - Drop any citation that does not resolve to a header id we actually emitted
+      (the model can only legitimately cite what it was shown).
+    - Check observation-level citations too, and count their valid ids toward
+      grounding. Filtering only the trailing CITATIONS: line let a fabricated
+      `[auth_events#7]` reach the operator, and -- the converse -- downgraded a
+      reply that had cited correctly inline but omitted the CITATIONS: line.
+    - Freeze what each kept citation resolves to, so the gate's decision survives
+      into the artifact instead of being reproducible only by re-running `route()`
+      with identical ordering.
+    - Downgrade a decisive reply whose citations ALL fail to resolve, capping
+      confidence. A decisive claim with nothing behind it is not one we let stand.
+
+    The two paths differ in exactly three ways, and all three are parameters
+    rather than branches: which field holds the observations, what counts as
+    decisive, and what the appended note says. `inconclusive` is exempt on both,
+    needing no citation.
+    """
+    kept = [c for c in reply.citations if c in valid_ids]
+    dropped = [c for c in reply.citations if c not in valid_ids]
+    if dropped:
+        logger.warning(drop_log, reply.domain, len(dropped), ", ".join(dropped))
+
+    observations, inline_ids = _resolve_observation_citations(
+        list(getattr(reply, observations_field)), valid_ids
+    )
+    citations = sorted(set(kept) | inline_ids)
+
+    updates: dict = {
+        "citations": citations,
+        observations_field: observations,
+        "citation_evidence": {c: list(valid_ids.get(c, ())) for c in citations},
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+    }
+
+    current = getattr(reply, stance_field)
+    if decisive(current) and not citations:
+        logger.warning(downgrade_log, reply.domain, current)
+        updates[stance_field] = "inconclusive"
+        updates["confidence"] = min(reply.confidence, 0.3)
+        updates["rationale"] = f"{reply.rationale} [{note}]".strip() if reply.rationale else note
+
+    return reply.model_copy(update=updates)
+
+
 def run_one(
     model: AnalystModel,
     context: InvestigationContext,
@@ -130,57 +277,31 @@ def run_one(
             rationale=f"no {domain} evidence was retrieved, so the hypothesis cannot be assessed from this domain",
         )
 
-    system = system_prompt(domain)
     evidence_text, valid_ids, _, _ = pack_evidence(slice_)
-    user = build_user_turn(context, scope, evidence_text)
-
-    try:
-        response = model.invoke(system, user)
-    except Exception as exc:
-        logger.warning("domain=%s | analyst model call failed", domain, exc_info=True)
-        return AnalystVerdict(
-            domain=domain,
-            stance="inconclusive",
-            confidence=0.0,
-            rationale=f"{domain} analyst could not run: {type(exc).__name__}: {exc}",
+    attempt = _invoke_with_one_reask(
+        model,
+        domain=domain,
+        system=system_prompt(domain),
+        user=build_user_turn(context, scope, evidence_text),
+        reask=_REASK,
+        parse=parse_verdict,
+        parse_error=VerdictParseError,
+        call_label="analyst",
+        noun="verdict",
+    )
+    if attempt.parsed is not None:
+        return _finalize(
+            attempt.parsed, valid_ids, attempt.prompt_tokens, attempt.generation_tokens
         )
-
-    prompt_tokens, generation_tokens = response.prompt_tokens, response.generation_tokens
-    try:
-        verdict = parse_verdict(response.generation, domain=domain)
-        return _finalize(verdict, valid_ids, prompt_tokens, generation_tokens)
-    except VerdictParseError:
-        logger.info("domain=%s | first reply had no verdict block, re-asking once", domain)
-
-    try:
-        retry = model.invoke(system, user + _REASK)
-        # Bill both calls: the failed first attempt was still generated and paid for.
-        prompt_tokens += retry.prompt_tokens
-        generation_tokens += retry.generation_tokens
-        verdict = parse_verdict(retry.generation, domain=domain)
-        return _finalize(verdict, valid_ids, prompt_tokens, generation_tokens)
-    except VerdictParseError:
-        logger.warning("domain=%s | re-ask still produced no parseable verdict", domain)
-        reasoning, _ = split_reasoning(response.generation)
-        return AnalystVerdict(
-            domain=domain,
-            stance="inconclusive",
-            confidence=0.0,
-            rationale=f"{domain} analyst produced no parseable verdict after a re-ask",
-            reasoning_trace=reasoning,
-            prompt_tokens=prompt_tokens,
-            generation_tokens=generation_tokens,
-        )
-    except Exception as exc:
-        logger.warning("domain=%s | re-ask call failed", domain, exc_info=True)
-        return AnalystVerdict(
-            domain=domain,
-            stance="inconclusive",
-            confidence=0.0,
-            rationale=f"{domain} analyst re-ask failed: {type(exc).__name__}: {exc}",
-            prompt_tokens=prompt_tokens,
-            generation_tokens=generation_tokens,
-        )
+    return AnalystVerdict(
+        domain=domain,
+        stance="inconclusive",
+        confidence=0.0,
+        rationale=attempt.rationale,
+        reasoning_trace=attempt.reasoning_trace,
+        prompt_tokens=attempt.prompt_tokens,
+        generation_tokens=attempt.generation_tokens,
+    )
 
 
 def _finalize(
@@ -198,49 +319,25 @@ def _finalize(
       capped confidence -- a decisive claim with no evidence behind it is not one we
       let stand. `inconclusive` needs no citation.
     """
-    kept = [c for c in verdict.citations if c in valid_ids]
-    dropped = [c for c in verdict.citations if c not in valid_ids]
-    if dropped:
-        logger.warning(
-            "domain=%s | dropped %d invented citation(s): %s",
-            verdict.domain,
-            len(dropped),
-            ", ".join(dropped),
-        )
-
-    # Observation-level citations are checked too, and their valid ids count
-    # toward grounding. Filtering only the trailing CITATIONS: line let a
-    # fabricated `[auth_events#7]` reach the operator and assessment.json, and
-    # -- the converse -- downgraded a verdict that had cited correctly inline
-    # but omitted the CITATIONS: line entirely.
-    observations, inline_ids = _resolve_observation_citations(
-        list(verdict.key_observations), valid_ids
+    return _apply_grounding(
+        verdict,
+        valid_ids,
+        prompt_tokens,
+        generation_tokens,
+        observations_field="key_observations",
+        stance_field="stance",
+        # A `Stance` is supports/refutes/inconclusive, so this is the decisive
+        # pair spelled out rather than `!= "inconclusive"`. Kept explicit because
+        # the blind path's `Disposition` has four members and needs the other
+        # test; see `_finalize_finding`.
+        decisive=lambda stance: stance in ("supports", "refutes"),
+        drop_log="domain=%s | dropped %d invented citation(s): %s",
+        downgrade_log=(
+            "domain=%s | %s verdict has no resolvable citation; "
+            "downgrading to inconclusive"
+        ),
+        note="ungrounded: no cited evidence resolved to the provided evidence",
     )
-    kept = sorted(set(kept) | inline_ids)
-
-    updates: dict = {
-        "citations": kept,
-        # Freeze what each kept citation resolves to. The gate already dropped
-        # the fabrications; recording the survivors is what makes that decision
-        # survive into assessment.json, instead of being reproducible only by
-        # re-running route() with identical ordering.
-        "citation_evidence": {c: list(valid_ids.get(c, [])) for c in kept},
-        "key_observations": observations,
-        "prompt_tokens": prompt_tokens,
-        "generation_tokens": generation_tokens,
-    }
-    if verdict.stance in ("supports", "refutes") and not kept:
-        logger.warning(
-            "domain=%s | %s verdict has no resolvable citation; downgrading to inconclusive",
-            verdict.domain,
-            verdict.stance,
-        )
-        note = "ungrounded: no cited evidence resolved to the provided evidence"
-        updates["stance"] = "inconclusive"
-        updates["confidence"] = min(verdict.confidence, 0.3)
-        updates["rationale"] = f"{verdict.rationale} [{note}]".strip() if verdict.rationale else note
-
-    return verdict.model_copy(update=updates)
 
 
 def combine(verdicts: list[AnalystVerdict]) -> tuple[Stance, float]:
@@ -338,53 +435,32 @@ def gather_finding(
             rationale=f"no {domain} evidence was retrieved",
         )
 
-    system = facts_system_prompt(domain)
     evidence_text, valid_ids, _, _ = pack_evidence(slice_)
-    user = build_facts_user_turn(scope, evidence_text)
-
-    try:
-        response = model.invoke(system, user)
-    except Exception as exc:
-        logger.warning("domain=%s | facts model call failed", domain, exc_info=True)
-        return DomainFinding(
-            domain=domain,
-            confidence=0.0,
-            rationale=f"{domain} analyst could not run: {type(exc).__name__}: {exc}",
+    attempt = _invoke_with_one_reask(
+        model,
+        domain=domain,
+        system=facts_system_prompt(domain),
+        # `build_facts_user_turn` takes no context, and the finished string is all
+        # that reaches the shared helper -- there is no parameter to leak through.
+        user=build_facts_user_turn(scope, evidence_text),
+        reask=_FINDING_REASK,
+        parse=parse_finding,
+        parse_error=FindingParseError,
+        call_label="facts",
+        noun="finding",
+    )
+    if attempt.parsed is not None:
+        return _finalize_finding(
+            attempt.parsed, valid_ids, attempt.prompt_tokens, attempt.generation_tokens
         )
-
-    prompt_tokens, generation_tokens = response.prompt_tokens, response.generation_tokens
-    try:
-        finding = parse_finding(response.generation, domain=domain)
-        return _finalize_finding(finding, valid_ids, prompt_tokens, generation_tokens)
-    except FindingParseError:
-        logger.info("domain=%s | first reply had no parseable finding, re-asking once", domain)
-
-    try:
-        retry = model.invoke(system, user + _FINDING_REASK)
-        prompt_tokens += retry.prompt_tokens
-        generation_tokens += retry.generation_tokens
-        finding = parse_finding(retry.generation, domain=domain)
-        return _finalize_finding(finding, valid_ids, prompt_tokens, generation_tokens)
-    except FindingParseError:
-        logger.warning("domain=%s | re-ask still produced no parseable finding", domain)
-        reasoning, _ = split_reasoning(response.generation)
-        return DomainFinding(
-            domain=domain,
-            confidence=0.0,
-            rationale=f"{domain} analyst produced no parseable finding after a re-ask",
-            reasoning_trace=reasoning,
-            prompt_tokens=prompt_tokens,
-            generation_tokens=generation_tokens,
-        )
-    except Exception as exc:
-        logger.warning("domain=%s | re-ask call failed", domain, exc_info=True)
-        return DomainFinding(
-            domain=domain,
-            confidence=0.0,
-            rationale=f"{domain} analyst re-ask failed: {type(exc).__name__}: {exc}",
-            prompt_tokens=prompt_tokens,
-            generation_tokens=generation_tokens,
-        )
+    return DomainFinding(
+        domain=domain,
+        confidence=0.0,
+        rationale=attempt.rationale,
+        reasoning_trace=attempt.reasoning_trace,
+        prompt_tokens=attempt.prompt_tokens,
+        generation_tokens=attempt.generation_tokens,
+    )
 
 
 def _finalize_finding(
@@ -406,44 +482,25 @@ def _finalize_finding(
 
     `inconclusive` is exempt, needing no citation, same as in `_finalize`.
     """
-    kept = [c for c in finding.citations if c in valid_ids]
-    dropped = [c for c in finding.citations if c not in valid_ids]
-    if dropped:
-        logger.warning(
-            "domain=%s | dropped %d invented citation(s) from a finding: %s",
-            finding.domain,
-            len(dropped),
-            ", ".join(dropped),
-        )
-    observations, inline_ids = _resolve_observation_citations(
-        list(finding.observations), valid_ids
-    )
-    citations = sorted(set(kept) | inline_ids)
-    updates: dict = {
-        "citations": citations,
-        "observations": observations,
-        # Freeze the resolution now, exactly as `_finalize` does for a
-        # verdict. Without it a stored finding's citation resolves only by
-        # recomputing the routing, and `HypothesisFindings` exists so its
-        # consumer can trace a judgement to rows without doing that.
-        "citation_evidence": {c: list(valid_ids.get(c, ())) for c in citations},
-        "prompt_tokens": prompt_tokens,
-        "generation_tokens": generation_tokens,
-    }
-    if finding.disposition != "inconclusive" and not citations:
-        logger.warning(
+    return _apply_grounding(
+        finding,
+        valid_ids,
+        prompt_tokens,
+        generation_tokens,
+        observations_field="observations",
+        stance_field="disposition",
+        # NOT the decisive pair: a `Disposition` is benign/suspicious/malicious/
+        # inconclusive, and "benign, and I am 95% sure" rests on evidence exactly
+        # as much as "malicious" does -- an uncitable benign call is the one most
+        # likely to close an investigation.
+        decisive=lambda disposition: disposition != "inconclusive",
+        drop_log="domain=%s | dropped %d invented citation(s) from a finding: %s",
+        downgrade_log=(
             "domain=%s | disposition '%s' had no citation that resolves; "
-            "downgrading to inconclusive",
-            finding.domain,
-            finding.disposition,
-        )
-        note = "downgraded: no cited evidence resolved"
-        updates["disposition"] = "inconclusive"
-        updates["confidence"] = min(finding.confidence, 0.3)
-        updates["rationale"] = (
-            f"{finding.rationale} [{note}]".strip() if finding.rationale else note
-        )
-    return finding.model_copy(update=updates)
+            "downgrading to inconclusive"
+        ),
+        note="downgraded: no cited evidence resolved",
+    )
 
 
 def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:

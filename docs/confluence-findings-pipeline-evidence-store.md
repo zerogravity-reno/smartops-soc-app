@@ -121,9 +121,9 @@ Nine steps. **One involves a model.**
 | 4 | `packing.pack_evidence()` — `packing.py:167` | Renders a slice under a 20k token budget, shrinking the row cap down a ladder (20 → 10 → 5 → 3 → 1 → header-only) instead of truncating mid-block. **Returns the cap it settled on**, so `exhibits_for` renders at the same rung. |
 | 5 | `packing.blocks()` — `packing.py:55` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:149`) and `exhibits_for` (`:119`) are thin readings of it. |
 | 6 | **the analyst** | Reads the packed evidence — the projected rows, rendered as text — and authors a `Disposition`, observations, and citations. **The only model-authored step.** It reasons over those rows; what it never sees is the raw tool output behind them, and it can cite only the ids code minted. |
-| 7 | `analyze._finalize_finding()` — `analyze.py:390` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, downgrades an ungrounded decisive disposition to `inconclusive`, and **freezes `citation_evidence`**. |
-| 8 | `analyze._as_judgement()` — `analyze.py:449` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
-| 9 | `analyze.gather()` — `analyze.py:508` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:564`). Assembles — does not decide. |
+| 7 | `analyze._finalize_finding()` — `analyze.py:463` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, downgrades an ungrounded decisive disposition to `inconclusive`, and **freezes `citation_evidence`**. |
+| 8 | `analyze._as_judgement()` — `analyze.py:503` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
+| 9 | `analyze.gather()` — `analyze.py:562` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:618`). Assembles — does not decide. |
 
 Steps 6–9 belong to the analyst tier and appear here because the gate at step 7 and the
 projection at step 8 are what make a *stored* judgement traceable.
@@ -362,7 +362,7 @@ could not have detected it.
 
 ### 10.6 `combine()` has no confidence floor — **OPEN (dead path)**
 
-`combine()` (`analyze.py:246`) has no floor back to `inconclusive`: a lone `supports` at 0.01
+`combine()` (`analyze.py:340`) has no floor back to `inconclusive`: a lone `supports` at 0.01
 confidence returns `('supports', 0.01)`, a decided stance at essentially no confidence. It sits
 on the hypothesis-shown path production no longer calls — nothing in `main.py` reaches it, and
 the live path is `gather()`, which has no combiner by contract. **Dead code that would mislead
@@ -457,7 +457,7 @@ of §10.4 and is also open.
 | `backend/src/smartops/subagent_analysts/routing.py` | `route()` (`:95`) — CIM category + entity kind → three `DomainSlice`s; the uncategorised fan-out; the no-projector warning (`:132`). |
 | `backend/src/smartops/subagent_analysts/formatting.py` | Per-record-type field projectors; `format_result_set` (`:265`) and its `# {category}#{index} · rows=N` header — **no query, deliberately**; `format_vt_verdicts` (`:304`); `_sanitise()`. |
 | `backend/src/smartops/subagent_analysts/packing.py` | `blocks()` (`:55`) — the single source of order and numbering; `pack_evidence()` (`:167`); `valid_citation_ids()` (`:149`); `exhibits_for()` (`:119`); `fitted_row_cap()` (`:209`). |
-| `backend/src/smartops/subagent_analysts/analyze.py` | `_finalize_finding()` (`:390`), `_as_judgement()` (`:449`), `gather()` (`:508`), `_retrieval_summary()` (`:564`) on the live path; `combine()` (`:246`) on the dormant one. |
+| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:130`) and `_apply_grounding()` (`:196`) — the orchestration and the grounding gate, each defined once and shared by both paths; `_finalize_finding()` (`:463`), `_as_judgement()` (`:503`), `gather()` (`:562`), `_retrieval_summary()` (`:618`) on the live path; `combine()` (`:340`) on the dormant one. |
 | `backend/src/smartops/broker.py` | `save_run_artifacts()` (`:1079`) and `load_run_artifacts()` (`:1132`); `RUNS_DIR_ENV_VAR` / `DEFAULT_RUNS_DIR` (`:1075`). |
 | `backend/src/smartops/replay.py` | `is_model_authored()` (`:45`), `load_evidence_from_file()` (`:57`), `load_evidence_from_run()` (`:115`), `evidence_by_id()` (`:147`), `_newest_run_in()` (`:176`), `ReplayToolset` (`:213`), `create_replay_subagent_runner()` (`:359`). |
 | `backend/src/smartops/main.py` | `_print_findings()` (`:421`) / `_persist_findings()` (`:482`) write the operator view and `findings.json`; `hypothesis_id` is hardcoded at `:666` (§10.1). |
