@@ -53,7 +53,7 @@ from smartops.broker import (
 )
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
-from smartops.subagent_analysts.analyze import analyze, gather
+from smartops.subagent_analysts.analyze import gather
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
 from smartops.telemetry import configure_telemetry

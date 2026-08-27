@@ -13,7 +13,10 @@ Layout:
 - `prompts`    -- domain system prompts + the fenced, escaped user turn
 - `model`      -- the boto3 `invoke_model` client and prompt template
 - `parse`      -- split reasoning from the verdict and parse it
-- `analyze`    -- run the three analysts and combine their verdicts
+- `analyze`    -- run the three analysts; `gather` assembles their findings
+                 into `HypothesisFindings` (the live path), while `analyze` +
+                 `combine` roll verdicts into a `HypothesisAssessment` on the
+                 hypothesis-shown path that production no longer calls
 """
 
 from __future__ import annotations

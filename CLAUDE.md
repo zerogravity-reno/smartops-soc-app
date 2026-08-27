@@ -40,8 +40,12 @@ must `cd` into each package. That was true when the config lived only in
 `backend/`; it was moved to the root afterwards. Prefer this file for the test
 command.
 
-No `filterwarnings` is configured anywhere, so `DeprecationWarning`s from the SDK
-pass silently — they will not surface as test failures.
+`filterwarnings` at `pyproject.toml:35-39` promotes `DeprecationWarning`,
+`PendingDeprecationWarning` and `UserWarning` to **errors**, so an SDK deprecation
+fails the suite rather than scrolling by. Other categories are not promoted — the
+suite currently emits `RuntimeWarning`s from `MCPClient.stop` and passes. To
+silence a third-party warning, add a targeted `ignore:<regex>:<Category>` line
+rather than weakening the three.
 
 ## Scope discipline
 

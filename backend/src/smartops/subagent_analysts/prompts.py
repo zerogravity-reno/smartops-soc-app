@@ -206,7 +206,9 @@ def build_user_turn(
 # unchanged from the hypothesis-framed bodies above; only the framing and the
 # final grounding rule (a clean read must be reported, not left blank) differ.
 #
-# Not yet called from analyze() -- see the plan's "Sequencing Decision".
+# Called from `analyze.gather_finding`, which is the live production path.
+# (This said "not yet called from analyze()" from when the blind tier landed
+# unwired beside the shown one; production moved onto it afterwards.)
 # ---------------------------------------------------------------------------
 
 # Facts-only security block, same as _SECURITY_BLOCK but without mentioning hypothesis

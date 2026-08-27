@@ -111,9 +111,13 @@ class CaseInfo(BaseModel):
     Neither is recoverable from an older run directory. `BrokerReport.scope` was
     only added in `430df12`, so every report saved before it has `scope: None`
     while `route()` needs one (`Scope.entities` is `min_length=1`). And the
-    hypothesis PROSE is persisted nowhere at all, in old reports or new ones --
-    `report.json` and `assessment.json` carry only `hypothesis_id`, which for a
-    CLI run is the literal string `"cli-hypothesis"`.
+    hypothesis PROSE is not in a broker artifact: `report.json` and
+    `assessment.json` carry only `hypothesis_id`, which for a CLI run is the
+    literal string `"cli-hypothesis"`. (It is no longer persisted *nowhere*, as
+    this said: `HypothesisFindings.hypothesis` now carries it into
+    `findings.json`. That is written by the analyst tier at the end of a live
+    run, though, so it is not available when replaying an older run directory --
+    which is what this function has to do.)
 
     So both are reconstructed, and the artifact records that they were: a
     reconstructed input is a datum about the measurement, not a detail of it.
