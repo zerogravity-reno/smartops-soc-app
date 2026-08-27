@@ -204,8 +204,49 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
 
         category = by_query.get(_normalise(call.query)) if call.query else None
         if category in _CIM_BUCKETS:
+            # The tag decides. But `_infer_cim_category` can read a category
+            # straight off the SPL, and when the two disagree the model has
+            # mislabelled its own query -- which routes real rows to a domain
+            # analyst whose prompt tells it that data is not its business, while
+            # the analyst that wanted them never sees them. Nothing downstream
+            # can detect that, because every row is intact and every id is
+            # valid, so compute the disagreement here and say so. Reporting it
+            # rather than overriding: the category is the one thing the model is
+            # asked to contribute, and inverting that precedence is a design
+            # change, not a bug fix.
+            contradiction = _infer_cim_category(call.query)
+            if contradiction in _CIM_BUCKETS and contradiction != category:
+                logger.warning(
+                    "task_id=%s tool=%s | model tagged this query '%s' but its SPL "
+                    "infers '%s'; filing under the tag. Rows will reach the '%s' "
+                    "analyst and not the '%s' one -- query=%r",
+                    task_id,
+                    call.tool,
+                    category,
+                    contradiction,
+                    category,
+                    contradiction,
+                    (call.query or "")[:200],
+                )
             buckets[category].append(result_set)
         else:
+            if call.query and by_query and category is None:
+                # Distinct from "the model never tagged it": the model DID report
+                # queries, and none of them matched this one. `_query_of` picks
+                # the longest search-looking string out of a tool input, so a
+                # tool taking two query-shaped arguments can hand back the wrong
+                # one -- and that string is the join key this lookup uses. The
+                # rows survive either way; the model's attribution does not.
+                logger.warning(
+                    "task_id=%s tool=%s | the model reported %d tagged quer%s but none "
+                    "matched this call, so its tag is lost; the recovered query may be "
+                    "the wrong string. query=%r",
+                    task_id,
+                    call.tool,
+                    len(by_query),
+                    "y" if len(by_query) == 1 else "ies",
+                    (call.query or "")[:200],
+                )
             inferred = _infer_cim_category(call.query)
             if inferred in _CIM_BUCKETS:
                 logger.info(

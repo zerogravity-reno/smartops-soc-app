@@ -1,4 +1,5 @@
 import json
+import logging
 """Projecting captured tool output into typed findings.
 
 The two-layer payload only works if neither layer can forge the other: the model
@@ -464,3 +465,97 @@ class TestTheModelsOwnAnswerIsNotEvidence:
             assert evidence_ids, f"{header} resolves to nothing"
             for eid in evidence_ids:
                 assert collected[eid] == "splunk_run_query"
+
+
+class TestATagTheQueryContradicts:
+    """The model's tag wins, and the disagreement is reported rather than hidden.
+
+    `_infer_cim_category` can read a category straight off the SPL, but it is
+    only consulted when the tag is absent or invalid. So a mislabelled query
+    routes real rows to the wrong domain analyst -- `auth_events` goes to
+    identity, whose prompt tells it it cannot see network activity -- while every
+    row stays intact and every citation id stays valid. Nothing downstream can
+    notice, which is why the disagreement is computed here.
+
+    This module's own docstring has claimed to pin "the behaviour when the two
+    disagree" since it was written. It did not; these are that test.
+    """
+
+    DNS_TAGGED_AS_AUTH = "index=botsv3 sourcetype=stream:dns coinhive.com"
+
+    def _project(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="smartops.projection"):
+            return project_siem(
+                [call(self.DNS_TAGGED_AS_AUTH, [{"query": "coinhive.com"}])],
+                [QueryRun(query=self.DNS_TAGGED_AS_AUTH, category="auth_events")],
+                task_id="t",
+            )
+
+    def test_the_tag_still_decides(self, caplog):
+        """Routing is unchanged. Overriding the tag would move rows between
+        analysts, which is a design change and not this warning's business."""
+        findings = self._project(caplog)
+
+        assert findings.auth_events and findings.auth_events[0].row_count == 1
+        assert findings.dns_resolutions == []
+
+    def test_the_disagreement_is_warned_about(self, caplog):
+        self._project(caplog)
+
+        assert "auth_events" in caplog.text
+        assert "dns_resolutions" in caplog.text
+        assert "infers" in caplog.text
+
+    def test_agreement_is_not_warned_about(self, caplog):
+        """The warning has to be quiet on the common path or it is noise."""
+        with caplog.at_level(logging.WARNING, logger="smartops.projection"):
+            findings = project_siem(
+                [call(self.DNS_TAGGED_AS_AUTH, [{"query": "coinhive.com"}])],
+                [QueryRun(query=self.DNS_TAGGED_AS_AUTH, category="dns_resolutions")],
+                task_id="t",
+            )
+
+        assert findings.dns_resolutions
+        assert caplog.text == ""
+
+    def test_a_tag_on_a_query_that_infers_nothing_is_not_warned_about(self, caplog):
+        """Most queries infer nothing. Absence of an inference is not a contradiction."""
+        with caplog.at_level(logging.WARNING, logger="smartops.projection"):
+            findings = project_siem(
+                [call("index=botsv3 | stats count", [{"count": 4}])],
+                [QueryRun(query="index=botsv3 | stats count", category="processes")],
+                task_id="t",
+            )
+
+        assert findings.processes
+        assert caplog.text == ""
+
+
+class TestALostTagIsDistinguishedFromAnAbsentOne:
+    """"The model never tagged it" and "we could not find the tag it wrote" are
+    different failures, and used to look identical.
+
+    `_query_of` picks the longest search-looking string out of a tool input, and
+    that string is the join key `project_siem` looks the tag up by. A tool taking
+    two query-shaped arguments can hand back the wrong one, at which point the
+    model's attribution is silently discarded. The rows survive either way.
+    """
+
+    def test_a_reported_tag_that_matches_nothing_warns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="smartops.projection"):
+            findings = project_siem(
+                [call("index=botsv3 sourcetype=wineventlog", [{"a": 1}])],
+                [QueryRun(query="something else entirely", category="processes")],
+                task_id="t",
+            )
+
+        assert findings.uncategorised or findings.processes
+        assert "none matched this call" in caplog.text
+
+    def test_no_reported_queries_at_all_is_silent(self, caplog):
+        """Nothing was lost -- the model simply did not tag. Already logged at info."""
+        with caplog.at_level(logging.WARNING, logger="smartops.projection"):
+            findings = project_siem([call("index=botsv3 | head 1", [{"a": 1}])], [], task_id="t")
+
+        assert findings.uncategorised[0].rows == [{"a": 1}]
+        assert caplog.text == ""
