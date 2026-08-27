@@ -245,8 +245,10 @@ set is about **2% of the pack.**
 
 ## 9. Verified facts
 
-Executed on 2026-08-26 against the 26 runs under `.smartops/runs/`. Method, and the one
-figure that came out different from the document it was inherited from: Appendix C.
+Executed on 2026-08-26 against the 26 runs under `.smartops/runs/`, and **re-run on
+2026-08-27 with no Splunk and no model reachable** — every figure below still holds.
+Method, and the one figure that came out different from the document it was inherited
+from: Appendix C.
 
 | Fact | Result |
 |---|---|
@@ -258,6 +260,10 @@ figure that came out different from the document it was inherited from: Appendix
 | answer tools reachable in a replay index | **0** across all 26 runs; the read door drops all 60 |
 | `report.trace_id` on a fresh run | populated — `5c5dc4e16617d30965e23d1a1a71574c` |
 | *analysis* artifacts exercising the link contract | **none yet** — 0 of 10 carry a top-level `task_id`, 0 carry any `citation_evidence` (§11) |
+| stored result sets, and how many carry an `evidence_id` | **875** = 846 SIEM result sets + 29 VT verdicts; **72** carry one, all in `cli-20260825T100434` (§11) |
+| a stored category the row set's own query contradicts | **0** of the 545 result sets whose query infers a category at all (§10.7) |
+| tool records reachable for replay | **788** across 23 runs, **0** of them model-authored |
+| runs that carry a `scope`, and so can be routed without reconstructing one | **1 of 26** — `BrokerReport.scope` postdates `430df12`, so replaying an older run means rebuilding its scope |
 
 ---
 
@@ -389,6 +395,12 @@ but a mislabelled query is no longer silent. A related warning fires when the ta
 misses entirely while the model *did* report queries — that is a mis-picked join key
 (`_query_of` selects the longest search-looking string in a tool input), which is a different
 thing from an untagged query and used to be indistinguishable from one.
+
+**Measured across the whole history: it has not happened yet.** Of the 875 stored result
+sets, 545 carry a query from which `_infer_cim_category` derives a category at all, and in
+**0** of those does the derived category contradict the bucket the rows were filed under
+(§9). So the warning is silent on every run on disk — which is what makes it worth having:
+the first time it fires, it will be a real event and not noise.
 
 Whether code should *override* the tag when it can read the truth is a live question and is
 **not** settled here: the category is the one thing the model is asked to contribute (§6), and
@@ -529,12 +541,37 @@ the refusal.
 
 Every figure in §9 came from **executing** the production readers (`load_run_artifacts`,
 `load_evidence_from_run`, `route`, `pack_evidence`, `valid_citation_ids`, `answer_tool_name`)
-against the 26 runs under `.smartops/runs/` on 2026-08-26 — not from reading the code or
-quoting an earlier document. Per-figure method is in
-`docs/sessions/handover_2026-08-26_confluence-page-written.md`; the scripts were not committed
-because nothing in production calls them and rewriting them from that method is a ten-minute
-job. Any `--scripted` run used for a figure points `SMARTOPS_RUNS_DIR` somewhere disposable —
-**never** under `.smartops/runs/`.
+against the 26 runs under `.smartops/runs/` — not from reading the code or quoting an earlier
+document. Per-figure method is in
+`docs/sessions/handover_2026-08-26_confluence-page-written.md`. Any `--scripted` run used for
+a figure points `SMARTOPS_RUNS_DIR` somewhere disposable — **never** under `.smartops/runs/`.
+
+**Re-run on 2026-08-27, with neither Splunk nor a model reachable.** The saved runs are the
+whole fixture, so the absence of both is a property of the check rather than a limit on it:
+
+| Check | Result |
+|---|---|
+| `uv run pytest` | **764 passed**, 0 failed |
+| `docs/check_anchors.py` | 83 anchors verified against the symbol named beside them, 0 stale |
+| `smartops-blind-compare --run cli-20260825T100434 --pack-only` | all three domains packed from real rows at ~2.1k / 2.2k / 3.6k estimated tokens, none truncated, every header id resolving to a real `Evidence.id` |
+| `load_run_artifacts` over every saved run | 26 of 26 |
+| `load_evidence_from_run` + `ReplayToolset` over every case | 23 of 23, 788 records indexed, 0 model-authored |
+| a `--scripted` broker run into a disposable `SMARTOPS_RUNS_DIR` | artifact written to a timestamped path with `latest.txt`, read back through `load_run_artifacts`, `trace_id` populated |
+
+**What that run did not exercise: a live analyst model call.** There were no working model
+credentials, so the pack-only gate built the exact prompt an analyst would receive but nothing
+sent it. The orchestration and the grounding gate behind it are covered by tests, not by a
+live call, and this page should not be read as saying otherwise.
+
+**One thing the Splunk-less run demonstrated positively.** With the MCP server unreachable the
+siem step came back `rejected`, carrying the reason, with `completed=false` **and**
+`confirmed_empty=false` — the distinction between "we looked and found nothing" and "we never
+got an answer" held, which is the one that must never collapse.
+
+The anchor checker is now committed at `docs/check_anchors.py` rather than living in a session
+scratchpad. It asserts that each anchored line *defines* the symbol named beside it; the
+earlier version only checked the line existed, and reported success while every `analyze.py`
+anchor on this page had slid onto an unrelated docstring.
 
 **One inherited figure did not survive re-measurement.** The claim was *"22 of 26 artifacts
 load through a shape fallback, not a tag"*; measured, it is **23 of 26**, with the sharper
