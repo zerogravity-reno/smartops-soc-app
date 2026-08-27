@@ -205,16 +205,37 @@ own resolves only against a recomputed routing — so a change in routing order 
 re-target every stored citation. Three fields close that gap:
 
 ```
-DomainJudgement.citations     "auth_events#1"                    what the analyst wrote
-  └─► citation_evidence       {"auth_events#1": ["cli-…:siem:tooluse_…:2"]}
-                                                                 frozen at finalisation
-        └─► ResultSet.evidence_id   "cli-…:siem:tooluse_…:2"      the record it came from
-              └─► Evidence.id       in evidence.json             the raw tool output
+DomainFinding.citations           "auth_events#1"              what the analyst wrote
+  └─► DomainFinding.citation_evidence
+          {"auth_events#1": ["cli-…:siem:tooluse_…:2"]}        frozen at finalisation
+        └─► ResultSet.evidence_id  "cli-…:siem:tooluse_…:2"    the record it came from
+              └─► Evidence.id      in evidence.json            the raw tool output
 
 full id shape:  {task_id}:{family}:{toolUseId}:{index}
                     │        │         │          │
               hypothesis  domain   dispatch   position in the capture list
 ```
+
+**On the wire the link changes carrier, and this is easy to get wrong.**
+`_as_judgement` projects a `DomainFinding` onto a **`DomainJudgement`**, which is what
+`HypothesisFindings` and therefore `findings.json` actually hold — and `DomainJudgement`
+has **no `citation_evidence` field**. It carries `citations` plus one **`Exhibit` per kept
+citation**, and the ids ride on `Exhibit.evidence_ids`:
+
+```
+DomainJudgement.citations   ["auth_events#1", …]               the kept citations
+  └─► DomainJudgement.exhibits[n]
+        ├── citation        "auth_events#1"                    which citation this is
+        ├── evidence_ids    ["cli-…:siem:tooluse_…:2"]         the same link, on the wire
+        ├── rows            the projected text the analyst read
+        ├── row_count       so a rows=0 exhibit is legible as one
+        └── query           the SPL, withheld from the analyst, restored here
+```
+
+So `citation_evidence` is the **internal** freeze, kept with the audit fields; the exhibit
+is what the Analyst Agent receives, and it is strictly better for that consumer — a
+pointer needs the store, whereas the exhibit carries the rows with it. An earlier version
+of this page drew `citation_evidence` hanging off `DomainJudgement`, which does not exist.
 
 Three properties are load-bearing:
 
@@ -264,6 +285,7 @@ from: Appendix C.
 | a stored category the row set's own query contradicts | **0** of the 545 result sets whose query infers a category at all (§10.7) |
 | tool records reachable for replay | **788** across 23 runs, **0** of them model-authored |
 | runs that carry a `scope`, and so can be routed without reconstructing one | **1 of 26** — `BrokerReport.scope` postdates `430df12`, so replaying an older run means rebuilding its scope |
+| the link contract, on a live blind run over saved evidence (2026-08-27) | **10 citations kept, 10 exhibits, 14 of 14 `Evidence.id`s resolving** against the run's 72-record `evidence.json` (§11) |
 
 ---
 
@@ -419,14 +441,21 @@ The 2026-08-24 audit recorded three gaps blocking closure of **"Findings Pipelin
 | 2 — 22 of 24 reports fail to load | **closed** — **26 of 26 load** (§9) |
 | 3 — artifact linking unstarted | **closed in the contracts** — `ResultSet.evidence_id`, `HypothesisAssessment.task_id`/`run_id`, `AnalystVerdict.citation_evidence`, `DomainFinding.citation_evidence`, `Exhibit.evidence_ids` all present, and `report.json` carries an `evidence_id` per result set. **Caveat below.** |
 
-> ⚠️ **The caveat on gap 3, measured rather than assumed.** No analysis artifact on disk
-> exercises the contract: all 10 (nine `assessment.json`, one `findings.json`) predate the
-> fields — **0 carry a top-level `task_id`, 0 carry any `citation_evidence`.** The fetch half
-> is partly there — **72 of the 875 stored result sets carry an `evidence_id`**, all 72 in
-> `cli-20260825T100434`. The chain is live in code and almost absent from the history, simply
-> because little has run since the fields landed. **The first blind run to complete after
-> `e3dcd99` will be the first artifact traceable end to end**, and is worth checking
-> deliberately rather than assuming.
+> ✅ **The caveat on gap 3 is now closed by a live run.** On **2026-08-27** the production
+> blind path (`gather`) was run over the saved evidence of `cli-20260825T100434` — real model
+> calls, no Splunk, no hypothesis passed — and the artifact it produced is traceable end to
+> end: **10 citations kept, 10 exhibits attached** (one per kept citation, none stray),
+> carrying **14 distinct `Evidence.id`s of which 14 resolve** against that run's 72-record
+> `evidence.json`. `task_id` and `run_id` populate; `hypothesis` is `null`, as it must be
+> when none is given.
+>
+> Two things that remain true. The **committed** artifacts still do not exercise it: all 10
+> under `.smartops/runs/` (nine `assessment.json`, one `findings.json`) predate the fields —
+> **0 carry a top-level `task_id`, 0 carry any `citation_evidence`** — and the live run above
+> deliberately wrote outside that tree, which is a protected fixture. And on the fetch side
+> **72 of the 875 stored result sets carry an `evidence_id`**, all 72 in that same run. So the
+> chain is proven in code and by execution, and still almost absent from the history, for the
+> plain reason that little has run since the fields landed.
 
 The audit's "unscheduled Important tier" of five is **four closed, one dead-path**:
 
@@ -557,11 +586,27 @@ whole fixture, so the absence of both is a property of the check rather than a l
 | `load_run_artifacts` over every saved run | 26 of 26 |
 | `load_evidence_from_run` + `ReplayToolset` over every case | 23 of 23, 788 records indexed, 0 model-authored |
 | a `--scripted` broker run into a disposable `SMARTOPS_RUNS_DIR` | artifact written to a timestamped path with `latest.txt`, read back through `load_run_artifacts`, `trace_id` populated |
+| **`gather()` — the production blind path — over the saved evidence, real model calls** | all three analysts returned: identity `suspicious` 0.7, network `malicious` 0.95, endpoint `suspicious` 0.7; 10 citations kept and 14 of 14 evidence ids resolving (§11). **One draw** — see the note below |
 
-**What that run did not exercise: a live analyst model call.** There were no working model
-credentials, so the pack-only gate built the exact prompt an analyst would receive but nothing
-sent it. The orchestration and the grounding gate behind it are covered by tests, not by a
-live call, and this page should not be read as saying otherwise.
+**On the model.** The imported analyst model is live; an idle one is evicted and reloads on
+the next call, which surfaces as `ModelNotReadyException` for the first minute or two.
+`_invoke_with_warmup` waits it out — up to 8 retries 30s apart — so a cold start is a delay
+rather than a failure. Reaching it from a plain script means loading `.env` (the explicit
+keys live there) and clearing any `AWS_PROFILE` whose login credential provider boto3 cannot
+resolve here.
+
+**Those dispositions are one draw, not a measurement.** The same evidence run twice through
+the same blind path minutes apart gave identity `suspicious` at 0.85 with five citations, then
+`suspicious` at 0.7 with one. The disposition held both times; the confidence and the citation
+count did not. What the run demonstrates is that the path executes and the link contract holds
+— not that a given confidence is reproducible.
+
+**The run passed no hypothesis at all.** `gather` accepts one, but only to record on
+`HypothesisFindings.hypothesis`; `gather_finding(model, scope, slice_)` has no parameter it
+could reach an analyst through. Omitting it entirely means the run cannot be read as having
+leaked one — and the artifact's `hypothesis` field is `null` accordingly. The **shown** arm,
+which does take the prose, exists only in `smartops-blind-compare` and is not what production
+runs.
 
 **One thing the Splunk-less run demonstrated positively.** With the MCP server unreachable the
 siem step came back `rejected`, carrying the reason, with `completed=false` **and**
