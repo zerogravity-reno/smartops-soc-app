@@ -104,6 +104,11 @@ def _resolve_observation_citations(
         found |= resolving
     return kept, found
 
+_PACK_TOKEN_BUDGET = 20_000
+"""The budget `pack_evidence` packs to, restated here to compare against what the
+model actually counted. Kept equal to `packing.pack_evidence`'s default; the
+comparison is a check on the estimate, not a second source of truth for it."""
+
 _REASK = (
     "\n\nYour previous reply did not end with the required VERDICT block. "
     "Reply again, ending with exactly:\n"
@@ -141,6 +146,7 @@ def _invoke_with_one_reask(
     parse_error: type[Exception],
     call_label: str,
     noun: str,
+    token_budget: int = _PACK_TOKEN_BUDGET,
 ) -> _Attempt:
     """Invoke one analyst, re-asking once if the reply carries no parseable block.
 
@@ -163,6 +169,22 @@ def _invoke_with_one_reask(
         )
 
     prompt_tokens, generation_tokens = response.prompt_tokens, response.generation_tokens
+    # `pack_evidence` chose a row cap from `estimate_tokens`, which is len//4 and
+    # optimistic on evidence rows. The model reports the real count, so compare
+    # them: the ladder cannot be re-run now (the call is spent), but an estimate
+    # that was low is worth a line, because the alternative is finding out via a
+    # provider length rejection that arrives as a generic model error -- or not
+    # finding out at all, if the provider truncates the tail and the analyst
+    # judges confidently over evidence it was never shown.
+    if prompt_tokens > token_budget:
+        logger.warning(
+            "domain=%s | packed to fit ~%d tokens but the model counted %d; the "
+            "chars-per-token estimate ran low for this evidence",
+            domain,
+            token_budget,
+            prompt_tokens,
+        )
+
     try:
         return _Attempt(parse(response.generation, domain=domain), prompt_tokens, generation_tokens)
     except parse_error:

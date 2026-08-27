@@ -936,3 +936,54 @@ class TestTheTwoOrchestratorsStayDistinguishable:
         f = gather_finding(_RaisingModel(), _scope(), self._slice())
         assert (v.prompt_tokens, v.generation_tokens) == (0, 0)
         assert (f.prompt_tokens, f.generation_tokens) == (0, 0)
+
+
+class TestTheTokenEstimateIsCheckedAgainstWhatTheModelCounted:
+    """`estimate_tokens` is `len(text) // 4` and runs optimistic on evidence rows.
+
+    The comment on `_CHARS_PER_TOKEN` used to say the inexactness was safe
+    "because the model reports the true count back". It does report it, on every
+    call, and nothing compared the two -- so a pack that overran the window
+    surfaced as a provider error indistinguishable from a bad credential, or, if
+    the provider truncated instead of rejecting, not at all.
+    """
+
+    class _CountingModel:
+        """Reports a prompt-token count of its own choosing."""
+
+        def __init__(self, prompt_tokens: int):
+            self._prompt_tokens = prompt_tokens
+            self.calls = 0
+
+        def invoke(self, system: str, user: str) -> AnalystResponse:
+            self.calls += 1
+            return AnalystResponse(
+                generation="</think>OBSERVATIONS:\n- x [connections#1]\nCITATIONS: connections#1",
+                prompt_tokens=self._prompt_tokens,
+                generation_tokens=5,
+                stop_reason="stop",
+            )
+
+    @staticmethod
+    def _slice():
+        return DomainSlice(
+            domain="network",
+            siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[{"dest": "1.2.3.4"}]))],
+        )
+
+    def test_a_count_over_the_budget_warns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
+            gather_finding(self._CountingModel(31_000), _scope(), self._slice())
+        assert "estimate ran low" in caplog.text
+        assert "31000" in caplog.text
+
+    def test_a_count_inside_the_budget_is_silent(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
+            gather_finding(self._CountingModel(4_000), _scope(), self._slice())
+        assert "estimate ran low" not in caplog.text
+
+    def test_the_shown_path_checks_it_too(self, caplog):
+        """One helper, so both paths get this or neither does."""
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
+            run_one(self._CountingModel(31_000), _ctx(), _scope(), self._slice())
+        assert "estimate ran low" in caplog.text

@@ -21,9 +21,19 @@ from .routing import DomainSlice
 
 logger = logging.getLogger(__name__)
 
-# Rough chars-per-token for Llama-family tokenizers; only used to keep the prompt
-# from overrunning the window, and the model reports the true count back so this
-# never has to be exact.
+# Rough chars-per-token for Llama-family tokenizers, used to pick a row cap that
+# keeps the prompt inside the window.
+#
+# It is an ESTIMATE and it runs optimistic on this payload: 4 is a fair average
+# for prose, but evidence rows are hex digests, base64 command lines, GUIDs and
+# timestamps, which BPE splits closer to 2-2.5 chars per token. So a pack that
+# measures 20k here can be considerably more in truth.
+#
+# This used to claim the inexactness was safe "because the model reports the true
+# count back". The model does report it, on every call, and for a long time
+# nothing compared the two. `_invoke_with_one_reask` now does, and warns -- so an
+# estimate that was low leaves a trace instead of surfacing later as a generic
+# model error indistinguishable from a bad credential.
 _CHARS_PER_TOKEN = 4
 
 # Progressively tighter row caps. 0 renders header + a "(N rows not shown)" line,
@@ -177,11 +187,14 @@ def pack_evidence(
     membership of its keys is the validity test, and the values are what a kept
     citation resolves to.
 
-    `row_cap` is the rung this call settled on. It is returned rather than left
-    implicit because `exhibits_for` has to render at the SAME cap for
-    `Exhibit.rows` to be what the analyst read; deriving it a second time would
-    put the ladder in two places, which is the mirroring `blocks()` exists to
-    prevent.
+    `row_cap` is the rung this call settled on, reported so a caller can log or
+    assert on it. Note that `exhibits_for` does NOT take it from here: it calls
+    `fitted_row_cap` and derives the rung again, deliberately, so that no caller
+    can thread the wrong value through and make `Exhibit.rows` something other
+    than what the analyst read (`exhibits_for`'s own docstring has the reasoning).
+    This return value used to be documented the other way round -- as the thing
+    `exhibits_for` consumes -- which described a design that had been replaced.
+    No caller reads it today.
     """
     ids = valid_citation_ids(slice_)
     if not slice_.has_evidence():
