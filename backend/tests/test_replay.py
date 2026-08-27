@@ -380,7 +380,7 @@ class TestModelAuthoredAnswersAreFilteredOnRead:
 
     `_EvidenceCollector` enforces that at capture, but 22 of the 26 runs on disk
     predate that skip and hold 60 `SiemAnswer`/`VtAnswer` records. They are not
-    inert: `build_replay_tools` mints one replay tool per recorded tool name, so
+    inert: `get_replay_tools_for_family` mints one replay tool per recorded name, so
     an unfiltered `VtAnswer` record becomes a tool that hands a subagent the
     model's own prior answer as though a tool had returned it.
     """

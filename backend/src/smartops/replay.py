@@ -64,10 +64,11 @@ def load_evidence_from_file(
     `_EvidenceCollector` enforces that at capture time -- but only since the
     `answer_tool` skip landed. 22 of the 26 runs on disk predate it and hold 60
     `SiemAnswer`/`VtAnswer` records between them, and they do not sit there
-    harmlessly: `ReplayToolset` indexes by tool name, so `build_replay_tools`
-    minted a replay tool literally called `VtAnswer` that handed a subagent the
-    model's own prior answer as though a tool had returned it, and
-    `evidence_by_id()` would resolve a citation to the model quoting itself.
+    harmlessly: `ReplayToolset` indexes by tool name, so
+    `get_replay_tools_for_family` minted a replay tool literally called
+    `VtAnswer` that handed a subagent the model's own prior answer as though a
+    tool had returned it, and `evidence_by_id()` would resolve a citation to the
+    model quoting itself.
 
     **Filtered on read, never deleted from the artifact**, and that is the whole
     design. `evidence_id()` is `f"{task_id}:{index}"`, so removing a record from
@@ -241,7 +242,7 @@ class ReplayToolset:
         # not redundant: they guard different doors. The loader covers everything
         # read off disk; this covers a caller that built the toolset from raw
         # dicts or from a collector, which never touches the loader at all. It
-        # matters most for THIS class, because `build_replay_tools` mints one
+        # matters most for THIS class, because `get_replay_tools_for_family` mints one
         # replay tool per recorded tool name -- so an unfiltered `VtAnswer`
         # record does not merely sit in the index, it becomes a tool a replayed
         # subagent can call and be handed the model's own prior answer. One
