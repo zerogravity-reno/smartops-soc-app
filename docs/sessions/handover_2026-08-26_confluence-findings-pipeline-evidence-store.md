@@ -145,10 +145,10 @@ The house style is unusually candid and the page is not credible without these.
    and silently re-targets every stored citation — the exact failure the link
    contract exists to prevent. This is the clearest illustration on the page of
    why the id shape matters, so use it as one. Worth adding what those records
-   did before the filter: `build_replay_tools` mints one replay tool per recorded
-   tool name, so an unfiltered record became a tool literally called `VtAnswer`
-   that handed a replayed subagent the model's own prior answer as though a tool
-   had returned it.
+   did before the filter: `get_replay_tools_for_family` mints one replay tool per
+   recorded tool name, so an unfiltered record became a tool literally called
+   `VtAnswer` that handed a replayed subagent the model's own prior answer as
+   though a tool had returned it.
 3. **edr/ndr evidence would reach no analyst.** `project()` has projectors for
    siem and vt only, and `route()` skips a `None` findings payload. Latent while
    both families are always REJECTED for want of an MCP server; live the day a

@@ -166,8 +166,12 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
 - **Formatting — `formatting.py`.** One dense, field-projected line per row, per
   record type (e.g. auth: `ts user src dest action app`; connections:
   `ts src:port→dst:port proto bytes action`). Each `ResultSet` renders under a
-  citable header `# {category}#{index} · query="…" · rows=N`. Rows come from
-  `ResultSet.rows` (code-assembled) — never `Evidence.raw`.
+  citable header `# {category}#{index} · rows=N` — the query is deliberately **not**
+  in the header, because a query written to test the hypothesis leaks it to an
+  analyst that is structurally blind to it; it stays in `ResultSet.query`,
+  `report.json`, `evidence.json`, and `Exhibit.query` for the Analyst Agent, which
+  is not blind (see `formatting.format_result_set`). Rows come from `ResultSet.rows`
+  (code-assembled) — never `Evidence.raw`.
 - **Packing — `packing.py`.** Fits a slice into the 32k window via a row-cap ladder
   (20→10→…→header-only), highest-signal first (VT, then siem, then untagged), logging
   any truncation. Returns the evidence text **plus the set of valid header ids** for

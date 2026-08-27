@@ -1,0 +1,237 @@
+<svg viewBox="0 0 2180 980" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Captured tool output forks two ways. Upward, the Findings Pipeline projects it into typed rows in code, routes them to a domain analyst, and carries the analyst's judgement out to HypothesisFindings -- only the analyst step is model-authored. Downward, the Evidence Store persists the same raw output to evidence.json for replay, audit, and citation resolution. No pipeline step ever reads evidence.json; the two halves are joined only by Evidence.id, carried on ResultSet.evidence_id, citation_evidence, and Exhibit.evidence_ids.">
+  <title>Findings Pipeline and Evidence Store: one capture, two paths that never rejoin</title>
+  <desc>Flow diagram of the SmartOps SOC Findings Pipeline and Evidence Store. Raw tool output is captured once, then projected into typed findings for the analysts (upper band, code except the analyst) and persisted raw to disk (lower band). The pipeline never reads the store; the only link between them is the Evidence.id chain.</desc>
+
+  <defs>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrViolet" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrGrey" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="2180" height="980" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="1090" y="32" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="21" font-weight="700" fill="#0f172a">Findings Pipeline &amp; Evidence Store — one capture, two paths that never rejoin</text>
+  <text x="1090" y="52" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="12.5" fill="#64748b">SmartOps SOC — projected typed rows go to the analyst; the raw output they came from goes to disk</text>
+
+  <!-- ============================================================= -->
+  <!-- BAND LABELS                                                    -->
+  <!-- ============================================================= -->
+  <text x="30" y="120" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#2563eb">THE FINDINGS PIPELINE</text>
+  <text x="30" y="138" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-style="italic" fill="#475569">projected, typed rows — tool result to judgement</text>
+
+  <text x="30" y="800" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#0f766e">THE EVIDENCE STORE</text>
+  <text x="30" y="818" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-style="italic" fill="#475569">the raw output those rows were projected from</text>
+
+  <!-- Model-authored bracket over the analyst box only -->
+  <line x1="1090" y1="172" x2="1290" y2="172" stroke="#b45309" stroke-width="1.5"/>
+  <line x1="1090" y1="172" x2="1090" y2="180" stroke="#b45309" stroke-width="1.5"/>
+  <line x1="1290" y1="172" x2="1290" y2="180" stroke="#b45309" stroke-width="1.5"/>
+  <text x="1190" y="165" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="11.5" font-weight="700" fill="#b45309">the only model-authored step — every other box is code</text>
+
+  <!-- ============================================================= -->
+  <!-- THE FORK                                                       -->
+  <!-- ============================================================= -->
+  <rect x="20" y="440" width="180" height="96" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="110" y="470" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">captured tool</text>
+  <text x="110" y="487" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">output</text>
+  <text x="110" y="507" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">_EvidenceCollector,</text>
+  <text x="110" y="521" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">AfterToolCallEvent hook</text>
+
+  <!-- fork up to the pipeline -->
+  <path d="M200,468 L225,468 L225,255 L245,255" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrBlue)"/>
+  <!-- fork down to the store -->
+  <path d="M200,508 L225,508 L225,700 L245,700" fill="none" stroke="#0f766e" stroke-width="2" marker-end="url(#arrTeal)"/>
+
+  <!-- ============================================================= -->
+  <!-- BAND A — THE PIPELINE (centre y = 255)                          -->
+  <!-- ============================================================= -->
+
+  <!-- A1 project() -->
+  <rect x="250" y="205" width="180" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="340" y="238" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">project()</text>
+  <text x="340" y="258" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">raw → typed rows</text>
+  <text x="340" y="273" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">siem + vt projectors</text>
+  <text x="340" y="290" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#b45309">edr/ndr: none — see §10</text>
+  <line x1="430" y1="255" x2="465" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A2 findings on the report -->
+  <rect x="470" y="205" width="200" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="570" y="235" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">SubtaskResult</text>
+  <text x="570" y="252" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">.findings</text>
+  <text x="570" y="271" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">ResultSet.rows, carried</text>
+  <text x="570" y="285" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">on BrokerReport</text>
+  <text x="570" y="299" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#7c3aed">+ evidence_id</text>
+  <line x1="670" y1="255" x2="705" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A3 route() -->
+  <rect x="710" y="205" width="170" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="795" y="240" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">route()</text>
+  <text x="795" y="260" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">CIM category +</text>
+  <text x="795" y="274" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">entity kind →</text>
+  <text x="795" y="290" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">3 DomainSlices</text>
+  <line x1="880" y1="255" x2="915" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A4 pack_evidence() -->
+  <rect x="920" y="205" width="165" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="1002" y="237" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">pack_evidence()</text>
+  <text x="1002" y="256" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">20k budget, row-cap</text>
+  <text x="1002" y="270" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">ladder; blocks() owns</text>
+  <text x="1002" y="284" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">order &amp; numbering</text>
+  <text x="1002" y="299" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#475569">no query in the header</text>
+  <line x1="1085" y1="255" x2="1115" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A5 the analyst — MODEL -->
+  <rect x="1120" y="205" width="170" height="100" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+  <text x="1205" y="240" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#78350f">the analyst</text>
+  <text x="1205" y="260" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#78350f">authors a Disposition,</text>
+  <text x="1205" y="274" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#78350f">observations, citations</text>
+  <text x="1205" y="291" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#78350f">no rows, no ids</text>
+  <line x1="1290" y1="255" x2="1320" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A6 _finalize_finding() -->
+  <rect x="1325" y="205" width="195" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="1422" y="237" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">_finalize_finding()</text>
+  <text x="1422" y="256" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">the grounding gate: drop</text>
+  <text x="1422" y="270" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">invented ids, downgrade</text>
+  <text x="1422" y="284" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">an ungrounded verdict</text>
+  <text x="1422" y="299" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#7c3aed">freeze citation_evidence</text>
+  <line x1="1520" y1="255" x2="1550" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A7 _as_judgement() -->
+  <rect x="1555" y="205" width="185" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="1647" y="237" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">_as_judgement()</text>
+  <text x="1647" y="256" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">onto the wire: audit</text>
+  <text x="1647" y="270" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">fields off, Exhibits on</text>
+  <text x="1647" y="287" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#475569">cited blocks only (~2%)</text>
+  <line x1="1740" y1="255" x2="1770" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A8 gather() -->
+  <rect x="1775" y="205" width="150" height="100" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="1850" y="243" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">gather()</text>
+  <text x="1850" y="263" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">assembles —</text>
+  <text x="1850" y="277" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">does not decide</text>
+  <text x="1850" y="293" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#475569">+ RetrievalSummary</text>
+  <line x1="1925" y1="255" x2="1955" y2="255" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+
+  <!-- A9 HypothesisFindings -->
+  <rect x="1960" y="205" width="200" height="100" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="2060" y="240" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">HypothesisFindings</text>
+  <text x="2060" y="259" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">findings.json →</text>
+  <text x="2060" y="274" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">the Analyst Agent</text>
+  <text x="2060" y="291" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#64748b">(not built)</text>
+
+  <!-- ============================================================= -->
+  <!-- THE CLAIM — the gap between the bands                          -->
+  <!-- ============================================================= -->
+  <line x1="250" y1="380" x2="2160" y2="380" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="7 6"/>
+  <line x1="250" y1="600" x2="2160" y2="600" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="7 6"/>
+
+  <!-- the crossed-out read -->
+  <path d="M795,595 L795,400" fill="none" stroke="#dc2626" stroke-width="2" stroke-dasharray="7 5"/>
+  <line x1="770" y1="510" x2="820" y2="475" stroke="#dc2626" stroke-width="3"/>
+  <line x1="770" y1="475" x2="820" y2="510" stroke="#dc2626" stroke-width="3"/>
+  <text x="845" y="486" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#dc2626">No pipeline step ever reads evidence.json.</text>
+  <text x="845" y="506" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#b91c1c">The analysts read ResultSet.rows out of report.json. When projection under-reports, the correct rows</text>
+  <text x="845" y="522" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#b91c1c">sitting in evidence.json are unreachable by any code path — it has happened twice.</text>
+
+  <!-- ============================================================= -->
+  <!-- THE ID LINK — violet, the only thing crossing the gap          -->
+  <!-- ============================================================= -->
+  <path d="M570,315 L570,350 L1600,350 L1600,632" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrViolet)"/>
+  <path d="M1422,315 L1422,350" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="5 4"/>
+  <path d="M1647,315 L1647,340 L1600,340" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="5 4"/>
+  <rect x="1660" y="404" width="330" height="60" rx="6" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.2"/>
+  <text x="1825" y="425" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#5b21b6">joined by id, not by data flow</text>
+  <text x="1825" y="443" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#5b21b6">ResultSet.evidence_id → citation_evidence</text>
+  <text x="1825" y="457" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#5b21b6">→ Exhibit.evidence_ids → Evidence.id</text>
+
+  <!-- ============================================================= -->
+  <!-- BAND B — THE STORE (centre y = 700)                             -->
+  <!-- ============================================================= -->
+
+  <!-- B1 Evidence -->
+  <rect x="250" y="650" width="180" height="100" rx="8" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="340" y="684" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">Evidence</text>
+  <text x="340" y="703" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">raw tool output, never</text>
+  <text x="340" y="717" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">model-authored</text>
+  <text x="340" y="735" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#7c3aed">id = task_id:index</text>
+  <line x1="430" y1="700" x2="465" y2="700" stroke="#0f766e" stroke-width="1.5" marker-end="url(#arrTeal)"/>
+
+  <!-- B2 save_run_artifacts() -->
+  <rect x="470" y="650" width="200" height="100" rx="8" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="570" y="682" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">save_run_artifacts()</text>
+  <text x="570" y="701" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">&lt;base&gt;/&lt;task_id&gt;/&lt;stamp&gt;/</text>
+  <text x="570" y="717" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#475569">timestamped — keying on task_id</text>
+  <text x="570" y="731" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#475569">alone overwrote every re-run</text>
+  <line x1="670" y1="700" x2="705" y2="700" stroke="#0f766e" stroke-width="1.5" marker-end="url(#arrTeal)"/>
+
+  <!-- the report also lands here — honest about who writes report.json -->
+  <path d="M520,315 L520,640" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#arrGrey)"/>
+  <text x="500" y="560" text-anchor="end" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#64748b">the same call writes</text>
+  <text x="500" y="574" text-anchor="end" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#64748b">report.json</text>
+
+  <!-- B3 the run directory -->
+  <rect x="710" y="640" width="215" height="120" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="817" y="668" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0f172a">the run directory</text>
+  <text x="817" y="690" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#0f766e">evidence.json — raw</text>
+  <text x="817" y="708" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#2563eb">report.json — typed rows</text>
+  <text x="817" y="726" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#475569">latest.txt — newest stamp</text>
+  <text x="817" y="747" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#64748b">26 runs on disk today</text>
+  <line x1="925" y1="700" x2="960" y2="700" stroke="#0f766e" stroke-width="1.5" marker-end="url(#arrTeal)"/>
+
+  <!-- B4 read doors -->
+  <rect x="965" y="640" width="245" height="120" rx="8" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="1087" y="667" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0f172a">the read doors</text>
+  <text x="1087" y="687" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">load_evidence_from_file / _run</text>
+  <text x="1087" y="702" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">evidence_by_id — one record</text>
+  <text x="1087" y="717" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">load_run_artifacts — the report</text>
+  <text x="1087" y="736" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#b45309">both doors filter model-authored</text>
+  <text x="1087" y="750" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#b45309">records — 60 of them, see §10</text>
+  <line x1="1210" y1="700" x2="1245" y2="700" stroke="#0f766e" stroke-width="1.5" marker-end="url(#arrTeal)"/>
+
+  <!-- B5 ReplayToolset -->
+  <rect x="1250" y="650" width="185" height="100" rx="8" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="1342" y="683" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">ReplayToolset</text>
+  <text x="1342" y="702" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">exact → fuzzy → tool-only</text>
+  <text x="1342" y="716" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">→ honest cache miss</text>
+  <text x="1342" y="734" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#475569">offline, zero cost</text>
+  <line x1="1435" y1="700" x2="1470" y2="700" stroke="#0f766e" stroke-width="1.5" marker-end="url(#arrTeal)"/>
+
+  <!-- B6 what the store is for -->
+  <rect x="1475" y="640" width="230" height="120" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="1590" y="668" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0f172a">what it is for</text>
+  <text x="1590" y="690" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#475569">replay a run at zero cost</text>
+  <text x="1590" y="708" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#475569">audit what a tool returned</text>
+  <text x="1590" y="726" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#5b21b6">resolve a stored citation</text>
+  <text x="1590" y="747" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-style="italic" fill="#64748b">never: feed an analyst</text>
+
+  <!-- ============================================================= -->
+  <!-- CAPTION                                                        -->
+  <!-- ============================================================= -->
+  <text x="1090" y="880" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#334155">
+    Raw tool output is captured once and forks. Upward, code projects it into typed rows, routes them by CIM category, packs them under a token budget, and carries
+  </text>
+  <text x="1090" y="898" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#334155">
+    the analyst's judgement out to HypothesisFindings — the analyst (amber) is the only step a model authors. Downward, the same output is persisted raw for replay,
+  </text>
+  <text x="1090" y="916" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#334155">
+    audit, and citation resolution. The two never rejoin: no pipeline step reads evidence.json (red), and the only thing crossing the gap is the Evidence.id chain (violet).
+  </text>
+</svg>
