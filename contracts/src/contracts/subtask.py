@@ -63,11 +63,14 @@ this is a judgement rather than a fact.
 def evidence_id(task_id: str, index: int) -> str:
     """The id of the `index`-th evidence item collected under `task_id`.
 
-    One formula, one place. It was previously inlined at two minting sites
-    (`smartops.subagents._EvidenceCollector.evidence` and `smartops.broker`),
-    and the projectors are about to become a third consumer -- three copies of
-    a format string that must agree exactly, or a `ResultSet.evidence_id`
-    silently points at nothing.
+    One formula, one place, and **four** minting sites that call it:
+    `smartops.subagents._EvidenceCollector.evidence`,
+    `smartops.projection.project_siem`, `smartops.projection.project_vt`, and the
+    VirusTotal enricher in `smartops.broker`. They must agree exactly, or a
+    `ResultSet.evidence_id` silently points at nothing. All four derive `index`
+    by enumerating the same collector call list in the same order; the filters
+    that drop a call are applied upstream, where the list is appended to, so that
+    no single enumeration can slide out of step with the others.
 
     The shape of this id, and what it does and does not guarantee, is recorded in
     `docs/superpowers/specs/2026-08-25-evidence-link-contract-design.md`. The
@@ -275,8 +278,18 @@ class SubagentMission(BaseModel):
 class Evidence(BaseModel):
     """One piece of raw tool output. Never shown to an LLM directly.
 
-    Subagents attach these to their SubtaskResult; the aggregator is what actually
-    writes them into the case file's evidence store, keyed by `id`.
+    Subagents attach these to their `SubtaskResult`, and
+    `smartops.broker.save_run_artifacts()` writes them as a JSON **list** to
+    `<runs>/<task_id>/<stamp>/evidence.json`. The `id` is carried inside each
+    record rather than used as a key on disk; `smartops.replay.evidence_by_id()`
+    is what indexes them by `id`, on read. Nothing recomputes an id from a
+    record's position in that list.
+
+    This used to say "the aggregator is what actually writes them into the case
+    file's evidence store", which was leftover language from the original
+    architecture sketch: the aggregator is the Analyst Agent, it is a separate epic
+    that does not exist in code, and it writes nothing here. The store is written
+    on the fetch side, by the Broker, at the end of a run.
     """
 
     id: str = Field(min_length=1)
@@ -432,7 +445,18 @@ def _assessment_tag(value: Any) -> str | None:
 
 
 class SubtaskResult(_StatusErrorContract):
-    """Full result returned by a subagent, consumed only by the aggregator."""
+    """Full result returned by a subagent.
+
+    Read first by the Broker itself -- `smartops.broker.evaluate_step` reads
+    `findings` to decide whether a plan step is complete, before any
+    `BrokerReport` exists -- then carried in `BrokerReport.results`, and from
+    there consumed by `smartops.subagent_analysts.routing.route()`. Telemetry and
+    the operator view read it too; this list is not closed.
+
+    It is **not** consumed by "the aggregator", as this said before. Nothing
+    summarises on a subagent's behalf; the domain analysts read the projected
+    `findings` and condense their own.
+    """
 
     task_id: str = Field(min_length=1)
     reason: str | None = Field(
