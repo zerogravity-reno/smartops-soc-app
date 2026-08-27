@@ -115,15 +115,15 @@ Nine steps. **One involves a model.**
 
 | Step | Code | What it does |
 |---|---|---|
-| 1 | `projection.project()` — `projection.py:307` | Raw tool output → typed `SiemFindings`/`VtFindings`, dispatching to `project_siem` (`:183`) or `project_vt` (`:227`). Every family with a projector must dispatch *here*: a call site that appended one projector itself is why a vt subagent holding real evidence once reported `findings=None`. |
-| 2 | `SubtaskResult.findings` — `subtask.py:462` | Carries the typed payload into `BrokerReport`. A **discriminated union**, so a JSON round trip returns the right subclass rather than the empty base class. |
+| 1 | `projection.project()` — `projection.py:348` | Raw tool output → typed `SiemFindings`/`VtFindings`, dispatching to `project_siem` (`:183`) or `project_vt` (`:268`). Every family with a projector must dispatch *here*: a call site that appended one projector itself is why a vt subagent holding real evidence once reported `findings=None`. |
+| 2 | `SubtaskResult.findings` — `subtask.py:473` | Carries the typed payload into `BrokerReport`. A **discriminated union**, so a JSON round trip returns the right subclass rather than the empty base class. |
 | 3 | `routing.route()` — `routing.py:95` | Splits the report into three `DomainSlice`s by CIM category and entity kind. Untagged sets are offered to the domains the scope's entity kinds imply, flagged rather than dropped — they were retrieved and paid for. |
-| 4 | `packing.pack_evidence()` — `packing.py:167` | Renders a slice under a 20k token budget, shrinking the row cap down a ladder (20 → 10 → 5 → 3 → 1 → header-only) instead of truncating mid-block. **Returns the cap it settled on**, so `exhibits_for` renders at the same rung. |
-| 5 | `packing.blocks()` — `packing.py:55` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:149`) and `exhibits_for` (`:119`) are thin readings of it. |
+| 4 | `packing.pack_evidence()` — `packing.py:177` | Renders a slice under a 20k token budget, shrinking the row cap down a ladder (20 → 10 → 5 → 3 → 1 → header-only) instead of truncating mid-block. **Returns the cap it settled on**, so `exhibits_for` renders at the same rung. |
+| 5 | `packing.blocks()` — `packing.py:65` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:159`) and `exhibits_for` (`:129`) are thin readings of it. |
 | 6 | **the analyst** | Reads the packed evidence — the projected rows, rendered as text — and authors a `Disposition`, observations, and citations. **The only model-authored step.** It reasons over those rows; what it never sees is the raw tool output behind them, and it can cite only the ids code minted. |
-| 7 | `analyze._finalize_finding()` — `analyze.py:463` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, downgrades an ungrounded decisive disposition to `inconclusive`, and **freezes `citation_evidence`**. |
-| 8 | `analyze._as_judgement()` — `analyze.py:503` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
-| 9 | `analyze.gather()` — `analyze.py:562` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:618`). Assembles — does not decide. |
+| 7 | `analyze._finalize_finding()` — `analyze.py:488` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, downgrades an ungrounded decisive disposition to `inconclusive`, and **freezes `citation_evidence`**. |
+| 8 | `analyze._as_judgement()` — `analyze.py:528` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
+| 9 | `analyze.gather()` — `analyze.py:587` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:643`). Assembles — does not decide. |
 
 Steps 6–9 belong to the analyst tier and appear here because the gate at step 7 and the
 projection at step 8 are what make a *stored* judgement traceable.
@@ -176,10 +176,10 @@ queries have stopped matching the ones it ran.
 |---|---|---|
 | **Write** | `save_run_artifacts()` — `broker.py:1079` | `<base>/<task_id>/<stamp>/` holding `report.json` + `evidence.json`, plus a sibling `latest.txt`. |
 | **Read (report)** | `load_run_artifacts()` — `broker.py:1132` | Typed round trip, no re-fetch and no model call. Needs the callable `Discriminator`s at `subtask.py:400`/`:422` for payloads written before `tool_family` existed. |
-| **Read (evidence)** | `load_evidence_from_file` / `_from_run` — `replay.py:57`/`:115` | Resolves a bare case id via `latest.txt`, else the highest stamp — zero-padded, so a lexical sort is chronological. |
-| **Address one record** | `evidence_by_id()` — `replay.py:147` | Keyed by `Evidence.id`, to resolve a single citation without scanning. |
-| **The id** | `evidence_id()` — `subtask.py:63` | `f"{task_id}:{index}"`. **One formula, four minting sites** — `_EvidenceCollector.evidence` (`subagents/__init__.py:341`), `project_siem` (`projection.py:202`), `project_vt` (`:232`), the VT enricher (`broker.py:333`) — which must agree exactly or a stored `ResultSet.evidence_id` points at nothing. |
-| **Replay** | `ReplayToolset` — `replay.py:213` | Serves recorded output offline: exact match → fuzzy → tool-only → an honest cache miss. Zero cost, no Splunk. |
+| **Read (evidence)** | `load_evidence_from_file` (`replay.py:57`) / `load_evidence_from_run` (`:116`) | Resolves a bare case id via `latest.txt`, else the highest stamp — zero-padded, so a lexical sort is chronological. |
+| **Address one record** | `evidence_by_id()` — `replay.py:148` | Keyed by `Evidence.id`, to resolve a single citation without scanning. |
+| **The id** | `evidence_id()` — `subtask.py:63` | `f"{task_id}:{index}"`. **One formula, four minting sites** — `_EvidenceCollector.evidence` (`subagents/__init__.py:338`), `project_siem` (`projection.py:183`), `project_vt` (`:268`), the VT enricher (`broker.py:333`) — which must agree exactly or a stored `ResultSet.evidence_id` points at nothing. |
+| **Replay** | `ReplayToolset` — `replay.py:214` | Serves recorded output offline: exact match → fuzzy → tool-only → an honest cache miss. Zero cost, no Splunk. |
 
 ### Why the path is timestamped
 
@@ -300,7 +300,7 @@ What they did before the filter, neither of it theoretical:
   a tool input and the answer's own `queries_run` supplied one, so the model's structured
   answer was filed under a **real CIM category** and reached the analysts as a citable
   `auth_events#N` **backed by the model's own words.**
-- **They became tools.** `get_replay_tools_for_family` (`replay.py:320`) mints one replay tool
+- **They became tools.** `get_replay_tools_for_family` (`replay.py:321`) mints one replay tool
   per recorded name, so an unfiltered record became a tool literally called `VtAnswer` that
   handed a replayed subagent **the model's own prior answer as though a tool had returned it.**
 
@@ -362,7 +362,7 @@ could not have detected it.
 
 ### 10.6 `combine()` has no confidence floor — **OPEN (dead path)**
 
-`combine()` (`analyze.py:340`) has no floor back to `inconclusive`: a lone `supports` at 0.01
+`combine()` (`analyze.py:365`) has no floor back to `inconclusive`: a lone `supports` at 0.01
 confidence returns `('supports', 0.01)`, a decided stance at essentially no confidence. It sits
 on the hypothesis-shown path production no longer calls — nothing in `main.py` reaches it, and
 the live path is `gather()`, which has no combiner by contract. **Dead code that would mislead
@@ -450,16 +450,16 @@ of §10.4 and is also open.
 | Module | Responsibility |
 |--------|----------------|
 | `contracts/src/contracts/findings.py` | The two-layer payload: `Assessment` (model-authored) vs `Findings` (code-assembled); `ResultSet` (`:41`), `SiemFindings` (`:114`), `VtVerdict` (`:156`), `VtFindings` (`:194`), the `CimCategory` vocabulary (`:21`), and the `Edr`/`Ndr` assessments. |
-| `contracts/src/contracts/subtask.py` | `Evidence` (`:275`), `evidence_id()` (`:63`) — the one id formula, `answer_tool_name()` (`:365`), `SubtaskResult` (`:441`) with the callable `Discriminator`s `_findings_tag` (`:400`) / `_assessment_tag` (`:422`), and `BrokerReport` (`:727`) including `trace_id` (`:733`). |
+| `contracts/src/contracts/subtask.py` | `Evidence` (`:278`), `evidence_id()` (`:63`) — the one id formula, `answer_tool_name()` (`:371`), `SubtaskResult` (`:447`) with the callable `Discriminator`s `_findings_tag` (`:406`) / `_assessment_tag` (`:428`), and `BrokerReport` (`:738`) including `trace_id` (`:744`). |
 | `contracts/src/contracts/reasoning.py` | The wire contracts: `Exhibit` (`:231`), `DomainJudgement` (`:289`), `StepSummary` (`:318`), `RetrievalSummary` (`:342`), `HypothesisFindings` (`:388`); `DomainFinding` (`:125`) and `AnalystVerdict` (`:80`) carry `citation_evidence`. |
-| `backend/src/smartops/projection.py` | `project()` (`:307`) — the dispatcher; `project_siem` (`:183`), `project_vt` (`:227`), `_infer_cim_category` (`:121`), `_rows_of` (`:76`, unwraps `structuredContent`), `_text_of` (`:41`). |
+| `backend/src/smartops/projection.py` | `project()` (`:348`) — the dispatcher; `project_siem` (`:183`), `project_vt` (`:268`), `_infer_cim_category` (`:121`), `_rows_of` (`:76`, unwraps `structuredContent`), `_text_of` (`:41`). |
 | `backend/src/smartops/subagents/__init__.py` | `_EvidenceCollector` (`:263`) — the `AfterToolCallEvent` hook at `HookOrder.SDK_FIRST`; the answer-tool skip (`:314`); `evidence()` (`:338`) mints ids from the same list the projectors enumerate. |
 | `backend/src/smartops/subagent_analysts/routing.py` | `route()` (`:95`) — CIM category + entity kind → three `DomainSlice`s; the uncategorised fan-out; the no-projector warning (`:132`). |
 | `backend/src/smartops/subagent_analysts/formatting.py` | Per-record-type field projectors; `format_result_set` (`:265`) and its `# {category}#{index} · rows=N` header — **no query, deliberately**; `format_vt_verdicts` (`:304`); `_sanitise()`. |
-| `backend/src/smartops/subagent_analysts/packing.py` | `blocks()` (`:55`) — the single source of order and numbering; `pack_evidence()` (`:167`); `valid_citation_ids()` (`:149`); `exhibits_for()` (`:119`); `fitted_row_cap()` (`:209`). |
-| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:130`) and `_apply_grounding()` (`:196`) — the orchestration and the grounding gate, each defined once and shared by both paths; `_finalize_finding()` (`:463`), `_as_judgement()` (`:503`), `gather()` (`:562`), `_retrieval_summary()` (`:618`) on the live path; `combine()` (`:340`) on the dormant one. |
-| `backend/src/smartops/broker.py` | `save_run_artifacts()` (`:1079`) and `load_run_artifacts()` (`:1132`); `RUNS_DIR_ENV_VAR` / `DEFAULT_RUNS_DIR` (`:1075`). |
-| `backend/src/smartops/replay.py` | `is_model_authored()` (`:45`), `load_evidence_from_file()` (`:57`), `load_evidence_from_run()` (`:115`), `evidence_by_id()` (`:147`), `_newest_run_in()` (`:176`), `ReplayToolset` (`:213`), `create_replay_subagent_runner()` (`:359`). |
+| `backend/src/smartops/subagent_analysts/packing.py` | `blocks()` (`:65`) — the single source of order and numbering; `pack_evidence()` (`:177`); `valid_citation_ids()` (`:159`); `exhibits_for()` (`:129`); `fitted_row_cap()` (`:222`). |
+| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:138`) and `_apply_grounding()` (`:221`) — the orchestration and the grounding gate, each defined once and shared by both paths; `_finalize_finding()` (`:488`), `_as_judgement()` (`:528`), `gather()` (`:587`), `_retrieval_summary()` (`:643`) on the live path; `combine()` (`:365`) on the dormant one. |
+| `backend/src/smartops/broker.py` | `save_run_artifacts()` (`:1079`) and `load_run_artifacts()` (`:1132`); `RUNS_DIR_ENV_VAR` / `DEFAULT_RUNS_DIR` (`:1076`). |
+| `backend/src/smartops/replay.py` | `is_model_authored()` (`:45`), `load_evidence_from_file()` (`:57`), `load_evidence_from_run()` (`:116`), `evidence_by_id()` (`:148`), `_newest_run_in()` (`:177`), `ReplayToolset` (`:214`), `create_replay_subagent_runner()` (`:360`). |
 | `backend/src/smartops/main.py` | `_print_findings()` (`:421`) / `_persist_findings()` (`:482`) write the operator view and `findings.json`; `hypothesis_id` is hardcoded at `:666` (§10.1). |
 
 ## Appendix B — The artifact on disk
@@ -553,7 +553,7 @@ their own commit alongside it:
 |---|---|---|
 | `contracts/subtask.py` — `Evidence`, `SubtaskResult` | the **aggregator** writes the evidence store and consumes the result | `broker.save_run_artifacts()` writes the store; the "aggregator" is the Analyst Agent, a separate epic with no code |
 | `docs/architecture.md` §5 | the citable header carries `query="…"` | the query left the header in the blind redesign — §10.5 |
-| `replay.py` (×2) and `test_replay.py` | `build_replay_tools` mints one replay tool per recorded name | **no such function exists** — it is `get_replay_tools_for_family` (`replay.py:320`), via `make_replay_tool` (`:304`) |
+| `replay.py` (×2) and `test_replay.py` | `build_replay_tools` mints one replay tool per recorded name | **no such function exists** — it is `get_replay_tools_for_family` (`replay.py:321`), via `make_replay_tool` (`:305`) |
 
 ---
 
