@@ -67,7 +67,7 @@ class Assessment(BaseModel):
 
     note: str = Field(
         default="",
-        max_length=400,
+        max_length=2000,
         description=(
             "Optional, capped, and NOT a summary of findings: strictly a remark "
             "about retrieval -- a truncated result set, a sourcetype that did not "
@@ -76,11 +76,28 @@ class Assessment(BaseModel):
     )
     """Declared HERE, once, because it is the same field for every family.
 
-    It used to be declared four times -- in `SiemAssessment`, `VtAssessment`,
-    `EdrAssessment` and `NdrAssessment` -- and only the SIEM copy carried the
-    description. The other three were `Field(default="", max_length=400)`:
-    identical in every enforced respect, and missing the only part of the field
-    that tells a model what to put in it.
+    **2000 characters, not tokens, and nothing reads it.** No code consumes this
+    field: it is absent from `broker._digest` (which returns status, rows, query
+    count, reason and gaps to the Broker), from every prompt, and from the analyst
+    path. It is written by the model, stored in `report.json`, and read by a human
+    auditing a run -- so the cap is not protecting anyone's context window, it is
+    bounding what a model spends OUTPUT tokens on against its cumulative
+    `Limits(output_tokens=)` ceiling.
+
+    Raised from 400 after a vt subagent overran it. That overrun was not evidence
+    the cap was wrong -- the model had simply never been shown the description
+    below, because three of the four family subclasses used to redeclare this
+    field without it. 2000 gives a genuine retrieval remark room ("sourcetype
+    stream:dns returned nothing; the index rotated mid-window") while still being
+    far too small to invite the summary the description forbids. A limit generous
+    enough to hold an analysis would contradict the instruction beside it.
+
+    **Why it is declared here and not per family.** It used to be declared four
+    times -- in `SiemAssessment`, `VtAssessment`, `EdrAssessment` and
+    `NdrAssessment` -- and only the SIEM copy carried the description. The other
+    three were `Field(default="", max_length=400)`: identical in every enforced
+    respect, and missing the only part of the field that tells a model what to put
+    in it.
 
     That is not a tidiness point. The vt subagent, shown a bare capped string,
     wrote a 500-character analysis of what the reputation data MEANT and was

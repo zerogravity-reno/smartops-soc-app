@@ -171,7 +171,10 @@ class TestEveryAssessmentTellsTheModelWhatNoteIsFor:
 
         assert spec.get("description"), f"{model_name}.note has no description"
         assert "NOT a summary of findings" in spec["description"]
-        assert spec["maxLength"] == 400
+        # Characters, not tokens. Nothing reads this field -- it is absent from
+        # `broker._digest`, every prompt, and the analyst path -- so the cap bounds
+        # what a model spends OUTPUT tokens on, not anyone's context.
+        assert spec["maxLength"] == 2000
 
     def test_it_is_declared_exactly_once(self):
         """The enforcement. Four identical copies is how three of them lost the
