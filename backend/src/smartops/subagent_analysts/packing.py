@@ -38,7 +38,24 @@ _CHARS_PER_TOKEN = 4
 
 # Progressively tighter row caps. 0 renders header + a "(N rows not shown)" line,
 # i.e. counts only -- the coarsest summary that still reports the set exists.
-_ROW_CAP_LADDER = (20, 10, 5, 3, 1, 0)
+#
+# The FIRST rung is a ceiling, not a starting guess: `pack_evidence` walks down
+# only when the rendered text overflows `token_budget`, so rung 0 is what every
+# slice that fits gets. It was 20, and 20 was never reached by budget pressure --
+# measured on `cli-20260823T112627`, the three slices rendered at 1,019 / 1,334 /
+# 2,625 tokens against a 20,000 budget, i.e. 5-13% of it. What the cap was doing
+# instead was hiding rows: 52 of a 72-row auth_events set from identity, and 110
+# rows from endpoint including 80 of a single 100-row processes set. And because
+# the ladder never stepped BELOW 20, `pack_evidence` returned `truncated=False`
+# throughout -- so the loss was not merely unflagged, it was actively reported as
+# "nothing was dropped".
+#
+# 200 because it clears the largest real set seen (100 rows) with room over, and
+# because rendering every row of all three slices costs 2,317 / 1,491 / 7,180
+# tokens -- the worst still under half the budget. The ladder is unchanged below
+# the top: a genuinely huge slice shrinks exactly as before, so the budget decides
+# what fits rather than a number chosen ahead of the data.
+_ROW_CAP_LADDER = (200, 20, 10, 5, 3, 1, 0)
 
 
 def estimate_tokens(text: str) -> int:

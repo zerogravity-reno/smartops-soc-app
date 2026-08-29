@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from smartops.subagent_analysts.packing import estimate_tokens, pack_evidence
+from smartops.subagent_analysts.packing import (
+    _ROW_CAP_LADDER,
+    estimate_tokens,
+    pack_evidence,
+)
 from smartops.subagent_analysts.prompts import (
     build_facts_user_turn,
     facts_system_prompt,
@@ -178,7 +182,10 @@ class TestPacking:
         assert "bad.com" in text
         assert truncated is False
         assert valid_ids.keys() == {"reputation#1", "dns_resolutions#1"}
-        assert row_cap == 20  # the ladder's first rung; nothing shrank
+        # The ladder's top rung, whatever it is -- the literal 20 that stood here
+        # turned raising the ceiling into a test failure, which read as a
+        # regression rather than the intended change.
+        assert row_cap == _ROW_CAP_LADDER[0]  # nothing shrank
 
     def test_large_slice_shrinks_and_flags_truncation(self):
         big_rows = [{"user": f"u{i}", "action": "failure"} for i in range(5000)]
@@ -194,7 +201,56 @@ class TestPacking:
         assert estimate_tokens(text) <= 400  # shrunk near the budget, not the full 5000 rows
         # The rung it settled on is returned, so `exhibits_for` can render the
         # exhibit at the cap the analyst actually read rather than a fixed one.
-        assert row_cap < 20
+        assert row_cap < _ROW_CAP_LADDER[0]
+
+
+class TestTheRowCapDoesNotHideRowsTheBudgetCouldAfford:
+    """The top rung is a ceiling, and it used to bind when nothing forced it to.
+
+    Measured on `cli-20260823T112627`: the three slices rendered at 5-13% of the
+    20,000-token budget while the cap withheld 52 rows from identity and 110 from
+    endpoint. And because the ladder never stepped BELOW its first rung,
+    `pack_evidence` reported `truncated=False` the whole time -- the loss was
+    reported as "nothing was dropped", which is why it went unnoticed.
+
+    Both halves are pinned: rows the budget can afford are shown, and a cap that
+    DOES bind still says so.
+    """
+
+    @staticmethod
+    def _slice(row_count):
+        rows = [{"user": f"u{i}", "action": "failure"} for i in range(row_count)]
+        return DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=row_count, rows=rows))],
+        )
+
+    def test_a_hundred_row_set_is_shown_in_full(self):
+        """The exact shape that was losing 80 rows: endpoint's 100-row processes
+        set, well inside budget, silently rendered at 20."""
+        text, _ids, truncated, row_cap = pack_evidence(self._slice(100))
+
+        assert truncated is False
+        assert row_cap >= 100
+        assert text.count("action=failure") == 100
+        assert estimate_tokens(text) < 20_000
+
+    def test_the_ceiling_still_binds_when_the_budget_cannot_afford_it(self):
+        """Raising the rung must not turn the ladder off. A slice too big for the
+        budget still shrinks, and still reports that it did."""
+        text, _ids, truncated, row_cap = pack_evidence(self._slice(5000), token_budget=200)
+
+        assert truncated is True
+        assert row_cap < _ROW_CAP_LADDER[0]
+        assert estimate_tokens(text) <= 400
+
+    def test_a_set_larger_than_the_ceiling_reports_the_withheld_rows(self):
+        """Above the top rung the cap is doing real work again, so the "(N rows
+        not shown)" line is the only thing that keeps the loss visible."""
+        text, _ids, _truncated, row_cap = pack_evidence(self._slice(500))
+
+        assert row_cap == _ROW_CAP_LADDER[0]
+        assert "not shown" in text
 
 
 def test_a_forged_evidence_block_cannot_reach_the_user_turn():
@@ -393,7 +449,7 @@ class TestExhibitsRenderAtTheAnalystsOwnCap:
         assert truncated is True
 
         # Derived, not passed: no caller can get it wrong.
-        assert fitted_row_cap(slice_, token_budget=20_000) == 20
+        assert fitted_row_cap(slice_, token_budget=20_000) == _ROW_CAP_LADDER[0]
         exhibit = exhibits_for(slice_, ["auth_events#1"], row_cap=row_cap)[0]
         rendered_rows = [line for line in exhibit.text.splitlines() if line.startswith("2018")]
         assert len(rendered_rows) <= row_cap
