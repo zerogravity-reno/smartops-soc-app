@@ -165,6 +165,29 @@ class TestTheTwoRootsAreJoinable:
 
         assert _by_name(spans)["smartops.analysis"].attributes["fetch.trace_id"] == "a" * 32
 
+    def test_run_id_is_what_actually_identifies_the_run(self, spans):
+        """`task_id` is NOT enough, and this is the assertion that says so.
+
+        A task_id is reused every time the same case is investigated again --
+        `botsv3_coinhive` has four runs under one id. Two traces joined on
+        task_id + hypothesis_id alone can therefore belong to different
+        investigations. `run_id` is the timestamped directory, and both roots
+        carry it: the fetch tier via `record_run_id()` after
+        `save_run_artifacts()` mints it, the analyze tier via this parameter.
+        """
+        with analysis_span("t-1", "h-1", run_id="20260830T120000"):
+            pass
+
+        assert _by_name(spans)["smartops.analysis"].attributes["run_id"] == "20260830T120000"
+
+    def test_run_id_is_omitted_rather_than_faked_when_unknown(self, spans):
+        """A broker that wrote no run directory has no id to give. An empty string
+        would be a real-looking join key matching nothing."""
+        with analysis_span("t-1", "h-1", run_id=None):
+            pass
+
+        assert "run_id" not in _by_name(spans)["smartops.analysis"].attributes
+
     def test_the_fetch_trace_id_is_omitted_rather_than_faked_when_absent(self, spans):
         """`BrokerReport.trace_id` is `None` when telemetry was never configured.
         Recording an all-zero id would be a real-looking value pointing at
@@ -173,6 +196,106 @@ class TestTheTwoRootsAreJoinable:
             pass
 
         assert "fetch.trace_id" not in _by_name(spans)["smartops.analysis"].attributes
+
+
+class TestTheFetchTierStampsTheSameRunId:
+    """`record_run_id` is how the fetch root gets the key the analyze root is
+    given directly. It has to be a late stamp rather than a span attribute:
+    `save_run_artifacts()` mints the timestamped directory, so nothing upstream of
+    it -- including `investigation_span` at the top of `broker_task` -- can know
+    the name yet. Spans accept attributes until they end, and it is still open."""
+
+    def test_it_lands_on_the_open_investigation_span(self, spans):
+        from contracts import AnalystTask, Entity, Scope
+        from smartops.telemetry import investigation_span, record_run_id
+
+        task = AnalystTask(
+            task_id="t-1",
+            hypothesis_id="h-1",
+            goal="g",
+            scope=Scope(
+                entities=[Entity(kind="user", value="bostoll")],
+                time_window=(
+                    datetime(2018, 8, 20, tzinfo=UTC),
+                    datetime(2018, 8, 21, tzinfo=UTC),
+                ),
+            ),
+        )
+
+        with investigation_span(task):
+            record_run_id("20260830T120000")
+
+        attrs = _by_name(spans)["smartops.investigation"].attributes
+        assert attrs["run_id"] == "20260830T120000"
+        assert attrs["task_id"] == "t-1"
+        assert attrs["hypothesis_id"] == "h-1"
+
+    def test_it_is_a_no_op_with_no_recording_span(self):
+        """Must never be the thing that breaks a run that finished its work."""
+        from smartops.telemetry import record_run_id
+
+        record_run_id("20260830T120000")  # outside any span; must not raise
+
+    def test_both_roots_carry_the_same_three_join_keys(self, spans):
+        """The property the two-trace design rests on: a reader holding either
+        trace can find the other, and can tell WHICH run it belongs to."""
+        from contracts import AnalystTask, Entity, Scope
+        from smartops.telemetry import investigation_span, record_run_id
+
+        task = AnalystTask(
+            task_id="t-1",
+            hypothesis_id="h-1",
+            goal="g",
+            scope=Scope(
+                entities=[Entity(kind="user", value="bostoll")],
+                time_window=(
+                    datetime(2018, 8, 20, tzinfo=UTC),
+                    datetime(2018, 8, 21, tzinfo=UTC),
+                ),
+            ),
+        )
+        with investigation_span(task):
+            record_run_id("20260830T120000")
+        with analysis_span("t-1", "h-1", run_id="20260830T120000"):
+            pass
+
+        emitted = _by_name(spans)
+        fetch = emitted["smartops.investigation"].attributes
+        analyze = emitted["smartops.analysis"].attributes
+
+        for key in ("task_id", "hypothesis_id", "run_id"):
+            assert fetch[key] == analyze[key], f"{key} differs between the two roots"
+
+    def test_the_two_roots_are_separate_traces_on_purpose(self, spans):
+        """Recorded as a decision rather than left to be discovered. Unifying them
+        would mean hoisting the fetch root into the CLI, which puts a tracing
+        concern in the entry point and leaves `broker_task` untraced when called as
+        a library (bench, replay). The join keys above are the alternative."""
+        from contracts import AnalystTask, Entity, Scope
+        from smartops.telemetry import investigation_span
+
+        task = AnalystTask(
+            task_id="t-1",
+            hypothesis_id="h-1",
+            goal="g",
+            scope=Scope(
+                entities=[Entity(kind="user", value="bostoll")],
+                time_window=(
+                    datetime(2018, 8, 20, tzinfo=UTC),
+                    datetime(2018, 8, 21, tzinfo=UTC),
+                ),
+            ),
+        )
+        with investigation_span(task):
+            pass
+        with analysis_span("t-1", "h-1", run_id="r"):
+            pass
+
+        emitted = _by_name(spans)
+        assert (
+            emitted["smartops.investigation"].context.trace_id
+            != emitted["smartops.analysis"].context.trace_id
+        )
 
 
 class TestContextSurvivesTheThreadFanOut:

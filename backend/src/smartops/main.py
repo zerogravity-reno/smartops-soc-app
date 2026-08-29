@@ -793,6 +793,7 @@ async def _run(argv: list[str] | None = None) -> int:
                 with analysis_span(
                     task.task_id,
                     task.hypothesis_id,
+                    run_id=Path(run_dir).name if run_dir else None,
                     fetch_trace_id=outcome.report.trace_id,
                 ):
                     findings = await gather(

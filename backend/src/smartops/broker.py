@@ -65,6 +65,7 @@ from smartops.guards import escape_untrusted, fenced
 from smartops.telemetry import (
     current_trace_id,
     investigation_span,
+    record_run_id,
     record_cost,
     record_result_status,
 )
@@ -1307,6 +1308,10 @@ async def _run_broker_task(
     )
 
     run_dir = save_run_artifacts(report)
+    # Now that the timestamped directory exists, name it on the fetch tier's span.
+    # This is the only attribute that ties this trace to ONE run rather than to
+    # every run of the same task -- see `telemetry.record_run_id`.
+    record_run_id(run_dir.name)
 
     return BrokerOutcome(
         results=list(request.collected),

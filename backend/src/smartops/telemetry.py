@@ -112,9 +112,37 @@ def investigation_span(task: AnalystTask) -> Iterator[trace.Span]:
         yield span
 
 
+def record_run_id(run_id: str) -> None:
+    """Stamp the run directory's name onto the current span.
+
+    Called after the artifacts are written, because that is when the id exists --
+    `save_run_artifacts()` mints the timestamped directory, so nothing upstream of
+    it can know the name. Spans accept attributes until they end, and this one is
+    still open.
+
+    **Why it matters that both trace roots carry this.** The fetch tier and the
+    analyze tier are separate traces on purpose (see `analysis_span`), joined by
+    their attributes rather than by a parent. They carried `task_id` and
+    `hypothesis_id`, and neither identifies a RUN: a task_id is reused every time
+    the same case is investigated again -- `botsv3_coinhive` has four runs under
+    one id. Two traces joined on task_id alone can therefore belong to different
+    investigations, which is the failure this closes.
+
+    A no-op with no recording span, same discipline as `record_cost`.
+    """
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    span.set_attribute("run_id", run_id)
+
+
 @contextmanager
 def analysis_span(
-    task_id: str, hypothesis_id: str, *, fetch_trace_id: str | None = None
+    task_id: str,
+    hypothesis_id: str,
+    *,
+    run_id: str | None = None,
+    fetch_trace_id: str | None = None,
 ) -> Iterator[trace.Span]:
     """Root span for the analyze tier.
 
@@ -125,11 +153,14 @@ def analysis_span(
     when called as a library -- or leaving it open across a boundary it does not
     own.
 
-    The two roots are joined the same way every other artifact in this system is
-    joined: on `task_id` and `hypothesis_id`. `fetch_trace_id` additionally
-    records which fetch trace produced the evidence, so a reader holding the
-    analyze trace can reach the retrieval that fed it. It comes from
-    `BrokerReport.trace_id`, which `broker_task` stamped from inside its own span.
+    The two roots are joined by their attributes rather than by a parent, and
+    **`run_id` is the one that actually identifies the run.** `task_id` and
+    `hypothesis_id` are carried too, but a task_id is reused across runs of the
+    same case, so those two alone would let traces from different investigations
+    look joinable. `fetch_trace_id` additionally records which fetch trace produced
+    the evidence -- it comes from `BrokerReport.trace_id`, which `broker_task`
+    stamped from inside its own span, so a reader holding the analyze trace can
+    jump straight to the retrieval rather than search for it.
 
     Analyst spans nest under this one for free: `gather()` fans out with
     `asyncio.to_thread`, which copies the current `contextvars` context into each
@@ -137,6 +168,10 @@ def analysis_span(
     """
     tracer = trace.get_tracer(TRACER_NAME)
     attributes = {"task_id": task_id, "hypothesis_id": hypothesis_id}
+    # Omitted rather than empty-stringed when unknown, so a missing join key reads
+    # as absent instead of as a real value that matches nothing.
+    if run_id:
+        attributes["run_id"] = run_id
     if fetch_trace_id:
         attributes["fetch.trace_id"] = fetch_trace_id
     with tracer.start_as_current_span("smartops.analysis", attributes=attributes) as span:
