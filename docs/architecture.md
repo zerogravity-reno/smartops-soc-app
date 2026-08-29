@@ -5,10 +5,14 @@ one hypothesis becomes a grounded, cited conclusion. It covers both halves of th
 pipeline — the **fetch** tier (Task Broker + domain subagents) and the newer
 **analyze** tier (three domain analysts + a grounding gate).
 
-> Related docs. `docs/agent_architecture.md` and
-> `docs/confluence-task-broker-architecture.md` go deeper on broker internals and
-> predate the analyst tier; `docs/PROJECT_DOCS.md` is the decision record (compiled
-> from `docs/sessions/`). This file is the single map of the whole system.
+> **Related docs.** This file is the single map of the whole system. Three
+> companion pages go deeper per subsystem and are the ones `docs/check_anchors.py`
+> validates: `confluence-task-broker-architecture.md` (the fetch tier),
+> `confluence-findings-pipeline-evidence-store.md` (evidence and the link
+> contract), `confluence-subagent-analysts.md` (the analysts; untracked by
+> design). `docs/PROJECT_DOCS.md` is the decision record, compiled from
+> `docs/sessions/` — never edited directly. `docs/archive/` holds superseded
+> architecture prose, kept for the reasoning it records.
 
 ---
 
@@ -24,13 +28,19 @@ The engine runs in two phases with a hard wall between them:
    of drawing conclusions.
 
 2. **Analyze (grounded by a gate).** Three **subagent-analysts** — identity,
-   network, endpoint — each take the hypothesis plus their routed slice of the
-   fetched evidence and decide whether it **supports**, **refutes**, or is
-   **inconclusive** about the hypothesis. They run on a Bedrock **custom-imported**
-   reasoning model (Cisco **Foundation-Sec-8B-Reasoning**, Llama-3.1-8B, 32k
-   context). A citation-validation gate drops any fabricated citation and downgrades
-   ungrounded decisive verdicts; a thin combiner rolls the three into one
-   `HypothesisAssessment`.
+   network, endpoint — each read their routed slice of the fetched evidence and
+   report what it shows: a **`Disposition`** of `benign` / `suspicious` /
+   `malicious` / `inconclusive`. They run on a Bedrock **custom-imported** reasoning
+   model (Cisco **Foundation-Sec-8B-Reasoning**, Llama-3.1-8B, 32k context). A
+   citation-validation gate drops any fabricated citation and downgrades ungrounded
+   decisive readings.
+
+   **The analysts never see the hypothesis.** An analyst told "20 auth events means
+   malicious" and then shown 20 auth events reports malicious — that is the
+   hypothesis talking, not the evidence. So they judge the *evidence*, and whether it
+   supports or refutes the *claim* is decided one level up, by the Analyst Agent,
+   across the `HypothesisFindings` contract. **There is no combiner in this
+   codebase**, deliberately — see section 7.
 
 The design invariant throughout: **conclusions must be grounded in evidence the
 system actually retrieved, and neither a model's rows nor its citations are taken
@@ -67,8 +77,8 @@ flowchart TD
         GATE["Grounding gate<br/>citation validation · ungrounded → inconclusive"]
     end
 
-    GATE --> COMBINE["combine() — confidence × margin"]
-    COMBINE --> ASSESS["HypothesisAssessment<br/>.smartops/runs/.../assessment.json"]
+    GATE --> FINDINGS["HypothesisFindings<br/>3 blind judgements + exhibits<br/>.smartops/runs/.../findings.json"]
+    FINDINGS -.->|contract boundary| BIGA["Analyst Agent<br/>(separate component — decides<br/>supports / refutes)"]
 ```
 
 The same shape, ASCII (for terminals that do not render mermaid):
@@ -85,7 +95,12 @@ CLI → Task Broker (Sonnet) ─┬─ investigate_siem → Splunk MCP ─┐
                                  route()  →  identity / network / endpoint
                                         (Foundation-Sec-8B, invoke_model)
                                                                ▼
-                          grounding gate → combine() → HypothesisAssessment
+                    grounding gate → HypothesisFindings (findings.json)
+                                                               ╎
+                                          ╎ contract boundary  ╎
+                                                               ▼
+                                Analyst Agent — decides supports / refutes
+                                        (separate component, owned elsewhere)
 ```
 
 ---
@@ -172,16 +187,24 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
   `report.json`, `evidence.json`, and `Exhibit.query` for the Analyst Agent, which
   is not blind (see `formatting.format_result_set`). Rows come from `ResultSet.rows`
   (code-assembled) — never `Evidence.raw`.
-- **Packing — `packing.py`.** Fits a slice into the 32k window via a row-cap ladder
-  (20→10→…→header-only), highest-signal first (VT, then siem, then untagged), logging
-  any truncation. Returns the evidence text **plus the set of valid header ids** for
-  the grounding gate.
+- **Packing — `packing.py`.** Fits a slice into a 20,000-token evidence budget via a
+  row-cap ladder (`200→20→10→5→3→1→header-only`), highest-signal first (VT, then siem,
+  then untagged), logging any truncation. Returns the evidence text **plus the set of
+  valid header ids** for the grounding gate. The ladder's **first rung is a ceiling,
+  not a starting guess** — it steps down only on budget overflow. It was 20 and
+  pressure never reached it, so the analyst read a 100-row process set at 20 rows
+  while 87% of the budget went unused, reporting `truncated=False` throughout.
 - **Prompts — `prompts.py`.** Each domain system prompt = the verbatim **Metis**
   preamble (the model's own trained persona, kept for safety/reasoning alignment)
   **augmented** with a hand-written, task-framed domain body: the exact evidence
   line-format it will see, its threat catalog, grounding rules, the untrusted-data
-  security block, and the fixed verdict format. The user turn fences the hypothesis
-  (escaped), scope, and evidence, reusing `guards.escape_untrusted` / `guards.fenced`.
+  security block, and the fixed answer block. The user turn fences the scope and the
+  evidence via `guards.fenced` — and takes **no hypothesis parameter at all**, which
+  is what makes blindness structural rather than a promise about callers.
+  `_FINDING_FOOTER` also carries a **reporting floor** (report every distinct pattern;
+  dedupe by row and reason) and a **`suspicious`/`inconclusive` tie-break**. Both
+  landed with `temperature=0`: greedy decoding answers thinly without them, so they
+  are one change with two halves. The hypothesis-shown prompts live in `shown.py`.
 - **Model — `model.py` (`AnalystModel`).** The imported model is driven by raw
   `invoke_model` (NOT Converse; no tool-calling, no structured output). The prompt
   template uses the model's registered special tokens and **seeds `<|assistant|>\n
@@ -191,12 +214,23 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
   with backoff. Credentials via `SMARTOPS_ANALYST_API_KEY` (ABSK bearer or
   ACCESS:SECRET) or the default AWS chain.
 - **Parse — `parse.py`.** Split `generation` on `</think>` (reasoning kept as an
-  audit trace, never re-fed; answer parsed). `parse_verdict` reads the labelled
-  block, tolerant of the model's markdown emphasis (`**VERDICT:**`) by stripping
-  `*`/backticks first. A malformed reply earns one bounded re-ask.
-- **Verdict — `contracts/reasoning.py` (`AnalystVerdict`).** `domain`, `stance`,
-  `confidence`, `rationale`, `key_observations`, `citations`, `reasoning_trace`, and
-  per-verdict `prompt_tokens`/`generation_tokens`.
+  audit trace, never re-fed; answer parsed). `parse_finding` reads the labelled block,
+  tolerant of the model's markdown emphasis (`**DISPOSITION:**`) by stripping
+  `*`/backticks first. A malformed reply earns one bounded re-ask. The format is
+  labelled text rather than JSON because this model has **no structured-output or
+  tool-calling support** (raw `invoke_model` on a custom import, no constrained
+  decoding) — and labelled text degrades gracefully where JSON fails atomically: a
+  reply missing `DISPOSITION` still keeps its observations and defaults to
+  `inconclusive`.
+- **Finding — `contracts/reasoning.py` (`DomainFinding`).** `domain`, `disposition`,
+  `confidence`, `rationale`, `observations`, `citations`, `reasoning_trace`, and
+  per-call `prompt_tokens`/`generation_tokens`. Projected to `DomainJudgement` for the
+  wire — see section 7.
+- **The shown arm — `shown.py`.** `run_one` → `AnalystVerdict` (a `Stance` on the
+  hypothesis) with its own prompts and parser. **Not in the pipeline.** Its only
+  caller is `blind_compare`, the A/B harness that measures whether seeing the
+  hypothesis anchors the read — the evidence the blind design rests on, so it stays
+  runnable.
 
 ---
 
@@ -207,15 +241,19 @@ Grounding is enforced at both tiers:
 - **Fetch side:** raw evidence never enters a prompt; findings are projected by
   code; citations are minted by code; `IndexScopeGuard` bounds what can be queried.
   The fetch half structurally cannot fabricate rows.
-- **Analyst side (`analyze.run_one` → `_finalize`):**
+- **Analyst side (`analyze.gather_finding` → `_finalize_finding`):**
   - **Citation validation.** `pack_evidence` returns the exact set of header ids it
     emitted; any citation the model produces that is not in that set is **dropped**
     and logged (this has caught real fabrications live, e.g. a `uncategoried#49`
     typo).
-  - **Grounding downgrade (the gate).** A `supports`/`refutes` verdict that resolves
-    to **zero** valid citations is downgraded to `inconclusive` with capped
-    confidence and a noted reason — a decisive claim with no evidence behind it does
-    not stand.
+  - **Grounding downgrade (the gate).** A decisive disposition (`benign`,
+    `suspicious` or `malicious`) that resolves to **zero** valid citations is
+    downgraded to `inconclusive` with capped confidence and a noted reason — a
+    decisive claim with no evidence behind it does not stand.
+  - **What the gate does NOT check** is whether a claim *matches* the row it cites.
+    One observed draw called an IP "known malicious" whose cited row read `mal=1` of
+    91. Citations resolving and claims being accurate are different tests, and only
+    the first is decidable here. Recorded at `analyze._as_judgement` as defect (c).
   - **Context isolation.** The `<think>` reasoning trace is persisted for audit but
     never fed back into any prompt.
 - **Empty-slice short-circuit.** A domain with no routed evidence returns
@@ -224,21 +262,95 @@ Grounding is enforced at both tiers:
 
 ---
 
-## 7. Combine → HypothesisAssessment
+## 7. HypothesisFindings — the Analyst Agent boundary
 
-`combine()` (`analyze.py`) is a thin, honest roll-up (a full aggregator is future
-work): it is a **confidence-weighted vote scaled by margin**. Support and refute
-sides sum their verdict confidences; the winner's confidence is the **mean of the
-winning side's verdicts, scaled by its margin over the loser** — so two unopposed
-0.88 supports roll up to ~0.88 (not a spurious 1.0), and opposition drives it toward
-`inconclusive`. Ties and all-inconclusive panels resolve to `inconclusive`. The
-result is a `HypothesisAssessment` (overall stance + confidence + the per-domain
-verdicts, with token totals), persisted next to the broker artifacts at
-`.smartops/runs/<task>/<timestamp>/assessment.json`.
+`gather()` (`analyze.py`) runs the three blind analysts concurrently and assembles
+`HypothesisFindings`, persisted beside the broker artifacts at
+`.smartops/runs/<task>/<timestamp>/findings.json`. **This is where the pipeline in
+this repository stops.**
+
+**There is no combiner, and its absence is the contract.** An earlier `combine()`
+rolled the three verdicts into one `HypothesisAssessment` by confidence-weighted
+vote. It was deleted once nothing called it: deciding whether findings support or
+refute the hypothesis belongs to the **Analyst Agent**, a separate component owned
+elsewhere. Three analysts reading different evidence *should* sometimes disagree, and
+flattening that here would destroy the signal the consumer needs. `HypothesisAssessment`
+still exists in `contracts/` as the shape that *does* carry a decided stance —
+`HypothesisFindings` defines itself by contrast with it.
+
+What crosses the boundary, per domain (`DomainJudgement`):
+
+| field | notes |
+|---|---|
+| `domain` | `identity` \| `network` \| `endpoint` — all three always present |
+| `disposition` | `benign` \| `suspicious` \| `malicious` \| `inconclusive` |
+| `confidence` | bounded to `[0.0, 1.0]` |
+| `rationale`, `observations`, `citations` | the read, and the ids behind it |
+| `exhibits` | one per kept citation: the rows themselves, `row_count`, and the `query` |
+
+**Dropped on the way out:** `reasoning_trace`, `prompt_tokens`, `generation_tokens`.
+The token counts are our telemetry. The trace is stronger than that — it is
+"persisted for audit, never re-fed", and putting a model's private chain of thought
+into a contract handed to *another* model is exactly re-feeding it. A projection
+rather than `model_dump(exclude=...)`, so the published schema does not advertise
+fields a consumer must know to ignore.
+
+**All three domains always appear**, including ones that got no evidence — reported
+`inconclusive` with no observations, never omitted. "We looked and found nothing" and
+"we did not look" are different facts, and a missing entry cannot express the
+difference. `RetrievalSummary` carries the fetch side for the same reason.
+
+**The shape is published and enforced.**
+`contracts/schemas/hypothesis-findings.v1.schema.json` (JSON Schema draft 2020-12) is
+generated by `contracts/schemas/generate.py` and asserted equal to the models in
+`contracts/tests/test_published_schema.py` — a schema file that silently falls behind
+tells a consumer the wrong thing authoritatively, which is worse than publishing none.
+A breaking change means bumping `schema_version` and publishing a new `vN` file, not
+editing v1 in place.
 
 ---
 
-## 8. Models & configuration
+## 8. Trace chain: evidence_id → hypothesis_id
+
+Every claim resolves back to the rows behind it, across three files in one run
+directory. The join keys are `task_id` and `hypothesis_id`.
+
+```
+report.json      task_id · hypothesis_id · plan · step_outcomes · results
+                     │
+                     │  evidence_id = f"{task_id}:{index}"
+                     ▼
+evidence.json    the Evidence payloads, keyed by that id
+                     │
+                     │  DomainJudgement.exhibits[].evidence_ids
+                     ▼
+findings.json    task_id · run_id · hypothesis_id · hypothesis prose
+                 3 × DomainJudgement, each exhibit naming its evidence_ids
+```
+
+- **`evidence_id()`** — `contracts/subtask.py:63`. One formula, one place, and
+  **four** minting sites that must agree exactly, or a `ResultSet.evidence_id` points
+  at nothing: `subagents._EvidenceCollector.evidence`, `projection.project_siem`,
+  `projection.project_vt`, and the VirusTotal enricher in `broker.py`. All four derive
+  `index` by enumerating the same collector call list in the same order.
+- **The trailing `index` is positional.** Whether it should become content-addressed
+  is open question A in
+  `docs/superpowers/specs/2026-08-25-evidence-link-contract-design.md`. Do not change
+  the formula without settling it.
+- **`ResultSet` uniqueness is validated** — `_evidence_ids_are_unique` and
+  `_citations_resolve_to_evidence` on `SubtaskResult` refuse a duplicate id or a
+  citation naming evidence that does not exist.
+- **`hypothesis_id` flows** `AnalystTask` → `BrokerReport` → `HypothesisFindings`.
+  The hypothesis *prose* is carried on `HypothesisFindings.hypothesis` so the artifact
+  is self-describing, and is **attacker-influenceable** — fence and escape it before it
+  reaches any prompt.
+
+Depth on this chain, citation by citation, is in
+`docs/confluence-findings-pipeline-evidence-store.md`.
+
+---
+
+## 9. Models & configuration
 
 | Concern | Broker (fetch) | Analysts (analyze) |
 |---|---|---|
@@ -246,22 +358,47 @@ verdicts, with token totals), persisted next to the broker artifacts at
 | Bedrock API | Converse | custom-imported → `invoke_model` |
 | Tools / structured output | yes (Strands `@tool`, structured output) | none (raw text in/out) |
 | Reasoning | thinking | `<think>…</think>`, seeded |
-| Cost model | per-token (tracked by `Budget`) | per model-copy-**minute** (warm time), not per token |
-| Context | large | **32,768** tokens (prompt + generation) |
+| Sampling | provider default | **greedy** (`temperature=0`, see below) |
+| Cost model | per-token (`Budget`) | per **CMU-minute** (`analyst_cost`), not per token |
+| Context | large | **32,768** tokens; evidence budget 20,000 |
+
+**Sampling is greedy, and deliberately not the model's own default.**
+`generation_config.json` ships `temperature=0.6, top_p=0.95` — those are the model's
+*conversational* settings, and at 0.6 one evidence slice produced three of the four
+possible dispositions across five draws (confidence spread 0.60, citation Jaccard
+0.27). At `temperature=0` the draws are byte-identical. The prompt's reporting floor
+is what makes that safe: greedy without it answers thinly, which is why the two
+changed together (see section 5). **Caveat:** determinism is confirmed on a *warm*
+model copy — the first call after a scale-up has been observed to differ, and the
+mechanism is not yet confirmed.
+
+**Cost is wall-clock, not tokens.** Bedrock Custom Model Import bills **per Custom
+Model Unit per minute** ($0.05718 in us-east-1) in **5-minute windows** from the first
+successful invocation, scaling to zero after 5 idle minutes. So three analysts running
+concurrently in one window cost the same as one — `gather()`'s fan-out is already the
+cost-optimal shape. `smartops.analyst_cost` records successful invocations and derives
+the windows; it needs `SMARTOPS_ANALYST_CMU_COUNT` (from
+`aws bedrock get-imported-model`) to print a dollar figure and reports "cost unknown"
+rather than guessing. `Budget` is untouched by this — its ledger answers "what did
+these tokens cost", which a per-minute charge cannot.
+
+⚠️ `budget.PRICING` holds Anthropic **first-party** rates, not Bedrock's. Directionally
+correct on Bedrock, not an invoice.
 
 Key env / CLI knobs:
 - `SMARTOPS_ANALYST_MODEL_ARN`, `SMARTOPS_ANALYST_API_KEY`,
-  `SMARTOPS_ANALYST_TEMPERATURE` (0.6 default), `SMARTOPS_ANALYST_TOP_P` (0.95),
-  `SMARTOPS_ANALYST_MAX_GEN_LEN` (3072), `SMARTOPS_ANALYST_READY_RETRIES` / `_WAIT_SECONDS`.
+  `SMARTOPS_ANALYST_TEMPERATURE` (**0** default), `SMARTOPS_ANALYST_TOP_P` (0.95),
+  `SMARTOPS_ANALYST_MAX_GEN_LEN` (3072), `SMARTOPS_ANALYST_READY_RETRIES` /
+  `_WAIT_SECONDS`, `SMARTOPS_ANALYST_CMU_COUNT` / `_CMU_PRICE`.
 - `--hypothesis` (enables the analyst tier), `--broker-output-tokens` (default 16000),
   `--subagent-turns` (default 25), `--skills` / `--no-skills`
   (`SMARTOPS_SKILLS_ENABLED`), `--budget-usd`.
-- Analyst token usage is reported per verdict and in total every run; the hard
-  per-call limit is the 32k context window (headroom ≈ 32768 − prompt tokens).
+- Analyst token usage is reported per finding and in total every run, alongside the
+  CMU-minute cost line. The hard per-call limit is the 32k context window.
 
 ---
 
-## 9. Contracts (the typed spine)
+## 10. Contracts (the typed spine)
 
 `contracts/` is a separate workspace member consumed by every tier.
 
@@ -274,13 +411,17 @@ Key env / CLI knobs:
 | `SubtaskResult` / `Evidence` / `Findings` | a subagent's result; raw evidence + typed rows |
 | `SiemFindings` / `VtFindings` / `ResultSet` | per-family projected payloads (CIM buckets, verdicts) |
 | `StepOutcome` / `BrokerReport` | per-step evaluation; the full fetch record |
-| `InvestigationContext` | the "why" for the analysts: `{hypothesis, seed_event?}` |
-| `AnalystVerdict` | one domain analyst's grounded conclusion |
-| `HypothesisAssessment` | the rolled-up result of the analyze tier |
+| `DomainFinding` | one blind analyst's read of its slice (internal) |
+| `DomainJudgement` / `Exhibit` | that read as it crosses the wire, with its rows |
+| `RetrievalSummary` / `StepSummary` | what the fetch side looked for and turned up |
+| **`HypothesisFindings`** | **the analyze tier's output — the Analyst Agent boundary** |
+| `InvestigationContext` | `{hypothesis, seed_event?}` — used by the A/B harness only; the live analysts never receive it |
+| `AnalystVerdict` / `Stance` | the hypothesis-shown arm's output (`shown.py`, not the pipeline) |
+| `HypothesisAssessment` | the shape that carries a *decided* stance. Nothing here produces one — kept because `HypothesisFindings` is defined by contrast with it |
 
 ---
 
-## 10. Data-flow example (coinhive / BSTOLL-L)
+## 11. Data-flow example (coinhive / BSTOLL-L)
 
 1. CLI: goal + `--hypothesis "Host BSTOLL-L was cryptomining via coinhive.com"` +
    entities `domain:coinhive.com`, `host:BSTOLL-L`.
@@ -290,28 +431,50 @@ Key env / CLI knobs:
    `dns_resolutions`, `connections`, some `uncategorised`, and a VT verdict.
 4. `route()` sends dns/connections + VT(domain) → network, processes → endpoint,
    uncategorised (host) → endpoint; auth → identity (empty → short-circuit).
-5. Each analyst reasons over its slice, emits `<think>…</think>` then a VERDICT
-   block; the gate validates citations against the emitted header ids.
-6. `combine()` rolls the verdicts into an overall stance + confidence; the
-   assessment is printed and saved. (Observed: grounded per-domain verdicts,
-   INCONCLUSIVE overall — reconnaissance without miner execution — a defensible SOC
-   outcome.)
+5. Each analyst reasons over its slice — **without being shown the hypothesis** —
+   emits `<think>…</think>` then a DISPOSITION block; the gate validates citations
+   against the emitted header ids.
+6. `gather()` attaches the three judgements to the hypothesis they never saw and
+   writes `findings.json`. No overall stance is produced: that is the Analyst Agent's
+   call. (Observed 2026-08-29, greedy: network `malicious` 0.95 citing the VT row
+   paired with a matching connection; endpoint `suspicious`; identity `benign` 0.95
+   over 72 auth rows. Three domains disagreeing on one estate is the expected shape,
+   not a fault — which is why nothing here flattens it.)
 
 ---
 
-## 11. Known limitations & follow-ups
+## 12. Known limitations & follow-ups
 
 - **SIEM CIM-categorization gap.** The siem subagent often does not tag queries with
   a CIM category, so evidence falls into `uncategorised`; `_infer_cim_category` is a
   fallback, not a cure. Uncategorised evidence fans out by entity kind and can dilute
   a domain's slice. Highest-leverage fix is reliable categorization at the siem tier.
-- **Analyst verdict variance.** At the model's default `temperature 0.6`, verdicts
-  can vary run-to-run on identical evidence. A stability sweep (temps 0.2/0.3/0.6) is
-  planned; 0.3 is Cisco's benchmarked setting.
+- ~~**Analyst verdict variance.**~~ **Resolved 2026-08-29** at `temperature=0` plus
+  a prompt reporting floor; the draws are byte-identical on a warm model copy. Two
+  residuals: the first call after a scale-up has been observed to differ (mechanism
+  unconfirmed — needs a deliberate >5-minute idle wait to reproduce), and
+  **consistency is not correctness** — see the next item.
+- **No answer key.** `bench.py` carries `expected_families` for routing correctness and
+  **no expected dispositions anywhere in the repo**. Verdicts can be shown consistent;
+  they cannot be shown *right*. Labelling 10–20 BOTSv3 cases with the disposition a
+  human analyst would give is the highest-leverage next work, and until it exists any
+  prompt edit is tuned against vibes.
+- **The grounding gate does not read claims against rows.** It verifies that citations
+  *resolve*, not that the sentence matches the evidence. One observed draw called an IP
+  "known malicious" whose cited row read `mal=1` of 91. Defect (c) at
+  `analyze._as_judgement`.
+- **No OTEL spans on the analyst path.** The Broker and fetch subagents stamp
+  `trace_attributes` onto every span; the analysts are raw boto3 and produce none, so a
+  trace covers the fetch half only.
 - **Budget escrow tradeoff.** The subagent escrow hold was calibrated to expected
   (not worst-case) turns to allow concurrency under tight budgets; this trades away
   part of the hard overspend guarantee. A per-investigation output-token ceiling is
   planned to restore it.
 - **edr / ndr not wired.** No MCP servers configured; the families are withheld.
-- **Aggregator.** The current `combine()` is intentionally thin; a richer downstream
-  Aggregator is future work.
+- **Aggregator.** Not in this repository, by contract — see section 7. `combine()`
+  was deleted along with the rest of the hypothesis-shown path; deciding for or against
+  the hypothesis is the Analyst Agent's job.
+- **The prompt-token estimator runs low.** `packing._CHARS_PER_TOKEN = 4` predicted
+  8,847 tokens for the endpoint slice where the model counted 11,975 (~26% low). Within
+  budget, and `_invoke_with_one_reask` warns past 20k, so this is a note rather than a
+  defect — but do not treat `estimate_tokens` as a ceiling.
