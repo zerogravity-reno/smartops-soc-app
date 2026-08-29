@@ -62,6 +62,11 @@ from smartops.tools.registry import load_mcp_servers, mcp_clients, warm_mcp_clie
 
 _ENTITY_KINDS = get_args(EntityKind)
 
+AWS_PROFILE_ENV_VAR = "AWS_PROFILE"
+"""Botocore's profile selector. Named here because `_neutralise_aws_profile`
+UNSETS it, and a variable this code writes to deserves to be as visible as one
+it merely reads."""
+
 # Used only on the scripted path, where nothing reaches a provider: `Budget`
 # still needs a `pricing_key` to bill against, and `ModelChoice` still validates
 # the pairing at construction. Never built into a real model.
@@ -585,6 +590,67 @@ def _persist_findings(
         )
 
 
+def _neutralise_aws_profile() -> str | None:
+    """Drop `AWS_PROFILE` when explicit credentials make it irrelevant.
+
+    Returns the value dropped, or `None`. Call AFTER `_load_env_file()` so that
+    credentials from `.env` count, and before anything constructs a boto3 client.
+
+    **Why this is code and not a note in the README.** It was a note in the
+    README -- three of them, across the handovers: "clear any shell `AWS_PROFILE`
+    before a live probe". A workaround documented three times is a defect with
+    good manners. The failure it prevents is also badly disguised: an unusable
+    profile surfaces as `The config profile (...) could not be found` from deep
+    inside botocore, at model-construction time, which reads as "your Bedrock
+    setup is wrong" rather than "an unrelated shell variable is set".
+
+    Two cases, both unambiguous:
+
+    - **Empty.** `AWS_PROFILE=""` is what `env AWS_PROFILE= ...` produces, and
+      botocore takes it literally -- it looks for a profile *named* empty string
+      and fails. An empty profile name is never valid, so it can only mean unset.
+    - **Set, with explicit keys also present.** `AWS_ACCESS_KEY_ID` +
+      `AWS_SECRET_ACCESS_KEY` in the environment are a direct statement of which
+      credentials to use. A profile named alongside them is the ambient leftover,
+      not the intent -- and it does not merely lose the race, it can break the run
+      outright, because botocore resolves the profile for *config* before it ever
+      reaches the credential chain the keys would win.
+
+    Logged at WARNING, never silent: overriding an operator's environment
+    variable without saying so is its own confusing failure.
+    """
+    profile = os.environ.get(AWS_PROFILE_ENV_VAR)
+    if profile is None:
+        return None
+
+    if not profile.strip():
+        del os.environ[AWS_PROFILE_ENV_VAR]
+        logging.getLogger(__name__).warning(
+            "%s was set to an empty value and has been unset -- botocore reads "
+            "that as a profile literally named '', which never exists",
+            AWS_PROFILE_ENV_VAR,
+        )
+        return profile
+
+    has_explicit_keys = all(
+        os.environ.get(name, "").strip()
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+    )
+    if not has_explicit_keys:
+        # Nothing else to authenticate with, so the profile is the intent.
+        return None
+
+    del os.environ[AWS_PROFILE_ENV_VAR]
+    logging.getLogger(__name__).warning(
+        "%s=%s ignored: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are set and are "
+        "what this run will authenticate with. Unset the keys if you meant to use "
+        "the profile.",
+        AWS_PROFILE_ENV_VAR,
+        profile,
+    )
+    return profile
+
+
 def _load_env_file() -> str | None:
     """Load `.env` into the environment, if there is one. Returns its path.
 
@@ -642,6 +708,9 @@ async def _run(argv: list[str] | None = None) -> int:
         level=logging.INFO if args.verbose else logging.ERROR,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    # After logging is configured, so its warning is visible, and after the .env
+    # load, so credentials from the file count as explicit.
+    _neutralise_aws_profile()
     configure_telemetry(console=args.console_traces)
 
     # Build MCP clients once, before any dispatch. A missing config or an unset
@@ -705,9 +774,16 @@ async def _run(argv: list[str] | None = None) -> int:
                 f"error: provider {choice.provider.value!r} is selected but not usable: {exc}",
                 file=sys.stderr,
             )
+            hint = ""
+            if os.environ.get(AWS_PROFILE_ENV_VAR):
+                hint = (
+                    f"\n       {AWS_PROFILE_ENV_VAR}="
+                    f"{os.environ[AWS_PROFILE_ENV_VAR]} is set and boto3 will use it; "
+                    "unset it to fall back to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."
+                )
             print(
                 f"       set {PROVIDER_ENV_VAR} to another provider, fix its credentials, "
-                "or pass --scripted to run without a model.",
+                f"or pass --scripted to run without a model.{hint}",
                 file=sys.stderr,
             )
             return 2
