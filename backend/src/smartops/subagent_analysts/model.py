@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from smartops.analyst_cost import AnalystSpend
 from smartops.errors import NotConfigured
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,7 @@ class AnalystModel:
         ready_wait_seconds: float = DEFAULT_READY_WAIT_SECONDS,
         client: Any | None = None,
         sleep: Any = time.sleep,
+        spend: AnalystSpend | None = None,
     ) -> None:
         self.model_arn = model_arn or os.environ.get(MODEL_ARN_ENV_VAR, "").strip()
         self.region = region or os.environ.get(REGION_ENV_VAR, "us-east-1")
@@ -189,6 +191,10 @@ class AnalystModel:
         self._api_key = (api_key or os.environ.get(API_KEY_ENV_VAR, "")).strip()
         self._client = client
         self._sleep = sleep  # injectable so tests do not actually wait
+        self.spend = spend if spend is not None else AnalystSpend()
+        """Billed-window record for this model's calls. Shared across the three
+        analysts because they share the `AnalystModel`, which is what makes their
+        concurrent calls collapse into one billing window rather than three."""
         # `analyze()` runs identity/network/endpoint concurrently via
         # `asyncio.gather(*(asyncio.to_thread(run_one, model, ...)))`, all
         # sharing this one `AnalystModel`. `threading.Lock`, not an
@@ -308,6 +314,10 @@ class AnalystModel:
             }
         )
         response = self._invoke_with_warmup(client, body)
+        # AFTER the call returned, not before: Bedrock starts the billing window
+        # at the first *successful* invocation, so a cold-start retry that never
+        # answered is not a billable minute. See `smartops.analyst_cost`.
+        self.spend.record()
         result = json.loads(response["body"].read())
         return AnalystResponse(
             generation=result.get("generation", ""),

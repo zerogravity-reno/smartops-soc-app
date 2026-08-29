@@ -725,6 +725,18 @@ async def _run(argv: list[str] | None = None) -> int:
                 logging.getLogger(__name__).debug("gather failed", exc_info=True)
             else:
                 _print_findings(findings)
+                # The analyst model is billed per CMU-minute, not per token, so
+                # its spend is not in `Budget` and `_print_outcome` above cannot
+                # show it. See `smartops.analyst_cost`.
+                #
+                # `getattr`, because the analyst model here is duck-typed -- tests
+                # inject fakes, and a bench harness may too. A cost READOUT must
+                # never be the thing that sinks a completed investigation, and the
+                # findings have already been printed by this point.
+                spend = getattr(analyst_model, "spend", None)
+                if spend is not None:
+                    print()
+                    print(spend.summary())
                 _persist_findings(task.task_id, findings, run_dir=run_dir)
 
     return 0
