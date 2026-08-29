@@ -1,0 +1,194 @@
+<svg viewBox="0 0 2020 700" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="One BrokerReport is routed in code into three domain slices; each analyst reads its evidence alone, blind to the hypothesis, through the same model-invocation step; code validates citations, projects the cited rows as exhibits, and gather assembles -- without deciding -- three judgements into HypothesisFindings, persisted as findings.json. The Analyst Agent, which will decide supports or refutes, is not built.">
+  <title>Analyst tier: BrokerReport to HypothesisFindings (hypothesis-blind, live path)</title>
+  <desc>Flow diagram of the SmartOps SOC analyst subagent tier as it runs in production: routing, three parallel blind domain analysts, citation validation, exhibit projection, and assembly into HypothesisFindings -- with no combiner, handed to a not-yet-built Analyst Agent.</desc>
+
+  <defs>
+    <marker id="arrowSlate" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#ea580c"/>
+    </marker>
+    <marker id="arrowGrey" viewBox="0 0 10 10" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="2020" height="700" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="1010" y="28" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="20" font-weight="700" fill="#0f172a">Analyst tier (live): BrokerReport → HypothesisFindings</text>
+  <text x="1010" y="46" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="12" fill="#64748b">SmartOps SOC — identity / network / endpoint analysts, hypothesis-blind</text>
+
+  <!-- Concurrency bracket over the three lanes -->
+  <line x1="420" y1="66" x2="1310" y2="66" stroke="#94a3b8" stroke-width="1.5"/>
+  <line x1="420" y1="66" x2="420" y2="74" stroke="#94a3b8" stroke-width="1.5"/>
+  <line x1="1310" y1="66" x2="1310" y2="74" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="865" y="60" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="12" font-style="italic" fill="#475569">three analysts run concurrently — each sees only its own slice, never the hypothesis</text>
+
+  <!-- Model-reasons bracket over column 5 only -->
+  <line x1="870" y1="96" x2="1060" y2="96" stroke="#b45309" stroke-width="1.5"/>
+  <line x1="870" y1="96" x2="870" y2="102" stroke="#b45309" stroke-width="1.5"/>
+  <line x1="1060" y1="96" x2="1060" y2="102" stroke="#b45309" stroke-width="1.5"/>
+  <text x="965" y="90" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="11.5" font-weight="700" fill="#b45309">the only step where a model reasons — everywhere else is code</text>
+
+  <!-- Lane divider hints -->
+  <line x1="420" y1="250" x2="1310" y2="250" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="6 6"/>
+  <line x1="420" y1="430" x2="1310" y2="430" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="6 6"/>
+
+  <!-- Lane labels -->
+  <text x="420" y="107" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#2563eb">IDENTITY</text>
+  <text x="420" y="287" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#059669">NETWORK</text>
+  <text x="420" y="467" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#ea580c">ENDPOINT</text>
+
+  <!-- Column 1: BrokerReport -->
+  <rect x="20" y="305" width="150" height="70" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="95" y="335" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#0f172a">BrokerReport</text>
+  <text x="95" y="352" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#475569">from Task Broker</text>
+
+  <!-- Column 2: route() -->
+  <rect x="210" y="300" width="170" height="80" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="295" y="332" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#0f172a">route()</text>
+  <text x="295" y="349" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#475569">code: CIM category +</text>
+  <text x="295" y="362" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#475569">entity kind</text>
+
+  <line x1="170" y1="340" x2="205" y2="340" stroke="#334155" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+  <!-- Fan-out route() -> 3 slices -->
+  <line x1="380" y1="330" x2="415" y2="160" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <line x1="380" y1="340" x2="415" y2="340" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <line x1="380" y1="350" x2="415" y2="520" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <!-- ============ IDENTITY LANE (y center 160) ============ -->
+  <rect x="420" y="125" width="160" height="70" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="500" y="155" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">Identity slice</text>
+  <text x="500" y="172" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">DomainSlice</text>
+
+  <line x1="580" y1="160" x2="615" y2="160" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+  <rect x="620" y="115" width="210" height="90" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="725" y="148" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">pack_evidence()</text>
+  <text x="725" y="165" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">20k budget + header ids</text>
+  <text x="725" y="180" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">+ Metis persona &amp; facts body</text>
+
+  <line x1="830" y1="160" x2="865" y2="160" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+  <rect x="870" y="120" width="190" height="80" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+  <text x="965" y="152" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#78350f">AnalystModel.invoke()</text>
+  <text x="965" y="169" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.3" fill="#78350f">Foundation-Sec-8B-Reasoning</text>
+
+  <line x1="1060" y1="160" x2="1095" y2="160" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+  <rect x="1100" y="115" width="210" height="90" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="1205" y="145" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">parse_finding() + gate</text>
+  <text x="1205" y="161" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">_finalize_finding(): drop invented ids</text>
+  <text x="1205" y="175" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">_as_judgement(): +Exhibits (cited rows)</text>
+
+  <!-- ============ NETWORK LANE (y center 340) ============ -->
+  <rect x="420" y="305" width="160" height="70" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="500" y="335" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">Network slice</text>
+  <text x="500" y="352" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">DomainSlice</text>
+
+  <line x1="580" y1="340" x2="615" y2="340" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <rect x="620" y="295" width="210" height="90" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="725" y="328" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">pack_evidence()</text>
+  <text x="725" y="345" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">20k budget + header ids</text>
+  <text x="725" y="360" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">+ Metis persona &amp; facts body</text>
+
+  <line x1="830" y1="340" x2="865" y2="340" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <rect x="870" y="300" width="190" height="80" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+  <text x="965" y="332" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#78350f">AnalystModel.invoke()</text>
+  <text x="965" y="349" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.3" fill="#78350f">Foundation-Sec-8B-Reasoning</text>
+
+  <line x1="1060" y1="340" x2="1095" y2="340" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <rect x="1100" y="295" width="210" height="90" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="1205" y="325" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">parse_finding() + gate</text>
+  <text x="1205" y="341" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">_finalize_finding(): drop invented ids</text>
+  <text x="1205" y="355" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">_as_judgement(): +Exhibits (cited rows)</text>
+
+  <!-- ============ ENDPOINT LANE (y center 520) ============ -->
+  <rect x="420" y="485" width="160" height="70" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="500" y="515" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">Endpoint slice</text>
+  <text x="500" y="532" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">DomainSlice</text>
+
+  <line x1="580" y1="520" x2="615" y2="520" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <rect x="620" y="475" width="210" height="90" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="725" y="508" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">pack_evidence()</text>
+  <text x="725" y="525" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">20k budget + header ids</text>
+  <text x="725" y="540" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">+ Metis persona &amp; facts body</text>
+
+  <line x1="830" y1="520" x2="865" y2="520" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <rect x="870" y="480" width="190" height="80" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+  <text x="965" y="512" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#78350f">AnalystModel.invoke()</text>
+  <text x="965" y="529" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.3" fill="#78350f">Foundation-Sec-8B-Reasoning</text>
+
+  <line x1="1060" y1="520" x2="1095" y2="520" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <rect x="1100" y="475" width="210" height="90" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="1205" y="505" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">parse_finding() + gate</text>
+  <text x="1205" y="521" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">_finalize_finding(): drop invented ids</text>
+  <text x="1205" y="535" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">_as_judgement(): +Exhibits (cited rows)</text>
+
+  <!-- Fan-in 3 judgements -> gather() -->
+  <line x1="1310" y1="160" x2="1345" y2="330" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <line x1="1310" y1="340" x2="1345" y2="340" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <line x1="1310" y1="520" x2="1345" y2="350" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <!-- No-combiner annotation over gather() -->
+  <text x="1430" y="290" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="11" font-style="italic" fill="#64748b">no combiner — assembles only (§9)</text>
+
+  <!-- Column 7: gather() -->
+  <rect x="1350" y="300" width="160" height="80" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="1430" y="332" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#0f172a">gather()</text>
+  <text x="1430" y="349" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">assembles —</text>
+  <text x="1430" y="362" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">does not decide</text>
+
+  <!-- Column 8: HypothesisFindings -> findings.json -->
+  <line x1="1510" y1="335" x2="1547" y2="280" stroke="#334155" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+  <rect x="1550" y="245" width="190" height="70" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="1645" y="278" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">HypothesisFindings</text>
+  <text x="1645" y="295" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#475569">3 judgements + retrieval</text>
+
+  <line x1="1645" y1="315" x2="1645" y2="392" stroke="#334155" stroke-width="1.5" marker-end="url(#arrowSlate)"/>
+
+  <rect x="1550" y="395" width="190" height="70" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="1645" y="428" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f172a">findings.json</text>
+  <text x="1645" y="445" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#475569">persisted per run</text>
+
+  <!-- Handoff to the not-yet-built Analyst Agent -->
+  <line x1="1740" y1="420" x2="1778" y2="355" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#arrowGrey)"/>
+
+  <rect x="1780" y="300" width="220" height="80" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="1890" y="332" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#64748b">Analyst Agent</text>
+  <text x="1890" y="349" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#64748b">not built —</text>
+  <text x="1890" y="362" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#64748b">decides SUPPORTS / REFUTES</text>
+
+  <!-- Caption -->
+  <text x="1010" y="610" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#334155">
+    One BrokerReport is routed in code into three domain slices; each analyst reads its evidence alone, blind to the
+  </text>
+  <text x="1010" y="628" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#334155">
+    hypothesis, through the same model-invocation step (amber). Code validates citations, projects cited rows as
+  </text>
+  <text x="1010" y="646" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#334155">
+    exhibits, and gather() assembles — without deciding — into HypothesisFindings. The Analyst Agent (dashed) is not built.
+  </text>
+</svg>

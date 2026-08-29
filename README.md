@@ -177,7 +177,8 @@ SubagentMission ─▶ tools_for(family) ─▶ subagent ─▶ SubtaskResult
    a `siem` step to the CIM categories it owns, so splitting siem into several
    steps gives code something it can actually evaluate per step.
 
-Deeper detail lives in [`docs/agent_architecture.md`](docs/agent_architecture.md).
+Deeper detail lives in [`docs/architecture.md`](docs/architecture.md) — the single
+map of the system — and its three `docs/confluence-*.md` per-subsystem companions.
 Decisions of record are in [`docs/PROJECT_DOCS.md`](docs/PROJECT_DOCS.md), which
 is **compiled** from `docs/sessions/` — edit a session file and re-run
 `python docs/compile_docs.py`, never edit it directly.

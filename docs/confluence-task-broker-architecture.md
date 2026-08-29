@@ -3,7 +3,7 @@
 > **Audience:** engineers, SOC leads, and stakeholders who want to understand how the
 > Task Broker agent works and why it is built the way it is.
 > **Source of truth:** this page is a stakeholder-friendly view of
-> `docs/agent_architecture.md` (current as of 2026-08-15). Code-level detail is in the
+> `docs/architecture.md` (the single map of the system). Code-level detail is in the
 > appendices at the end.
 
 ---
@@ -244,7 +244,7 @@ complete.** Code applied each step's `CompletionRule` to the result it got back:
 | `siem-bstoll-network-dns` | ❌ **false** | 0 | **false** | **rejected** |
 
 That third row is the whole design in miniature. The subtask was rejected (a
-concurrent-dispatch MCP race, documented in `agent_architecture.md` §8), so it is recorded as
+concurrent-dispatch MCP race, documented in `docs/archive/agent_architecture.md` §8), so it is recorded as
 `completed=false` **and** `confirmed_empty=false`. The system refuses to claim "we looked and
 found no DNS activity" when the truth is "we never got an answer." Splitting SIEM into two
 steps is exactly what makes this possible: **one failing subtask cannot mark the other

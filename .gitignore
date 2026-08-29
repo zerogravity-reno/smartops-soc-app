@@ -23,3 +23,25 @@ mcp_servers.local.json
 
 # Subagent-driven-development ledgers and review packages, per plan.
 .superpowers/
+
+# Knowledge-graph cache from the graphify skill. Regenerated on demand, 12MB.
+graphify-out/
+
+# One-off HTML run reports. Every one is a snapshot of a single investigation,
+# reproducible from the run directory it was rendered from; none is cited by a
+# session doc. The two that ARE evidence for a decision -- the blind-vs-shown
+# measurement dumps -- are tracked deliberately and must stay that way, which is
+# why this ignores *.html rather than everything loose in docs/.
+docs/*.html
+
+# Raw measurement dumps nothing cites. `blind-vs-shown-*` is deliberately NOT
+# here: handover_2026-08-25 quotes its numbers, so it is evidence, not output.
+docs/anchoring-cli-*.json
+docs/anchoring-cli-*.md
+docs/benchmark_live_*.json
+
+# PNG exports of diagrams whose .svg source is tracked beside them, at 100-200x
+# the size. The confluence pages document PNG as the paste-into-Confluence
+# deliverable, so they stay on disk -- regenerate from the SVG when needed.
+docs/diagrams/*.png
+docs/images/*.png

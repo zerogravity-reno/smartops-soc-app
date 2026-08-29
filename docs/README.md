@@ -1,7 +1,13 @@
 # SmartOps SOC App — Documentation
 
-This folder holds a running, per-session record of *why* the project looks the
-way it does — decisions, trade-offs, and what shipped — not a restatement of
+**Start at [`architecture.md`](architecture.md)** — the single map of the whole
+system, from the Task Broker through the three blind domain analysts to the
+`HypothesisFindings` contract. Three `confluence-*.md` pages go deeper per
+subsystem and are the ones `check_anchors.py` validates. Superseded prose lives in
+[`archive/`](archive/) and is not maintained.
+
+The rest of this folder is a running, per-session record of *why* the project looks
+the way it does — decisions, trade-offs, and what shipped — not a restatement of
 what the code already says. If something is only discoverable by reading git
 history or the source, it doesn't need a session entry.
 
