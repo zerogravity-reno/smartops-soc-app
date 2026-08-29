@@ -141,3 +141,49 @@ class TestAllThreeDomainsProduceTheSameShape:
     def test_the_three_domains_are_the_only_accepted_values(self):
         with pytest.raises(ValueError):
             DomainJudgement(domain="cloud", disposition="benign", confidence=0.5)
+
+
+class TestEveryAssessmentTellsTheModelWhatNoteIsFor:
+    """`note` is model-authored, so its description is the only thing steering it.
+
+    It was declared four times -- once per family subclass -- and only
+    `SiemAssessment` carried a description. The other three were
+    `Field(default="", max_length=400)`: identical in every ENFORCED respect and
+    missing the part that does the actual work.
+
+    The cost was measured, not theorised. Shown a bare capped string, the vt
+    subagent wrote a 500-character analysis of what the reputation data MEANT and
+    was rejected twice by structured-output validation before truncating into the
+    limit -- two turns spent on a rule it was never shown, while that rule ("NOT a
+    summary of findings") sat on a sibling class it does not inherit from.
+
+    Now declared once on `Assessment`. These tests fail if anyone redeclares it
+    without one, which is how the drift happened the first time.
+    """
+
+    @pytest.mark.parametrize(
+        "model_name", ["SiemAssessment", "VtAssessment", "EdrAssessment", "NdrAssessment"]
+    )
+    def test_note_carries_its_guidance(self, model_name):
+        import contracts
+
+        spec = getattr(contracts, model_name).model_json_schema()["properties"]["note"]
+
+        assert spec.get("description"), f"{model_name}.note has no description"
+        assert "NOT a summary of findings" in spec["description"]
+        assert spec["maxLength"] == 400
+
+    def test_it_is_declared_exactly_once(self):
+        """The enforcement. Four identical copies is how three of them lost the
+        description, and a redeclaration is invisible in review because it looks
+        like the field simply being present."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "contracts" / "findings.py"
+        ).read_text(encoding="utf-8")
+
+        assert source.count("note: str") == 1, (
+            "`note` is declared more than once -- put it on `Assessment` and let the "
+            "family subclasses inherit it, or the description drifts out of three of them"
+        )

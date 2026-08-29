@@ -65,6 +65,31 @@ class ResultSet(BaseModel):
 class Assessment(BaseModel):
     """Base for the small, model-authored per-family judgement."""
 
+    note: str = Field(
+        default="",
+        max_length=400,
+        description=(
+            "Optional, capped, and NOT a summary of findings: strictly a remark "
+            "about retrieval -- a truncated result set, a sourcetype that did not "
+            "exist. Do not describe what the data means."
+        ),
+    )
+    """Declared HERE, once, because it is the same field for every family.
+
+    It used to be declared four times -- in `SiemAssessment`, `VtAssessment`,
+    `EdrAssessment` and `NdrAssessment` -- and only the SIEM copy carried the
+    description. The other three were `Field(default="", max_length=400)`:
+    identical in every enforced respect, and missing the only part of the field
+    that tells a model what to put in it.
+
+    That is not a tidiness point. The vt subagent, shown a bare capped string,
+    wrote a 500-character analysis of what the reputation data MEANT and was
+    rejected twice by structured-output validation before truncating into the
+    limit -- two turns spent on a rule it was never shown, and the rule it broke
+    ("NOT a summary of findings") was written down the whole time, on a sibling
+    class it did not inherit from.
+    """
+
 
 class Findings(BaseModel):
     """Base for the code-assembled per-family payload."""
@@ -98,15 +123,6 @@ class SiemAssessment(Assessment):
         description=(
             "Categories asked for but not retrieved, including ones that returned "
             "nothing. An empty result is a finding, not a failure."
-        ),
-    )
-    note: str = Field(
-        default="",
-        max_length=400,
-        description=(
-            "Optional, capped, and NOT a summary of findings: strictly a remark "
-            "about retrieval -- a truncated result set, a sourcetype that did not "
-            "exist. Do not describe what the data means."
         ),
     )
 
@@ -188,7 +204,7 @@ class VtAssessment(Assessment):
         default_factory=list,
         description="Indicators in scope that were not checked, e.g. rate limited.",
     )
-    note: str = Field(default="", max_length=400)
+
 
 
 class VtFindings(Findings):
@@ -211,7 +227,6 @@ class EdrAssessment(Assessment):
     )
     covered: list[CimCategory] = Field(default_factory=list)
     not_covered: list[CimCategory] = Field(default_factory=list)
-    note: str = Field(default="", max_length=400)
 
 
 class NdrAssessment(Assessment):
@@ -222,5 +237,4 @@ class NdrAssessment(Assessment):
     )
     covered: list[CimCategory] = Field(default_factory=list)
     not_covered: list[CimCategory] = Field(default_factory=list)
-    note: str = Field(default="", max_length=400)
 
