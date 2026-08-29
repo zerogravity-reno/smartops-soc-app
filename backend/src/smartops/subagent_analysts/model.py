@@ -45,10 +45,35 @@ _BEARER_ENV_VAR = "AWS_BEARER_TOKEN_BEDROCK"
 private mapping handed to `ScopedEnvTokenProvider`, never written to `os.environ`.
 """
 
-# Confirmed defaults from the model's generation_config.json. Temperature is
-# configurable; drop toward 0.3 for steadier verdicts, keep 0.6 for the reasoning
-# diversity the model was tuned for.
-DEFAULT_TEMPERATURE = 0.6
+# GREEDY, deliberately, and NOT the model's shipped `generation_config.json` value.
+#
+# That file carries `temperature=0.6, top_p=0.95` and this tracked it verbatim until it
+# was measured. Those are the model's *conversational* defaults, and a SOC verdict is not
+# a conversation: at 0.6 one evidence slice produced three of the four possible
+# dispositions across five draws, confidence spreading 0.60, citation Jaccard 0.27
+# (docs/sessions/handover_2026-08-27_analyst-verdict-variance.md).
+#
+# 0 rather than the model card's 0.1-0.3, on measurement rather than preference. The
+# reason to avoid greedy was that it answered THINLY -- one observation citing one
+# block, on a slice holding 15 tagged sets -- and on the network domain it read
+# `suspicious` where sampling twice read `malicious`, which was the better call. Both
+# were artefacts of a prompt with no reporting floor. With the floor in `prompts.py`,
+# greedy returns four observations on identity AND network, and reads network
+# `malicious` 0.95 citing the VirusTotal row paired with a matching connection -- the
+# accurate answer, three draws running. Measured 2026-08-29, three arms, two domains.
+#
+# So the floor and this value are ONE change with two halves. Raising the temperature
+# without removing the floor is safe; removing the floor while leaving this at 0 brings
+# the thin answers straight back. Change them together or not at all.
+#
+# What greedy buys beyond stability: a verdict replays exactly from its `evidence_id`.
+# The draws are byte-identical -- same disposition, same citations, same generation
+# token count -- so an audit can reproduce a stored verdict rather than approximate it.
+#
+# `top_p` stays at the shipped 0.95. It only truncates the distribution's tail and is
+# inert under greedy decoding; left at the model's own value so that raising the
+# temperature is a one-line change with no second surprise.
+DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 # In tokens. Reasoning needs room; kept well under the 32,768 window so the prompt
 # has space. The caller is responsible for prompt size (see `packing`).
@@ -63,13 +88,64 @@ DEFAULT_READY_RETRIES = 8
 DEFAULT_READY_WAIT_SECONDS = 30.0
 _MODEL_NOT_READY_CODE = "ModelNotReadyException"
 
-# Single source of truth for the template. The seeded `<think>` is the one change
-# from the SAMA chat_bedrock.py probe, and is what the model's own chat_template
-# appends as its generation prompt.
+_RETRY_CONFIG = {"max_attempts": 3, "mode": "adaptive"}
+"""Botocore-level retries, which this client had none of.
+
+A different failure from the cold start `_invoke_with_warmup` handles, and it needs a
+different remedy. The three analysts run CONCURRENTLY against one imported model
+(`gather()` fans out via `asyncio.to_thread`), so they arrive at the endpoint together
+and a `ThrottlingException` on one is the expected shape of contention rather than a
+surprise. With no retry config, botocore's default of 5 legacy attempts applies to the
+standard set but `adaptive` is what actually paces a burst: it maintains a client-side
+rate limiter across the shared client, which is the thing three simultaneous callers
+need.
+
+Why it matters more here than it looks: a throttled analyst raises out of
+`AnalystModel.invoke`, `_invoke_with_one_reask` catches it and returns an unparsed
+`_Attempt`, and the domain lands on the wire as `inconclusive` with confidence 0.0. A
+transient capacity blip is therefore indistinguishable from "the evidence does not
+support a judgement" -- the single most misleading way for this to fail, since
+`inconclusive` is a legitimate verdict a reader has no reason to doubt.
+
+`mode` is deliberately not `standard`: standard retries the same call on a fixed
+backoff, adaptive additionally slows the *next* caller, which is what stops three
+threads from re-colliding on each retry.
+"""
+
+
+def _botocore_config() -> Any:
+    """`Config(retries=_RETRY_CONFIG)`, imported lazily.
+
+    Local import for the same reason `_get_client` imports boto3 locally: code that
+    only wants the template or parse helpers should not pay for botocore.
+    """
+    from botocore.config import Config
+
+    return Config(retries=_RETRY_CONFIG)
+
+
+# Single source of truth for the template, and it must match the model's own
+# `chat_template` byte for byte -- `<|system|>`, `<|user|>`, `<|assistant|>` and
+# `<think>` are real special tokens for THIS model (ids 128264-128268 in its
+# `tokenizer_config.json`), not the Llama-3.1 base's `<|start_header_id|>` scheme, so
+# a near-miss here is silently off-template rather than an error.
+#
+# Derived by walking the published Jinja with its whitespace control applied
+# (`{%-` strips preceding whitespace, so most of the apparent blank lines collapse):
+#
+#     {{ bos_token }} -> <|begin_of_text|>
+#     \n<|system|>\n{system}      (trailing blank line eaten by the next `{%- elif`)
+#     \n<|user|>\n{user}          (same)
+#     \n<|assistant|>\n<think>    (trailing newline eaten by `{%- endif %}`)
+#
+# So there IS a newline after the BOS token and there is NO trailing newline after the
+# seeded `<think>`. Both were wrong here before; `test_analyst_model.py` pins the exact
+# string now. The seeded `<think>` is not our invention -- it is what the template
+# appends for `add_generation_prompt=True`.
 _PROMPT_TEMPLATE = (
-    "<|begin_of_text|><|system|>\n{system}\n"
+    "<|begin_of_text|>\n<|system|>\n{system}\n"
     "<|user|>\n{user}\n"
-    "<|assistant|>\n<think>\n"
+    "<|assistant|>\n<think>"
 )
 
 
@@ -163,7 +239,9 @@ class AnalystModel:
                         "ignoring it and falling back to the default credential chain",
                         API_KEY_ENV_VAR,
                     )
-            self._client = boto3.client("bedrock-runtime", **kwargs)
+            self._client = boto3.client(
+                "bedrock-runtime", config=_botocore_config(), **kwargs
+            )
         return self._client
 
     def _bearer_client(self, boto3: Any, api_key: str) -> Any:
@@ -213,7 +291,10 @@ class AnalystModel:
         return boto3.Session(botocore_session=session).client(
             "bedrock-runtime",
             region_name=self.region,
-            config=Config(auth_scheme_preference="httpBearerAuth"),
+            config=Config(
+                auth_scheme_preference="httpBearerAuth",
+                retries=_RETRY_CONFIG,
+            ),
         )
 
     def invoke(self, system: str, user: str) -> AnalystResponse:

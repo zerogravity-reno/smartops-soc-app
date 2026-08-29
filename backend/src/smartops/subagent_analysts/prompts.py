@@ -238,6 +238,16 @@ CRITICAL CITATION RULES:
 - Never invent an id. Every observation you report MUST cite at least one header id that
   appears in the evidence — an uncited observation will be discarded downstream, not
   trusted anyway.
+- When the same observation is supported by both a category-named set (`auth_events#2`,
+  `connections#5`) and an `uncategorised#N` set, cite the category-named one. Cite
+  `uncategorised#N` when it is the only place the rows appear.
+
+HOW MUCH TO REPORT: report EVERY distinct security-relevant pattern you can support
+from these rows — not a sample of them, and not only the strongest one. Two
+observations that cite the same rows for the same reason are one observation; two that
+rest on different rows, or read the same rows differently, are two. Work through the
+WHAT TO LOOK FOR list above and account for each entry you have rows to speak to. A
+short answer is correct only when the evidence is genuinely short.
 
 JUDGING WHAT YOU SEE: after listing your observations, give a DISPOSITION -- your
 read of what this evidence shows, based only on the rows in front of you:
@@ -247,12 +257,17 @@ read of what this evidence shows, based only on the rows in front of you:
 - `malicious` — the rows themselves show hostile activity.
 - `inconclusive` — there is too little here to judge either way. Say this rather
   than guessing; it is a real answer, not a failure.
+CHOOSING BETWEEN `suspicious` AND `inconclusive`: if you can cite a specific row that
+is anomalous, the answer is at least `suspicious` — you found something. Reserve
+`inconclusive` for when no row you can cite matches any pattern at all, or there were
+no rows to read. "Many rows, none of them anomalous" is `benign`, not `inconclusive`.
 Judge the evidence, not a theory about it. Do not infer what someone might be
 looking for and grade against that — report what these rows show.
 
 Reason step by step, then end your reply with EXACTLY this block and nothing after it:
 OBSERVATIONS:
 - <a specific, evidence-grounded finding> [header_id]
+- <one line per distinct finding; repeat this line as many times as you have findings>
 DISPOSITION: benign | suspicious | malicious | inconclusive
 CONFIDENCE: <0.0-1.0, your confidence in that disposition>
 RATIONALE: <one or two sentences on your overall read of this evidence>

@@ -97,6 +97,60 @@ class TestFactsSystemPrompt:
         assert p.index("You are Metis") < p.index("network detection")
 
 
+class TestFactsPromptSteadiesTheVerdict:
+    """The three prompt rules added alongside the temperature drop to 0.3.
+
+    Each targets a defect that was MEASURED, not guessed, in
+    docs/sessions/handover_2026-08-27_analyst-verdict-variance.md. They are pinned
+    because the prompt is the half of that fix which a later edit could silently
+    undo -- the temperature change is visible in `.env`, these are not.
+    """
+
+    def test_a_reporting_floor_is_stated(self):
+        """Finding 2: nothing said how much to report, so one draw gave 1
+        observation and another 17 from the same rows. Lowering the temperature
+        without this trades a wandering-thorough analyst for a stable-terse one."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert "HOW MUCH TO REPORT:" in p
+            assert "EVERY distinct security-relevant pattern" in p
+
+    def test_suspicious_and_inconclusive_have_a_tie_break(self):
+        """Finding 3: both labels were defensible on the same rows, with no
+        ordering rule -- which is the coin flip that produced `benign`,
+        `inconclusive`, `inconclusive` on three draws of one slice."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert "CHOOSING BETWEEN `suspicious` AND `inconclusive`:" in p
+            assert "at least `suspicious`" in p
+            # The other half of the rule: a full, clean slice is benign, and
+            # calling it `inconclusive` understates a real negative finding.
+            assert "is `benign`, not `inconclusive`" in p
+
+    def test_category_matched_evidence_is_preferred_over_uncategorised(self):
+        """Finding 6: greedy decoding cited an `uncategorised#N` block on a slice
+        holding 15 tagged sets, and nothing in the prompt preferred otherwise."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert "cite the category-named one" in p
+
+    def test_the_new_rules_keep_the_blind_guarantee(self):
+        """Regression: the tie-break rule first read "no row you can cite SUPPORTS
+        any pattern", which put a `Stance` word into a prompt whose whole point is
+        that no hypothesis framing reaches it. `test_the_disposition_never_implies_a_
+        hypothesis_exists` caught it; this states the constraint at the rules
+        themselves so the next edit sees it in place."""
+        for domain in ("identity", "network", "endpoint"):
+            lowered = facts_system_prompt(domain).lower()
+
+            assert "supports" not in lowered
+            assert "refutes" not in lowered
+            assert "hypothesis" not in lowered
+
+
 class TestFactsUserTurn:
     def test_no_hypothesis_anywhere(self):
         turn = build_facts_user_turn(_scope(), "# auth_events#1 · rows=1")

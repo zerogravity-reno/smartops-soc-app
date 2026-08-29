@@ -9,7 +9,12 @@ import time
 
 import pytest
 from smartops.errors import NotConfigured
-from smartops.subagent_analysts.model import AnalystModel, analyst_model_from_env
+from smartops.subagent_analysts.model import (
+    DEFAULT_TEMPERATURE,
+    AnalystModel,
+    _botocore_config,
+    analyst_model_from_env,
+)
 
 
 class _FakeBody:
@@ -31,13 +36,86 @@ class _FakeClient:
 
 
 class TestTemplate:
-    def test_prompt_seeds_think_and_places_turns(self):
+    """The template must match the model's published `chat_template` exactly.
+
+    Pinned as one byte-for-byte equality rather than a handful of `startswith` /
+    `in` / `rstrip().endswith()` probes, which is what this was. Those passed both
+    before and after a real off-template defect: the prompt was missing the newline
+    after `<|begin_of_text|>` and carried an extra one after the seeded `<think>`,
+    and every loose assertion still held. Off-template prompting does not raise --
+    it just degrades instruction-following silently, which is the failure this file
+    is the only place to catch.
+
+    EXPECTED below is derived from the published Jinja with its whitespace control
+    applied; the derivation is recorded at `_PROMPT_TEMPLATE` in
+    `subagent_analysts/model.py`. If Cisco republishes the template, re-derive it
+    there and update this constant -- do not relax the comparison.
+    """
+
+    EXPECTED = (
+        "<|begin_of_text|>\n"
+        "<|system|>\n"
+        "SYS\n"
+        "<|user|>\n"
+        "USR\n"
+        "<|assistant|>\n"
+        "<think>"
+    )
+
+    def test_prompt_matches_the_published_chat_template_byte_for_byte(self):
+        assert AnalystModel.format_prompt("SYS", "USR") == self.EXPECTED
+
+    def test_the_special_tokens_are_this_models_own_not_llama_31_headers(self):
+        """`<|system|>` etc. are real special tokens for THIS model (ids 128264-128268).
+
+        The base Llama-3.1 `<|start_header_id|>system<|end_header_id|>` scheme would
+        tokenize here as literal text, so a well-meant "correction" toward it is a
+        regression. Asserted so that reasoning has to be re-done deliberately.
+        """
         prompt = AnalystModel.format_prompt("SYS", "USR")
-        assert prompt.startswith("<|begin_of_text|><|system|>")
-        assert "SYS" in prompt and "USR" in prompt
-        assert "<|user|>" in prompt and "<|assistant|>" in prompt
-        # the generation prompt seeds the reasoning tag
-        assert prompt.rstrip().endswith("<think>")
+
+        assert "<|start_header_id|>" not in prompt
+        assert "<|eot_id|>" not in prompt
+
+    def test_the_generation_prompt_seeds_the_reasoning_tag(self):
+        """`add_generation_prompt=True` ends the template at `<think>`, so the model
+        opens its reasoning immediately and emits `</think>` before the answer block
+        that `parse.split_reasoning` splits on."""
+        assert AnalystModel.format_prompt("SYS", "USR").endswith("<|assistant|>\n<think>")
+
+
+class TestSamplingDefaults:
+    def test_temperature_does_not_track_the_models_chat_default(self):
+        """0.6 is what `generation_config.json` ships, and it is deliberately NOT
+        used: it is the model's conversational setting, and at 0.6 one evidence
+        slice produced three of the four dispositions across five draws. See
+        docs/sessions/handover_2026-08-27_analyst-verdict-variance.md.
+
+        Asserted as an inequality against 0.6 as well as an equality, so that
+        "restore the documented default" reads as the regression it would be.
+        """
+        assert DEFAULT_TEMPERATURE == 0.0
+        assert DEFAULT_TEMPERATURE != 0.6
+
+
+class TestThrottleRetries:
+    """A throttled analyst is invisible without this: the exception is caught by
+    `_invoke_with_one_reask` and the domain lands on the wire as `inconclusive`
+    with confidence 0.0 -- indistinguishable from an honest "cannot judge".
+
+    Distinct from the `ModelNotReadyException` warm-up loop below, which handles
+    cold-start eviction. Three analysts run concurrently against one imported
+    model, so contention is the expected case, not a surprise.
+    """
+
+    def test_the_client_config_retries_adaptively(self):
+        config = _botocore_config()
+
+        assert config.retries["max_attempts"] == 3
+        # `adaptive`, not `standard`: standard retries the same call on a backoff,
+        # adaptive also rate-limits the NEXT caller, which is what stops three
+        # threads re-colliding on every retry.
+        assert config.retries["mode"] == "adaptive"
 
 
 class TestInvoke:
