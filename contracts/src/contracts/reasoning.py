@@ -80,8 +80,8 @@ class InvestigationContext(BaseModel):
 class AnalystVerdict(BaseModel):
     """One domain analyst's conclusion about the hypothesis.
 
-    `reasoning_trace` holds the model's `<think>...</think>` chain, kept for audit
-    and never fed back into any prompt -- the same context-isolation rule the
+    `reasoning_trace` holds the model's `<think>...</think>` chain, available for
+    audit and never fed back into any prompt -- the same context-isolation rule the
     fetch side applies to raw `Evidence`.
     """
 
@@ -108,7 +108,15 @@ class AnalystVerdict(BaseModel):
     )
     reasoning_trace: str | None = Field(
         default=None,
-        description="The model's <think> chain. Persisted for audit, never re-fed.",
+        description=(
+            "The model's <think> chain. Never re-fed into any prompt, and never on "
+            "the wire -- `DomainJudgement` drops it. Persisted for audit only by a "
+            "caller that passes `analyze.gather(trace_sink=...)`, which writes "
+            "`traces.json` beside the run's other artifacts; a caller that passes "
+            "no sink discards it. It said 'Persisted for audit' unconditionally, "
+            "which was true of an older artifact format that dumped this model "
+            "directly and false once the wire projection landed."
+        ),
     )
     prompt_tokens: int = Field(
         default=0,

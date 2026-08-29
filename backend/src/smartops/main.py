@@ -20,6 +20,7 @@ rejection reasons are what this run demonstrates.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -35,6 +36,7 @@ from contracts import (
     Entity,
     EntityKind,
     FetchStep,
+    DomainFinding,
     HypothesisFindings,
     InvestigationContext,
     Scope,
@@ -478,6 +480,84 @@ def _print_findings(findings: HypothesisFindings) -> None:
     )
 
 
+def _resolve_run_dir(task_id: str, run_dir: Path | str | None) -> Path | None:
+    """The directory a run's artifacts belong in, or `None` if it cannot be found.
+
+    A passed `run_dir` wins; otherwise `SMARTOPS_RUNS_DIR` (or the default) plus
+    the task's `latest.txt` pointer. `None` rather than a raise: a missing run
+    directory means the broker never wrote one, and a completed analysis should
+    still print its findings.
+
+    Extracted because `_persist_findings` and `_persist_reasoning_traces` must
+    resolve to the SAME directory. Two copies of these rules would drift, and the
+    failure would be a trace file landing beside a different run's findings --
+    silently, since both files would look well-formed.
+    """
+    if run_dir is not None:
+        return Path(run_dir)
+    base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+    latest = Path(base) / task_id / "latest.txt"
+    if not latest.exists():
+        return None
+    return latest.parent / latest.read_text(encoding="utf-8").strip()
+
+
+def _persist_reasoning_traces(
+    task_id: str,
+    hypothesis_id: str,
+    findings: list[DomainFinding],
+    run_dir: Path | str | None = None,
+) -> None:
+    """Write `traces.json` beside the run's other artifacts.
+
+    **Local audit only, and deliberately a separate file from `findings.json`.**
+    The trace is the model's `<think>` chain: it must never reach another model
+    (that is re-feeding a private chain of thought) and must never leave the
+    process on a span (OTel span content goes to whatever collector is
+    configured, and Strands' redaction is opt-in and OFF). Keeping it in its own
+    file on the run directory is what makes it auditable without making it
+    shippable -- `.smartops/` is gitignored, so it never reaches a remote either.
+
+    `DomainJudgement` therefore has no field for it and `findings.json` correctly
+    lacks it. This is the other half of that decision: without this writer the
+    trace was simply discarded, while `DomainFinding.reasoning_trace` still
+    described itself as "persisted for audit". It had been, by an older artifact
+    format that dumped `DomainFinding` directly; the wire projection removed the
+    only writer and nothing replaced it.
+
+    Same run-directory resolution as `_persist_findings`, and silently does
+    nothing when there is no directory to write to -- an audit artifact must not
+    be the thing that fails a completed analysis.
+    """
+    target_dir = _resolve_run_dir(task_id, run_dir)
+    if target_dir is None:
+        return
+
+    payload = {
+        # The same join keys every other artifact carries, so a trace file found
+        # on its own is still resolvable back to the run and the claim.
+        "task_id": task_id,
+        "hypothesis_id": hypothesis_id,
+        "run_id": target_dir.name,
+        "traces": [
+            {
+                "domain": finding.domain,
+                # Carried alongside so a reader can see WHICH judgement this
+                # reasoning produced without opening findings.json and joining.
+                "disposition": finding.disposition,
+                "confidence": finding.confidence,
+                "prompt_tokens": finding.prompt_tokens,
+                "generation_tokens": finding.generation_tokens,
+                "reasoning_trace": finding.reasoning_trace,
+            }
+            for finding in findings
+        ],
+    }
+    (target_dir / "traces.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+
 def _persist_findings(
     task_id: str, findings: HypothesisFindings, run_dir: Path | str | None = None
 ) -> None:
@@ -490,14 +570,9 @@ def _persist_findings(
     far side of this contract. The writer for `assessment.json` was deleted with
     the rest of the shown path; see `subagent_analysts/shown.py`.
     """
-    if run_dir is not None:
-        target_dir = Path(run_dir)
-    else:
-        base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
-        latest = Path(base) / task_id / "latest.txt"
-        if not latest.exists():
-            return
-        target_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
+    target_dir = _resolve_run_dir(task_id, run_dir)
+    if target_dir is None:
+        return
 
     if target_dir.is_dir():
         # `gather()` already set run_id where the caller knew it; fill it in when
@@ -726,6 +801,14 @@ async def _run(argv: list[str] | None = None) -> int:
                         analyst_model,
                         run_id=Path(run_dir).name if run_dir else None,
                         hypothesis=args.hypothesis,
+                        # The only hook that can reach `reasoning_trace`:
+                        # `_as_judgement` drops it before `gather` returns.
+                        trace_sink=lambda domain_findings: _persist_reasoning_traces(
+                            task.task_id,
+                            task.hypothesis_id,
+                            domain_findings,
+                            run_dir=run_dir,
+                        ),
                     )
             except Exception as exc:
                 print(

@@ -478,6 +478,7 @@ async def gather(
     run_id: str | None = None,
     hypothesis_id: str | None = None,
     hypothesis: str | None = None,
+    trace_sink: Callable[[list[DomainFinding]], None] | None = None,
 ) -> HypothesisFindings:
     """Run the three blind analysts and attach their judgements to the hypothesis.
 
@@ -503,12 +504,31 @@ async def gather(
     attacker-influenceable and is only carried, never rendered here. Pass
     `run_id` whenever it is known -- see the field's own note on why this
     contract sets it here rather than at write time.
+
+    **`trace_sink`** receives the raw `DomainFinding`s before projection, and is
+    the only way to reach the model's `reasoning_trace`: `_as_judgement` drops it
+    on the way to the wire, deliberately, so a caller that wants it for audit has
+    to be handed it here or never see it. It WAS never seeing it -- the contract
+    claimed the trace was "persisted for audit" while nothing persisted it, a
+    claim that had been true of an older artifact format that dumped
+    `DomainFinding` directly.
+
+    A sink rather than a second return value: the wire artifact is what `gather`
+    is *for*, and widening the return type would make every caller acknowledge
+    audit data it does not want. A sink is also the shape that keeps the default
+    behaviour -- discard -- explicit at the call site rather than implicit here.
+    Exceptions from it are not caught: a caller that asked for its traces to be
+    written and had that fail should hear about it.
     """
     routed = route(report, scope)
     slices = routed.slices()
     findings = await asyncio.gather(
         *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
     )
+    # Before `_as_judgement` below drops `reasoning_trace`, which is the last
+    # point at which anything can.
+    if trace_sink is not None:
+        trace_sink(list(findings))
     return HypothesisFindings(
         task_id=report.task_id,
         run_id=run_id,
