@@ -19,11 +19,18 @@ Silent-by-default is deliberate: Strands' GenAI spans can carry prompt and
 response content, so a console exporter left on would put SOC investigation
 data into plaintext container logs.
 
-Note for when a real model call lands: Strands' span-content redaction is
-opt-in and OFF by default -- set `gen_ai_unredacted_attributes=` (empty value)
-in `OTEL_SEMCONV_STABILITY_OPT_IN` to redact `gen_ai.input.messages`,
-`gen_ai.output.messages`, and `gen_ai.system_instructions`. Not wired up here
-because no model call happens yet, so no span currently carries content.
+⚠️ Real model calls happen now, so this is live rather than theoretical:
+Strands' span-content redaction is opt-in and OFF by default. Set
+`gen_ai_unredacted_attributes=` (empty value) in `OTEL_SEMCONV_STABILITY_OPT_IN`
+to redact `gen_ai.input.messages`, `gen_ai.output.messages` and
+`gen_ai.system_instructions` before pointing this at any collector -- otherwise
+prompts and responses, which for us means SOC evidence, are exported verbatim.
+
+The analyst tier is instrumented by hand (`analysis_span`, `analyst_span`)
+because Strands cannot reach it: those three calls drive a Bedrock
+custom-imported model through raw `invoke_model` with no `Agent` involved, so
+auto-instrumentation produces nothing and a trace covered the fetch half only.
+Our spans carry the judgement and the token counts, never the reasoning trace.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -102,6 +110,81 @@ def investigation_span(task: AnalystTask) -> Iterator[trace.Span]:
         },
     ) as span:
         yield span
+
+
+@contextmanager
+def analysis_span(
+    task_id: str, hypothesis_id: str, *, fetch_trace_id: str | None = None
+) -> Iterator[trace.Span]:
+    """Root span for the analyze tier.
+
+    A SECOND root rather than a child of `investigation_span`, because that span
+    opens inside `broker_task()` and has closed by the time `main` calls
+    `gather()`. Nesting would mean either hoisting the fetch span up into `main`
+    -- which puts a tracing concern in the CLI and leaves `broker_task` untraced
+    when called as a library -- or leaving it open across a boundary it does not
+    own.
+
+    The two roots are joined the same way every other artifact in this system is
+    joined: on `task_id` and `hypothesis_id`. `fetch_trace_id` additionally
+    records which fetch trace produced the evidence, so a reader holding the
+    analyze trace can reach the retrieval that fed it. It comes from
+    `BrokerReport.trace_id`, which `broker_task` stamped from inside its own span.
+
+    Analyst spans nest under this one for free: `gather()` fans out with
+    `asyncio.to_thread`, which copies the current `contextvars` context into each
+    worker thread, and OTel's context is a contextvar.
+    """
+    tracer = trace.get_tracer(TRACER_NAME)
+    attributes = {"task_id": task_id, "hypothesis_id": hypothesis_id}
+    if fetch_trace_id:
+        attributes["fetch.trace_id"] = fetch_trace_id
+    with tracer.start_as_current_span("smartops.analysis", attributes=attributes) as span:
+        yield span
+
+
+@contextmanager
+def analyst_span(domain: str) -> Iterator[trace.Span]:
+    """One domain analyst's call: pack, invoke, parse, ground.
+
+    Hand-rolled because Strands cannot instrument this tier. The rest of the
+    system rides on Strands' auto-instrumentation of `Agent`, but the analysts
+    drive a Bedrock custom-imported model through raw `invoke_model` -- no
+    `Agent`, so no spans -- which left a trace covering the fetch half only.
+
+    Attribute names follow OTel's GenAI semantic conventions where one exists
+    (`gen_ai.*`), so a collector that already understands Strands' spans reads
+    these the same way. `record_analyst_finding()` fills them in.
+    """
+    tracer = trace.get_tracer(TRACER_NAME)
+    with tracer.start_as_current_span(
+        f"smartops.analyst.{domain}",
+        attributes={"analyst.domain": domain, "gen_ai.operation.name": "chat"},
+    ) as span:
+        yield span
+
+
+def record_analyst_finding(finding: Any) -> None:
+    """Stamp a `DomainFinding`'s outcome onto the current span.
+
+    What a reader wants from an analyst span is the judgement and what it cost,
+    so both go on. `reasoning_trace` deliberately does NOT: it is the model's
+    private chain of thought, kept for audit and never re-fed, and a span export
+    is not an audit store -- Strands' span-content redaction is opt-in and off by
+    default, so a trace shipped to a collector would carry it in plaintext.
+
+    A no-op with no active recording span, same discipline as `record_cost`: this
+    must never be the thing that breaks an analysis.
+    """
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    span.set_attribute("analyst.disposition", finding.disposition)
+    span.set_attribute("analyst.confidence", finding.confidence)
+    span.set_attribute("analyst.observation_count", len(finding.observations))
+    span.set_attribute("analyst.citation_count", len(finding.citations))
+    span.set_attribute("gen_ai.usage.input_tokens", finding.prompt_tokens)
+    span.set_attribute("gen_ai.usage.output_tokens", finding.generation_tokens)
 
 
 def current_trace_id() -> str | None:

@@ -55,7 +55,7 @@ from smartops.domains import ALL_FAMILIES
 from smartops.subagent_analysts.analyze import gather
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
-from smartops.telemetry import configure_telemetry
+from smartops.telemetry import analysis_span, configure_telemetry
 from smartops.tools.registry import load_mcp_servers, mcp_clients, warm_mcp_clients
 
 _ENTITY_KINDS = get_args(EntityKind)
@@ -710,14 +710,23 @@ async def _run(argv: list[str] | None = None) -> int:
             # analyst that was shown the hypothesis is the anchoring this path
             # exists to remove.
             run_dir = getattr(outcome, "run_dir", None)
+            # The analyze tier's root span. A second root beside the fetch tier's
+            # `investigation_span`, which opened inside `broker_task()` and closed
+            # when it returned -- see `telemetry.analysis_span`. The two join on
+            # task_id/hypothesis_id, and on the fetch trace id recorded here.
             try:
-                findings = await gather(
-                    outcome.report,
-                    scope,
-                    analyst_model,
-                    run_id=Path(run_dir).name if run_dir else None,
-                    hypothesis=args.hypothesis,
-                )
+                with analysis_span(
+                    task.task_id,
+                    task.hypothesis_id,
+                    fetch_trace_id=outcome.report.trace_id,
+                ):
+                    findings = await gather(
+                        outcome.report,
+                        scope,
+                        analyst_model,
+                        run_id=Path(run_dir).name if run_dir else None,
+                        hypothesis=args.hypothesis,
+                    )
             except Exception as exc:
                 print(
                     f"\nanalysis failed: {type(exc).__name__}: {exc}", file=sys.stderr

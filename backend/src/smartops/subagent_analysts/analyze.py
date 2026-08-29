@@ -58,6 +58,8 @@ from contracts import (
     StepSummary,
 )
 
+from smartops.telemetry import analyst_span, record_analyst_finding
+
 from .model import AnalystModel
 from .packing import exhibits_for, pack_evidence
 from .parse import FindingParseError, parse_finding, split_reasoning
@@ -310,6 +312,10 @@ def gather_finding(
     """
     domain = slice_.domain
 
+    # Outside the span deliberately: no model call happens on this branch, so a
+    # span here would report a zero-token, zero-latency "analyst call" that never
+    # ran, which is exactly the never-attempted state the rest of this pipeline
+    # works to keep distinguishable.
     if not slice_.has_evidence():
         return DomainFinding(
             domain=domain,
@@ -317,6 +323,26 @@ def gather_finding(
             rationale=f"no {domain} evidence was retrieved",
         )
 
+    with analyst_span(domain):
+        finding = _gather_finding_traced(model, scope, slice_, domain)
+        record_analyst_finding(finding)
+        return finding
+
+
+def _gather_finding_traced(
+    model: AnalystModel,
+    scope: Scope,
+    slice_: DomainSlice,
+    domain: AnalystDomain,
+) -> DomainFinding:
+    """The body of `gather_finding`, split out so the span wraps exactly the work.
+
+    A separate function rather than more indentation under the `with`: the two
+    return paths below both need their finding stamped onto the span, and
+    threading that through an inlined block means either duplicating the
+    `record_analyst_finding` call or assigning to a variable declared before the
+    context manager. Neither reads as well as a body that just returns.
+    """
     evidence_text, valid_ids, _, _ = pack_evidence(slice_)
     attempt = _invoke_with_one_reask(
         model,
