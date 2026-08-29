@@ -857,7 +857,16 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     carried = req.step_outcomes
     req.plan = plan
     req.step_outcomes = {}
-    for step in steps:
+    # `plan.steps`, NOT the `steps` argument. Strands hands this function whatever
+    # the model emitted -- plain dicts for a `list[FetchStep]` parameter -- and
+    # `FetchPlan(...)` above is what coerces them into `FetchStep`. Iterating the
+    # raw argument raised `AttributeError: 'dict' object has no attribute
+    # 'step_id'` on EVERY live call, which Strands turned into an error tool
+    # result; the model re-planned, failed identically, and burned six of eleven
+    # turns before `broker_task` fell back to a synthesized plan. Every test called
+    # this function directly with already-built `FetchStep` objects, where the
+    # attribute access works, so nothing caught it.
+    for step in plan.steps:
         prior = carried.pop(step.step_id, None)
         req.step_outcomes[step.step_id] = (
             # Planned, not judged: `evaluated=False` until `evaluate_step()` runs
@@ -887,7 +896,9 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     # dispatch, and it cannot cite an id it was never told. Reporting only a
     # count -- which is all this returned before -- left the binding in change 3
     # unusable from the model's side.
-    minted = "; ".join(f"{s.step_id} ({s.family}): {s.objective}" for s in steps)
+    # `plan.steps` for the same reason as the loop above: the `steps` argument
+    # holds the model's raw dicts, not `FetchStep`s.
+    minted = "; ".join(f"{s.step_id} ({s.family}): {s.objective}" for s in plan.steps)
     replaced = (
         " This replaced the previous plan: any step id you re-listed kept the dispatches "
         "it had already spent, and outcomes for steps you did not re-list were dropped."
@@ -895,7 +906,7 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
         else ""
     )
     return (
-        f"Fetch plan recorded with {len(steps)} step(s). Rationale: {rationale}. "
+        f"Fetch plan recorded with {len(plan.steps)} step(s). Rationale: {rationale}. "
         f"Step ids: {minted}. Dispatch a step by calling its family's tool with "
         f"that step's step_id.{replaced}"
     )
