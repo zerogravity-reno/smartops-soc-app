@@ -1367,31 +1367,35 @@ class TestFetchPlanAndReport:
         assert res.assessment.tool_family == "edr"
         assert res.assessment.covered == ["processes"]
 
-    def test_persist_assessment_direct_run_dir(self, tmp_path):
-        # Item 7: _persist_assessment writes directly into passed run_dir without relying on latest.txt
-        from smartops.main import _persist_assessment
-        from contracts import HypothesisAssessment
+    def test_persist_findings_direct_run_dir(self, tmp_path):
+        """A passed `run_dir` is written to directly, without consulting latest.txt.
+
+        Was `test_persist_assessment_direct_run_dir` against `_persist_assessment`,
+        which was deleted with the hypothesis-shown path. The behaviour it pins is
+        not shown-specific -- `_persist_findings` resolves its target the same way
+        and stamps the same join key -- so it is retargeted rather than dropped.
+        """
+        from contracts import HypothesisFindings
+        from smartops.main import _persist_findings
 
         run_a = tmp_path / "run_a"
         run_b = tmp_path / "run_b"
         run_a.mkdir()
         run_b.mkdir()
 
-        assessment_a = HypothesisAssessment(
+        findings_a = HypothesisFindings(
             task_id="task-1",
             hypothesis_id="h1",
-            overall_stance="supports",
-            confidence=0.9,
-            observations=[],
+            findings=[],
         )
-        _persist_assessment("task-1", assessment_a, run_dir=run_a)
-        assert (run_a / "assessment.json").exists()
-        assert not (run_b / "assessment.json").exists()
+        _persist_findings("task-1", findings_a, run_dir=run_a)
+        assert (run_a / "findings.json").exists()
+        assert not (run_b / "findings.json").exists()
 
         # The join key is what makes a misfiling detectable at all: before it,
         # a verdict in the wrong folder was indistinguishable from one in the
         # right folder. run_id is stamped here, by the only layer that knows it.
-        written = json.loads((run_a / "assessment.json").read_text(encoding="utf-8"))
+        written = json.loads((run_a / "findings.json").read_text(encoding="utf-8"))
         assert written["task_id"] == "task-1"
         assert written["run_id"] == "run_a"
 

@@ -7,14 +7,16 @@ from datetime import UTC, datetime
 
 import pytest
 from smartops.subagent_analysts.analyze import (
-    _finalize,
     _finalize_finding,
-    analyze,
-    combine,
     gather,
     gather_finding,
-    run_one,
 )
+
+# The shown arm, which `blind_compare` still measures against. Imported from its
+# own module now, which is what makes the two paths tellable apart at a glance --
+# see `subagent_analysts/shown.py`. `analyze()` and `combine()` were deleted with
+# the rest of that path, and their tests with them.
+from smartops.subagent_analysts.shown import _finalize, run_one
 from smartops.subagent_analysts.model import AnalystResponse
 from smartops.subagent_analysts.routing import DomainSlice
 
@@ -86,42 +88,6 @@ class _DomainModel:
             if self._MARKERS[domain] in flat:
                 return AnalystResponse(generation=gen, prompt_tokens=1, generation_tokens=1, stop_reason="stop")
         raise AssertionError("no domain matched the system prompt")
-
-
-class TestCombine:
-    def test_supports_wins_scaled_by_margin(self):
-        # win=0.9, lose=0.3 -> margin 0.5, mean(win)=0.9 -> 0.45
-        stance, conf = combine([
-            AnalystVerdict(domain="identity", stance="supports", confidence=0.9),
-            AnalystVerdict(domain="network", stance="refutes", confidence=0.3),
-        ])
-        assert stance == "supports"
-        assert conf == pytest.approx(0.45, abs=0.01)
-
-    def test_unopposed_confidence_is_mean_not_pinned_to_one(self):
-        # Two supports, nothing against -> confidence is their MEAN (~0.85), not 1.0.
-        stance, conf = combine([
-            AnalystVerdict(domain="network", stance="supports", confidence=0.8),
-            AnalystVerdict(domain="endpoint", stance="supports", confidence=0.9),
-            AnalystVerdict(domain="identity", stance="inconclusive", confidence=0.0),
-        ])
-        assert stance == "supports"
-        assert conf == pytest.approx(0.85, abs=0.01)
-
-    def test_tie_is_inconclusive(self):
-        stance, _ = combine([
-            AnalystVerdict(domain="identity", stance="supports", confidence=0.5),
-            AnalystVerdict(domain="network", stance="refutes", confidence=0.5),
-        ])
-        assert stance == "inconclusive"
-
-    def test_all_inconclusive(self):
-        stance, conf = combine([
-            AnalystVerdict(domain="identity", stance="inconclusive", confidence=0.2),
-            AnalystVerdict(domain="network", stance="inconclusive", confidence=0.4),
-        ])
-        assert stance == "inconclusive"
-        assert conf == pytest.approx(0.3, abs=0.01)
 
 
 class TestRunOne:
@@ -300,38 +266,6 @@ class TestGatherFinding:
         assert finding.citations == ["auth_events#1", "auth_events#2"]
 
 
-class TestAnalyze:
-    async def test_full_pipeline_produces_assessment(self):
-        siem = SubtaskResult(
-            task_id="t1:siem:1",
-            status=SubtaskStatus.OK,
-            findings=SiemFindings(
-                auth_events=[ResultSet(query="auth", row_count=1, rows=[{"user": "bostoll", "action": "failure"}])],
-                dns_resolutions=[ResultSet(query="dns", row_count=1, rows=[{"query": "x.com"}])],
-                processes=[ResultSet(query="proc", row_count=1, rows=[{"process": "cmd.exe"}])],
-            ),
-        )
-        report = BrokerReport(
-            task_id="t1",
-            hypothesis_id="h-42",
-            results=[siem],
-            classification=TaskClassification(tool_families=["siem"], rationale="x"),
-            cost=CostSummary(),
-        )
-        model = _DomainModel({
-            "identity": "</think> VERDICT: supports\nCONFIDENCE: 0.9\nCITATIONS: auth_events#1",
-            "network": "</think> VERDICT: inconclusive\nCONFIDENCE: 0.2",
-            "endpoint": "</think> VERDICT: supports\nCONFIDENCE: 0.5\nCITATIONS: processes#1",
-        })
-        assessment = await analyze(report, _ctx(), _scope(), model)
-
-        assert assessment.hypothesis_id == "h-42"
-        assert len(assessment.verdicts) == 3
-        assert assessment.overall_stance == "supports"
-        domains = {v.domain for v in assessment.verdicts}
-        assert domains == {"identity", "network", "endpoint"}
-
-
 class TestInlineObservationCitations:
     """`_finalize` filtered only the trailing CITATIONS: line.
 
@@ -403,7 +337,7 @@ class TestInlineObservationCitations:
 
 def test_a_verdict_records_which_evidence_its_citations_resolve_to():
     from contracts import AnalystVerdict
-    from smartops.subagent_analysts.analyze import _finalize
+    from smartops.subagent_analysts.shown import _finalize
 
     verdict = AnalystVerdict(
         domain="network", stance="supports", confidence=0.9,

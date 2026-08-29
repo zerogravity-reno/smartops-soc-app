@@ -35,7 +35,6 @@ from contracts import (
     Entity,
     EntityKind,
     FetchStep,
-    HypothesisAssessment,
     HypothesisFindings,
     InvestigationContext,
     Scope,
@@ -484,9 +483,12 @@ def _persist_findings(
 ) -> None:
     """Write findings.json beside the broker's run artifacts.
 
-    Same resolution rules as `_persist_assessment`, and beside it rather than
-    replacing it: `assessment.json` is the shape that carries a decided stance,
-    and this one deliberately does not.
+    `run_dir` wins over `SMARTOPS_RUNS_DIR` over the default. Named
+    `findings.json`, not `assessment.json`: `HypothesisAssessment` is the shape
+    that carries a decided stance, and `HypothesisFindings` deliberately does not
+    -- deciding for or against the hypothesis is the Analyst Agent's call, on the
+    far side of this contract. The writer for `assessment.json` was deleted with
+    the rest of the shown path; see `subagent_analysts/shown.py`.
     """
     if run_dir is not None:
         target_dir = Path(run_dir)
@@ -504,71 +506,6 @@ def _persist_findings(
             findings if findings.run_id else findings.model_copy(update={"run_id": target_dir.name})
         )
         (target_dir / "findings.json").write_text(
-            stamped.model_dump_json(indent=2), encoding="utf-8"
-        )
-
-
-def _print_assessment(assessment: HypothesisAssessment) -> None:
-    print(
-        f"\nhypothesis assessment: {assessment.overall_stance.upper()} "
-        f"(confidence {assessment.confidence:.2f})"
-    )
-    for verdict in assessment.verdicts:
-        print(
-            f"  [{verdict.domain:<8}] {verdict.stance:<12} conf={verdict.confidence:.2f}"
-            f"  tokens p={verdict.prompt_tokens} g={verdict.generation_tokens}"
-        )
-        if verdict.rationale:
-            print(f"             {verdict.rationale}")
-        for observation in verdict.key_observations:
-            print(f"               - {observation}")
-        if verdict.citations:
-            print(f"             cited: {', '.join(verdict.citations)}")
-
-    # Summed here rather than through a contract method. Two such methods existed
-    # on `HypothesisFindings` and both read a `verdicts` field that model does not
-    # have, so calling either raised `AttributeError`; `HypothesisAssessment`,
-    # which does have `verdicts`, never had them at all -- so these two lines have
-    # been an `AttributeError` waiting on the shown path, unreached only because
-    # production moved to the blind path and stopped calling this function.
-    total_p = sum(v.prompt_tokens for v in assessment.verdicts)
-    total_g = sum(v.generation_tokens for v in assessment.verdicts)
-    print(
-        f"\nanalyst tokens: {total_p} prompt + {total_g} generation = {total_p + total_g} total"
-    )
-    # The per-call ceiling is the 32,768-token context window (prompt + generation).
-    # Prompts here are small, so headroom is large; raise SMARTOPS_ANALYST_MAX_GEN_LEN
-    # if a verdict looks cut off. Cost is billed per model-copy-minute, not per token.
-    print("  (per-call context ceiling is 32,768 tokens; imported-model cost is per warm-minute, not per token)")
-
-
-def _persist_assessment(
-    task_id: str,
-    assessment: HypothesisAssessment,
-    run_dir: Path | str | None = None,
-) -> None:
-    """Write assessment.json beside the broker's run artifacts.
-
-    If `run_dir` is passed directly (from `save_run_artifacts`), it writes straight
-    there to avoid pointer race conditions. Otherwise falls back to resolving via
-    `latest.txt`. Best-effort: missing dir skips silently.
-    """
-    if run_dir is not None:
-        target_dir = Path(run_dir)
-    else:
-        base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
-        latest = Path(base) / task_id / "latest.txt"
-        if not latest.exists():
-            return
-        target_dir = latest.parent / latest.read_text(encoding="utf-8").strip()
-
-    if target_dir.is_dir():
-        # Stamp the run directory onto the artifact. The analysis layer cannot
-        # know it -- the persistence layer chooses it -- so it is set here, and
-        # it makes the file self-describing if it is ever copied out of its
-        # folder.
-        stamped = assessment.model_copy(update={"run_id": target_dir.name})
-        (target_dir / "assessment.json").write_text(
             stamped.model_dump_json(indent=2), encoding="utf-8"
         )
 

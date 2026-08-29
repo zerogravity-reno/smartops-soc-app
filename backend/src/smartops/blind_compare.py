@@ -90,10 +90,11 @@ from smartops.main import _force_utf8_output
 # `load_evidence_from_run` reads. A second implementation here would be a second
 # thing to keep in step with the writer, and would drift the first time one moved.
 from smartops.replay import _newest_run_in
-from smartops.subagent_analysts.analyze import gather_finding, run_one
+from smartops.subagent_analysts.analyze import gather_finding
 from smartops.subagent_analysts.model import AnalystModel, analyst_model_from_env
 from smartops.subagent_analysts.packing import estimate_tokens, pack_evidence
 from smartops.subagent_analysts.routing import DomainSlice, route
+from smartops.subagent_analysts.shown import run_one
 
 logger = logging.getLogger(__name__)
 

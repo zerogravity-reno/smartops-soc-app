@@ -1,27 +1,36 @@
-"""Run the three domain analysts, on either of two paths.
+"""Run the three domain analysts. **This is the production path.**
 
-Both paths pack a domain's evidence, build a prompt, invoke the model, parse the
-reply, and re-ask once if the first reply carried no parseable block. That
-machinery is `_invoke_with_one_reask`, and the grounding gate applied to what
-comes back is `_apply_grounding`; each is defined once and used by both paths,
-so a change to either cannot land on one path and miss the other. They differ in
-what the analyst is shown and therefore in what it may conclude:
+`gather()` is what `smartops.main` calls. It routes a `BrokerReport` to the three
+domains, runs them concurrently, and assembles `HypothesisFindings` -- the
+contract handed up to the Analyst Agent.
 
-- **Hypothesis-shown** — `run_one` -> `AnalystVerdict` (a `Stance` on the
-  hypothesis), rolled up by `analyze` + `combine` into a `HypothesisAssessment`.
-- **Hypothesis-blind** — `gather_finding` -> `DomainFinding` (a `Disposition` on
-  the evidence), assembled by `gather` into `HypothesisFindings`, the contract
-  handed up to the Analyst Agent. There is no combiner on this path: deciding
-  supports/refutes is the Analyst Agent's job, not this layer's.
+The analysts are **blind**: they never receive the hypothesis. An analyst told
+"20 auth events means malicious" and then shown 20 auth events reports malicious,
+which is the hypothesis talking rather than the evidence. So each one judges what
+its rows show (`DomainFinding`, carrying a `Disposition` --
+benign/suspicious/malicious/inconclusive) and never takes a position on a claim.
 
-The blind path's guarantee is structural rather than disciplinary --
-`gather_finding` and `build_facts_user_turn` have no hypothesis parameter, so
-there is nothing to leak.
+**There is no combiner here, deliberately.** Deciding whether these findings
+support or refute the hypothesis is the Analyst Agent's job, on the far side of
+the `HypothesisFindings` contract. `analyze()` and `combine()` used to sit here
+and roll three verdicts into one `HypothesisAssessment`; they were deleted once
+nothing called them. See `contracts.reasoning.HypothesisFindings`.
 
-Failure is contained per analyst on both paths: a call that errors or stays
-unparseable becomes an `inconclusive` result that says why, so one domain never
-sinks the whole run -- the same discipline the Broker applies to a failing
-subagent.
+The blind guarantee is structural, not disciplinary: `gather_finding(model,
+scope, slice_)` and `build_facts_user_turn(scope, evidence_text)` have no
+hypothesis parameter, so there is nothing to leak. `_invoke_with_one_reask` takes
+an already-built prompt STRING for the same reason -- a shared helper that could
+accept an `InvestigationContext` would downgrade the guarantee to a promise about
+what callers pass. Keep it that way.
+
+Two helpers here are shared with the hypothesis-shown arm in `shown.py`, which
+`blind_compare` measures this path against: `_invoke_with_one_reask` (pack,
+invoke, re-ask once) and `_apply_grounding` (the citation gate). Each is defined
+once so a change cannot land on one arm and miss the other.
+
+Failure is contained per analyst: a call that errors or stays unparseable becomes
+an `inconclusive` finding that says why, so one domain never sinks the whole run
+-- the same discipline the Broker applies to a failing subagent.
 """
 
 from __future__ import annotations
@@ -51,8 +60,8 @@ from contracts import (
 
 from .model import AnalystModel
 from .packing import exhibits_for, pack_evidence
-from .parse import FindingParseError, VerdictParseError, parse_finding, parse_verdict, split_reasoning
-from .prompts import build_facts_user_turn, build_user_turn, facts_system_prompt, system_prompt
+from .parse import FindingParseError, parse_finding, split_reasoning
+from .prompts import build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
@@ -108,17 +117,6 @@ _PACK_TOKEN_BUDGET = 20_000
 """The budget `pack_evidence` packs to, restated here to compare against what the
 model actually counted. Kept equal to `packing.pack_evidence`'s default; the
 comparison is a check on the estimate, not a second source of truth for it."""
-
-_REASK = (
-    "\n\nYour previous reply did not end with the required VERDICT block. "
-    "Reply again, ending with exactly:\n"
-    "VERDICT: supports | refutes | inconclusive\n"
-    "CONFIDENCE: <0.0-1.0>\n"
-    "RATIONALE: <one or two sentences>\n"
-    "OBSERVATIONS:\n- <observation> [citation]\n"
-    "CITATIONS: <comma-separated header ids>"
-)
-
 
 @dataclass(frozen=True)
 class _Attempt:
@@ -278,152 +276,14 @@ def _apply_grounding(
     return reply.model_copy(update=updates)
 
 
-def run_one(
-    model: AnalystModel,
-    context: InvestigationContext,
-    scope: Scope,
-    slice_: DomainSlice,
-) -> AnalystVerdict:
-    """One domain analyst, invoked synchronously (boto3 is sync)."""
-    domain = slice_.domain
-
-    # No evidence routed to this domain -> the answer is inconclusive by
-    # definition. Return it directly rather than spending a model call on a prompt
-    # whose only honest reply is "nothing to analyze" (and which tempts the model
-    # to invent a citation for absent evidence).
-    if not slice_.has_evidence():
-        return AnalystVerdict(
-            domain=domain,
-            stance="inconclusive",
-            confidence=0.0,
-            rationale=f"no {domain} evidence was retrieved, so the hypothesis cannot be assessed from this domain",
-        )
-
-    evidence_text, valid_ids, _, _ = pack_evidence(slice_)
-    attempt = _invoke_with_one_reask(
-        model,
-        domain=domain,
-        system=system_prompt(domain),
-        user=build_user_turn(context, scope, evidence_text),
-        reask=_REASK,
-        parse=parse_verdict,
-        parse_error=VerdictParseError,
-        call_label="analyst",
-        noun="verdict",
-    )
-    if attempt.parsed is not None:
-        return _finalize(
-            attempt.parsed, valid_ids, attempt.prompt_tokens, attempt.generation_tokens
-        )
-    return AnalystVerdict(
-        domain=domain,
-        stance="inconclusive",
-        confidence=0.0,
-        rationale=attempt.rationale,
-        reasoning_trace=attempt.reasoning_trace,
-        prompt_tokens=attempt.prompt_tokens,
-        generation_tokens=attempt.generation_tokens,
-    )
-
-
-def _finalize(
-    verdict: AnalystVerdict,
-    valid_ids: dict[str, list[str]],
-    prompt_tokens: int,
-    generation_tokens: int,
-) -> AnalystVerdict:
-    """Anti-hallucination gate + token stamping applied to a parsed verdict.
-
-    - Drop any citation that does not resolve to a header id we actually emitted
-      (the model can only legitimately cite what it was shown).
-    - Grounding downgrade: a `supports`/`refutes` verdict whose citations ALL fail
-      to resolve is treated as ungrounded and downgraded to `inconclusive` with
-      capped confidence -- a decisive claim with no evidence behind it is not one we
-      let stand. `inconclusive` needs no citation.
-    """
-    return _apply_grounding(
-        verdict,
-        valid_ids,
-        prompt_tokens,
-        generation_tokens,
-        observations_field="key_observations",
-        stance_field="stance",
-        # A `Stance` is supports/refutes/inconclusive, so this is the decisive
-        # pair spelled out rather than `!= "inconclusive"`. Kept explicit because
-        # the blind path's `Disposition` has four members and needs the other
-        # test; see `_finalize_finding`.
-        decisive=lambda stance: stance in ("supports", "refutes"),
-        drop_log="domain=%s | dropped %d invented citation(s): %s",
-        downgrade_log=(
-            "domain=%s | %s verdict has no resolvable citation; "
-            "downgrading to inconclusive"
-        ),
-        note="ungrounded: no cited evidence resolved to the provided evidence",
-    )
-
-
-def combine(verdicts: list[AnalystVerdict]) -> tuple[Stance, float]:
-    """Roll per-domain verdicts into one stance + confidence.
-
-    Thin by design (the full Aggregator is later work): confidence-weighted vote
-    of the non-inconclusive verdicts. Ties and an all-inconclusive panel resolve
-    to `inconclusive`. Confidence is the winning side's share of the decided
-    weight, or the mean confidence when nothing was decided.
-    """
-    if not verdicts:
-        return "inconclusive", 0.0
-
-    support_confs = [v.confidence for v in verdicts if v.stance == "supports"]
-    refute_confs = [v.confidence for v in verdicts if v.stance == "refutes"]
-    support, refute = sum(support_confs), sum(refute_confs)
-
-    if support == refute:  # includes the all-inconclusive case (both 0)
-        mean = sum(v.confidence for v in verdicts) / len(verdicts)
-        return "inconclusive", round(mean, 3)
-
-    # Confidence = the winning side's MEAN verdict confidence, scaled by its margin
-    # over the losing side. Unopposed, the margin is 1 and confidence is just the
-    # mean of the deciding domains (two 0.88 supports -> ~0.88, NOT 1.0). Opposition
-    # lowers it toward inconclusive. This replaces "winning share of decided weight",
-    # which pinned an unopposed verdict to 1.0 no matter how unsure each domain was.
-    winning_confs, win, lose = (
-        (support_confs, support, refute)
-        if support > refute
-        else (refute_confs, refute, support)
-    )
-    stance: Stance = "supports" if support > refute else "refutes"
-    margin = (win - lose) / (win + lose)
-    confidence = (sum(winning_confs) / len(winning_confs)) * margin
-    return stance, round(confidence, 3)
-
-
-async def analyze(
-    report: BrokerReport,
-    context: InvestigationContext,
-    scope: Scope,
-    model: AnalystModel,
-) -> HypothesisAssessment:
-    """Route the report, run the three analysts concurrently, and combine."""
-    routed = route(report, scope)
-    verdicts = await asyncio.gather(
-        *(asyncio.to_thread(run_one, model, context, scope, slice_) for slice_ in routed.slices())
-    )
-    verdicts = list(verdicts)
-    overall_stance, confidence = combine(verdicts)
-    return HypothesisAssessment(
-        task_id=report.task_id,
-        hypothesis_id=report.hypothesis_id,
-        overall_stance=overall_stance,
-        confidence=confidence,
-        verdicts=verdicts,
-    )
-
-
 # ---------------------------------------------------------------------------
-# Tier 1 of the hypothesis-blind redesign (see
+# The blind analyst call and the artifact it feeds (see
 # docs/superpowers/specs/2026-08-23-hypothesis-blind-analysts-design.md).
-# Mirrors run_one()'s shape but never receives the hypothesis. Not yet called
-# from analyze() -- that wiring is the Aggregator cycle, a later plan.
+#
+# This said "not yet called from analyze() -- that wiring is the Aggregator
+# cycle, a later plan", which was true when the blind tier landed dark beside the
+# shown one and became actively misleading afterwards: `main` moved onto
+# `gather()` and this is the ONLY path that runs. `analyze()` is gone.
 # ---------------------------------------------------------------------------
 
 _FINDING_REASK = (

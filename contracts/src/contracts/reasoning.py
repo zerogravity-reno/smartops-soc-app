@@ -465,8 +465,9 @@ class HypothesisFindings(BaseModel):
     # No token totals here, deliberately. Two such methods stood on this model
     # and both summed `self.verdicts` -- a field of `HypothesisAssessment`, not of
     # this one -- so either raised `AttributeError` on call. Copied across with
-    # the rest of the shape and never exercised, because the only caller
-    # (`main._print_assessment`) is on the shown path. Not repaired against
-    # `findings` either: `DomainJudgement` drops the token counts on purpose (see
-    # its docstring), so there is nothing on this side of the wire to sum. Token
-    # spend is our telemetry, and it stays on `DomainFinding`.
+    # the rest of the shape and never exercised, because their only caller was
+    # `main._print_assessment`, which has since been deleted along with the rest
+    # of the hypothesis-shown path. Not repaired against `findings` either:
+    # `DomainJudgement` drops the token counts on purpose (see its docstring), so
+    # there is nothing on this side of the wire to sum. Token spend is our
+    # telemetry, and it stays on `DomainFinding`.

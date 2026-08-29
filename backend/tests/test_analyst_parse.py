@@ -5,11 +5,10 @@ from __future__ import annotations
 import pytest
 from smartops.subagent_analysts.parse import (
     FindingParseError,
-    VerdictParseError,
     parse_finding,
-    parse_verdict,
     split_reasoning,
 )
+from smartops.subagent_analysts.shown import VerdictParseError, parse_verdict
 
 _GOOD = """the failures cluster on one account from one source, consistent with a \
 brute force that then succeeded.

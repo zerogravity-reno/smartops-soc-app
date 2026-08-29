@@ -17,17 +17,14 @@ import re
 
 from contracts import (
     AnalystDomain,
-    AnalystVerdict,
     Disposition,
     DomainFinding,
-    Stance,
 )
 
 logger = logging.getLogger(__name__)
 
 _THINK_CLOSE = "</think>"
 
-_STANCE_RE = re.compile(r"VERDICT\s*:\s*(.+)", re.IGNORECASE)
 # `CONFIDENCE` and its value can be separated by markdown emphasis the 8B model
 # adds (`**CONFIDENCE:** 0.7`), so allow non-digit noise between them -- but
 # `[^\n\d]` rather than `\D`, so that noise cannot cross a newline. `\D*` used
@@ -64,9 +61,6 @@ _RATIONALE_RE = re.compile(
     rf"RATIONALE\s*:\s*(.+?)(?:\n{_LABEL_PREFIX}{_LABEL}\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
 _CITATIONS_RE = re.compile(r"CITATIONS\s*:\s*(.+)", re.IGNORECASE)
-_OBSERVATIONS_RE = re.compile(
-    rf"OBSERVATIONS\s*:\s*(.+?)(?:\n{_LABEL_PREFIX}CITATIONS\s*:|\Z)", re.IGNORECASE | re.DOTALL
-)
 # `parse_finding`'s own OBSERVATIONS pattern, module-level like every other
 # pattern here rather than recompiled on every call. Deliberately not
 # `_OBSERVATIONS_RE`: that one assumes OBSERVATIONS immediately precedes
@@ -87,10 +81,6 @@ def _strip_md(text: str) -> str:
     `auth_events#1` and `dns_resolutions#1` depend on them.
     """
     return text.replace("*", "").replace("`", "")
-
-
-class VerdictParseError(ValueError):
-    """The generation carried no recognisable verdict block."""
 
 
 def split_reasoning(generation: str) -> tuple[str | None, str]:
@@ -142,45 +132,6 @@ def _normalise_disposition(raw: str) -> Disposition | None:
     return None
 
 
-_STANCE_KEYWORDS: tuple[tuple[str, Stance], ...] = (
-    ("inconclusive", "inconclusive"),
-    ("insufficient", "inconclusive"),
-    ("unclear", "inconclusive"),
-    ("refut", "refutes"),
-    ("support", "supports"),
-)
-
-
-def _normalise_stance(raw: str) -> Stance | None:
-    text = raw.strip().lower()
-    # The model is prompted to lead the VERDICT line with the stance word
-    # itself, so check the leading word first, before falling back to a
-    # substring scan over the whole line. Substring-only used to misclassify a
-    # verbose line where the *other* stance word appears in passing --
-    # `VERDICT: refutes, there is no support for the hypothesis` scanned
-    # "support" first and registered as `supports`.
-    leading = re.split(r"[\s,.;:\-]+", text, maxsplit=1)[0] if text else ""
-    for needle, stance in _STANCE_KEYWORDS:
-        if needle in leading:
-            return stance
-    for needle, stance in _STANCE_KEYWORDS:
-        if needle in text:
-            return stance
-    return None
-
-
-def _parse_observations(answer: str) -> list[str]:
-    match = _OBSERVATIONS_RE.search(answer)
-    if not match:
-        return []
-    observations = []
-    for line in match.group(1).splitlines():
-        line = line.strip().lstrip("-*").strip()
-        if line:
-            observations.append(line)
-    return observations
-
-
 def _parse_citations(answer: str) -> list[str]:
     """The header ids on the trailing `CITATIONS:` line.
 
@@ -199,43 +150,6 @@ def _parse_citations(answer: str) -> list[str]:
     raw = match.group(1).strip()
     cleaned = (c.strip("[]").strip() for c in re.split(r"[,\s]+", raw))
     return [c for c in cleaned if c]
-
-
-def parse_verdict(
-    generation: str, *, domain: AnalystDomain
-) -> AnalystVerdict:
-    """Parse a full generation (reasoning + answer) into an `AnalystVerdict`.
-
-    Raises `VerdictParseError` if no stance can be recovered.
-    """
-    reasoning, raw_answer = split_reasoning(generation)
-    # Field extraction runs on a markdown-stripped copy so `**VERDICT:**`-style
-    # emphasis does not break the labelled parse; `reasoning` is kept verbatim.
-    answer = _strip_md(raw_answer)
-
-    stance_match = _STANCE_RE.search(answer)
-    stance = _normalise_stance(stance_match.group(1)) if stance_match else None
-    if stance is None:
-        raise VerdictParseError(
-            f"no VERDICT stance found in {domain} analyst output"
-        )
-
-    confidence_match = _CONFIDENCE_RE.search(answer)
-    confidence = float(confidence_match.group(1)) if confidence_match else 0.0
-    confidence = max(0.0, min(1.0, confidence))
-
-    rationale_match = _RATIONALE_RE.search(answer)
-    rationale = rationale_match.group(1).strip() if rationale_match else ""
-
-    return AnalystVerdict(
-        domain=domain,
-        stance=stance,
-        confidence=confidence,
-        rationale=rationale,
-        key_observations=_parse_observations(answer),
-        citations=_parse_citations(answer),
-        reasoning_trace=reasoning,
-    )
 
 
 class FindingParseError(ValueError):

@@ -7,10 +7,9 @@ from datetime import UTC, datetime
 from smartops.subagent_analysts.packing import estimate_tokens, pack_evidence
 from smartops.subagent_analysts.prompts import (
     build_facts_user_turn,
-    build_user_turn,
     facts_system_prompt,
-    system_prompt,
 )
+from smartops.subagent_analysts.shown import build_user_turn, system_prompt
 from smartops.subagent_analysts.routing import DomainSlice
 
 from contracts import Entity, InvestigationContext, ResultSet, Scope, VtVerdict
