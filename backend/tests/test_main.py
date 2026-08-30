@@ -54,6 +54,20 @@ class TestEnvFileLoading:
         assert os.environ["VT_API_KEY"] == "from-parent"
 
 
+class TestFamiliesHelpText:
+    """`--families` reaches only `_scripted_invoker` -- it is never passed to
+    `broker_task`, so on the real model path it does nothing. The help text
+    used to read as a constraint on any run ("comma-separated families to
+    dispatch"); it must now say the flag is scripted-only."""
+
+    def test_mentions_scripted_only(self):
+        action = next(
+            a for a in _build_parser()._actions if a.dest == "families"
+        )
+
+        assert "--scripted" in action.help
+
+
 class TestEntityParsing:
     def test_kind_value_pairs_parse(self):
         entity = _parse_entity("ip:10.2.4.9")

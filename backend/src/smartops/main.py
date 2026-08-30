@@ -299,7 +299,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--families",
         default=",".join(ALL_FAMILIES),
-        help=f"comma-separated families to dispatch (default: all of {','.join(ALL_FAMILIES)})",
+        help=(
+            f"comma-separated families to dispatch, --scripted only (default: all of "
+            f"{','.join(ALL_FAMILIES)}). On the model path this does nothing -- the "
+            "tool gate (available_broker_tools()) decides what is available instead"
+        ),
     )
     parser.add_argument(
         # 1.0 was below the cost of a single run and guaranteed a confusing
