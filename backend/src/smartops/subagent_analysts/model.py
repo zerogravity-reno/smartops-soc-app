@@ -378,6 +378,40 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+MAX_GEN_LEN_ENV_VAR = "SMARTOPS_ANALYST_MAX_GEN_LEN"
+
+
+def _clamped_max_gen_len() -> int:
+    """`MAX_GEN_LEN_ENV_VAR`, refused above `DEFAULT_MAX_GEN_LEN`.
+
+    `packing._GENERATION_RESERVE` is set to `DEFAULT_MAX_GEN_LEN` and reserved
+    out of the 32,768-token window once, at import. This env var is read at
+    RUNTIME and can name a larger value -- `SMARTOPS_ANALYST_MAX_GEN_LEN=8192`
+    overflows the window by ~4,600 tokens against that frozen reserve, silently,
+    since nothing at import time can see a value only set later. Clamping here
+    is the cheapest place to close that gap: refusing (or silently honouring) a
+    too-large value would either break every run using this env var today or
+    let the overflow back in, so this warns and falls back to the reserved
+    default instead. Raise `DEFAULT_MAX_GEN_LEN` itself (which re-derives
+    `_PACK_TOKEN_BUDGET`) if more generation room is genuinely needed.
+    """
+    requested = _env_int(MAX_GEN_LEN_ENV_VAR, DEFAULT_MAX_GEN_LEN)
+    if requested > DEFAULT_MAX_GEN_LEN:
+        logger.warning(
+            "%s=%d exceeds DEFAULT_MAX_GEN_LEN=%d, which is what "
+            "packing._GENERATION_RESERVE reserved out of the context window at "
+            "import time; using %d instead so the reserved prompt budget stays "
+            "honest. Raise DEFAULT_MAX_GEN_LEN (and re-derive the packing "
+            "budget) if more generation room is genuinely needed.",
+            MAX_GEN_LEN_ENV_VAR,
+            requested,
+            DEFAULT_MAX_GEN_LEN,
+            DEFAULT_MAX_GEN_LEN,
+        )
+        return DEFAULT_MAX_GEN_LEN
+    return requested
+
+
 def analyst_model_from_env() -> AnalystModel | None:
     """Build the analyst model from the environment, or `None` if unconfigured.
 
@@ -390,7 +424,7 @@ def analyst_model_from_env() -> AnalystModel | None:
     return AnalystModel(
         temperature=_env_float("SMARTOPS_ANALYST_TEMPERATURE", DEFAULT_TEMPERATURE),
         top_p=_env_float("SMARTOPS_ANALYST_TOP_P", DEFAULT_TOP_P),
-        max_gen_len=_env_int("SMARTOPS_ANALYST_MAX_GEN_LEN", DEFAULT_MAX_GEN_LEN),
+        max_gen_len=_clamped_max_gen_len(),
         ready_retries=_env_int("SMARTOPS_ANALYST_READY_RETRIES", DEFAULT_READY_RETRIES),
         ready_wait_seconds=_env_float(
             "SMARTOPS_ANALYST_READY_WAIT_SECONDS", DEFAULT_READY_WAIT_SECONDS

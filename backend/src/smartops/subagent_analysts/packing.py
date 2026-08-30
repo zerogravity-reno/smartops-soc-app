@@ -16,10 +16,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import cycle
 from typing import get_args
 
-from contracts import AnalystDomain, Entity, EntityKind, Scope
+from contracts import AnalystDomain, Entity, Scope
 
 from .formatting import format_result_set, format_vt_verdicts
 from .model import DEFAULT_MAX_GEN_LEN
@@ -114,9 +113,19 @@ docstring for the model identity). Every reserve below is carved out of this."""
 
 _GENERATION_RESERVE = DEFAULT_MAX_GEN_LEN
 """Tokens the model may spend on its reply. Imported rather than restated so this
-budget visibly shrinks if `model.DEFAULT_MAX_GEN_LEN` ever grows -- the two used
-to be reserved independently, with nothing that would notice if one changed and
-the other did not."""
+budget visibly shrinks if `model.DEFAULT_MAX_GEN_LEN` (the module CONSTANT) ever
+grows -- the two used to be reserved independently, with nothing that would
+notice if one changed and the other did not.
+
+**This is computed once, at import, and does not see a per-call override.**
+`model.analyst_model_from_env` reads `SMARTOPS_ANALYST_MAX_GEN_LEN` at RUNTIME
+and used to hand it straight to `AnalystModel`, so an operator setting it above
+`DEFAULT_MAX_GEN_LEN` (e.g. 8192) silently overflowed this reserve -- and the
+32,768-token window behind it -- by exactly the difference, with nothing here
+able to notice a value that only exists later. `_clamped_max_gen_len` in
+`model.py` is what actually enforces the invariant this constant's name implies:
+it refuses (with a warning) any env value above `DEFAULT_MAX_GEN_LEN`, which is
+the value this reserve was computed from."""
 
 _SYSTEM_PROMPT_RESERVE = max(
     estimate_tokens(facts_system_prompt(domain)) for domain in get_args(AnalystDomain)
@@ -129,15 +138,8 @@ under-reserves, which is the direction to be wrong in. `max()` over all three
 because one shared budget is applied to every domain; the reader who grows one
 domain's body sees this move without having to know which domain was largest."""
 
-_SCAFFOLD_ENTITY_KINDS = get_args(EntityKind)
-"""Every `EntityKind`, cycled below to build a scope wide enough to bound
-`_USER_TURN_SCAFFOLD_RESERVE` -- see that constant's own docstring for why a
-20-entity scope, not a 1-entity one, is what gets measured."""
-
 # Sized like real indicators, not short placeholders -- a SHA-256 hash and a
-# full callback URL, not "sample-file_hash" -- so the measurement below already
-# leans toward the conservative (over-reserving) side rather than needing a
-# second cushion bolted on afterward.
+# full callback URL, not "sample-file_hash".
 _SCAFFOLD_SAMPLE_VALUES: dict[str, str] = {
     "host": "WORKSTATION-042",
     "user": "svc-account-domain-admin",
@@ -148,10 +150,27 @@ _SCAFFOLD_SAMPLE_VALUES: dict[str, str] = {
     "process": "powershell.exe",
 }
 
+_SCAFFOLD_LONGEST_KIND, _SCAFFOLD_LONGEST_VALUE = max(
+    _SCAFFOLD_SAMPLE_VALUES.items(), key=lambda item: len(item[1])
+)
+"""The single longest sample value across every `EntityKind` (currently `url`),
+and the kind it belongs to.
+
+**Every scaffold entity uses this one value, not a cycle through all seven
+kinds.** A 20-entity scope built by cycling `EntityKind` puts each long value
+(the SHA-256 hash, the full URL) in only ~3 of the 20 slots, with the rest
+filled by short ones (`host`, `user`, `ip`) -- so the measurement below was an
+AVERAGE-case scope, not a worst-case one. Measured reality for a 20-entity
+scope of the longest value alone is 833 tokens against the 474 the cycled
+version produced: the old reserve was exhausted at ~10 entities of the longest
+kind, and the whole `_SAFETY_MARGIN` consumed by ~25 -- at which point
+`_PACK_TOKEN_BUDGET` goes negative against the window. Bounding the WORST case
+(every entity is the longest value) rather than a plausible-looking average is
+what `_USER_TURN_SCAFFOLD_RESERVE` needs to actually be a bound."""
+
 _SCAFFOLD_SAMPLE_SCOPE = Scope(
     entities=[
-        Entity(kind=kind, value=_SCAFFOLD_SAMPLE_VALUES[kind])
-        for _, kind in zip(range(20), cycle(_SCAFFOLD_ENTITY_KINDS))
+        Entity(kind=_SCAFFOLD_LONGEST_KIND, value=_SCAFFOLD_LONGEST_VALUE) for _ in range(20)
     ],
     time_window=(datetime(2000, 1, 1, tzinfo=UTC), datetime(2000, 1, 2, tzinfo=UTC)),
 )
@@ -181,10 +200,13 @@ _USER_TURN_SCAFFOLD_RESERVE = estimate_tokens(
 )
 """What `build_facts_user_turn` adds around the evidence text itself: the
 `<scope>`/`<evidence>` fencing, one rendered line per scope entity, and the
-trailing instruction line. Measured, not guessed, against the 20-entity bound
-above -- the cost of widening it from 1 entity to 20 is roughly 370 tokens
-against a budget in the tens of thousands, i.e. under 2%, which is what makes
-erring toward a generous bound cheap enough to just take."""
+trailing instruction line. Measured against `_SCAFFOLD_SAMPLE_SCOPE`'s 20
+entities of the single LONGEST sample value (833 tokens), not an average across
+`EntityKind` (474 tokens for the same 20 entities cycled through all seven
+kinds) -- see that constant's own docstring for why the cycled version was not
+actually a bound. The cost of that correctness, against a budget in the tens of
+thousands, is ~1.4% (`_PACK_TOKEN_BUDGET` drops by 359 tokens) -- cheap enough
+that there is no reason to keep the version that was wrong."""
 
 _SAFETY_MARGIN = 500
 """A deliberate, named cushion on top of the three measured reserves, so the

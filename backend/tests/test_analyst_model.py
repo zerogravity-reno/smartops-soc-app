@@ -7,9 +7,12 @@ import os
 import threading
 import time
 
+import logging
+
 import pytest
 from smartops.errors import NotConfigured
 from smartops.subagent_analysts.model import (
+    DEFAULT_MAX_GEN_LEN,
     DEFAULT_TEMPERATURE,
     AnalystModel,
     _botocore_config,
@@ -308,8 +311,57 @@ class TestFromEnv:
     def test_reads_optional_generation_controls(self, monkeypatch):
         monkeypatch.setenv("SMARTOPS_ANALYST_MODEL_ARN", "arn:fake")
         monkeypatch.setenv("SMARTOPS_ANALYST_TEMPERATURE", "0.3")
-        monkeypatch.setenv("SMARTOPS_ANALYST_MAX_GEN_LEN", "4096")
+        # At or below DEFAULT_MAX_GEN_LEN, so this exercises the pass-through
+        # half of `_clamped_max_gen_len` rather than its clamp.
+        monkeypatch.setenv("SMARTOPS_ANALYST_MAX_GEN_LEN", "2048")
         model = analyst_model_from_env()
         assert model is not None
         assert model.temperature == 0.3
-        assert model.max_gen_len == 4096
+        assert model.max_gen_len == 2048
+
+
+class TestMaxGenLenIsClampedToTheReservedBudget:
+    """Finding 3 (2026-08-30 whole-branch review).
+
+    `packing._GENERATION_RESERVE` is set to `DEFAULT_MAX_GEN_LEN` and reserved
+    out of the 32,768-token window once, at import -- but this env var is read
+    at RUNTIME, and used to be handed straight to `AnalystModel` with nothing
+    checking it against that frozen reserve.
+    `SMARTOPS_ANALYST_MAX_GEN_LEN=8192` overflowed the window by ~4,600 tokens,
+    silently, while `_GENERATION_RESERVE`'s docstring claimed the two could not
+    diverge.
+    """
+
+    def test_a_value_above_the_default_is_clamped_and_warns(self, monkeypatch, caplog):
+        monkeypatch.setenv("SMARTOPS_ANALYST_MODEL_ARN", "arn:fake")
+        monkeypatch.setenv("SMARTOPS_ANALYST_MAX_GEN_LEN", "8192")
+
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.model"):
+            model = analyst_model_from_env()
+
+        assert model is not None
+        assert model.max_gen_len == DEFAULT_MAX_GEN_LEN
+        assert "SMARTOPS_ANALYST_MAX_GEN_LEN=8192" in caplog.text
+        assert str(DEFAULT_MAX_GEN_LEN) in caplog.text
+
+    def test_a_value_at_the_default_is_not_clamped_and_does_not_warn(self, monkeypatch, caplog):
+        monkeypatch.setenv("SMARTOPS_ANALYST_MODEL_ARN", "arn:fake")
+        monkeypatch.setenv("SMARTOPS_ANALYST_MAX_GEN_LEN", str(DEFAULT_MAX_GEN_LEN))
+
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.model"):
+            model = analyst_model_from_env()
+
+        assert model is not None
+        assert model.max_gen_len == DEFAULT_MAX_GEN_LEN
+        assert caplog.text == ""
+
+    def test_unset_falls_back_to_the_default_unclamped(self, monkeypatch, caplog):
+        monkeypatch.setenv("SMARTOPS_ANALYST_MODEL_ARN", "arn:fake")
+        monkeypatch.delenv("SMARTOPS_ANALYST_MAX_GEN_LEN", raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.model"):
+            model = analyst_model_from_env()
+
+        assert model is not None
+        assert model.max_gen_len == DEFAULT_MAX_GEN_LEN
+        assert caplog.text == ""
