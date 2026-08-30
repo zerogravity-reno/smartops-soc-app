@@ -42,7 +42,7 @@ from contracts.findings import SiemFindings, VtFindings
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
-from contracts import AnalystTask, Entity, Scope, SubtaskResult, ToolFamily
+from contracts import AnalystDomain, AnalystTask, Disposition, Entity, Scope, SubtaskResult, ToolFamily
 from smartops.broker import broker_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import spec_for
@@ -99,13 +99,16 @@ DEFAULT_BOTSV3_TASK = AnalystTask(
     ),
 )
 
-BOTSV3_POWERSHELL_TASK = AnalystTask(
-    task_id="botsv3_powershell_hash",
-    hypothesis_id="powershell-malware-hash",
-    goal="Investigate suspicious file hash e2ac36894c2560d2b277ff9618b76c8c reputation on VirusTotal and SIEM activity on host BSTOLL-L.",
+# hdoor.exe (BOTSv3 Q307), a network scanner/backdoor -- not PowerShell. The
+# original task pointed at a hash absent from BOTSv3 (VT NOT FOUND); renamed
+# from BOTSV3_POWERSHELL_TASK along with the case, per R8.
+BOTSV3_HDOOR_TASK = AnalystTask(
+    task_id="botsv3_hdoor_tool",
+    hypothesis_id="hdoor-backdoor-tool",
+    goal="Investigate suspected attack tool (network scanner/backdoor) file hash 586EF56F4D8963DD546163AC31C865D7 reputation on VirusTotal and SIEM activity on host BSTOLL-L.",
     scope=Scope(
         entities=[
-            Entity(kind="file_hash", value="e2ac36894c2560d2b277ff9618b76c8c"),
+            Entity(kind="file_hash", value="586EF56F4D8963DD546163AC31C865D7"),
             Entity(kind="host", value="BSTOLL-L"),
         ],
         time_window=(
@@ -115,14 +118,19 @@ BOTSV3_POWERSHELL_TASK = AnalystTask(
     ),
 )
 
+# C2 at 45.77.53.176 (BOTSv3 Q322). BOTSv3 Q323 documents ABUNGST-L and
+# FYODOR-L -- not BSTOLL-L -- as the endpoints that contacted C2
+# infrastructure, so the host changed along with the IP: keeping BSTOLL-L
+# would correctly retrieve nothing and look like an analyst failure rather
+# than a correctly-scoped negative.
 BOTSV3_C2_IP_TASK = AnalystTask(
-    task_id="botsv3_c2_ip",
-    hypothesis_id="c2-outbound-ip",
-    goal="Is external IP 217.182.164.14 known-malicious, and what network connections did host BSTOLL-L make to it?",
+    task_id="botsv3_c2_beacon",
+    hypothesis_id="c2-beacon-outbound",
+    goal="Is external IP 45.77.53.176 known-malicious, and what network connections did host ABUNGST-L make to it?",
     scope=Scope(
         entities=[
-            Entity(kind="ip", value="217.182.164.14"),
-            Entity(kind="host", value="BSTOLL-L"),
+            Entity(kind="ip", value="45.77.53.176"),
+            Entity(kind="host", value="ABUNGST-L"),
         ],
         time_window=(
             datetime(2018, 8, 20, 0, 0, 0, tzinfo=UTC),
@@ -264,8 +272,8 @@ BOTSV3_HARD_MULTI_VECTOR_TASK = AnalystTask(
 
 BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
     "botsv3_coinhive": (DEFAULT_BOTSV3_TASK, ["siem", "vt"]),
-    "botsv3_powershell_hash": (BOTSV3_POWERSHELL_TASK, ["siem", "vt"]),
-    "botsv3_c2_ip": (BOTSV3_C2_IP_TASK, ["siem", "vt"]),
+    "botsv3_hdoor_tool": (BOTSV3_HDOOR_TASK, ["siem", "vt"]),
+    "botsv3_c2_beacon": (BOTSV3_C2_IP_TASK, ["siem", "vt"]),
     "botsv3_web_shell_url": (BOTSV3_WEB_SHELL_TASK, ["siem", "vt"]),
     "botsv3_dns_tunneling": (BOTSV3_DNS_TUNNELING_TASK, ["siem", "vt"]),
     "botsv3_mimikatz_hash": (BOTSV3_MIMIKATZ_TASK, ["siem", "vt"]),
@@ -275,6 +283,96 @@ BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
     "botsv3_suspicious_user_auth": (BOTSV3_USER_AUTH_TASK, ["siem"]),
     "botsv3_hard_multivector": (BOTSV3_HARD_MULTI_VECTOR_TASK, ["siem", "vt"]),
 }
+
+
+EXPECTED_DISPOSITIONS: dict[str, dict[AnalystDomain, Disposition]] = {
+    "botsv3_coinhive": {
+        # BSTOLL-L is the endpoint mining Monero (BOTSv3 Q210); chrome#5 was
+        # the process at 100% CPU (Q208); six coinhive destinations were
+        # visited, over coinhive.com plus ws001/ws005/ws011/ws014/
+        # ws019.coinhive.com; Symantec fired JSCoinminer Download 8 (SID
+        # 30358). network: malicious -- the DNS queries plus VT mal=11 on
+        # the domain.
+        #
+        # network ONLY. A live run of this exact scope on 2026-08-30
+        # retrieved 46 dns_resolutions rows and 124 connections rows and
+        # zero process rows -- the Broker planned siem-dns and
+        # siem-connections and no process step, because the case's entities
+        # are a domain and a host and its goal asks what the host did WITH
+        # the domain. An endpoint expectation would not be reliably
+        # elicited by this case, and scoring it would penalise the analyst
+        # for evidence the plan never asked for. chrome#5 at 100% CPU is
+        # real and documented (Q208) but belongs to a different case,
+        # scoped to elicit process evidence -- out of scope here.
+        #
+        # No identity entry either -- BOTSv3 documents no authentication
+        # anomaly for this activity, and asserting benign would be
+        # inventing an answer.
+        "network": "malicious",
+    },
+    "botsv3_c2_beacon": {
+        # C2 at 45.77.53.176 / 45.77.65.211, URL paths /admin/get.php,
+        # /news.php, /login/process.php (Q322).
+        "network": "malicious",
+    },
+    "botsv3_hdoor_tool": {
+        # MD5 586EF56F4D8963DD546163AC31C865D7 is hdoor.exe (Q307), a
+        # network scanner/backdoor, downloaded over port 3333 inside
+        # logos.png (Q314, Q316).
+        "endpoint": "malicious",
+    },
+}
+"""The BOTSv3 answer key, per case and per domain.
+
+Sparse and deliberately so: a case absent here has no documented answer in
+BOTSv3, which is the honest state for most of `BENCHMARK_CASES` -- see
+`SYNTHETIC_INDICATOR_CASES` for the ones built on indicators the dataset does
+not contain. Per-domain rather than one value per case (R6): `HypothesisFindings`
+has no overall disposition -- deciding across domains is the Analyst Agent's
+job, and `combine()` was deleted for crossing that line. A domain missing from
+a case's entry (e.g. no `identity` for `botsv3_coinhive`) is not "expected
+benign" -- it means BOTSv3 documents no answer for that domain, and asserting
+one would be inventing it.
+"""
+
+
+SYNTHETIC_INDICATOR_CASES = frozenset({
+    "botsv3_web_shell_url",
+    "botsv3_dns_tunneling",
+    "botsv3_mimikatz_hash",
+    "botsv3_ransomware_note",
+    "botsv3_exfil_ip",
+    "botsv3_phishing_domain",
+})
+"""Cases whose indicators BOTSv3 does not contain, kept for coverage anyway.
+
+They still earn their place -- they exercise the empty-result path and keep
+entity-kind routing coverage (`url` and `file_hash` have no other case) -- but
+none of them has a documented answer, so none appears in
+`EXPECTED_DISPOSITIONS`. What is actually wrong, per case:
+
+- `botsv3_web_shell_url` -- host `po18-s92-l01` and the `shell.php` URL appear
+  nowhere in BOTSv3; VT NOT FOUND.
+- `botsv3_dns_tunneling` -- `a1b2c3.tunnel.malicious.net` is a placeholder
+  (`a1`/`b2`/`c3` sequential) and does not resolve. BOTSv3's DNS finding is a
+  statistic -- average third-level subdomain length 8.10 on `brewertalk.com`
+  (Q224) -- which is not a disposition, so there is nothing to expect here.
+- `botsv3_mimikatz_hash` -- MISLABELLED, not merely synthetic.
+  `31d6cfe0d16ae931b73c59d7e0c089c0` is the NTLM hash of an empty password. It
+  is not Mimikatz, not malware, and not a file hash in the sense the case
+  name claims. A correct system returns `inconclusive`; the case name says it
+  should find a credential dumper.
+- `botsv3_ransomware_note` -- `8f4e2b109156a297e68c123456789abc` is a
+  placeholder (sequential hex tail `123456789abc`). BOTSv3 has no ransomware
+  component at all.
+- `botsv3_exfil_ip` -- `104.20.208.59` is Cloudflare (AS13335). BOTSv3 shows
+  `104.20.209.59` -- one digit different -- as a DNS response for
+  coinhive.com, not an exfil destination. BOTSv3's actual exfiltration is via
+  S3, which is out of scope per R2.
+- `botsv3_phishing_domain` -- not in BOTSv3, but the domain is real: our own
+  saved VT lookup has `secure-login-account.com` at `mal=14`. VT-only case;
+  expect no SIEM rows.
+"""
 
 
 class RunMetrics(BaseModel):
@@ -309,6 +407,21 @@ class RunMetrics(BaseModel):
     index_scoping_correct: bool
     findings_completeness: dict[str, int]
     routing_correctness: bool
+    disposition_correct: bool | None = None
+    """Whether the analysts' per-domain dispositions matched `EXPECTED_DISPOSITIONS`.
+
+    Three states, not two. `None` covers both "no answer key for this case"
+    (absent from `EXPECTED_DISPOSITIONS`) and "no findings to score at all"
+    (no `SMARTOPS_ANALYST_MODEL_ARN`, or `--scripted`) -- the same
+    no-answer-vs-wrong-answer distinction `StepOutcome.evaluated` and
+    `RetrievalSummary` exist to preserve elsewhere in this codebase. Only a
+    genuine mismatch, on a domain the case DOES have a documented answer for,
+    is `False`. Always `None` today: `_execute_single_run` calls only
+    `broker_task`, never `smartops.subagent_analysts.analyze`, so no
+    per-domain findings ever reach this scope to compare -- see
+    `compute_disposition_correct` and the 2026-08-30 benchmark answer-sheet
+    report.
+    """
     stop_reason: str
     dispatched: list[str]
     skills_enabled: bool = False
@@ -515,6 +628,27 @@ def extract_findings_completeness(results: list[SubtaskResult]) -> dict[str, int
     return counts
 
 
+def compute_disposition_correct(
+    case_id: str,
+    findings: dict[AnalystDomain, Disposition] | None,
+) -> bool | None:
+    """Whether `findings` matches the case's entry in `EXPECTED_DISPOSITIONS`.
+
+    Only the domains present in the case's expectation are compared -- a
+    domain `EXPECTED_DISPOSITIONS` says nothing about is not scored, silence
+    is not a wrong answer. Returns `None`, never `False`, in either of two
+    distinct no-basis-to-score states: the case has no documented answer at
+    all (absent from `EXPECTED_DISPOSITIONS`), or no findings were produced
+    for this run (`findings is None`). Collapsing those into `False` would
+    read as "the analyst got it wrong" when the truth is "we have no answer
+    key" or "nobody looked" -- see `RunMetrics.disposition_correct`.
+    """
+    expected = EXPECTED_DISPOSITIONS.get(case_id)
+    if expected is None or findings is None:
+        return None
+    return all(findings.get(domain) == disposition for domain, disposition in expected.items())
+
+
 async def _execute_single_run(
     task: AnalystTask,
     arm: str,
@@ -576,6 +710,12 @@ async def _execute_single_run(
     scoping_correct = check_index_scoping(outcome.results)
     findings_map = extract_findings_completeness(outcome.results)
     routing_correct = set(outcome.dispatched) == set(expected_families)
+    # No `HypothesisFindings` reaches this scope: this function calls only
+    # `broker_task`, never `smartops.subagent_analysts.analyze`, so there is
+    # nothing here to compare against `EXPECTED_DISPOSITIONS` yet. Wiring the
+    # analyst step into the bench so a real comparison can happen is a design
+    # decision left to the controller, not made here.
+    disposition_correct = compute_disposition_correct(task.task_id, None)
 
     if outcome.classification and outcome.classification.rationale:
         if "stop_reason=" in outcome.classification.rationale:
@@ -599,6 +739,7 @@ async def _execute_single_run(
         index_scoping_correct=scoping_correct,
         findings_completeness=findings_map,
         routing_correctness=routing_correct,
+        disposition_correct=disposition_correct,
         stop_reason=stop_reason,
         dispatched=[str(d) for d in outcome.dispatched],
         skills_enabled=skills_enabled(),

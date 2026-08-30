@@ -17,16 +17,20 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from smartops.bench import (
     BENCHMARK_CASES,
+    EXPECTED_DISPOSITIONS,
+    SYNTHETIC_INDICATOR_CASES,
     RunMetrics,
     _execute_single_run,
     _pinned_skills,
     _run,
     check_index_scoping,
     compute_arm_summary,
+    compute_disposition_correct,
     compute_metric_stats,
     extract_findings_completeness,
     run,
@@ -36,6 +40,8 @@ from smartops.main import _PLACEHOLDER_MODEL
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
 
 from contracts import (
+    AnalystDomain,
+    Disposition,
     QueryRun,
     ResultSet,
     SiemFindings,
@@ -549,3 +555,95 @@ class TestBenchDisablesTheSkillPack:
         assert f"- **Skill Pack ({SKILLS_ENABLED_ENV_VAR}):** False" in md_out.read_text(
             encoding="utf-8"
         )
+
+
+class TestBOTSv3AnswerSheet:
+    """The BOTSv3 answer key (`EXPECTED_DISPOSITIONS`) and the honest label on
+    the cases built from indicators the dataset does not contain
+    (`SYNTHETIC_INDICATOR_CASES`) must not drift apart from `BENCHMARK_CASES`
+    or from each other, and the renamed cases must actually resolve.
+    """
+
+    def test_every_expected_disposition_case_exists_in_benchmark_cases(self):
+        for case_id in EXPECTED_DISPOSITIONS:
+            assert case_id in BENCHMARK_CASES, (
+                f"{case_id!r} has a documented answer but is not a benchmark case"
+            )
+
+    def test_every_synthetic_case_exists_in_benchmark_cases(self):
+        for case_id in SYNTHETIC_INDICATOR_CASES:
+            assert case_id in BENCHMARK_CASES, (
+                f"{case_id!r} is marked synthetic but is not a benchmark case"
+            )
+
+    def test_expected_dispositions_and_synthetic_cases_are_disjoint(self):
+        overlap = set(EXPECTED_DISPOSITIONS) & SYNTHETIC_INDICATOR_CASES
+        assert overlap == set(), (
+            f"{overlap} has both a documented answer and a fictional indicator"
+        )
+
+    def test_every_domain_and_disposition_value_is_valid(self):
+        valid_domains = set(get_args(AnalystDomain))
+        valid_dispositions = set(get_args(Disposition))
+        for case_id, per_domain in EXPECTED_DISPOSITIONS.items():
+            for domain, disposition in per_domain.items():
+                assert domain in valid_domains, f"{case_id}: {domain!r} is not an AnalystDomain"
+                assert disposition in valid_dispositions, (
+                    f"{case_id}: {disposition!r} is not a Disposition"
+                )
+
+    def test_renamed_cases_resolve_and_old_names_are_gone(self):
+        assert "botsv3_c2_beacon" in BENCHMARK_CASES
+        assert "botsv3_hdoor_tool" in BENCHMARK_CASES
+        assert "botsv3_c2_ip" not in BENCHMARK_CASES
+        assert "botsv3_powershell_hash" not in BENCHMARK_CASES
+
+
+class TestDispositionCorrect:
+    """`disposition_correct` must keep "no answer key", "no findings" and a
+    genuine mismatch as three distinct outcomes -- collapsing any pair of them
+    into the same value would hide a real defect behind a plausible-looking
+    `None`/`False`.
+    """
+
+    def test_none_when_the_case_has_no_expectation(self):
+        assert compute_disposition_correct("botsv3_web_shell_url", {"network": "malicious"}) is None
+
+    def test_none_when_findings_are_absent(self):
+        assert compute_disposition_correct("botsv3_coinhive", None) is None
+
+    def test_true_on_a_match(self):
+        assert compute_disposition_correct("botsv3_coinhive", {"network": "malicious"}) is True
+
+    def test_false_on_a_mismatch(self):
+        assert compute_disposition_correct("botsv3_coinhive", {"network": "benign"}) is False
+
+    def test_a_domain_with_no_expectation_is_not_scored(self):
+        # botsv3_coinhive expects only `network`. An extra `endpoint` entry in
+        # the findings -- something the answer key says nothing about -- must
+        # not flip the result: silence is not a wrong answer.
+        assert (
+            compute_disposition_correct(
+                "botsv3_coinhive", {"network": "malicious", "endpoint": "benign"}
+            )
+            is True
+        )
+
+    async def test_execute_single_run_carries_the_measure_and_it_is_none_today(self):
+        # `_execute_single_run` never calls the analyst step, so no findings
+        # ever reach it to compare -- see `RunMetrics.disposition_correct`.
+        # This is the plumbing check: the field is on RunMetrics and populated
+        # by `_execute_single_run`, not the disposition logic itself (covered
+        # above against `compute_disposition_correct` directly).
+        task, expected = BENCHMARK_CASES["botsv3_coinhive"]
+
+        metrics = await _execute_single_run(
+            task,
+            arm="S",
+            run_index=0,
+            expected_families=expected,
+            model=_PLACEHOLDER_MODEL,
+            budget_usd=1.0,
+            scripted=True,
+        )
+        assert metrics.disposition_correct is None
