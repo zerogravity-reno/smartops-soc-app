@@ -9,6 +9,8 @@ from smartops.subagent_analysts.packing import (
     _PACK_TOKEN_BUDGET,
     _render,
     _ROW_CAP_LADDER,
+    _SAFETY_MARGIN,
+    _USER_TURN_SCAFFOLD_RESERVE,
     estimate_tokens,
     pack_evidence,
 )
@@ -318,7 +320,7 @@ class TestTheDerivedBudgetLeavesRoom:
     that budget as 59% low on network evidence, and the resulting call ran with
     918 tokens of headroom, under 3% of the window, before it needed a re-ask.
 
-    `_PACK_TOKEN_BUDGET` is now derived from the window minus three named
+    `_PACK_TOKEN_BUDGET` is now derived from the window minus four named
     reserves (`packing.py`'s own comments have the reasoning for each). This
     pins the invariant those reserves exist to guarantee, so a future change
     that grows one of them without shrinking the budget fails here rather than
@@ -332,6 +334,33 @@ class TestTheDerivedBudgetLeavesRoom:
         )
 
         assert _PACK_TOKEN_BUDGET + largest_system_prompt + DEFAULT_MAX_GEN_LEN <= 32_768
+
+    def test_every_domain_keeps_the_full_safety_margin(self):
+        """The sharper regression this fix-round pins: the first cut of this
+        budget derived `_SYSTEM_PROMPT_RESERVE` as the max across domains, so
+        by construction `network` (the largest) landed with a total EXACTLY at
+        32,768 -- zero engineered margin, only `identity` and `endpoint`
+        carrying incidental slack because their own prompts happen to be
+        smaller. `_SAFETY_MARGIN` exists so every domain, including whichever
+        one sizes the reserve, keeps at least that much headroom -- not just
+        the tightest one. This computes each domain's REAL total (its own
+        system prompt, not the max) so `network`'s margin is checked exactly,
+        not inferred from the aggregate assertion above.
+        """
+        for domain in get_args(AnalystDomain):
+            system_prompt_tokens = estimate_tokens(facts_system_prompt(domain))
+            total = (
+                system_prompt_tokens
+                + _PACK_TOKEN_BUDGET
+                + DEFAULT_MAX_GEN_LEN
+                + _USER_TURN_SCAFFOLD_RESERVE
+            )
+            spare = 32_768 - total
+
+            assert spare >= _SAFETY_MARGIN, (
+                f"{domain} has only {spare} tokens of headroom, below the "
+                f"{_SAFETY_MARGIN}-token safety margin"
+            )
 
 
 class TestTheEstimatorErrsHighOnDenseEvidence:

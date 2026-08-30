@@ -16,9 +16,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import cycle
 from typing import get_args
 
-from contracts import AnalystDomain, Entity, Scope
+from contracts import AnalystDomain, Entity, EntityKind, Scope
 
 from .formatting import format_result_set, format_vt_verdicts
 from .model import DEFAULT_MAX_GEN_LEN
@@ -71,7 +72,9 @@ _CHARS_PER_TOKEN = 2.5
 # only when the rendered text overflows `token_budget`, so rung 0 is what every
 # slice that fits gets. It was 20, and 20 was never reached by budget pressure --
 # measured on `cli-20260823T112627`, the three slices rendered at 1,019 / 1,334 /
-# 2,625 tokens against a 20,000 budget, i.e. 5-13% of it. What the cap was doing
+# 2,625 tokens against a 20,000 budget (the pre-recalibration figure -- see
+# `_CHARS_PER_TOKEN` and `_PACK_TOKEN_BUDGET` below for the current one),
+# i.e. 5-13% of it. What the cap was doing
 # instead was hiding rows: 52 of a 72-row auth_events set from identity, and 110
 # rows from endpoint including 80 of a single 100-row processes set. And because
 # the ladder never stepped BELOW 20, `pack_evidence` returned `truncated=False`
@@ -99,7 +102,7 @@ def estimate_tokens(text: str) -> int:
 # as a bare number with no stated relationship to it -- which is how a budget of
 # 20,000 sat next to a 32,768-token window with nobody having checked that the
 # other things sharing that window (the system prompt, the generation) still
-# fit once it was spent. Three named reserves, each with its own reason; a
+# fit once it was spent. Four named reserves, each with its own reason; a
 # future reader (or `TestTheDerivedBudgetLeavesRoom` in
 # `test_analyst_prompts.py`) can see why the budget is what it is, and changing
 # `max_gen_len` or growing a system prompt visibly moves it.
@@ -126,34 +129,92 @@ under-reserves, which is the direction to be wrong in. `max()` over all three
 because one shared budget is applied to every domain; the reader who grows one
 domain's body sees this move without having to know which domain was largest."""
 
+_SCAFFOLD_ENTITY_KINDS = get_args(EntityKind)
+"""Every `EntityKind`, cycled below to build a scope wide enough to bound
+`_USER_TURN_SCAFFOLD_RESERVE` -- see that constant's own docstring for why a
+20-entity scope, not a 1-entity one, is what gets measured."""
+
+# Sized like real indicators, not short placeholders -- a SHA-256 hash and a
+# full callback URL, not "sample-file_hash" -- so the measurement below already
+# leans toward the conservative (over-reserving) side rather than needing a
+# second cushion bolted on afterward.
+_SCAFFOLD_SAMPLE_VALUES: dict[str, str] = {
+    "host": "WORKSTATION-042",
+    "user": "svc-account-domain-admin",
+    "ip": "203.0.113.255",
+    "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "domain": "malicious-c2-infrastructure.example.com",
+    "url": "https://malicious-c2-infrastructure.example.com/api/v2/beacon/checkin?token=deadbeef",
+    "process": "powershell.exe",
+}
+
 _SCAFFOLD_SAMPLE_SCOPE = Scope(
-    entities=[Entity(kind="host", value="sample-host")],
+    entities=[
+        Entity(kind=kind, value=_SCAFFOLD_SAMPLE_VALUES[kind])
+        for _, kind in zip(range(20), cycle(_SCAFFOLD_ENTITY_KINDS))
+    ],
     time_window=(datetime(2000, 1, 1, tzinfo=UTC), datetime(2000, 1, 2, tzinfo=UTC)),
 )
-"""A minimal, synthetic scope used only to measure `build_facts_user_turn`'s fixed
-overhead below -- never handed to a real analyst call."""
+"""A synthetic scope used only to measure `build_facts_user_turn`'s fixed
+overhead below -- never handed to a real analyst call.
+
+**20 entities, not 1.** The first cut of this reserve measured a single-entity
+scope (106 tokens) and derived a budget that landed EXACTLY on the 32,768-token
+ceiling for `network` (the domain whose system prompt sizes
+`_SYSTEM_PROMPT_RESERVE`) -- and was already 4 tokens short of what a real
+1-entity scope costs once you count what `_render_scope` actually emits. That
+is the identical failure mode this whole task exists to fix, just smaller and
+harder to spot: a derivation that is *exact* on paper is exact only until the
+next measurement finds it wrong by a few tokens, and this reserve is cheap
+enough that there is no reason to cut it that close.
+
+`Scope.entities` has no maximum (`contracts.subtask.Scope`), so no fixed count
+is a guarantee -- 20 is a judgement about realistic investigation scopes, not a
+hard bound. The largest scope in this repo's saved-run corpus
+(`blind_compare.CASES`) names 5; 20 is 4x that, which comfortably covers a
+hypothesis naming every entity kind several times over while still costing a
+small, named amount (`_USER_TURN_SCAFFOLD_RESERVE` below) rather than an
+unbounded one."""
 
 _USER_TURN_SCAFFOLD_RESERVE = estimate_tokens(
     build_facts_user_turn(_SCAFFOLD_SAMPLE_SCOPE, "")
 )
 """What `build_facts_user_turn` adds around the evidence text itself: the
-`<scope>`/`<evidence>` fencing and the trailing instruction line. Measured with an
-empty evidence string plus a one-entity scope, so this is a floor rather than an
-exact figure -- a hypothesis naming many entities renders a larger `<scope>`
-block -- but a real scope block was 261-367 characters (roughly 100-150 tokens at
-this module's ratio) across the entity counts seen in saved runs, negligible next
-to the system-prompt and generation reserves above. Named so it is visible at
-all, rather than silently eaten out of the evidence budget."""
+`<scope>`/`<evidence>` fencing, one rendered line per scope entity, and the
+trailing instruction line. Measured, not guessed, against the 20-entity bound
+above -- the cost of widening it from 1 entity to 20 is roughly 370 tokens
+against a budget in the tens of thousands, i.e. under 2%, which is what makes
+erring toward a generous bound cheap enough to just take."""
+
+_SAFETY_MARGIN = 500
+"""A deliberate, named cushion on top of the three measured reserves, so the
+budget does not land exactly on the window ceiling for whichever domain has the
+largest system prompt -- which it did, silently, before this constant existed
+(see `_SCAFFOLD_SAMPLE_SCOPE`'s docstring for the exact failure). Every reserve
+above is itself a measurement -- of a rendered string, of a synthetic scope, of
+`DEFAULT_MAX_GEN_LEN` -- and a measurement can be off by a little without being
+wrong in kind: a system prompt gains a sentence, a real scope is denser than the
+sample, the 2.5 ratio meets evidence a bit worse than the network slice that
+calibrated it. 500 tokens (under 2% of the evidence budget) is cheap insurance
+against exactly that, and it is a NAME a reader can see and reason about rather
+than incidental slack that happens to exist for two domains and not the third.
+`TestTheDerivedBudgetLeavesRoom` in `test_analyst_prompts.py` asserts every
+domain keeps at least this much headroom, not just the tightest one."""
 
 _PACK_TOKEN_BUDGET = (
-    _CONTEXT_WINDOW - _SYSTEM_PROMPT_RESERVE - _GENERATION_RESERVE - _USER_TURN_SCAFFOLD_RESERVE
+    _CONTEXT_WINDOW
+    - _SYSTEM_PROMPT_RESERVE
+    - _GENERATION_RESERVE
+    - _USER_TURN_SCAFFOLD_RESERVE
+    - _SAFETY_MARGIN
 )
-"""The evidence budget `pack_evidence` packs to by default: everything left in the
-window once the system prompt, the generation, and the user-turn scaffolding
-have each taken their named share. Restated nowhere else -- `analyze.py` imports
-this name rather than hosting its own copy, which is what let the two silently
-diverge before (`analyze._PACK_TOKEN_BUDGET` and this module's own default were
-two literals that happened to both say 20,000)."""
+"""The evidence budget `pack_evidence` packs to by default: everything left in
+the window once the system prompt, the generation, the user-turn scaffolding,
+and the explicit safety margin have each taken their named share. Restated
+nowhere else -- `analyze.py` imports this name rather than hosting its own
+copy, which is what let the two silently diverge before (`analyze.
+_PACK_TOKEN_BUDGET` and this module's own default were two literals that
+happened to both say 20,000)."""
 
 
 @dataclass(frozen=True)
