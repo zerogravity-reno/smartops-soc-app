@@ -873,13 +873,25 @@ class TestTheTwoOrchestratorsStayDistinguishable:
 
 
 class TestTheTokenEstimateIsCheckedAgainstWhatTheModelCounted:
-    """`estimate_tokens` is `len(text) // 4` and runs optimistic on evidence rows.
+    """`estimate_tokens` is `len(text) // 2.5` and can still run low on
+    unusually dense evidence.
 
     The comment on `_CHARS_PER_TOKEN` used to say the inexactness was safe
     "because the model reports the true count back". It does report it, on every
     call, and nothing compared the two -- so a pack that overran the window
     surfaced as a provider error indistinguishable from a bad credential, or, if
     the provider truncated instead of rejecting, not at all.
+
+    Finding 4 (2026-08-30 whole-branch review): the comparison used to be
+    `prompt_tokens > token_budget`, where `token_budget` bounds the EVIDENCE
+    alone while `prompt_tokens` is the FULL system+user prompt Bedrock counted
+    -- so the warning fired on every full pack even when the estimator was
+    correct, blaming "the chars-per-token estimate" for tokens the system
+    prompt and generation reserve (both already reserved separately) accounted
+    for on their own. It now compares against `_DANGER_THRESHOLD` (the window
+    minus the generation reserve minus the safety margin) -- the real line a
+    full prompt has to stay under -- and the message names what actually
+    overran instead.
     """
 
     class _CountingModel:
@@ -905,19 +917,40 @@ class TestTheTokenEstimateIsCheckedAgainstWhatTheModelCounted:
             siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[{"dest": "1.2.3.4"}]))],
         )
 
-    def test_a_count_over_the_budget_warns(self, caplog):
+    def test_a_count_over_the_danger_threshold_warns(self, caplog):
         with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
             gather_finding(self._CountingModel(31_000), _scope(), self._slice())
-        assert "estimate ran low" in caplog.text
         assert "31000" in caplog.text
+        # Names what actually overran -- the window's headroom for the
+        # generation reserve -- rather than blaming the chars-per-token
+        # estimate, which is not always the cause.
+        assert "window" in caplog.text
+        assert "generation reserve" in caplog.text
 
-    def test_a_count_inside_the_budget_is_silent(self, caplog):
+    def test_a_count_inside_the_danger_threshold_is_silent(self, caplog):
         with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
             gather_finding(self._CountingModel(4_000), _scope(), self._slice())
-        assert "estimate ran low" not in caplog.text
+        assert caplog.text == ""
+
+    def test_a_full_pack_over_the_evidence_budget_alone_no_longer_false_alarms(self, caplog):
+        """The exact false positive Finding 4 describes.
+
+        This count exceeds `_PACK_TOKEN_BUDGET` (the evidence-only budget) --
+        which is what the OLD comparison checked, and would have warned on --
+        but the window itself still has plenty of room once the system prompt
+        and generation reserve, both already carved out separately, are
+        accounted for. The corrected comparison must stay silent.
+        """
+        from smartops.subagent_analysts.packing import _PACK_TOKEN_BUDGET
+
+        with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
+            gather_finding(
+                self._CountingModel(_PACK_TOKEN_BUDGET + 1_000), _scope(), self._slice()
+            )
+        assert caplog.text == ""
 
     def test_the_shown_path_checks_it_too(self, caplog):
         """One helper, so both paths get this or neither does."""
         with caplog.at_level(logging.WARNING, logger="smartops.subagent_analysts.analyze"):
             run_one(self._CountingModel(31_000), _ctx(), _scope(), self._slice())
-        assert "estimate ran low" in caplog.text
+        assert "generation reserve" in caplog.text

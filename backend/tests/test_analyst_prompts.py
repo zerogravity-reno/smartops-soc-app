@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from smartops.subagent_analysts.model import DEFAULT_MAX_GEN_LEN
@@ -15,10 +16,12 @@ from smartops.subagent_analysts.packing import (
     pack_evidence,
 )
 from smartops.subagent_analysts.prompts import (
+    _FINDING_ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
 )
-from smartops.subagent_analysts.shown import build_user_turn, system_prompt
+from smartops.subagent_analysts.analyze import _FINDING_REASK
+from smartops.subagent_analysts.shown import _REASK, _VERDICT_FOOTER, build_user_turn, system_prompt
 from smartops.subagent_analysts.routing import DomainSlice
 
 from contracts import AnalystDomain, Entity, InvestigationContext, ResultSet, Scope, VtVerdict
@@ -212,6 +215,61 @@ class TestFactsPromptFixesLiveRunRegressions:
             assert "supports" not in lowered
             assert "refutes" not in lowered
             assert "hypothesis" not in lowered
+
+
+class TestTheReaskCannotDivergeFromTheFooter:
+    """Finding 1 of the 2026-08-30 whole-branch review.
+
+    `analyze._FINDING_REASK` used to be a SECOND, hand-written copy of the
+    required answer block: OBSERVATIONS -> CONFIDENCE -> RATIONALE -> CITATIONS,
+    with NO DISPOSITION line at all, while `prompts._FINDING_FOOTER` asked for
+    DISPOSITION -> CONFIDENCE -> RATIONALE -> OBSERVATIONS -> CITATIONS. Because
+    the re-ask is appended to the user turn (`model.invoke(system, user +
+    reask)`), it is the LAST and most explicit instruction the model reads, so a
+    model that obeyed it verbatim could never supply a disposition --
+    `parse.parse_finding` then defaulted the missing field to `inconclusive`.
+    Verified as the root cause of a wrong verdict in a live 2026-08-30 run: the
+    documented correct answer was `malicious`.
+
+    This asserts field set AND order agree, not just that both mention the same
+    words -- an order mismatch is exactly the defect that shipped.
+    """
+
+    @staticmethod
+    def _fields(text: str) -> list[str]:
+        return re.findall(r"^([A-Z]+):", text, re.MULTILINE)
+
+    def test_the_blind_reask_matches_the_blind_footer(self):
+        assert self._fields(_FINDING_REASK) == self._fields(_FINDING_ANSWER_BLOCK)
+        assert self._fields(_FINDING_REASK) == [
+            "DISPOSITION",
+            "CONFIDENCE",
+            "RATIONALE",
+            "OBSERVATIONS",
+            "CITATIONS",
+        ]
+
+    def test_the_reask_is_built_from_the_shared_block_not_a_second_copy(self):
+        """Guards the FIX, not just the symptom: a hand-patched `DISPOSITION:`
+        line with no shared constant would pass the assertion above and still
+        be able to drift again the next time either string is edited alone."""
+        assert _FINDING_ANSWER_BLOCK in _FINDING_REASK
+
+    def test_the_shown_arms_reask_already_agreed_with_its_footer(self):
+        """Regression guard for the sibling this finding asked us to check.
+
+        `shown._REASK`/`shown._VERDICT_FOOTER` pair did NOT have this defect --
+        this pins that they still agree, so a future edit to one is caught here
+        rather than only in a live run.
+        """
+        assert self._fields(_REASK) == self._fields(_VERDICT_FOOTER)
+        assert self._fields(_REASK) == [
+            "VERDICT",
+            "CONFIDENCE",
+            "RATIONALE",
+            "OBSERVATIONS",
+            "CITATIONS",
+        ]
 
 
 class TestFactsUserTurn:

@@ -61,9 +61,16 @@ from contracts import (
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel
-from .packing import _CONTEXT_WINDOW, _PACK_TOKEN_BUDGET, exhibits_for, pack_evidence
+from .packing import (
+    _CONTEXT_WINDOW,
+    _GENERATION_RESERVE,
+    _PACK_TOKEN_BUDGET,
+    _SAFETY_MARGIN,
+    exhibits_for,
+    pack_evidence,
+)
 from .parse import FindingParseError, parse_finding, split_reasoning
-from .prompts import build_facts_user_turn, facts_system_prompt
+from .prompts import _FINDING_ANSWER_BLOCK, build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
@@ -115,14 +122,29 @@ def _resolve_observation_citations(
         found |= resolving
     return kept, found
 
-# `_PACK_TOKEN_BUDGET` and `_CONTEXT_WINDOW` are imported from `.packing` rather
-# than restated here: this module used to carry its own `_PACK_TOKEN_BUDGET =
-# 20_000` "kept equal to `packing.pack_evidence`'s default" by convention alone,
-# which is exactly the kind of duplication that can silently diverge -- and
-# `packing.py`'s own default was a bare `20_000` with no derivation behind it
-# either, until a live Splunk run measured how wrong the estimate underneath it
-# was (see `packing._CHARS_PER_TOKEN`). Importing both names means the warning
-# below moves automatically if the derived budget or the context window ever do.
+# `_PACK_TOKEN_BUDGET`, `_CONTEXT_WINDOW`, `_GENERATION_RESERVE` and
+# `_SAFETY_MARGIN` are imported from `.packing` rather than restated here: this
+# module used to carry its own `_PACK_TOKEN_BUDGET = 20_000` "kept equal to
+# `packing.pack_evidence`'s default" by convention alone, which is exactly the
+# kind of duplication that can silently diverge -- and `packing.py`'s own
+# default was a bare `20_000` with no derivation behind it either, until a live
+# Splunk run measured how wrong the estimate underneath it was (see
+# `packing._CHARS_PER_TOKEN`). Importing these names means the warning below
+# moves automatically if the derived budget, the context window, or either
+# reserve ever do.
+
+_DANGER_THRESHOLD = _CONTEXT_WINDOW - _GENERATION_RESERVE - _SAFETY_MARGIN
+"""The real line a full PROMPT (system + user + evidence) must stay under.
+
+`_PACK_TOKEN_BUDGET` bounds the EVIDENCE alone, so comparing the model's real,
+full prompt count against it flagged every full pack as an estimator failure --
+even a correct one, since the system prompt and generation reserve (both
+already carved out of `_PACK_TOKEN_BUDGET`) are reason enough for the full
+count to exceed the evidence-only budget on their own. This is the same
+arithmetic restated the other way: subtracting the system-prompt and user-turn-
+scaffold reserves from `prompt_tokens` before comparing to `_PACK_TOKEN_BUDGET`
+is algebraically the window minus the generation reserve minus the safety
+margin, which is what is computed directly here."""
 
 @dataclass(frozen=True)
 class _Attempt:
@@ -181,26 +203,29 @@ def _invoke_with_one_reask(
     # rejection that arrives as a generic model error -- or not finding out at
     # all, if the provider truncates the tail and the analyst judges confidently
     # over evidence it was never shown.
-    if prompt_tokens > token_budget:
-        # Headroom against the WINDOW, not just against the budget: "counted
-        # 31850" means nothing to a reader who does not carry 32,768 in their
-        # head. This is the exact 2026-08-30 network case -- 31,850 actual
-        # against a 32,768 window left 918 tokens, under 3%, for the rest of the
-        # generation -- restated as a number the log line itself can show rather
-        # than one a reader has to go compute.
+    if prompt_tokens > _DANGER_THRESHOLD:
+        # Compared against `_DANGER_THRESHOLD`, not `token_budget`: `token_budget`
+        # bounds the evidence alone, while `prompt_tokens` is the full system+user
+        # prompt Bedrock actually counted, so the two differ by design at a full
+        # pack -- the system prompt and generation reserve are real tokens that
+        # were never part of the evidence budget to begin with. What actually
+        # matters is whether the WINDOW itself is close to full, which is the
+        # exact 2026-08-30 network case -- 31,850 counted against a 32,768 window
+        # left 918 tokens, under 3%, for the generation -- restated as a number
+        # the log line itself can show rather than one a reader has to go compute.
         headroom = _CONTEXT_WINDOW - prompt_tokens
         logger.warning(
-            "domain=%s | packed to fit ~%d tokens but the model counted %d; the "
-            "chars-per-token estimate ran low for this evidence. That leaves "
-            "%d of %d window tokens (%.1f%%) for the rest of the prompt and the "
-            "generation -- the closer this is to zero, the nearer the call came "
-            "to failing outright",
+            "domain=%s | prompt counted %d tokens (evidence alone was packed to "
+            "an estimated ~%d); only %d of the %d-token window (%.1f%%) is left "
+            "for the model's %d-token generation reserve -- the closer this is "
+            "to zero, the nearer the call came to failing outright",
             domain,
-            token_budget,
             prompt_tokens,
+            token_budget,
             headroom,
             _CONTEXT_WINDOW,
             100 * headroom / _CONTEXT_WINDOW,
+            _GENERATION_RESERVE,
         )
 
     try:
@@ -308,12 +333,18 @@ def _apply_grounding(
 
 _FINDING_REASK = (
     "\n\nYour previous reply did not end with the required block. "
-    "Reply again, ending with exactly:\n"
-    "OBSERVATIONS:\n- <observation> [header_id]\n"
-    "CONFIDENCE: <0.0-1.0>\n"
-    "RATIONALE: <one or two sentences>\n"
-    "CITATIONS: <comma-separated header ids>"
+    "Reply again, ending with exactly:\n" + _FINDING_ANSWER_BLOCK
 )
+"""Built from `prompts._FINDING_ANSWER_BLOCK`, not a second hand-written copy.
+
+This is appended to the user turn (`model.invoke(system, user + reask)`), so it
+is the LAST and most explicit instruction the model reads on a re-ask -- a
+divergence here overrides the first-ask footer rather than merely duplicating
+it. It used to be independently written out with OBSERVATIONS first and NO
+DISPOSITION line at all; see `_FINDING_ANSWER_BLOCK`'s docstring for what that
+caused. Deriving it from the same constant the footer uses makes the two
+incapable of saying different things; `test_analyst_prompts.py` pins that they
+still agree on field set and order."""
 
 
 def gather_finding(

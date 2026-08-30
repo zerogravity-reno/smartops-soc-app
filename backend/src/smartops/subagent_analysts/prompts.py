@@ -94,7 +94,32 @@ SECURITY CONSTRAINTS
 #   (~3 distinct facts restated per block, up from a 17-observation worst case
 #   before the floor existed) that spent the whole generation budget and left
 #   no room for the answer block.
-_FINDING_FOOTER = """\
+
+_FINDING_ANSWER_BLOCK = """\
+DISPOSITION: benign | suspicious | malicious | inconclusive
+CONFIDENCE: <0.0-1.0, your confidence in that disposition>
+RATIONALE: <one or two sentences on your overall read of this evidence>
+OBSERVATIONS:
+- <a specific, evidence-grounded finding> [header_id]
+- <one line per distinct finding; repeat this line as many times as you have findings>
+CITATIONS: <comma-separated full header ids you actually used, e.g. auth_events#1, auth_events#2>"""
+"""The exact block a finding must end with, DISPOSITION first.
+
+Defined once so the first-ask instruction (`_FINDING_FOOTER`, below) and the
+re-ask `analyze._invoke_with_one_reask` sends on an unparseable first reply
+cannot state two different field sets or orders. They used to: the re-ask was
+hand-written separately in `analyze.py` and had drifted to OBSERVATIONS ->
+CONFIDENCE -> RATIONALE -> CITATIONS with NO DISPOSITION line at all. Since the
+re-ask is appended to the user turn (the LAST and most explicit instruction the
+model reads), a model that obeyed it verbatim could never answer with a
+disposition -- `parse.parse_finding` then defaulted the missing field to
+`inconclusive`. Verified as the root cause of a wrong verdict in a live run on
+2026-08-30: the network analyst's first reply was unparseable, the re-ask fired,
+and the documented correct answer for that case was `malicious`. Importing this
+one constant into `analyze.py` rather than restating it there is what makes that
+divergence structurally impossible now, not just fixed once."""
+
+_FINDING_FOOTER = f"""\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
 `dns_resolutions#1`, `processes#1`, `reputation#1`, or `uncategorised#3` — cite
@@ -139,13 +164,7 @@ Judge the evidence, not a theory about it. Do not infer what someone might be
 looking for and grade against that — report what these rows show.
 
 Reason step by step, then end your reply with EXACTLY this block and nothing after it:
-DISPOSITION: benign | suspicious | malicious | inconclusive
-CONFIDENCE: <0.0-1.0, your confidence in that disposition>
-RATIONALE: <one or two sentences on your overall read of this evidence>
-OBSERVATIONS:
-- <a specific, evidence-grounded finding> [header_id]
-- <one line per distinct finding; repeat this line as many times as you have findings>
-CITATIONS: <comma-separated full header ids you actually used, e.g. auth_events#1, auth_events#2>"""
+{_FINDING_ANSWER_BLOCK}"""
 
 _IDENTITY_FACTS_BODY = f"""\
 Your task in this investigation is to act as the identity and authentication analyst.
