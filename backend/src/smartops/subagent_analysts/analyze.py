@@ -61,7 +61,7 @@ from contracts import (
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel
-from .packing import exhibits_for, pack_evidence
+from .packing import _CONTEXT_WINDOW, _PACK_TOKEN_BUDGET, exhibits_for, pack_evidence
 from .parse import FindingParseError, parse_finding, split_reasoning
 from .prompts import build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice, route
@@ -115,10 +115,14 @@ def _resolve_observation_citations(
         found |= resolving
     return kept, found
 
-_PACK_TOKEN_BUDGET = 20_000
-"""The budget `pack_evidence` packs to, restated here to compare against what the
-model actually counted. Kept equal to `packing.pack_evidence`'s default; the
-comparison is a check on the estimate, not a second source of truth for it."""
+# `_PACK_TOKEN_BUDGET` and `_CONTEXT_WINDOW` are imported from `.packing` rather
+# than restated here: this module used to carry its own `_PACK_TOKEN_BUDGET =
+# 20_000` "kept equal to `packing.pack_evidence`'s default" by convention alone,
+# which is exactly the kind of duplication that can silently diverge -- and
+# `packing.py`'s own default was a bare `20_000` with no derivation behind it
+# either, until a live Splunk run measured how wrong the estimate underneath it
+# was (see `packing._CHARS_PER_TOKEN`). Importing both names means the warning
+# below moves automatically if the derived budget or the context window ever do.
 
 @dataclass(frozen=True)
 class _Attempt:
@@ -169,20 +173,34 @@ def _invoke_with_one_reask(
         )
 
     prompt_tokens, generation_tokens = response.prompt_tokens, response.generation_tokens
-    # `pack_evidence` chose a row cap from `estimate_tokens`, which is len//4 and
-    # optimistic on evidence rows. The model reports the real count, so compare
-    # them: the ladder cannot be re-run now (the call is spent), but an estimate
-    # that was low is worth a line, because the alternative is finding out via a
-    # provider length rejection that arrives as a generic model error -- or not
-    # finding out at all, if the provider truncates the tail and the analyst
-    # judges confidently over evidence it was never shown.
+    # `pack_evidence` chose a row cap from `estimate_tokens`, which is
+    # `len // packing._CHARS_PER_TOKEN` and still an estimate even recalibrated.
+    # The model reports the real count, so compare them: the ladder cannot be
+    # re-run now (the call is spent), but an estimate that was low is worth a
+    # line, because the alternative is finding out via a provider length
+    # rejection that arrives as a generic model error -- or not finding out at
+    # all, if the provider truncates the tail and the analyst judges confidently
+    # over evidence it was never shown.
     if prompt_tokens > token_budget:
+        # Headroom against the WINDOW, not just against the budget: "counted
+        # 31850" means nothing to a reader who does not carry 32,768 in their
+        # head. This is the exact 2026-08-30 network case -- 31,850 actual
+        # against a 32,768 window left 918 tokens, under 3%, for the rest of the
+        # generation -- restated as a number the log line itself can show rather
+        # than one a reader has to go compute.
+        headroom = _CONTEXT_WINDOW - prompt_tokens
         logger.warning(
             "domain=%s | packed to fit ~%d tokens but the model counted %d; the "
-            "chars-per-token estimate ran low for this evidence",
+            "chars-per-token estimate ran low for this evidence. That leaves "
+            "%d of %d window tokens (%.1f%%) for the rest of the prompt and the "
+            "generation -- the closer this is to zero, the nearer the call came "
+            "to failing outright",
             domain,
             token_budget,
             prompt_tokens,
+            headroom,
+            _CONTEXT_WINDOW,
+            100 * headroom / _CONTEXT_WINDOW,
         )
 
     try:

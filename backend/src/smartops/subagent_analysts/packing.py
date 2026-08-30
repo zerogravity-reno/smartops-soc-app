@@ -15,8 +15,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import get_args
+
+from contracts import AnalystDomain, Entity, Scope
 
 from .formatting import format_result_set, format_vt_verdicts
+from .model import DEFAULT_MAX_GEN_LEN
+from .prompts import build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice
 
 logger = logging.getLogger(__name__)
@@ -24,17 +30,39 @@ logger = logging.getLogger(__name__)
 # Rough chars-per-token for Llama-family tokenizers, used to pick a row cap that
 # keeps the prompt inside the window.
 #
-# It is an ESTIMATE and it runs optimistic on this payload: 4 is a fair average
-# for prose, but evidence rows are hex digests, base64 command lines, GUIDs and
-# timestamps, which BPE splits closer to 2-2.5 chars per token. So a pack that
-# measures 20k here can be considerably more in truth.
+# It is an ESTIMATE, and it must run PESSIMISTIC (fewer chars per token, i.e. more
+# estimated tokens for the same text) rather than optimistic -- a slice that packs
+# slightly less than it could costs some evidence, while one that overflows the
+# window costs the entire analyst call. This used to be 4, a fair average for
+# prose, on the reasoning that evidence rows are hex digests, base64 command
+# lines, GUIDs and timestamps, which BPE splits closer to "2-2.5 chars per
+# token". That reasoning was directionally right and the number was still wrong
+# by a lot. A live Splunk run on 2026-08-30 measured it against what the model
+# actually counted (see docs/sessions/handover_2026-08-30_splunk-back-answer-
+# sheet-and-siem-trace.md):
+#
+#   domain=network  | packed to fit ~20000 tokens but the model counted 31850
+#   domain=endpoint | packed to fit ~20000 tokens but the model counted 22709
+#
+# network was 59% low -- implying an actual ratio of roughly 20000*4/31850 ≈ 2.5
+# chars/token on that slice -- and endpoint 14% low (ratio ≈3.5). 2.5 is the
+# worse (denser) of the two measured SIEM-evidence ratios, so it is what this
+# constant uses: one conservative value applied everywhere, calibrated to the
+# densest real evidence seen rather than an average across domains. It was
+# derived from SIEM evidence specifically (identifier- and punctuation-heavy
+# rows); a domain whose evidence tokenizes more like prose is simply packed with
+# some margin to spare, which is the deliberately safe direction to be wrong in.
 #
 # This used to claim the inexactness was safe "because the model reports the true
-# count back". The model does report it, on every call, and for a long time
-# nothing compared the two. `_invoke_with_one_reask` now does, and warns -- so an
-# estimate that was low leaves a trace instead of surfacing later as a generic
-# model error indistinguishable from a bad credential.
-_CHARS_PER_TOKEN = 4
+# count back". That claim is false: the model does report it, on every call, and
+# `_invoke_with_one_reask` does compare the two -- but the comparison fires AFTER
+# the tokens are already spent. On the network run above it left just 918 tokens
+# of the 32,768 window -- under 3% -- for the system prompt and the answer
+# combined, and the first reply came back with no parseable block. A comparison
+# that only warns after the call cannot be the safety net; getting the estimate
+# itself right (this constant) and deriving the budget from real reserves
+# (`_PACK_TOKEN_BUDGET` below) is.
+_CHARS_PER_TOKEN = 2.5
 
 # Progressively tighter row caps. 0 renders header + a "(N rows not shown)" line,
 # i.e. counts only -- the coarsest summary that still reports the set exists.
@@ -59,7 +87,73 @@ _ROW_CAP_LADDER = (200, 20, 10, 5, 3, 1, 0)
 
 
 def estimate_tokens(text: str) -> int:
-    return len(text) // _CHARS_PER_TOKEN
+    # `int(...)` rather than relying on `//`'s own return type: `_CHARS_PER_TOKEN`
+    # is a float (2.5), and float floor-division already returns a float
+    # (`5 // 2.5 == 2.0`) -- silently widening this function's return type had it
+    # stayed `len(text) // _CHARS_PER_TOKEN`.
+    return int(len(text) // _CHARS_PER_TOKEN)
+
+
+# ---------------------------------------------------------------------------
+# The packing budget, derived from the model's context window rather than left
+# as a bare number with no stated relationship to it -- which is how a budget of
+# 20,000 sat next to a 32,768-token window with nobody having checked that the
+# other things sharing that window (the system prompt, the generation) still
+# fit once it was spent. Three named reserves, each with its own reason; a
+# future reader (or `TestTheDerivedBudgetLeavesRoom` in
+# `test_analyst_prompts.py`) can see why the budget is what it is, and changing
+# `max_gen_len` or growing a system prompt visibly moves it.
+# ---------------------------------------------------------------------------
+
+_CONTEXT_WINDOW = 32_768
+"""Foundation-Sec-8B-Reasoning's context window (see `model.py`'s own module
+docstring for the model identity). Every reserve below is carved out of this."""
+
+_GENERATION_RESERVE = DEFAULT_MAX_GEN_LEN
+"""Tokens the model may spend on its reply. Imported rather than restated so this
+budget visibly shrinks if `model.DEFAULT_MAX_GEN_LEN` ever grows -- the two used
+to be reserved independently, with nothing that would notice if one changed and
+the other did not."""
+
+_SYSTEM_PROMPT_RESERVE = max(
+    estimate_tokens(facts_system_prompt(domain)) for domain in get_args(AnalystDomain)
+)
+"""The largest rendered system prompt across the three domains, measured with
+`estimate_tokens` rather than hardcoded -- prose tokenizes closer to the old
+4-chars/token average than evidence does, so measuring it with the SAME
+(conservative) estimator this module uses for evidence over-reserves rather than
+under-reserves, which is the direction to be wrong in. `max()` over all three
+because one shared budget is applied to every domain; the reader who grows one
+domain's body sees this move without having to know which domain was largest."""
+
+_SCAFFOLD_SAMPLE_SCOPE = Scope(
+    entities=[Entity(kind="host", value="sample-host")],
+    time_window=(datetime(2000, 1, 1, tzinfo=UTC), datetime(2000, 1, 2, tzinfo=UTC)),
+)
+"""A minimal, synthetic scope used only to measure `build_facts_user_turn`'s fixed
+overhead below -- never handed to a real analyst call."""
+
+_USER_TURN_SCAFFOLD_RESERVE = estimate_tokens(
+    build_facts_user_turn(_SCAFFOLD_SAMPLE_SCOPE, "")
+)
+"""What `build_facts_user_turn` adds around the evidence text itself: the
+`<scope>`/`<evidence>` fencing and the trailing instruction line. Measured with an
+empty evidence string plus a one-entity scope, so this is a floor rather than an
+exact figure -- a hypothesis naming many entities renders a larger `<scope>`
+block -- but a real scope block was 261-367 characters (roughly 100-150 tokens at
+this module's ratio) across the entity counts seen in saved runs, negligible next
+to the system-prompt and generation reserves above. Named so it is visible at
+all, rather than silently eaten out of the evidence budget."""
+
+_PACK_TOKEN_BUDGET = (
+    _CONTEXT_WINDOW - _SYSTEM_PROMPT_RESERVE - _GENERATION_RESERVE - _USER_TURN_SCAFFOLD_RESERVE
+)
+"""The evidence budget `pack_evidence` packs to by default: everything left in the
+window once the system prompt, the generation, and the user-turn scaffolding
+have each taken their named share. Restated nowhere else -- `analyze.py` imports
+this name rather than hosting its own copy, which is what let the two silently
+diverge before (`analyze._PACK_TOKEN_BUDGET` and this module's own default were
+two literals that happened to both say 20,000)."""
 
 
 @dataclass(frozen=True)
@@ -192,7 +286,7 @@ def valid_citation_ids(slice_: DomainSlice) -> dict[str, list[str]]:
 
 
 def pack_evidence(
-    slice_: DomainSlice, *, token_budget: int = 20_000
+    slice_: DomainSlice, *, token_budget: int = _PACK_TOKEN_BUDGET
 ) -> tuple[str, dict[str, list[str]], bool, int]:
     """Render a slice's evidence under `token_budget`.
 
@@ -236,7 +330,7 @@ def pack_evidence(
     return _render(slice_, 0), ids, True, 0
 
 
-def fitted_row_cap(slice_: DomainSlice, *, token_budget: int = 20_000) -> int:
+def fitted_row_cap(slice_: DomainSlice, *, token_budget: int = _PACK_TOKEN_BUDGET) -> int:
     """The row cap `pack_evidence` settles on for this slice.
 
     A reading of `pack_evidence` rather than its own walk of `_ROW_CAP_LADDER`,

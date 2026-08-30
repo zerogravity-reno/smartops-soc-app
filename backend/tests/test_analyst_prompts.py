@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from smartops.subagent_analysts.model import DEFAULT_MAX_GEN_LEN
 from smartops.subagent_analysts.packing import (
+    _PACK_TOKEN_BUDGET,
+    _render,
     _ROW_CAP_LADDER,
     estimate_tokens,
     pack_evidence,
@@ -16,7 +19,8 @@ from smartops.subagent_analysts.prompts import (
 from smartops.subagent_analysts.shown import build_user_turn, system_prompt
 from smartops.subagent_analysts.routing import DomainSlice
 
-from contracts import Entity, InvestigationContext, ResultSet, Scope, VtVerdict
+from contracts import AnalystDomain, Entity, InvestigationContext, ResultSet, Scope, VtVerdict
+from typing import get_args
 
 
 def _scope() -> Scope:
@@ -305,6 +309,119 @@ class TestTheRowCapDoesNotHideRowsTheBudgetCouldAfford:
 
         assert row_cap == _ROW_CAP_LADDER[0]
         assert "not shown" in text
+
+
+class TestTheDerivedBudgetLeavesRoom:
+    """The assertion whose absence let `_PACK_TOKEN_BUDGET` sit at a bare 20,000
+    next to a 32,768-token window with nobody checking the two against each
+    other -- a live Splunk run on 2026-08-30 measured the estimate underneath
+    that budget as 59% low on network evidence, and the resulting call ran with
+    918 tokens of headroom, under 3% of the window, before it needed a re-ask.
+
+    `_PACK_TOKEN_BUDGET` is now derived from the window minus three named
+    reserves (`packing.py`'s own comments have the reasoning for each). This
+    pins the invariant those reserves exist to guarantee, so a future change
+    that grows one of them without shrinking the budget fails here rather than
+    silently eating into the model's own reply.
+    """
+
+    def test_budget_plus_largest_system_prompt_plus_generation_fits_the_window(self):
+        largest_system_prompt = max(
+            estimate_tokens(facts_system_prompt(domain))
+            for domain in get_args(AnalystDomain)
+        )
+
+        assert _PACK_TOKEN_BUDGET + largest_system_prompt + DEFAULT_MAX_GEN_LEN <= 32_768
+
+
+class TestTheEstimatorErrsHighOnDenseEvidence:
+    """`_CHARS_PER_TOKEN` used to be 4, calibrated for prose. Real SIEM evidence
+    -- IPs, dotted hostnames, `key=value` pairs, ISO timestamps -- is punctuation-
+    and identifier-heavy and tokenizes far denser than that, which is exactly what
+    let a pack estimated at 20,000 tokens come back from the model at 31,850. A
+    test that only pinned the new constant's value would pass on any other wrong
+    constant; this instead asserts the property the constant exists to buy:
+    the estimate must run higher than the old (falsified) ratio would have given,
+    on evidence shaped like what was actually measured.
+    """
+
+    @staticmethod
+    def _dense_slice() -> DomainSlice:
+        rows = [
+            {
+                "time": f"2018-08-20T14:22:{i % 60:02d}.000+0000",
+                "src_ip": f"217.182.164.{i % 250}",
+                "dest_ip": f"ws{i:03d}.coinhive.com",
+                "user": f"svc-account-{i:04d}",
+                "EventCode": "4688",
+                "action": "allowed",
+            }
+            for i in range(50)
+        ]
+        return DomainSlice(
+            domain="network",
+            siem_sets=[("connections", ResultSet(query="q", row_count=50, rows=rows))],
+        )
+
+    def test_the_estimate_exceeds_the_old_falsified_ratio(self):
+        text, _ids, _truncated, _row_cap = pack_evidence(self._dense_slice())
+
+        assert estimate_tokens(text) > len(text) // 4
+
+
+class TestADenseSliceThatWouldHaveOverflowedNowShrinks:
+    """Reconstructs the shape of the 2026-08-30 network defect: a slice dense
+    enough that the OLD (falsified) ratio-and-budget pair -- `chars // 4 <=
+    20_000`, i.e. up to ~80,000 rendered characters -- would have let it through
+    at the ladder's top rung unflagged, while the true token count (approximated
+    here by this module's own recalibrated, conservative ratio, since no real
+    tokenizer is available) is over 30,000 -- comfortably past the model's
+    32,768-token window once the system prompt and generation are accounted for.
+    """
+
+    @staticmethod
+    def _slice_that_used_to_slip_through() -> DomainSlice:
+        # A long, but not implausible, C2 hostname -- BOTS v3's real coinhive
+        # infrastructure used subdomains under `coinhive.com`; this exaggerates
+        # that shape to push per-row density high enough to demonstrate the
+        # defect without needing thousands of rows.
+        long_host_suffix = (
+            "-".join(f"segment{i:03d}" for i in range(8))
+            + ".coinhive-mining-pool-cdn.example-attacker-infra.com"
+        )
+        rows = [
+            {
+                "time": "2018-08-20T14:22:31.000+0000",
+                "src_ip": f"217.182.164.{i % 250}",
+                "src_port": str(40000 + i % 20000),
+                "dest_ip": f"ws{i:04d}.{long_host_suffix}",
+                "dest_port": "443",
+                "transport": "tcp",
+                "bytes_out": str(1_000_000 + i),
+                "bytes_in": str(500_000 + i),
+                "uri_path": "/api/v2/beacon/checkin?session=" + ("a1b2c3d4" * 12) + f"&id={i}",
+                "action": "allowed",
+            }
+            for i in range(5000)
+        ]
+        return DomainSlice(
+            domain="network",
+            siem_sets=[("connections", ResultSet(query="q", row_count=5000, rows=rows))],
+        )
+
+    def test_a_slice_the_old_ratio_and_budget_missed_now_truncates(self):
+        slice_ = self._slice_that_used_to_slip_through()
+
+        # Prove the "used to slip through" half concretely rather than only in
+        # prose: at the ladder's top rung, the OLD estimator (chars // 4) against
+        # the OLD bare 20,000 budget would have accepted this slice unshrunk.
+        top_rung_text = _render(slice_, _ROW_CAP_LADDER[0])
+        assert len(top_rung_text) // 4 <= 20_000
+
+        text, _ids, truncated, row_cap = pack_evidence(slice_)
+
+        assert truncated is True
+        assert row_cap < _ROW_CAP_LADDER[0]
 
 
 def test_a_forged_evidence_block_cannot_reach_the_user_turn():
