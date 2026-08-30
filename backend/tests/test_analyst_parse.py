@@ -269,6 +269,64 @@ class TestFindingDisposition:
         assert f.disposition == "benign"
 
 
+_GOOD_FINDING_NEW_ORDER = """the logons cluster around one account with no failures preceding \
+success, and no process or network rows are present in this slice.
+</think>
+DISPOSITION: benign
+CONFIDENCE: 0.65
+RATIONALE: A single successful logon with no surrounding anomaly pattern.
+OBSERVATIONS:
+- one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]
+CITATIONS: auth_events#1"""
+
+
+class TestParseFindingIsOrderIndependent:
+    """The task-2 fix reorders `_FINDING_FOOTER`'s required block so DISPOSITION,
+    CONFIDENCE, and RATIONALE come BEFORE OBSERVATIONS -- so a model that
+    over-produces observations does not lose the verdict fields to
+    `max_gen_len` truncation. `_FINDING_OBSERVATIONS_RE` and `_RATIONALE_RE`
+    both terminate at the next KNOWN label (`_LABEL`) rather than assuming a
+    fixed position relative to it, so both field orders must parse to the same
+    result -- these two tests are what make that claim true rather than
+    assumed, per the task-2 brief.
+    """
+
+    def test_new_order_disposition_first_round_trips(self):
+        f = parse_finding(_GOOD_FINDING_NEW_ORDER, domain="identity")
+
+        assert f.disposition == "benign"
+        assert f.confidence == 0.65
+        assert "logon" in f.rationale
+        assert f.observations == [
+            "one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]"
+        ]
+        assert f.citations == ["auth_events#1"]
+
+    def test_old_order_observations_first_still_round_trips(self):
+        # Stored artifacts and any in-flight reply may still use the OLD order
+        # (OBSERVATIONS first) -- same fixture as `_GOOD_FINDING_NEW_ORDER`
+        # with DISPOSITION moved back, so the two orders are compared
+        # apples-to-apples.
+        out = """the logons cluster around one account with no failures preceding \
+success, and no process or network rows are present in this slice.
+</think>
+OBSERVATIONS:
+- one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]
+DISPOSITION: benign
+CONFIDENCE: 0.65
+RATIONALE: A single successful logon with no surrounding anomaly pattern.
+CITATIONS: auth_events#1"""
+        f = parse_finding(out, domain="identity")
+
+        assert f.disposition == "benign"
+        assert f.confidence == 0.65
+        assert "logon" in f.rationale
+        assert f.observations == [
+            "one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]"
+        ]
+        assert f.citations == ["auth_events#1"]
+
+
 class TestMarkdownHeadingLabels:
     """A label written as a markdown heading must still be a label.
 

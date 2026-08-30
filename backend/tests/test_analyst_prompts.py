@@ -154,6 +154,60 @@ class TestFactsPromptSteadiesTheVerdict:
             assert "hypothesis" not in lowered
 
 
+class TestFactsPromptFixesLiveRunRegressions:
+    """Two regressions from `852e090` measured in a live Splunk run on
+    2026-08-30 (see the task-2 brief under
+    `.superpowers/sdd/handover_2026-08-30_.../task-2-brief.md`), on top of the
+    rules pinned by `TestFactsPromptSteadiesTheVerdict` above.
+    """
+
+    def test_inconclusive_states_its_own_precondition(self):
+        """Defect 1: the network analyst chose `inconclusive` with a citable
+        anomalous row in hand, reciting the footer's own definition of
+        `suspicious` as its rationale. The tie-break paragraph correcting that
+        sat AFTER the `inconclusive` bullet, so the bullet itself must now say
+        when the label applies rather than reading as a safe default."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert "no row you can cite matches any pattern" in p
+            assert "not a safe default" in p
+
+    def test_required_block_orders_disposition_before_observations(self):
+        """Defect 2a: OBSERVATIONS used to come first, so a model that
+        over-produced observations lost DISPOSITION/CONFIDENCE/RATIONALE to
+        `max_gen_len` -- exactly the fields that matter. `parse_finding` is
+        proven order-independent in `test_analyst_parse.py`."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert p.index("DISPOSITION:") < p.index("OBSERVATIONS:")
+
+    def test_the_reporting_floor_has_a_concrete_ceiling(self):
+        """Defect 2b: the floor's own worst-case failure was 82 observations
+        restating ~3 facts once per block. A bare "report EVERY pattern" has no
+        backstop against that; the ceiling does, without reintroducing
+        "report a sample" -- which is what the floor was added to remove."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert "at most 10 observations" in p
+            assert "ONE observation, not one per block" in p
+            assert "report a sample" not in p.lower()
+
+    def test_still_keeps_the_blind_guarantee(self):
+        """Regression guard alongside `test_the_new_rules_keep_the_blind_guarantee`
+        above -- both prompt rewrites for this task touched wording right next
+        to the disposition definitions, exactly where a hypothesis word has
+        leaked in before."""
+        for domain in ("identity", "network", "endpoint"):
+            lowered = facts_system_prompt(domain).lower()
+
+            assert "supports" not in lowered
+            assert "refutes" not in lowered
+            assert "hypothesis" not in lowered
+
+
 class TestFactsUserTurn:
     def test_no_hypothesis_anywhere(self):
         turn = build_facts_user_turn(_scope(), "# auth_events#1 · rows=1")

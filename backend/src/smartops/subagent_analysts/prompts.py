@@ -80,6 +80,19 @@ SECURITY CONSTRAINTS
 # shown. Those are different axes; only the second one can be led. The wording
 # below deliberately never implies a hypothesis exists, for the same reason the
 # bodies do not: naming one invites the model to guess at it.
+#
+# Two more fixes below answer a live Splunk run on 2026-08-30 (measurements in
+# the task-2 brief under .superpowers/sdd/handover_2026-08-30_.../task-2-brief.md):
+# - INCONCLUSIVE now states its own precondition. It used to be defined first as
+#   an inviting safe default ("a real answer, not a failure") with the
+#   correction arriving only in CHOOSING BETWEEN, several lines later -- and a
+#   live run picked `inconclusive` over `suspicious` while holding a citable
+#   anomalous row, reciting the footer's own definition of `suspicious` as its
+#   rationale. The precondition now sits on the bullet itself.
+# - HOW MUCH TO REPORT now caps the list and calls out the same fact recurring
+#   per block by name. Unbounded, it produced 82 near-duplicate observations
+#   (~3 distinct facts restated per block) that spent the whole generation
+#   budget and left no room for the answer block.
 _FINDING_FOOTER = """\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
@@ -98,9 +111,14 @@ CRITICAL CITATION RULES:
 HOW MUCH TO REPORT: report EVERY distinct security-relevant pattern you can support
 from these rows — not a sample of them, and not only the strongest one. Two
 observations that cite the same rows for the same reason are one observation; two that
-rest on different rows, or read the same rows differently, are two. Work through the
-WHAT TO LOOK FOR list above and account for each entry you have rows to speak to. A
-short answer is correct only when the evidence is genuinely short.
+rest on different rows, or read the same rows differently, are two. The SAME fact
+noticed again in another block — e.g. "host X generated N of these events" recurring
+once per block of the same kind — is also ONE observation, not one per block: name the
+pattern once and cite every block it recurs in. Work through the WHAT TO LOOK FOR list
+above and account for each entry you have rows to speak to. Report at most 10 observations;
+if deduplicating by the rules above still leaves you over that, you have not finished
+collapsing repeats — collapse further rather than listing an 11th. A short answer is
+correct only when the evidence is genuinely short.
 
 JUDGING WHAT YOU SEE: after listing your observations, give a DISPOSITION -- your
 read of what this evidence shows, based only on the rows in front of you:
@@ -108,8 +126,10 @@ read of what this evidence shows, based only on the rows in front of you:
 - `suspicious` — the activity is abnormal or warrants follow-up, but is not
   conclusively hostile from these rows alone.
 - `malicious` — the rows themselves show hostile activity.
-- `inconclusive` — there is too little here to judge either way. Say this rather
-  than guessing; it is a real answer, not a failure.
+- `inconclusive` — use this ONLY when no row you can cite matches any pattern at
+  all, or there were no rows to read. It is a real answer, not a failure, but it
+  is not a safe default: if you can name one row that is anomalous, that is
+  `suspicious` or `malicious`, never this.
 CHOOSING BETWEEN `suspicious` AND `inconclusive`: if you can cite a specific row that
 is anomalous, the answer is at least `suspicious` — you found something. Reserve
 `inconclusive` for when no row you can cite matches any pattern at all, or there were
@@ -118,12 +138,12 @@ Judge the evidence, not a theory about it. Do not infer what someone might be
 looking for and grade against that — report what these rows show.
 
 Reason step by step, then end your reply with EXACTLY this block and nothing after it:
-OBSERVATIONS:
-- <a specific, evidence-grounded finding> [header_id]
-- <one line per distinct finding; repeat this line as many times as you have findings>
 DISPOSITION: benign | suspicious | malicious | inconclusive
 CONFIDENCE: <0.0-1.0, your confidence in that disposition>
 RATIONALE: <one or two sentences on your overall read of this evidence>
+OBSERVATIONS:
+- <a specific, evidence-grounded finding> [header_id]
+- <one line per distinct finding; repeat this line as many times as you have findings>
 CITATIONS: <comma-separated full header ids you actually used, e.g. auth_events#1, auth_events#2>"""
 
 _IDENTITY_FACTS_BODY = f"""\
