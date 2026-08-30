@@ -76,12 +76,12 @@ Nine steps. **One involves a model.**
 | 1 | `projection.project()` — `projection.py:348` | Raw output → typed `SiemFindings`/`VtFindings`, dispatching to `project_siem` (`:183`) or `project_vt` (`:268`). Every family with a projector must dispatch *here*: a call site that appended one itself is why a vt subagent holding real evidence once reported `findings=None`. |
 | 2 | `SubtaskResult.findings` — `subtask.py:473` | Carries the typed payload into `BrokerReport`. A **discriminated union**, so a JSON round trip returns the right subclass rather than the empty base. |
 | 3 | `routing.route()` — `routing.py:95` | Splits the report into three `DomainSlice`s by CIM category and entity kind. Untagged sets go to the domains the scope's entity kinds imply — flagged, never dropped: they were retrieved and paid for. |
-| 4 | `packing.pack_evidence()` — `packing.py:194` | Renders a slice under a 20,000-token budget, shrinking the row cap down a ladder (**200 → 20 → 10 → 5 → 3 → 1 → header-only**) instead of truncating mid-block. Returns the rung it settled on, so `exhibits_for` renders at the same one. |
-| 5 | `packing.blocks()` — `packing.py:82` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:176`) and `exhibits_for` (`:146`) are thin readings of it. |
+| 4 | `packing.pack_evidence()` — `packing.py:349` | Renders a slice under a token budget **derived** from the 32,768-token context window minus named reserves (currently 25,751 tokens, not a fixed constant), shrinking the row cap down a ladder (**200 → 20 → 10 → 5 → 3 → 1 → header-only**) instead of truncating mid-block. Returns the rung it settled on, so `exhibits_for` renders at the same one. |
+| 5 | `packing.blocks()` — `packing.py:237` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:331`) and `exhibits_for` (`:301`) are thin readings of it. |
 | 6 | **the analyst** | Reads the packed evidence and authors a `Disposition`, observations and citations. **The only model-authored step.** It never sees the raw tool output behind those rows, and can cite only ids code minted. |
-| 7 | `analyze._finalize_finding()` — `analyze.py:374` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, downgrades an ungrounded decisive disposition to `inconclusive`, and **freezes `citation_evidence`**. |
-| 8 | `analyze._as_judgement()` — `analyze.py:414` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
-| 9 | `analyze.gather()` — `analyze.py:473` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:549`). Assembles — does not decide. |
+| 7 | `analyze._finalize_finding()` — `analyze.py:392` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, downgrades an ungrounded decisive disposition to `inconclusive`, and **freezes `citation_evidence`**. |
+| 8 | `analyze._as_judgement()` — `analyze.py:432` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
+| 9 | `analyze.gather()` — `analyze.py:491` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:567`). Assembles — does not decide. |
 
 **Numbering is per category, not per slice.** One counter over the whole slice numbered by
 position instead, so a network slice emitted `connections#1..#9` then `dns_resolutions#10..`
@@ -175,11 +175,11 @@ pack**.
 | `backend/src/smartops/projection.py` | `project()` (`:348`), `project_siem` (`:183`), `project_vt` (`:268`), `_infer_cim_category`. |
 | `backend/src/smartops/subagent_analysts/routing.py` | `route()` (`:95`) — CIM category + entity kind → three `DomainSlice`s; the uncategorised fan-out. |
 | `backend/src/smartops/subagent_analysts/formatting.py` | Per-record-type field projectors; the `# {category}#{index} · rows=N` header — **no query, deliberately**. |
-| `backend/src/smartops/subagent_analysts/packing.py` | `blocks()` (`:82`) — the single source of order and numbering; `pack_evidence()` (`:194`); `valid_citation_ids()` (`:176`); `exhibits_for()` (`:146`); `fitted_row_cap()` (`:239`). |
-| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:138`), `_apply_grounding()` (`:221`), `_finalize_finding()` (`:374`), `_as_judgement()` (`:414`), `gather()` (`:473`), `_retrieval_summary()` (`:549`). |
+| `backend/src/smartops/subagent_analysts/packing.py` | `blocks()` (`:237`) — the single source of order and numbering; `pack_evidence()` (`:349`); `valid_citation_ids()` (`:331`); `exhibits_for()` (`:301`); `fitted_row_cap()` (`:394`). |
+| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:142`), `_apply_grounding()` (`:239`), `_finalize_finding()` (`:392`), `_as_judgement()` (`:432`), `gather()` (`:491`), `_retrieval_summary()` (`:567`). |
 | `backend/src/smartops/broker.py` | `save_run_artifacts()` and `load_run_artifacts()`. |
 | `backend/src/smartops/replay.py` | Offline replay against a stored run: `evidence_by_id()`, `ReplayToolset`. |
-| `backend/src/smartops/main.py` | `_print_findings()` (`:427`) / `_persist_findings()` (`:566`) write the operator view and `findings.json`. |
+| `backend/src/smartops/main.py` | `_print_findings()` (`:431`) / `_persist_findings()` (`:570`) write the operator view and `findings.json`. |
 | `contracts/schemas/hypothesis-findings.v1.schema.json` | The published output shape, generated by `generate.py` and enforced in `contracts/tests/test_published_schema.py`. |
 
 **Known open items** are tracked in `docs/PROJECT_DOCS.md` and the session handovers — the

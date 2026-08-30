@@ -187,9 +187,11 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
   `report.json`, `evidence.json`, and `Exhibit.query` for the Analyst Agent, which
   is not blind (see `formatting.format_result_set`). Rows come from `ResultSet.rows`
   (code-assembled) — never `Evidence.raw`.
-- **Packing — `packing.py`.** Fits a slice into a 20,000-token evidence budget via a
-  row-cap ladder (`200→20→10→5→3→1→header-only`), highest-signal first (VT, then siem,
-  then untagged), logging any truncation. Returns the evidence text **plus the set of
+- **Packing — `packing.py`.** Fits a slice into a token budget **derived** from the
+  32,768-token context window minus four named reserves (system prompt, generation,
+  user-turn scaffolding, an explicit safety margin) — currently 25,751 tokens, not a
+  bare constant — via a row-cap ladder (`200→20→10→5→3→1→header-only`), highest-signal
+  first (VT, then siem, then untagged), logging any truncation. Returns the evidence text **plus the set of
   valid header ids** for the grounding gate. The ladder's **first rung is a ceiling,
   not a starting guess** — it steps down only on budget overflow. It was 20 and
   pressure never reached it, so the analyst read a 100-row process set at 20 rows
@@ -360,7 +362,7 @@ Depth on this chain, citation by citation, is in
 | Reasoning | thinking | `<think>…</think>`, seeded |
 | Sampling | provider default | **greedy** (`temperature=0`, see below) |
 | Cost model | per-token (`Budget`) | per **CMU-minute** (`analyst_cost`), not per token |
-| Context | large | **32,768** tokens; evidence budget 20,000 |
+| Context | large | **32,768** tokens; evidence budget **derived**, currently 25,751 |
 
 **Sampling is greedy, and deliberately not the model's own default.**
 `generation_config.json` ships `temperature=0.6, top_p=0.95` — those are the model's
@@ -454,18 +456,24 @@ Key env / CLI knobs:
   residuals: the first call after a scale-up has been observed to differ (mechanism
   unconfirmed — needs a deliberate >5-minute idle wait to reproduce), and
   **consistency is not correctness** — see the next item.
-- **No answer key.** `bench.py` carries `expected_families` for routing correctness and
-  **no expected dispositions anywhere in the repo**. Verdicts can be shown consistent;
-  they cannot be shown *right*. Labelling 10–20 BOTSv3 cases with the disposition a
-  human analyst would give is the highest-leverage next work, and until it exists any
-  prompt edit is tuned against vibes.
+- **Answer key is sparse.** `bench.py` now carries `EXPECTED_DISPOSITIONS`, a real
+  BOTSv3-documented answer per case/domain — but only 3 entries
+  (`botsv3_coinhive`, `botsv3_c2_beacon`, `botsv3_hdoor_tool`) against 11 cases.
+  Most verdicts can still only be shown consistent, not *right*. Labelling the
+  remaining cases with the disposition BOTSv3 documents (where it documents one)
+  is the highest-leverage next work.
 - **The grounding gate does not read claims against rows.** It verifies that citations
   *resolve*, not that the sentence matches the evidence. One observed draw called an IP
   "known malicious" whose cited row read `mal=1` of 91. Defect (c) at
   `analyze._as_judgement`.
-- **No OTEL spans on the analyst path.** The Broker and fetch subagents stamp
-  `trace_attributes` onto every span; the analysts are raw boto3 and produce none, so a
-  trace covers the fetch half only.
+- ~~**No OTEL spans on the analyst path.**~~ **Resolved.** `telemetry.analysis_span` /
+  `analyst_span` hand-roll spans for this tier (Strands cannot auto-instrument raw
+  `invoke_model` calls the way it does an `Agent`). Fetch and analyze remain two
+  separate trace roots rather than one nested trace — `analysis_span` opens after the
+  fetch tier's root has already closed — joined by `task_id` + `hypothesis_id` +
+  `run_id` instead of by parentage; `run_id` is the one that actually identifies a
+  single run, since a `task_id` is reused across repeated investigations of the same
+  case (`telemetry.record_run_id`).
 - **Budget escrow tradeoff.** The subagent escrow hold was calibrated to expected
   (not worst-case) turns to allow concurrency under tight budgets; this trades away
   part of the hard overspend guarantee. A per-investigation output-token ceiling is
@@ -474,7 +482,18 @@ Key env / CLI knobs:
 - **Aggregator.** Not in this repository, by contract — see section 7. `combine()`
   was deleted along with the rest of the hypothesis-shown path; deciding for or against
   the hypothesis is the Analyst Agent's job.
-- **The prompt-token estimator runs low.** `packing._CHARS_PER_TOKEN = 4` predicted
-  8,847 tokens for the endpoint slice where the model counted 11,975 (~26% low). Within
-  budget, and `_invoke_with_one_reask` warns past 20k, so this is a note rather than a
-  defect — but do not treat `estimate_tokens` as a ceiling.
+- ~~**The prompt-token estimator runs low.**~~ **Resolved 2026-08-30 — this WAS a
+  defect, not a note.** `packing._CHARS_PER_TOKEN = 4` (a prose average) undercounted
+  dense, identifier-heavy SIEM evidence by as much as 59%: a live Splunk run packed the
+  network domain to fit ~20,000 tokens while the model counted 31,850, leaving just 918
+  tokens of the 32,768 window for the system prompt and the answer combined — under
+  3% — and the analyst's first reply came back with no parseable block.
+  `_invoke_with_one_reask` comparing the estimate to the model's true count only fires
+  **after** the tokens are already spent, so it could not have been the safety net; the
+  fix was getting the estimate right and deriving the budget from real reserves instead.
+  `_CHARS_PER_TOKEN` is now `2.5` (the denser of the two ratios measured that day), and
+  the hardcoded `_PACK_TOKEN_BUDGET = 20_000` is now **derived** from the model's
+  32,768-token context window minus four named reserves (system prompt, generation,
+  user-turn scaffolding, and an explicit safety margin) — currently 25,751 tokens.
+  `TestTheDerivedBudgetLeavesRoom` in `test_analyst_prompts.py` asserts every domain
+  keeps at least the safety margin's headroom.
