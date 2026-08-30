@@ -5210,8 +5210,8 @@ streamed to `/tmp` (Q315), brute force from **Russia** (Q318), password
 1. Fix `coinhive` first — it needs no change, only `expected_disposition`. It is the
    one case where a green result means something today.
 2. Add `expected_disposition: Disposition` to `BENCHMARK_CASES` beside
-   `expected_families`, and score it next to the existing
-   `routing_correct = set(dispatched) == set(expected_families)` (`bench.py:578`).
+   `expected_families`, and score it next to the existing `routing_correct`
+   assignment in `bench.py` (`set(dispatched) == set(expected_families)`).
    **That routing metric has never meant anything** — until `e6df52c` every run
    used the synthesized fallback, so `dispatched` reflected what the model
    *claimed*. It is real now.
@@ -5303,6 +5303,22 @@ for tid, group in traces.items():
     print(f"\nTRACE {tid}")
     show(None)
 ```
+
+## A note on citations in this file
+
+**Symbols, not line numbers.** Nothing in this handover cites a `file.py:NNN`
+anchor, deliberately. `docs/check_anchors.py` and `docs/fix_anchors.py` scan
+`confluence-*.md` and `architecture.md` — **not `docs/sessions/`** — and session
+docs are the historical record, so by convention they are never updated after the
+fact. An anchor here would be unchecked by tooling and unmaintainable by rule: it
+would rot silently and there would be no correct moment to fix it.
+
+That is not hypothetical. `check_anchors.py` run over `docs/sessions/*.md` reports
+**18 stale anchors** in earlier handovers, several broken by refactors in this
+session. They are being left alone on purpose: they were accurate when written,
+and repointing them would make a dated snapshot describe code it never described.
+A symbol name (`routing_correct`, `_as_judgement`, `pack_evidence`) survives every
+refactor that moves a line, which is why this file uses them throughout.
 
 ## Where things are
 
