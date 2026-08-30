@@ -4,17 +4,20 @@ This is the first thing in the repo that runs end to end. It is deliberately
 thin -- argument parsing, a `Budget`, and printing -- because everything
 interesting belongs in `smartops.broker`.
 
-**Why this does not call a model.** `broker.default_broker_invoker()` builds a
-real Strands `Agent`, but no Bedrock credentials or region are configured yet, so
-this CLI injects `_scripted_invoker()` instead: a deterministic stand-in that
-dispatches exactly the families named by `--families`. Everything downstream of
-the dispatch decision -- mission construction, the entity gate, tool resolution,
-result collection, budget settlement -- is the real code path. Swapping in a live
-model is a one-line change to which invoker is passed.
+**When this calls a model, and when it does not.** `broker.default_broker_invoker()`
+builds a real Strands `Agent`, and `broker_task()` uses it whenever
+`model_choice_from_env()` resolves a configured provider. Only when none is
+configured (or `--scripted` is passed) does this CLI fall back to
+`_scripted_invoker()` instead: a deterministic stand-in that dispatches exactly
+the families named by `--families` -- a flag that does nothing on the model
+path, where the tool gate (`available_broker_tools()`) decides what is
+available instead. Everything downstream of the dispatch decision -- mission
+construction, the entity gate, tool resolution, result collection, budget
+settlement -- is the real code path either way.
 
-Expect every family to be REJECTED today. No MCP server is configured for any
-domain, so that is the honest state of the system, and the two *different*
-rejection reasons are what this run demonstrates.
+Splunk is configured and returns real rows for `siem`; whether a family is
+accepted or rejected depends on which MCP servers `--mcp-config` (or its
+defaults) resolve, not on a blanket "nothing is configured yet".
 """
 
 from __future__ import annotations
@@ -249,8 +252,11 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="smartops-broker",
         description="Run the Task Broker over one investigative task.",
         epilog=(
-            "No model is called yet: --families drives dispatch directly. "
-            "Expect every family to be REJECTED until MCP servers are configured."
+            "A real model runs whenever a provider is configured (see "
+            "model_choice_from_env()); --families only drives the scripted path "
+            "(--scripted, or no provider configured) -- on the model path the "
+            "tool gate decides what's available instead. Splunk is configured, "
+            "so siem dispatches return real rows."
         ),
     )
     parser.add_argument("--goal", required=True, help="what to find out, in plain language")
@@ -860,10 +866,11 @@ async def _run(argv: list[str] | None = None) -> int:
             # independent judgements are joined to the claim they were formed
             # without.
             #
-            # `analyze()`/`combine()` still exist and still produce a decided
-            # stance, but nothing calls them here any more: a stance formed by an
-            # analyst that was shown the hypothesis is the anchoring this path
-            # exists to remove.
+            # `analyze()`/`combine()` used to sit here and roll the three shown
+            # verdicts into one decided stance; both were DELETED once nothing
+            # called them (see `analyze.py`'s own module docstring and
+            # `docs/architecture.md`). A stance formed by an analyst that was
+            # shown the hypothesis is the anchoring this path exists to remove.
             run_dir = getattr(outcome, "run_dir", None)
             # The analyze tier's root span. A second root beside the fetch tier's
             # `investigation_span`, which opened inside `broker_task()` and closed
