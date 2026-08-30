@@ -288,7 +288,8 @@ class TestParseFindingIsOrderIndependent:
     both terminate at the next KNOWN label (`_LABEL`) rather than assuming a
     fixed position relative to it, so both field orders must parse to the same
     result -- these two tests are what make that claim true rather than
-    assumed, per the task-2 brief.
+    assumed (see
+    docs/sessions/handover_2026-08-30_splunk-back-answer-sheet-and-siem-trace.md).
     """
 
     def test_new_order_disposition_first_round_trips(self):

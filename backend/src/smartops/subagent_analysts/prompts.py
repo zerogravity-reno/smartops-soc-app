@@ -82,17 +82,18 @@ SECURITY CONSTRAINTS
 # bodies do not: naming one invites the model to guess at it.
 #
 # Two more fixes below answer a live Splunk run on 2026-08-30 (measurements in
-# the task-2 brief under .superpowers/sdd/handover_2026-08-30_.../task-2-brief.md):
+# docs/sessions/handover_2026-08-30_splunk-back-answer-sheet-and-siem-trace.md):
 # - INCONCLUSIVE now states its own precondition. It used to be defined first as
 #   an inviting safe default ("a real answer, not a failure") with the
-#   correction arriving only in CHOOSING BETWEEN, several lines later -- and a
-#   live run picked `inconclusive` over `suspicious` while holding a citable
-#   anomalous row, reciting the footer's own definition of `suspicious` as its
+#   correction arriving only in CHOOSING BETWEEN, several lines later -- and the
+#   network analyst picked `inconclusive` (confidence 0.7, a citable anomalous
+#   row in hand) reciting the footer's own definition of `suspicious` as its
 #   rationale. The precondition now sits on the bullet itself.
 # - HOW MUCH TO REPORT now caps the list and calls out the same fact recurring
 #   per block by name. Unbounded, it produced 82 near-duplicate observations
-#   (~3 distinct facts restated per block) that spent the whole generation
-#   budget and left no room for the answer block.
+#   (~3 distinct facts restated per block, up from a 17-observation worst case
+#   before the floor existed) that spent the whole generation budget and left
+#   no room for the answer block.
 _FINDING_FOOTER = """\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
@@ -120,8 +121,8 @@ if deduplicating by the rules above still leaves you over that, you have not fin
 collapsing repeats — collapse further rather than listing an 11th. A short answer is
 correct only when the evidence is genuinely short.
 
-JUDGING WHAT YOU SEE: after listing your observations, give a DISPOSITION -- your
-read of what this evidence shows, based only on the rows in front of you:
+JUDGING WHAT YOU SEE: give a DISPOSITION -- your read of what this evidence shows,
+based only on the rows in front of you:
 - `benign` — the activity is consistent with normal operation.
 - `suspicious` — the activity is abnormal or warrants follow-up, but is not
   conclusively hostile from these rows alone.

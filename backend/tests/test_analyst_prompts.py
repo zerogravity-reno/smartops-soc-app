@@ -156,9 +156,9 @@ class TestFactsPromptSteadiesTheVerdict:
 
 class TestFactsPromptFixesLiveRunRegressions:
     """Two regressions from `852e090` measured in a live Splunk run on
-    2026-08-30 (see the task-2 brief under
-    `.superpowers/sdd/handover_2026-08-30_.../task-2-brief.md`), on top of the
-    rules pinned by `TestFactsPromptSteadiesTheVerdict` above.
+    2026-08-30 (see
+    docs/sessions/handover_2026-08-30_splunk-back-answer-sheet-and-siem-trace.md),
+    on top of the rules pinned by `TestFactsPromptSteadiesTheVerdict` above.
     """
 
     def test_inconclusive_states_its_own_precondition(self):
