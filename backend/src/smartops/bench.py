@@ -343,6 +343,7 @@ SYNTHETIC_INDICATOR_CASES = frozenset({
     "botsv3_ransomware_note",
     "botsv3_exfil_ip",
     "botsv3_phishing_domain",
+    "botsv3_hard_multivector",
 })
 """Cases whose indicators BOTSv3 does not contain, kept for coverage anyway.
 
@@ -372,6 +373,13 @@ none of them has a documented answer, so none appears in
 - `botsv3_phishing_domain` -- not in BOTSv3, but the domain is real: our own
   saved VT lookup has `secure-login-account.com` at `mal=14`. VT-only case;
   expect no SIEM rows.
+- `botsv3_hard_multivector` -- only ONE of its three reputation indicators is
+  the problem: the file hash `e2ac36894c2560d2b277ff9618b76c8c` is absent from
+  BOTSv3 (VT NOT FOUND). The domain `coinhive.com` and the IP
+  `217.182.164.14` are both genuine BOTSv3 data. Repointing the hash is a
+  scope decision left to the controller, not made here; this case stays out
+  of `EXPECTED_DISPOSITIONS` because a fabricated indicator sits alongside two
+  real ones and no single disposition can be asserted for the case as a whole.
 """
 
 

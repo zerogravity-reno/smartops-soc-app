@@ -598,6 +598,23 @@ class TestBOTSv3AnswerSheet:
         assert "botsv3_c2_ip" not in BENCHMARK_CASES
         assert "botsv3_powershell_hash" not in BENCHMARK_CASES
 
+    def test_every_case_key_matches_its_own_tasks_task_id(self):
+        """Finding 8: nothing else pins this.
+
+        `_execute_single_run` looks the answer key up by `task.task_id`, while
+        `EXPECTED_DISPOSITIONS` is keyed by the `BENCHMARK_CASES` dict key. The
+        two agree today for every case, but nothing stops a future rename of
+        just one of them from silently disabling scoring for that case --
+        `compute_disposition_correct` would look up a key the answer key never
+        populates and quietly return `None` (no answer key) forever.
+        """
+        for case_id, (task, _expected_families) in BENCHMARK_CASES.items():
+            assert task.task_id == case_id, (
+                f"BENCHMARK_CASES key {case_id!r} does not match its "
+                f"AnalystTask.task_id {task.task_id!r} -- disposition scoring "
+                "for this case would silently never match EXPECTED_DISPOSITIONS"
+            )
+
 
 class TestDispositionCorrect:
     """`disposition_correct` must keep "no answer key", "no findings" and a
