@@ -145,8 +145,9 @@ read the same rows differently, are two. The SAME fact noticed again in another 
 e.g. "host X generated N of these events" recurring once per block of the same kind — is
 also ONE observation, not one per block: name it once and cite every block it recurs in.
 Report at most 10 observations. That ceiling counts DISTINCT GROUPINGS, not importance:
-if the rules above still leave you over it, group more coarsely — one line covering a
-whole set — rather than deciding which rows deserve a line and dropping the rest.
+if the rules above still leave you over it, group more coarsely — one line may cover a
+whole set, or several sets, cited to each of them — rather than deciding which rows
+deserve a line and dropping the rest.
 
 Reason step by step, then end your reply with EXACTLY this block and nothing after it:
 {_NARRATIVE_ANSWER_BLOCK}"""

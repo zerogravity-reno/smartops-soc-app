@@ -252,7 +252,16 @@ class TestFactsPromptFixesLiveRunRegressions:
 
         The ceiling must not become a filter, either: over it, the analyst
         groups more coarsely rather than deciding which rows earn a line. That
-        is the whole difference between aggregating and selecting."""
+        is the whole difference between aggregating and selecting.
+
+        And the coarsening must not bottom out ABOVE the ceiling. When one set
+        was the coarsest licensed unit, a slice of more than 10 sets made three
+        rules jointly unsatisfiable -- never drop a set, at most 10 lines, one
+        set per line at coarsest -- with nothing saying which to break, and the
+        cheapest way out was to drop a set. 15-set slices are measured, not
+        hypothetical: see `test_category_matched_evidence_is_preferred_over_
+        uncategorised` above. A line that may span sets makes the three
+        satisfiable at any number of sets."""
         for domain in ("identity", "network", "endpoint"):
             p = facts_system_prompt(domain)
 
@@ -260,13 +269,18 @@ class TestFactsPromptFixesLiveRunRegressions:
             assert "at most 10 observations" in flat
             assert "ONE observation, not one per block" in flat
             assert "That ceiling counts DISTINCT GROUPINGS, not importance" in flat
+            assert "one line may cover a whole set, or several sets" in flat
             assert "report a sample" not in flat.lower()
 
     def test_still_keeps_the_blind_guarantee(self):
         """Regression guard alongside `test_the_new_rules_keep_the_blind_guarantee`
-        above -- both prompt rewrites for this task touched wording right next
-        to the disposition definitions, exactly where a hypothesis word has
-        leaked in before."""
+        above, stated at the rules THIS class pins: the required answer block and
+        the reporting ceiling. Those two get reworded every time either is
+        retuned -- twice already -- and a `Stance` word has leaked in during
+        exactly that kind of edit before ("no row you can cite SUPPORTS any
+        pattern"). Repeating the constraint here is what puts it in front of the
+        next person retuning them, rather than leaving it to a vocabulary test
+        several classes away that they have no reason to open."""
         for domain in ("identity", "network", "endpoint"):
             lowered = facts_system_prompt(domain).lower()
 
