@@ -12,15 +12,15 @@
 Almost every misunderstanding of this layer comes from conflating them.
 
 **The Findings Pipeline** carries **projected, typed rows** from a tool result to a domain
-analyst's judgement and out to the Analyst Agent. **The Evidence Store** holds the **raw tool
-output those rows were projected from**, on disk, addressable by id.
+analyst's plain-English account of them, and out to the Analyst Agent. **The Evidence Store**
+holds the **raw tool output those rows were projected from**, on disk, addressable by id.
 
 | | Findings Pipeline | Evidence Store |
 |---|---|---|
 | **Carries** | typed rows (`ResultSet.rows`, `VtVerdict`) | raw tool payloads (`Evidence.raw`) |
 | **Lives** | in memory, persisted in `report.json` | on disk, in `evidence.json` |
 | **Read by** | `route()` → the analysts → the Analyst Agent | replay, audit, citation resolution |
-| **Purpose** | produce a grounded judgement | prove what the judgement rested on |
+| **Purpose** | produce a grounded account of the rows | prove what that account rested on |
 | **Written by** | `projection.project()` | `broker.save_run_artifacts()` |
 
 They are joined by **one thing only: an id** — not by data flow.
@@ -76,7 +76,7 @@ Nine steps. **One involves a model.**
 | 1 | `projection.project()` — `projection.py:348` | Raw output → typed `SiemFindings`/`VtFindings`, dispatching to `project_siem` (`:183`) or `project_vt` (`:268`). Every family with a projector must dispatch *here*: a call site that appended one itself is why a vt subagent holding real evidence once reported `findings=None`. |
 | 2 | `SubtaskResult.findings` — `subtask.py:473` | Carries the typed payload into `BrokerReport`. A **discriminated union**, so a JSON round trip returns the right subclass rather than the empty base. |
 | 3 | `routing.route()` — `routing.py:95` | Splits the report into three `DomainSlice`s by CIM category and entity kind. Untagged sets go to the domains the scope's entity kinds imply — flagged, never dropped: they were retrieved and paid for. |
-| 4 | `packing.pack_evidence()` — `packing.py:376` | Renders a slice under a token budget **derived** from the 32,768-token context window minus named reserves (currently 25,751 tokens, not a fixed constant), shrinking the row cap down a ladder (**200 → 20 → 10 → 5 → 3 → 1 → header-only**) instead of truncating mid-block. Returns the rung it settled on, so `exhibits_for` renders at the same one. |
+| 4 | `packing.pack_evidence()` — `packing.py:376` | Renders a slice under a token budget **derived** from the 32,768-token context window minus named reserves (currently 25,150 tokens, not a fixed constant), shrinking the row cap down a ladder (**200 → 20 → 10 → 5 → 3 → 1 → header-only**) instead of truncating mid-block. Returns the rung it settled on, so `exhibits_for` renders at the same one. |
 | 5 | `packing.blocks()` — `packing.py:259` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:358`) and `exhibits_for` (`:328`) are thin readings of it. |
 | 6 | **the analyst** | Reads the packed evidence and authors a plain-English `narrative`, observations and citations — **no verdict of any kind** since 2026-08-31; judging is the Analyst Agent's job, above this boundary. **The only model-authored step.** It never sees the raw tool output behind those rows, and can cite only ids code minted. |
 | 7 | `analyze._finalize_finding()` — `analyze.py:484` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, flags ungrounded claims with a noted reason, and **freezes `citation_evidence`**. |
@@ -86,8 +86,10 @@ Nine steps. **One involves a model.**
 **Numbering is per category, not per slice.** One counter over the whole slice numbered by
 position instead, so a network slice emitted `connections#1..#9` then `dns_resolutions#10..`
 — **with no `dns_resolutions#1`, the exact worked example the analyst prompts hand the
-model.** A model citing it failed validation, lost the observation, and was downgraded to
-`inconclusive` — which reads as a cautious analyst rather than a bug, and is why it survived.
+model.** A model citing it failed validation and lost the observation; as the gate behaved at
+the time, the finding was then downgraded to `inconclusive` — which read as a cautious
+analyst rather than a bug, and is why it survived. There is no disposition to downgrade since
+2026-08-31, and the gate marks the narrative instead; the numbering hazard is unchanged.
 
 ---
 

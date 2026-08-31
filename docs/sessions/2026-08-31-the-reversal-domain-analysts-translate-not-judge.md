@@ -110,13 +110,66 @@ the system prompt shrank when the judging blocks were deleted. Network is pinned
 but identity and endpoint did not shrink equally, so their margins *changed* asymmetrically.
 - Identity: 577 → 601 (+24)
 - Network: 500 → 500 (±0, pinned)
-- Endpoint: 590 → 575 (−15)
+- Endpoint: 590 → 575 (−15); now 576 after the prompt-fidelity fix below
 
 The mechanism: `_PACK_TOKEN_BUDGET` is derived from the 32,768-token context window minus named
 reserves. One of those reserves is `_SYSTEM_PROMPT_RESERVE`, the max spare bytes across all three
 domain system prompts, measured at import. When a prompt shrank, that max shrunk, the pack budget
 grew, and the margin allocation rebalanced. Endpoint did not shrink as much as the overall reserve,
 so it lost margin to growth elsewhere.
+
+### The derived budget, re-measured — and a figure that was stale in five places
+
+`_PACK_TOKEN_BUDGET` was documented as **25,751** in `architecture.md` (three sites) and both
+Confluence pages. That figure predates this branch: it was already wrong at the docs commit,
+where the real value was **25,426**. Corrected everywhere to the measured value.
+
+The number moves whenever any domain prompt changes length, because it is derived rather than
+declared — which is the property the docs are careful to state and then undermined by printing a
+literal. Anyone quoting it should re-measure:
+
+    uv run python -c "from smartops.subagent_analysts.packing import _PACK_TOKEN_BUDGET as b; print(b)"
+
+Current value after the prompt-fidelity fix below: **25,150**, with margins identity 601 /
+network 500 (pinned) / endpoint 576.
+
+## The prompts were then measured against real evidence, and three defects fixed
+
+The verdict removal was verified by tests; the *quality* of the translation was not, and could
+not be — no test can see whether prose recounts rows or explains them. A full three-domain replay
+of `cli-20260823T112627` (identity 80 rows, network 46, endpoint 165) against the live model
+exposed three mechanical defects that a single-row run had hidden:
+
+1. **Time ranges ran backwards** — "between 17:07:34 and 15:41:29", four times. Rows are not
+   printed in a consistent time order: most sets print oldest-first, but `processes#8` prints
+   newest-first. The model took first-printed → last-printed as a period, which is accidentally
+   right on ascending sets and inverted on descending ones. The prompt's word "in order" meant
+   printed-order in one place and chronological in another — flagged as a deferred minor during
+   Task A's review, and made real here.
+2. **Content asserted on `rows=0` sets** — "Network flows occurred between 192.168.247.131 and
+   217.182.164.14 [uncategorised#2]", where that set is literally `(no rows returned)`. The
+   grounding gate cannot catch this: the cited id resolves, it is merely empty.
+3. **Cross-set attribution** — one claim merging `processes#2` through `#6` while citing only
+   `#2`. Its own reasoning trace admits the merge.
+
+Three rules were added to `_NARRATIVE_FOOTER` (shared, so one edit covers all three domains) and
+the identical replay re-run at temperature 0: backwards ranges **4 → 0**, zero-row assertions
+**2 → 0**, attribution corrected to one set per claim. Two unasked improvements came with it —
+identity moved from "successes outnumbered failures significantly" to "1,063 successes and 19
+failures", and endpoint found both PowerShell executions where it had reported one.
+
+Cost: +172 system-prompt tokens, taken out of the evidence budget (25,426 → 25,150). All three
+domains stay above the 500-token floor.
+
+**Still open — one drift got worse.** The reputation rows read
+`ip=217.182.164.14 FOUND mal=1 susp=0 harmless=90`. Before the fix the network analyst wrote
+"low malware presence (mal=1)"; after, "flagged … as suspicious/malicious". One engine of 91 is
+not "flagged", and grading a count with a word is the judgement this tier gave up. It also
+asserted "217.182.164.14 (IP associated with coinhive.com)" — a link the evidence does not make,
+and one the DNS rows contradict, since they resolve coinhive subdomains to `192.168.247.2`. The
+next rule to write is that a number is reported as a number; it should be measured the same way
+rather than assumed. **The grounding gate cannot help with any of this** — every such claim cites
+an id that resolves. Only the *reading* of the cited rows is wrong, and nothing automated sees it.
 
 ## What the schema version meant
 

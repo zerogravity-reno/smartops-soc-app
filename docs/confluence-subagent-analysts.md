@@ -179,7 +179,7 @@ on disk for replay; v2 is the current wire.
   copy**; the first call after a scale-up has been observed to differ.
 - **Evidence budget derived from a 32,768-token window, not a fixed number.**
   `_PACK_TOKEN_BUDGET` is the window minus named reserves (system prompt, generation,
-  user-turn scaffolding, safety margin) — currently 25,751 tokens. `pack_evidence` caps
+  user-turn scaffolding, safety margin) — currently 25,150 tokens. `pack_evidence` caps
   rows per set on a ladder (**200 → 20 → 10 → 5 → 3 → 1 → header-only**) and reports the
   rung. `exhibits_for` re-derives the *same* rung, so the rows handed forward are exactly
   what the analyst read. **Per-domain spare margins as of 2026-08-31:** identity 601, network 500, endpoint 575.

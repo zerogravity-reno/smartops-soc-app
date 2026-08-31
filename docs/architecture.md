@@ -189,7 +189,7 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
   (code-assembled) — never `Evidence.raw`.
 - **Packing — `packing.py`.** Fits a slice into a token budget **derived** from the
   32,768-token context window minus four named reserves (system prompt, generation,
-  user-turn scaffolding, an explicit safety margin) — currently 25,751 tokens, not a
+  user-turn scaffolding, an explicit safety margin) — currently 25,150 tokens, not a
   bare constant — via a row-cap ladder (`200→20→10→5→3→1→header-only`), highest-signal
   first (VT, then siem, then untagged), logging any truncation. Returns the evidence text **plus the set of
   valid header ids** for the grounding gate. The ladder's **first rung is a ceiling,
@@ -362,7 +362,7 @@ Depth on this chain, citation by citation, is in
 | Reasoning | thinking | `<think>…</think>`, seeded |
 | Sampling | provider default | **greedy** (`temperature=0`, see below) |
 | Cost model | per-token (`Budget`) | per **CMU-minute** (`analyst_cost`), not per token |
-| Context | large | **32,768** tokens; evidence budget **derived**, currently 25,751 |
+| Context | large | **32,768** tokens; evidence budget **derived**, currently 25,150 |
 
 **Sampling is greedy, and deliberately not the model's own default.**
 `generation_config.json` ships `temperature=0.6, top_p=0.95` — those are the model's
@@ -494,6 +494,6 @@ Key env / CLI knobs:
   `_CHARS_PER_TOKEN` is now `2.5` (the denser of the two ratios measured that day), and
   the hardcoded `_PACK_TOKEN_BUDGET = 20_000` is now **derived** from the model's
   32,768-token context window minus four named reserves (system prompt, generation,
-  user-turn scaffolding, and an explicit safety margin) — currently 25,751 tokens.
+  user-turn scaffolding, and an explicit safety margin) — currently 25,150 tokens.
   `TestTheDerivedBudgetLeavesRoom` in `test_analyst_prompts.py` asserts every domain
   keeps at least the safety margin's headroom.

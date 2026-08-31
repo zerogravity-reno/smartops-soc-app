@@ -130,6 +130,16 @@ CRITICAL CITATION RULES:
 - When the same observation is supported by both a category-named set (`auth_events#2`,
   `connections#5`) and an `uncategorised#N` set, cite the category-named one. Cite
   `uncategorised#N` when it is the only place the rows appear.
+- Cite EVERY set a statement rests on. A sentence taking its count from one set and its
+  times from another, or spanning `processes#2` through `processes#6`, cites all of them.
+- A set whose header says `rows=0` holds NOTHING. Say it returned no rows; never attach a
+  host, address, account, time or count to it. A statement whose only ids are `rows=0`
+  sets has no evidence and does not belong in your reply.
+
+TIME RANGES: rows are NOT always printed in time order — some sets print newest first.
+Read the timestamps and write every range earliest to latest. Never take a set's first
+and last printed lines as a period's start and end; a range ending before it begins is
+always wrong.
 
 HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per evidence set, in the order
 the sets are printed — two to five sentences for a set with rows, one sentence for a set
