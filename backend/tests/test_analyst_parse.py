@@ -1,4 +1,10 @@
-"""Tests for reasoning/answer splitting and verdict parsing."""
+"""Tests for reasoning/answer splitting, verdict parsing and finding parsing.
+
+Two parsers, two arms. `parse_verdict` is the hypothesis-SHOWN arm (`shown.py`,
+the A/B harness) and still reads VERDICT/CONFIDENCE/RATIONALE. `parse_finding` is
+the production, hypothesis-BLIND path, which since 2026-08-31 forms no verdict at
+all and reads NARRATIVE/OBSERVATIONS/CITATIONS.
+"""
 
 from __future__ import annotations
 
@@ -108,7 +114,7 @@ class TestParseVerdict:
     def test_a_rationale_sentence_ending_in_a_colon_is_not_a_label(self):
         # The terminator used to be a generic uppercase run (`[A-Z][A-Z ]+:`) under
         # IGNORECASE, so any prose line ending in a colon looked like the next
-        # label and truncated the rationale. Only the five real labels end it.
+        # label and truncated the rationale. Only the real labels end it.
         out = (
             "</think>VERDICT: supports\n"
             "RATIONALE: The host beaconed to a known C2.\n"
@@ -121,8 +127,11 @@ class TestParseVerdict:
 
     def test_rationale_still_stops_at_each_real_label(self):
         # Guards against over-correcting: bounding the terminator must not stop it
-        # terminating, in either the bare or the emphasised spelling.
-        for label in ("OBSERVATIONS", "CITATIONS", "CONFIDENCE", "VERDICT"):
+        # terminating, in either the bare or the emphasised spelling. NARRATIVE is
+        # in the list although this arm's own prompt never emits it -- `_LABEL` is
+        # shared, and a label that stops terminating on one arm stops terminating
+        # on both.
+        for label in ("OBSERVATIONS", "CITATIONS", "CONFIDENCE", "VERDICT", "NARRATIVE"):
             for line in (f"{label}: x", f"**{label}:** x"):
                 out = f"</think>VERDICT: supports\nRATIONALE: kept.\n{line}"
                 assert parse_verdict(out, domain="identity").rationale == "kept."
@@ -131,10 +140,10 @@ class TestParseVerdict:
 _GOOD_FINDING = """the logons cluster around one account with no failures preceding \
 success, and no process or network rows are present in this slice.
 </think>
+NARRATIVE: bostoll logged on successfully once from 10.0.1.50 at 09:14, with no \
+failed logons before it. No process or network rows were present in this slice.
 OBSERVATIONS:
 - one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]
-CONFIDENCE: 0.65
-RATIONALE: A single successful logon with no surrounding anomaly pattern.
 CITATIONS: auth_events#1"""
 
 
@@ -142,58 +151,79 @@ class TestParseFinding:
     def test_parses_rich_finding(self):
         f = parse_finding(_GOOD_FINDING, domain="identity")
         assert f.domain == "identity"
-        assert f.confidence == 0.65
-        assert "logon" in f.rationale
+        assert "10.0.1.50" in f.narrative
+        assert "OBSERVATIONS" not in f.narrative  # the narrative stops at the label
         assert len(f.observations) == 1
         assert f.citations == ["auth_events#1"]
         assert f.reasoning_trace and "cluster" in f.reasoning_trace
 
-    def test_confidence_is_clamped(self):
-        out = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCONFIDENCE: 3.0\nCITATIONS: auth_events#1"
-        assert parse_finding(out, domain="network").confidence == 1.0
+    def test_the_finding_carries_no_verdict(self):
+        """The whole point of the 2026-08-31 change, pinned at the parser.
+
+        A `DomainFinding` used to carry a `disposition` and a `confidence`, and
+        `parse_finding` defaulted the disposition to `inconclusive` when the model
+        gave none -- so the 2026-08-30 run put a verdict no model had formed onto
+        the wire. Both fields are gone from the contract; this asserts the parser
+        cannot bring them back by any route.
+        """
+        f = parse_finding(_GOOD_FINDING, domain="identity")
+        assert not hasattr(f, "disposition")
+        assert not hasattr(f, "confidence")
+
+    def test_a_disposition_line_the_model_still_emits_is_ignored_not_absorbed(self):
+        """`DISPOSITION` stays in `_LABEL` although no prompt asks for it.
+
+        An 8B model that has learned the habit, or a stored generation replayed
+        from before the change, still emits the line. Keeping the label means it
+        ENDS the narrative instead of being swallowed into it -- the same silent
+        truncation `_LABEL` exists to prevent, running the other way.
+        """
+        out = (
+            "</think>NARRATIVE: one clean logon for bostoll.\n"
+            "DISPOSITION: benign\n"
+            "OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "CITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert f.narrative == "one clean logon for bostoll."
+        assert "DISPOSITION" not in f.narrative
+        assert f.observations == ["one clean logon [auth_events#1]"]
 
     def test_missing_observations_and_citations_raises(self):
         with pytest.raises(FindingParseError):
             parse_finding("</think>I looked at the evidence and it seems fine.", domain="endpoint")
 
     def test_citations_alone_are_enough_to_parse(self):
-        # No OBSERVATIONS block, but a CITATIONS line is still a recognisable finding.
-        out = "</think>RATIONALE: nothing notable.\nCITATIONS: auth_events#1"
+        # No OBSERVATIONS block, but a NARRATIVE and a CITATIONS line are still a
+        # recognisable finding. Still an OR between those two, deliberately laxer
+        # than `parse_verdict`.
+        out = "</think>NARRATIVE: nothing notable in the rows.\nCITATIONS: auth_events#1"
         f = parse_finding(out, domain="identity")
         assert f.citations == ["auth_events#1"]
         assert f.observations == []
 
-    def test_defaults_when_optional_fields_absent(self):
-        out = "</think>OBSERVATIONS:\n- x [auth_events#1]"
+    def test_observations_alone_are_enough_to_parse(self):
+        out = "</think>NARRATIVE: one logon.\nOBSERVATIONS:\n- x [auth_events#1]"
         f = parse_finding(out, domain="endpoint")
-        assert f.confidence == 0.0
-        assert f.rationale == ""
+        assert f.observations == ["x [auth_events#1]"]
         assert f.citations == []
-
-    def test_confidence_without_a_value_does_not_grab_a_digit_from_a_citation(self):
-        out = (
-            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
-            "CONFIDENCE: unclear\nCITATIONS: auth_events#1"
-        )
-        assert parse_finding(out, domain="identity").confidence == 0.0
 
     def test_markdown_bolded_block_parses(self):
         out = (
             "prose...\n</think>\n"
+            "**NARRATIVE:** BSTOLL-L ran chrome.exe, which referenced the CoinHive "
+            "library.  \n"
             "**OBSERVATIONS:**  \n"
             "- BSTOLL-L ran chrome.exe [processes#1]  \n"
-            "**CONFIDENCE:** 0.7  \n"
-            "**RATIONALE:** Evidence shows chrome.exe referencing the CoinHive library.  \n"
             "**CITATIONS:** processes#1"
         )
         f = parse_finding(out, domain="endpoint")
-        assert f.confidence == 0.7
+        assert "CoinHive" in f.narrative
         assert f.citations == ["processes#1"]
-        assert "CoinHive" in f.rationale
         assert f.observations == ["BSTOLL-L ran chrome.exe [processes#1]"]
 
     def test_an_observation_containing_a_colon_does_not_drop_the_ones_after_it(self):
-        # Worse here than in a rationale: the OBSERVATIONS capture ended at the
+        # Worse here than in a narrative: the OBSERVATIONS capture ended at the
         # first prose colon, so every LATER observation vanished -- and with them
         # the inline citations `_finalize_finding` unions into `citations`.
         #
@@ -202,7 +232,8 @@ class TestParseFinding:
         # accident. The 8B model does not reliably bullet every line, so relying
         # on that is relying on a typo.
         out = (
-            "</think>OBSERVATIONS:\n"
+            "</think>NARRATIVE: a burst of failures then a success.\n"
+            "OBSERVATIONS:\n"
             "- 14 failed logons in 3 minutes [auth_events#1]\n"
             "The pattern was: burst, pause, burst [auth_events#1]\n"
             "- then a success from the same source [auth_events#2]\n"
@@ -213,118 +244,172 @@ class TestParseFinding:
         assert "auth_events#2" in f.observations[2]
 
     def test_finding_observations_still_stop_at_each_real_label(self):
-        for label in ("CONFIDENCE", "RATIONALE", "CITATIONS", "VERDICT"):
+        for label in ("NARRATIVE", "CONFIDENCE", "RATIONALE", "CITATIONS", "VERDICT"):
             for line in (f"{label}: x", f"**{label}:** x"):
-                out = f"</think>OBSERVATIONS:\n- kept [auth_events#1]\n{line}"
+                out = (
+                    "</think>NARRATIVE: a line.\n"
+                    f"OBSERVATIONS:\n- kept [auth_events#1]\n{line}"
+                )
                 assert parse_finding(out, domain="identity").observations == [
                     "kept [auth_events#1]"
                 ]
 
 
-class TestFindingDisposition:
-    """The blind analyst judges its evidence -- blind does not mean silent."""
+class TestTheNarrativeIsRequired:
+    """A missing NARRATIVE raises rather than defaulting to `""`.
 
-    def _finding(self, disposition_line: str):
+    The narrative is what this tier produces. `parse_finding` used to default an
+    absent `DISPOSITION` to `inconclusive`, which on the 2026-08-30 live run put
+    a verdict no model had formed onto the wire; a silent `""` here would put a
+    silence no model had produced there instead, and `HypothesisFindings` cannot
+    tell that apart from a domain that genuinely had nothing to say.
+
+    Raising is not discarding: `analyze._invoke_with_one_reask` turns this into
+    one bounded re-ask whose last instruction is the required block itself.
+    """
+
+    def test_observations_and_citations_without_a_narrative_raise(self):
         out = (
             "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
-            f"{disposition_line}\n"
-            "CONFIDENCE: 0.6\nCITATIONS: auth_events#1"
+            "CITATIONS: auth_events#1"
         )
-        return parse_finding(out, domain="identity")
+        with pytest.raises(FindingParseError, match="NARRATIVE"):
+            parse_finding(out, domain="identity")
 
-    def test_each_disposition_parses(self):
-        for word in ("benign", "suspicious", "malicious", "inconclusive"):
-            assert self._finding(f"DISPOSITION: {word}").disposition == word
+    def test_an_empty_narrative_line_raises_rather_than_capturing_the_next_label(self):
+        """The one hole `_LABEL` cannot close on its own.
 
-    def test_a_missing_disposition_is_inconclusive_not_benign(self):
-        out = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCITATIONS: auth_events#1"
-        assert parse_finding(out, domain="identity").disposition == "inconclusive"
-
-    def test_a_missing_disposition_does_not_discard_the_observations(self):
-        """Laxer than parse_verdict on purpose: the grounded rows are still worth keeping."""
-        out = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCITATIONS: auth_events#1"
-        assert parse_finding(out, domain="identity").observations == ["x [auth_events#1]"]
-
-    def test_a_hedge_that_mentions_another_disposition_reads_the_leading_word(self):
-        # Same failure `_normalise_stance` guards against: a substring-only scan
-        # would see "suspicious" here and mis-record a judgement the model
-        # explicitly declined to make.
-        f = self._finding("DISPOSITION: inconclusive, though some rows look suspicious")
-        assert f.disposition == "inconclusive"
-
-    def test_markdown_emphasis_does_not_break_it(self):
-        assert self._finding("**DISPOSITION:** malicious").disposition == "malicious"
-
-    def test_an_unrecognisable_disposition_falls_back_to_inconclusive(self):
-        assert self._finding("DISPOSITION: probably fine?").disposition == "inconclusive"
-
-    def test_disposition_terminates_a_preceding_rationale(self):
-        # DISPOSITION joined `_LABEL`, so it must actually end a field.
+        Every terminator is anchored to a NEWLINE, so a label that is the very
+        first thing after `NARRATIVE:` is not terminated but captured: the `\\s*`
+        after the colon gives the newline back and `OBSERVATIONS:\\n- x` becomes
+        the narrative. Without `_LABEL_AT_START_RE` this parses "successfully"
+        and ships the label block as prose.
+        """
         out = (
-            "</think>OBSERVATIONS:\n- x [auth_events#1]\n"
-            "RATIONALE: kept.\nDISPOSITION: benign\nCITATIONS: auth_events#1"
+            "</think>NARRATIVE:\nOBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "CITATIONS: auth_events#1"
+        )
+        with pytest.raises(FindingParseError, match="NARRATIVE"):
+            parse_finding(out, domain="identity")
+
+    def test_a_whitespace_only_narrative_raises(self):
+        out = (
+            "</think>NARRATIVE:    \nOBSERVATIONS:\n- x [auth_events#1]\n"
+            "CITATIONS: auth_events#1"
+        )
+        with pytest.raises(FindingParseError, match="NARRATIVE"):
+            parse_finding(out, domain="identity")
+
+
+class TestTheNarrativeLabelTerminates:
+    """`NARRATIVE` had to JOIN `_LABEL`, and the failure mode is silent.
+
+    `parse.py`'s own comment on `_LABEL` says a label that appears in a footer
+    but not in the set "silently stops terminating" -- nothing raises, the
+    preceding capture simply runs on through it. `prompts._NARRATIVE_ANSWER_BLOCK`
+    emits `NARRATIVE:`, so without it in `_LABEL` an OBSERVATIONS capture that
+    reaches a NARRATIVE line swallows the whole narrative as an extra
+    observation, and that observation is then handed to the grounding gate, the
+    operator, and the Analyst Agent.
+
+    `test_the_observations_capture_stops_at_a_narrative_label` is the one that
+    FAILS if `NARRATIVE` is dropped from `_LABEL`; the others pin the
+    already-working direction so the pair reads as a whole.
+    """
+
+    def test_the_observations_capture_stops_at_a_narrative_label(self):
+        out = (
+            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "NARRATIVE: bostoll logged on once from 10.0.1.50 at 09:14.\n"
+            "CITATIONS: auth_events#1"
         )
         f = parse_finding(out, domain="identity")
-        assert f.rationale == "kept."
-        assert f.disposition == "benign"
+        assert f.observations == ["one clean logon [auth_events#1]"]
+        assert f.narrative == "bostoll logged on once from 10.0.1.50 at 09:14."
+
+    def test_a_heading_spelled_narrative_label_terminates_too(self):
+        # Observed on blind draw #4 of the 2026-08-25 re-measurement: the model
+        # writes the label as a markdown heading. `#` is handled in
+        # `_LABEL_PREFIX`, never in `_strip_md` -- header ids need it.
+        out = (
+            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "### NARRATIVE: bostoll logged on once.\n"
+            "CITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert f.observations == ["one clean logon [auth_events#1]"]
+        assert f.narrative == "bostoll logged on once."
+
+    def test_the_narrative_capture_stops_at_the_observations_label(self):
+        out = (
+            "</think>NARRATIVE: bostoll logged on once from 10.0.1.50 at 09:14.\n"
+            "OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "CITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert f.narrative == "bostoll logged on once from 10.0.1.50 at 09:14."
+        assert f.observations == ["one clean logon [auth_events#1]"]
+
+    def test_a_narrative_sentence_ending_in_a_colon_is_not_a_label(self):
+        out = (
+            "</think>NARRATIVE: three hosts appear in the rows.\n"
+            "They are, in order: BSTOLL-L, DC01 and FS02.\n"
+            "OBSERVATIONS:\n- three hosts [auth_events#1]\n"
+            "CITATIONS: auth_events#1"
+        )
+        f = parse_finding(out, domain="identity")
+        assert "FS02" in f.narrative
+        assert "OBSERVATIONS" not in f.narrative
 
 
-_GOOD_FINDING_NEW_ORDER = """the logons cluster around one account with no failures preceding \
-success, and no process or network rows are present in this slice.
+_GOOD_FINDING_NARRATIVE_FIRST = """the logons cluster around one account with no \
+failures preceding success, and no process or network rows are present in this slice.
 </think>
-DISPOSITION: benign
-CONFIDENCE: 0.65
-RATIONALE: A single successful logon with no surrounding anomaly pattern.
+NARRATIVE: bostoll logged on successfully once from 10.0.1.50 at 09:14.
 OBSERVATIONS:
 - one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]
 CITATIONS: auth_events#1"""
 
 
 class TestParseFindingIsOrderIndependent:
-    """The task-2 fix reorders `_FINDING_FOOTER`'s required block so DISPOSITION,
-    CONFIDENCE, and RATIONALE come BEFORE OBSERVATIONS -- so a model that
-    over-produces observations does not lose the verdict fields to
-    `max_gen_len` truncation. `_FINDING_OBSERVATIONS_RE` and `_RATIONALE_RE`
-    both terminate at the next KNOWN label (`_LABEL`) rather than assuming a
-    fixed position relative to it, so both field orders must parse to the same
-    result -- these two tests are what make that claim true rather than
-    assumed (see
+    """`_NARRATIVE_RE` and `_FINDING_OBSERVATIONS_RE` both terminate at the next
+    KNOWN label (`_LABEL`) rather than assuming a fixed position relative to one
+    another, so both field orders must parse to the same result.
+
+    `_NARRATIVE_ANSWER_BLOCK` asks for NARRATIVE first, so that a model which
+    over-produces observations does not lose the narrative to `max_gen_len`
+    truncation. The other order still has to work: a stored artifact or an
+    in-flight reply may use it, and an 8B model reorders the block anyway. These
+    two tests are what make the claim true rather than assumed (see
     docs/sessions/handover_2026-08-30_splunk-back-answer-sheet-and-siem-trace.md).
     """
 
-    def test_new_order_disposition_first_round_trips(self):
-        f = parse_finding(_GOOD_FINDING_NEW_ORDER, domain="identity")
+    _EXPECTED_NARRATIVE = "bostoll logged on successfully once from 10.0.1.50 at 09:14."
+    _EXPECTED_OBSERVATIONS = [
+        "one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]"
+    ]
 
-        assert f.disposition == "benign"
-        assert f.confidence == 0.65
-        assert "logon" in f.rationale
-        assert f.observations == [
-            "one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]"
-        ]
+    def test_narrative_first_round_trips(self):
+        f = parse_finding(_GOOD_FINDING_NARRATIVE_FIRST, domain="identity")
+
+        assert f.narrative == self._EXPECTED_NARRATIVE
+        assert f.observations == self._EXPECTED_OBSERVATIONS
         assert f.citations == ["auth_events#1"]
 
-    def test_old_order_observations_first_still_round_trips(self):
-        # Stored artifacts and any in-flight reply may still use the OLD order
-        # (OBSERVATIONS first) -- same fixture as `_GOOD_FINDING_NEW_ORDER`
-        # with DISPOSITION moved back, so the two orders are compared
-        # apples-to-apples.
+    def test_observations_first_still_round_trips(self):
+        # Same fixture with NARRATIVE moved after OBSERVATIONS, so the two orders
+        # are compared apples-to-apples.
         out = """the logons cluster around one account with no failures preceding \
 success, and no process or network rows are present in this slice.
 </think>
 OBSERVATIONS:
 - one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]
-DISPOSITION: benign
-CONFIDENCE: 0.65
-RATIONALE: A single successful logon with no surrounding anomaly pattern.
+NARRATIVE: bostoll logged on successfully once from 10.0.1.50 at 09:14.
 CITATIONS: auth_events#1"""
         f = parse_finding(out, domain="identity")
 
-        assert f.disposition == "benign"
-        assert f.confidence == 0.65
-        assert "logon" in f.rationale
-        assert f.observations == [
-            "one clean logon for bostoll from 10.0.1.50, no prior failures [auth_events#1]"
-        ]
+        assert f.narrative == self._EXPECTED_NARRATIVE
+        assert f.observations == self._EXPECTED_OBSERVATIONS
         assert f.citations == ["auth_events#1"]
 
 
@@ -343,14 +428,13 @@ class TestMarkdownHeadingLabels:
 
     def test_a_heading_label_terminates_finding_observations(self):
         out = (
-            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
-            "### DISPOSITION: benign\n### CONFIDENCE: 0.85\n"
-            "CITATIONS: auth_events#1"
+            "</think>NARRATIVE: one clean logon.\n"
+            "OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
+            "### CITATIONS: auth_events#1"
         )
         f = parse_finding(out, domain="identity")
         assert f.observations == ["one clean logon [auth_events#1]"]
-        assert f.disposition == "benign"
-        assert f.confidence == 0.85
+        assert f.citations == ["auth_events#1"]
 
     def test_a_heading_label_terminates_a_rationale(self):
         out = (
@@ -371,7 +455,8 @@ class TestMarkdownHeadingLabels:
     def test_a_hash_inside_a_header_id_is_untouched(self):
         """The reason this is not fixed in `_strip_md`."""
         out = (
-            "</think>OBSERVATIONS:\n- rows seen [auth_events#1], [processes#12]\n"
+            "</think>NARRATIVE: two sets of rows were present.\n"
+            "OBSERVATIONS:\n- rows seen [auth_events#1], [processes#12]\n"
             "CITATIONS: auth_events#1, processes#12"
         )
         f = parse_finding(out, domain="identity")
@@ -385,15 +470,17 @@ class TestCitationSeparators:
     `_parse_citations` split on commas only, so `CITATIONS: auth_events#1
     auth_events#2` -- a model following the *spirit* of the prompt and missing
     its punctuation -- became the single token `auth_events#1 auth_events#2`,
-    matched nothing in `valid_citation_ids()`, and had its whole finding
-    downgraded to `inconclusive` by `_finalize_finding`. Flagged as unscheduled
-    in the 2026-08-24 review.
+    matched nothing in `valid_citation_ids()`, and had its whole finding stripped
+    of citations and marked ungrounded by `_finalize_finding`. Flagged as
+    unscheduled in the 2026-08-24 review.
     """
 
     @staticmethod
     def _cites(line: str) -> list[str]:
         return parse_finding(
-            f"</think>OBSERVATIONS:\n- x [auth_events#1]\n{line}", domain="identity"
+            f"</think>NARRATIVE: rows were present.\n"
+            f"OBSERVATIONS:\n- x [auth_events#1]\n{line}",
+            domain="identity",
         ).citations
 
     def test_comma_separated(self):
