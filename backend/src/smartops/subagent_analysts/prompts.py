@@ -141,6 +141,11 @@ Read the timestamps and write every range earliest to latest. Never take a set's
 and last printed lines as a period's start and end; a range ending before it begins is
 always wrong.
 
+COUNTS: when a header carries `events=M`, its rows are GROUPS and M is the true number of
+events — quote M, and never add the `count=` values up yourself. `rows=N` is how many
+groups there are, not how many events. Where no total is given, count only what is
+printed and say so.
+
 HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per evidence set, in the order
 the sets are printed — two to five sentences for a set with rows, one sentence for a set
 with none. Every set you were given must appear in it. When a domain hands you many

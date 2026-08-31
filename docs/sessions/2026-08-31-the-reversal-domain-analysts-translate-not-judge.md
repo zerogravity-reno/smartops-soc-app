@@ -161,6 +161,39 @@ failures", and endpoint found both PowerShell executions where it had reported o
 Cost: +172 system-prompt tokens, taken out of the evidence budget (25,426 → 25,150). All three
 domains stay above the 500-token floor.
 
+### The counts are now code's job, not the model's
+
+The worst of the defects was arithmetic. `| stats count by ...` rows are **groups**, so
+`rows=72` on an `auth_events` set stood for 7,656 events — and nothing said so. The analyst
+was left summing a `count=` column in prose, across rows the row cap may have withheld from
+it. It reported "1,063 successes" in the narrative and "1,083" in an observation drawn from
+the same set; the truth was 5,032 successes and 518 failures out of 7,656 events. Wrong
+twice, inconsistent with itself inside one finding, and invisible to the grounding gate,
+because the citation resolved perfectly. **Only the reading was wrong.**
+
+This is not a prompt problem, and a fourth prompt rule would have been the wrong answer. It
+is the package's standing division of labour — *code supplies every number, the model authors
+none* — with one number left on the wrong side of the line. `formatting._event_total()` now
+sums the column over ALL rows, and the header carries it:
+
+    # auth_events#2 · rows=72 · events=7656
+
+The prompt gains one rule pointing at it: quote `events=M`, never add the `count=` values up
+yourself. Re-running the same replay, the narrative now reads *"72 events logged 7,656
+operations"* — the exact figure. Because the header is embedded in `Exhibit.rows`, the true
+total also crosses the contract boundary, so the Analyst Agent can check a total rather than
+trusting one.
+
+A set with no `count` on any row gets no `events=`: `rows=N` already IS the event total there,
+and a second number would only invite a reader to hunt for a difference that is not there.
+
+**Still open — a fabricated IP digit.** The run that verified the count fix also wrote
+`217.182.184.14` for an address the evidence spells `217.182.164.14`. One digit, in a SOC
+narrative, on an indicator. It did not occur in the previous run, so it is not obviously
+caused by any rule added here — but it is the most consequential error class on this tier
+(citations are checked; the prose around them is not), and it wants a transcription check
+that compares entity-shaped strings in the narrative against the rows.
+
 **Still open — one drift got worse.** The reputation rows read
 `ip=217.182.164.14 FOUND mal=1 susp=0 harmless=90`. Before the fix the network analyst wrote
 "low malware presence (mal=1)"; after, "flagged … as suspicious/malicious". One engine of 91 is

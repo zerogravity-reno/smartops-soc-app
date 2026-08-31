@@ -14,7 +14,7 @@ code-assembled `ResultSet.rows`; `Evidence.raw` blobs are never rendered here.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from smartops.guards import escape_untrusted
@@ -262,6 +262,40 @@ def format_row(category: str, row: dict[str, Any]) -> str:
     return _format_generic(row) if _projection_is_empty(line) else line
 
 
+def _event_total(rows: Sequence[dict[str, Any]]) -> int | None:
+    """Total events a set represents, or `None` when it is not an aggregate set.
+
+    `| stats count by ...` rows are GROUPS, not events: `rows=72` on an
+    `auth_events` set can stand for several thousand logons. Nothing said so, and
+    the analyst was left to sum a `count=` column in prose across rows it may not
+    even have been shown. Measured on `cli-20260823T112627`: a 72-row set whose
+    counts total 7,656 was reported as "1,063 successes" in the narrative and
+    "1,083" in an observation drawn from the same set -- wrong, and inconsistent
+    with itself inside one finding.
+
+    So code sums it, which is this package's standing division of labour: code
+    supplies every number, the model authors none. The sum runs over ALL rows,
+    not the capped subset, because the rows the cap withheld are exactly the ones
+    the analyst cannot count.
+
+    A row with no `count` is one event -- `_count_suffix` omits the field for
+    single-event rows rather than writing `count=1`, so a mixed set (the common
+    case) still totals correctly. `None` means no row carried a count at all: the
+    set is not an aggregate and `rows=N` already IS the event total, so a second
+    number would only invite the reader to look for a difference that is not there.
+    """
+    if not any(_first(row, "count", default="") not in ("", "-") for row in rows):
+        return None
+    total = 0
+    for row in rows:
+        raw = _first(row, "count", default="")
+        try:
+            total += int(str(raw)) if raw not in ("", "-") else 1
+        except (TypeError, ValueError):
+            total += 1
+    return total
+
+
 def format_result_set(
     category: str, result_set: ResultSet, *, index: int, row_cap: int = 20
 ) -> str:
@@ -291,6 +325,9 @@ def format_result_set(
     still gets it via the exhibit.
     """
     header = f"# {category}#{index} · rows={result_set.row_count}"
+    events = _event_total(result_set.rows)
+    if events is not None:
+        header += f" · events={events}"
     if not result_set.rows:
         return f"{header}\n(no rows returned)"
 
