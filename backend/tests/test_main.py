@@ -335,8 +335,9 @@ class TestTheCliRunsTheAnalystsBlind:
                 seen.append((system, user))
                 return AnalystResponse(
                     generation=(
-                        "</think>OBSERVATIONS:\n- a logon [auth_events#1]\n"
-                        "DISPOSITION: benign\nCONFIDENCE: 0.5\nCITATIONS: auth_events#1"
+                        "</think>NARRATIVE:\na logon occurred [auth_events#1]\n"
+                        "OBSERVATIONS:\n- a logon [auth_events#1]\n"
+                        "CITATIONS: auth_events#1"
                     ),
                     prompt_tokens=1,
                     generation_tokens=1,
@@ -367,7 +368,7 @@ class TestTheCliRunsTheAnalystsBlind:
             assert "crypto-miner" not in user.lower()
             assert "hypothesis" not in user.lower()
 
-    async def test_the_cli_prints_dispositions_and_no_overall_stance(
+    async def test_the_cli_prints_narratives_and_no_overall_stance(
         self, tmp_path, monkeypatch, capsys
     ):
         """No verdict is printed because none is ours to make."""
@@ -378,8 +379,9 @@ class TestTheCliRunsTheAnalystsBlind:
             def invoke(self, system, user):
                 return AnalystResponse(
                     generation=(
-                        "</think>OBSERVATIONS:\n- a logon [auth_events#1]\n"
-                        "DISPOSITION: suspicious\nCONFIDENCE: 0.8\nCITATIONS: auth_events#1"
+                        "</think>NARRATIVE:\nuser bostoll logged on [auth_events#1]\n"
+                        "OBSERVATIONS:\n- a logon [auth_events#1]\n"
+                        "CITATIONS: auth_events#1"
                     ),
                     prompt_tokens=1, generation_tokens=1, stop_reason="stop",
                 )
@@ -401,6 +403,7 @@ class TestTheCliRunsTheAnalystsBlind:
 
         out = capsys.readouterr().out
         assert "analysts were blind" in out
-        assert "suspicious" in out
-        assert "no overall stance" in out
+        assert "user bostoll logged on" in out
+        assert "no overall stance and no disposition" in out
         assert "SUPPORTS" not in out and "REFUTES" not in out
+        assert "conf=" not in out

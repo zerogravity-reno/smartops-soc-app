@@ -437,23 +437,21 @@ def _print_outcome(outcome, budget: Budget) -> None:
 def _print_findings(findings: HypothesisFindings) -> None:
     """Operator view of the blind path.
 
-    Deliberately prints no overall verdict: there isn't one. Each domain judged
-    its own evidence without seeing the hypothesis, and rolling those into
-    SUPPORTS/REFUTES is the Analyst Agent's job. Printing a stance here would be
+    Deliberately prints no verdict of any kind: there isn't one. Each domain
+    translated its own evidence into plain English without seeing the
+    hypothesis and without judging it, and rolling that into SUPPORTS/REFUTES
+    is the Analyst Agent's job. Printing a stance or disposition here would be
     inventing the very thing this path exists to keep separate.
 
     `rows=N` per citation is shown because it is the cheapest way to see the
-    failure the exhibits exposed: a confident judgement resting on a cited block
-    that returned nothing.
+    failure the exhibits exposed: a narrative resting on a cited block that
+    returned nothing.
     """
     print(f"\ndomain findings for hypothesis {findings.hypothesis_id} (analysts were blind):")
     for judgement in findings.findings:
-        print(
-            f"  [{judgement.domain:<8}] {judgement.disposition:<12} "
-            f"conf={judgement.confidence:.2f}"
-        )
-        if judgement.rationale:
-            print(f"             {judgement.rationale}")
+        print(f"  [{judgement.domain:<8}]")
+        if judgement.narrative:
+            print(f"             {judgement.narrative}")
         for observation in judgement.observations:
             print(f"               - {observation}")
         for exhibit in judgement.exhibits:
@@ -490,8 +488,9 @@ def _print_findings(findings: HypothesisFindings) -> None:
             print(f"  not covered: {', '.join(retrieval.not_covered)}")
 
     print(
-        "\nno overall stance: deciding whether this supports or refutes the "
-        "hypothesis is the Analyst Agent's call, not this layer's."
+        "\nno overall stance and no disposition: deciding whether this supports "
+        "or refutes the hypothesis, or what it means at all, is the Analyst "
+        "Agent's call, not this layer's."
     )
 
 
@@ -557,10 +556,6 @@ def _persist_reasoning_traces(
         "traces": [
             {
                 "domain": finding.domain,
-                # Carried alongside so a reader can see WHICH judgement this
-                # reasoning produced without opening findings.json and joining.
-                "disposition": finding.disposition,
-                "confidence": finding.confidence,
                 "prompt_tokens": finding.prompt_tokens,
                 "generation_tokens": finding.generation_tokens,
                 "reasoning_trace": finding.reasoning_trace,

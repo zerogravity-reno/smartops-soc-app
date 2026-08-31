@@ -15,10 +15,22 @@ so the claim can be re-tested rather than re-asserted.
 
 WHAT IS COMPARED, AND WHAT IS NOT
 The two arms return different types on purpose: `run_one` -> `AnalystVerdict`
-(carries a stance) and `gather_finding` -> `DomainFinding` (deliberately stance-free,
-because an analyst who cannot see the hypothesis must not decide SUPPORTS/REFUTES).
-So **stance is not a comparable quantity**. What is comparable is the read of the
-evidence: the observations, the citations they rest on, and the confidence.
+(carries a stance and a confidence) and `gather_finding` -> `DomainFinding`
+(deliberately stance-free AND verdict-free as of 2026-08-31, because an analyst
+who cannot see the hypothesis must not decide SUPPORTS/REFUTES, or rate how sure
+it is of a reading it is not allowed to form). So **stance and confidence are not
+comparable quantities any more** -- disposition agreement and confidence spread,
+the two figures the 2026-08-27/29 variance work reported, became unmeasurable
+BECAUSE THERE IS NO VERDICT on the blind side, not because anyone stopped
+measuring. Confidence stays in this artifact for the shown arm only, where it
+still means something.
+
+What both arms still produce, and what remains genuinely comparable, is the read
+of the evidence: the observations and the citations they rest on.
+`within_arm_citation_agreement` and `within_arm_text_agreement` (below) are
+untouched by this and are arguably the better metric for a translator anyway --
+they measure whether two runs read the SAME rows, which is exactly what a
+translator is supposed to get right, independent of any verdict.
 
 THE DECISION RULE, FIXED BEFORE THE RUN
 Recorded here so the conclusion is not chosen after seeing the output.
@@ -346,8 +358,16 @@ class ArmSample(BaseModel):
     its conditions."""
     stance: Stance | None = None
     """Present for the shown arm only. The blind arm has no stance by design."""
-    confidence: float
+    confidence: float | None = None
+    """Present for the shown arm only. The blind arm forms no verdict, so it has
+    nothing to rate its certainty about -- `None` here, not a manufactured 0.0,
+    which would read as "confidently found nothing" rather than "not asked"."""
     rationale: str
+    """The arm's prose account of its evidence: `AnalystVerdict.rationale` for
+    the shown arm, `DomainFinding.narrative` for the blind arm. One field name
+    across both on purpose -- both are "what this arm said in prose" and a
+    reader comparing them does not care that the two prompts spell it
+    differently."""
     observations: list[str]
     citations: list[str]
     citation_evidence: dict[str, list[str]] = Field(default_factory=dict)
@@ -373,9 +393,12 @@ class ArmStats(BaseModel):
     from a credential fault) and the report read as a completed measurement. A
     failed call reports zero prompt tokens, which is what this counts.
     """
-    confidence_min: float
-    confidence_median: float
-    confidence_max: float
+    confidence_min: float | None = None
+    confidence_median: float | None = None
+    confidence_max: float | None = None
+    """`None` for the blind arm, and for any condition with no confidence-bearing
+    samples: it forms no verdict, so there is nothing to summarise. Shown-arm-only,
+    same reasoning as `ArmSample.confidence`."""
     mean_observation_count: float
     prompt_tokens: int
     generation_tokens: int
@@ -645,6 +668,9 @@ class BlindCompareReport(BaseModel):
                 "",
                 "## Confidence and cost",
                 "",
+                "Confidence is shown-arm-only: the blind arm forms no verdict, so "
+                "it has nothing to rate its certainty about.",
+                "",
                 "| Domain | Condition | confidence (min/med/max) | mean observations | "
                 "stances | failed | prompt tok | gen tok |",
                 "|---|---|---|---|---|---|---|---|",
@@ -654,10 +680,13 @@ class BlindCompareReport(BaseModel):
             stances = (
                 ", ".join(f"{k}:{v}" for k, v in sorted(stats.stances.items())) or "—"
             )
-            confidence = (
-                f"{stats.confidence_min:.2f} / {stats.confidence_median:.2f} / "
-                f"{stats.confidence_max:.2f}"
-            )
+            if stats.confidence_min is None:
+                confidence = "n/a"
+            else:
+                confidence = (
+                    f"{stats.confidence_min:.2f} / {stats.confidence_median:.2f} / "
+                    f"{stats.confidence_max:.2f}"
+                )
             lines.append(
                 f"| {domain} | {condition} | {confidence} | "
                 f"{stats.mean_observation_count:.1f} | {stances} | "
@@ -681,7 +710,8 @@ class BlindCompareReport(BaseModel):
                     head = f"**#{sample.sample_index}**"
                     if sample.stance is not None:
                         head += f" — stance `{sample.stance}`"
-                    head += f", confidence {sample.confidence:.2f}"
+                    if sample.confidence is not None:
+                        head += f", confidence {sample.confidence:.2f}"
                     if not sample.model_called:
                         head += " *(no model call — empty slice)*"
                     lines.extend([head, "", f"> {sample.rationale or '(no rationale)'}", ""])
@@ -821,8 +851,8 @@ def _to_sample(
         sample_index=index,
         model_called=model_called,
         stance=None,
-        confidence=result.confidence,
-        rationale=result.rationale,
+        confidence=None,
+        rationale=result.narrative,
         observations=list(result.observations),
         citations=list(result.citations),
         reasoning_trace=result.reasoning_trace,
@@ -910,7 +940,10 @@ def sample_anchoring(
 
 
 def _arm_stats(arm: Arm, samples: list[ArmSample]) -> ArmStats:
-    confidences = [s.confidence for s in samples]
+    # Shown-arm-only: the blind arm's samples all carry `confidence=None`, so
+    # this is empty for it and the three summary fields below stay `None`
+    # rather than choking on a `min()`/`max()` of nothing.
+    confidences = [s.confidence for s in samples if s.confidence is not None]
     stances: dict[str, int] = {}
     for sample in samples:
         if sample.stance is not None:
@@ -920,9 +953,9 @@ def _arm_stats(arm: Arm, samples: list[ArmSample]) -> ArmStats:
         samples=len(samples),
         model_calls=sum(1 for s in samples if s.model_called),
         failed_calls=sum(1 for s in samples if s.model_called and s.prompt_tokens == 0),
-        confidence_min=min(confidences),
-        confidence_median=round(statistics.median(confidences), 4),
-        confidence_max=max(confidences),
+        confidence_min=min(confidences) if confidences else None,
+        confidence_median=round(statistics.median(confidences), 4) if confidences else None,
+        confidence_max=max(confidences) if confidences else None,
         mean_observation_count=round(
             sum(len(s.observations) for s in samples) / len(samples), 3
         ),
