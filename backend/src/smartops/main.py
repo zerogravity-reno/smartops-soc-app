@@ -267,8 +267,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "the hypothesis to test, in plain language. When given AND "
             "SMARTOPS_ANALYST_MODEL_ARN is configured, the identity/network/endpoint "
-            "subagent-analysts analyze the fetched evidence and report whether it "
-            "supports or refutes it. Stub for an upstream Analyst agent"
+            "subagent-analysts translate the fetched evidence into a plain-English "
+            "narrative with cited observations. They are never shown this hypothesis "
+            "and take no position on it -- whether the evidence supports or refutes "
+            "it is the upstream Analyst agent's call. Stub for that agent"
         ),
     )
     parser.add_argument(

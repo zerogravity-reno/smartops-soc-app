@@ -5,8 +5,8 @@ agent forms an investigative hypothesis; a **Task Broker** agent plans the fetch
 work and dispatches it to specialized domain subagents; those subagents query
 real tools (Splunk over MCP, VirusTotal's REST API) and report back typed
 findings with citable evidence. Three **blind domain analysts** then read that
-evidence — never the hypothesis — and each report a `Disposition`, assembled
-into `HypothesisFindings`: the contract handed back to the Analyst Agent.
+evidence — never the hypothesis — and each translate it into plain English
+narration with cited observations, assembled into `HypothesisFindings`: the contract handed back to the Analyst Agent, which assigns the verdict.
 
 ---
 
@@ -24,7 +24,7 @@ Bedrock (or DeepSeek) for the model.
 | `vt` (VirusTotal, REST) | Working | `domain`, `ip`, `file_hash`, `url`. Native tools — needs no MCP server. |
 | `ndr` / `edr` | Not wired | No MCP server configured. Withheld from the Broker's toolset, so they are neither planned nor dispatched. |
 | Domain subagents (`subagents/`) | Working | Bounded model loop — the library default is `DEFAULT_TURNS = 14`, but the CLI's `--subagent-turns` defaults to **25** and wins. A loop that ends without an answer gets one bounded turn to report what it already retrieved. |
-| Domain analysts (`subagent_analysts/`) | Working | Three **blind** analysts (identity/network/endpoint) read the `BrokerReport`'s routed evidence — never the hypothesis — and each emit a `Disposition`. `gather()` assembles the three into `HypothesisFindings`: the contract boundary handed to the separate Analyst Agent. Runs on a Bedrock **custom-imported** model (Foundation-Sec-8B-Reasoning). Enabled by passing `--hypothesis` **and** setting `SMARTOPS_ANALYST_MODEL_ARN` (see the `.env` block below); without the ARN, `--hypothesis` alone prints `analysis: skipped`. |
+| Domain analysts (`subagent_analysts/`) | Working | Three **blind** analysts (identity/network/endpoint) read the `BrokerReport`'s routed evidence — never the hypothesis — and each translate it into narrative with cited observations. `gather()` assembles the three into `HypothesisFindings`: the contract boundary handed to the separate Analyst Agent, which assigns verdicts. Runs on a Bedrock **custom-imported** model (Foundation-Sec-8B-Reasoning). Enabled by passing `--hypothesis` **and** setting `SMARTOPS_ANALYST_MODEL_ARN` (see the `.env` block below); without the ARN, `--hypothesis` alone prints `analysis: skipped`. |
 | Benchmark runner (`bench.py`) | Working | Single-topology runner over 11 BOTSv3 cases, reporting cost, tokens, wall clock, query count and findings completeness. |
 | Skill pack (`skills/`) | Off by default | `superman-splunk` reference pack for the `siem` subagent. Opt in per run with `--skills`. |
 
@@ -81,8 +81,8 @@ Other flags: `--since` / `--until` (absolute window), `--families`,
 
 Add `--hypothesis "<claim>"` **and** set `SMARTOPS_ANALYST_MODEL_ARN` (see the
 `.env` block above) to also run the **analyst tier**: three blind domain
-analysts read the fetched evidence and each report a `Disposition` — see the
-Architecture section below. `--hypothesis` alone, with no ARN configured (or
+analysts read the fetched evidence and translate it into narrative findings with
+cited observations — see the Architecture section below. `--hypothesis` alone, with no ARN configured (or
 with `--scripted`), prints `analysis: skipped (set SMARTOPS_ANALYST_MODEL_ARN
 to enable, and do not pass --scripted)` and runs nothing further.
 

@@ -275,9 +275,14 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
     `dns_resolutions#10..` -- with no `dns_resolutions#1`, which is the exact
     worked example `prompts._NARRATIVE_FOOTER` hands the model. A model citing it
     failed `valid_citation_ids`, lost the observation to
-    `_resolve_observation_citations`, and had its disposition downgraded to
-    `inconclusive` by `_finalize_finding`. That reads as a cautious analyst,
-    not as a bug, which is what made it survive.
+    `_resolve_observation_citations`, and -- as `_finalize_finding` behaved at the
+    time -- had its disposition downgraded to `inconclusive`. That read as a
+    cautious analyst rather than as a bug, which is what let it survive.
+
+    The downgrade half of that account is history: since 2026-08-31 there is no
+    disposition to downgrade and `_finalize_finding` marks the narrative instead.
+    The NUMBERING half is not history, and is why this note stays -- a per-slice
+    counter would still emit ids the model cannot cite.
     """
     out: list[Block] = []
     if slice_.vt_verdicts:
