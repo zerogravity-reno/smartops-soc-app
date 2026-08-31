@@ -42,7 +42,7 @@ from contracts.findings import SiemFindings, VtFindings
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
-from contracts import AnalystDomain, AnalystTask, Disposition, Entity, Scope, SubtaskResult, ToolFamily
+from contracts import AnalystDomain, AnalystTask, Entity, Scope, SubtaskResult, ToolFamily
 from smartops.broker import broker_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import spec_for
@@ -285,14 +285,14 @@ BENCHMARK_CASES: dict[str, tuple[AnalystTask, list[ToolFamily]]] = {
 }
 
 
-EXPECTED_DISPOSITIONS: dict[str, dict[AnalystDomain, Disposition]] = {
+EXPECTED_CITATIONS: dict[str, dict[AnalystDomain, tuple[str, ...]]] = {
     "botsv3_coinhive": {
         # BSTOLL-L is the endpoint mining Monero (BOTSv3 Q210); chrome#5 was
         # the process at 100% CPU (Q208); six coinhive destinations were
         # visited, over coinhive.com plus ws001/ws005/ws011/ws014/
         # ws019.coinhive.com; Symantec fired JSCoinminer Download 8 (SID
-        # 30358). network: malicious -- the DNS queries plus VT mal=11 on
-        # the domain.
+        # 30358). network: the DNS queries plus VT mal=11 on the domain
+        # are what the narrative must have cited to have seen this.
         #
         # network ONLY. A live run of this exact scope on 2026-08-30
         # retrieved 46 dns_resolutions rows and 124 connections rows and
@@ -306,33 +306,48 @@ EXPECTED_DISPOSITIONS: dict[str, dict[AnalystDomain, Disposition]] = {
         # scoped to elicit process evidence -- out of scope here.
         #
         # No identity entry either -- BOTSv3 documents no authentication
-        # anomaly for this activity, and asserting benign would be
-        # inventing an answer.
-        "network": "malicious",
+        # anomaly for this activity, and asserting one would be inventing
+        # an answer.
+        "network": ("dns_resolutions",),
     },
     "botsv3_c2_beacon": {
         # C2 at 45.77.53.176 / 45.77.65.211, URL paths /admin/get.php,
-        # /news.php, /login/process.php (Q322).
-        "network": "malicious",
+        # /news.php, /login/process.php (Q322) -- a `connections` row is
+        # what shows the host talking to the C2, not a DNS lookup of it.
+        "network": ("connections",),
     },
     "botsv3_hdoor_tool": {
         # MD5 586EF56F4D8963DD546163AC31C865D7 is hdoor.exe (Q307), a
         # network scanner/backdoor, downloaded over port 3333 inside
-        # logos.png (Q314, Q316).
-        "endpoint": "malicious",
+        # logos.png (Q314, Q316). Either the VT reputation lookup on the
+        # hash or a process row for hdoor.exe running on the host proves
+        # the narrative saw it -- see the disjunction note below.
+        "endpoint": ("reputation", "processes"),
     },
 }
-"""The BOTSv3 answer key, per case and per domain.
+"""The BOTSv3 answer key: per case and per domain, which evidence category the
+narrative must cite to have seen the row that establishes the documented fact.
+
+Each value is a tuple of citation categories, matched against the prefix of a
+citation header id before its `#` (e.g. `dns_resolutions#1` ->
+`dns_resolutions`). A tuple is a DISJUNCTION, not a conjunction: ANY ONE of the
+listed categories appearing among the domain's citations is a match, not all
+of them. `botsv3_hdoor_tool` lists `("reputation", "processes")` because
+either the VT lookup on the hash or a process listing on the host sees the row
+that proves hdoor.exe was there -- citing both is not required, and scoring it
+as if it were would penalise a narrative for reaching the same fact through a
+different, equally valid, evidence set. A single-element tuple states the only
+qualifying category for that domain.
 
 Sparse and deliberately so: a case absent here has no documented answer in
 BOTSv3, which is the honest state for most of `BENCHMARK_CASES` -- see
 `SYNTHETIC_INDICATOR_CASES` for the ones built on indicators the dataset does
-not contain. Per-domain rather than one value per case (R6): `HypothesisFindings`
-has no overall disposition -- deciding across domains is the Analyst Agent's
-job, and `combine()` was deleted for crossing that line. A domain missing from
-a case's entry (e.g. no `identity` for `botsv3_coinhive`) is not "expected
-benign" -- it means BOTSv3 documents no answer for that domain, and asserting
-one would be inventing it.
+not contain. Per-domain rather than one entry per case (R6): `HypothesisFindings`
+has no overall verdict -- deciding across domains is the Analyst Agent's job,
+and `combine()` was deleted for crossing that line. A domain missing from a
+case's entry (e.g. no `identity` for `botsv3_coinhive`) is not "expected no
+citation" -- it means BOTSv3 documents no answer for that domain, and
+asserting one would be inventing it.
 """
 
 
@@ -350,7 +365,7 @@ SYNTHETIC_INDICATOR_CASES = frozenset({
 They still earn their place -- they exercise the empty-result path and keep
 entity-kind routing coverage (`url` and `file_hash` have no other case) -- but
 none of them has a documented answer, so none appears in
-`EXPECTED_DISPOSITIONS`. What is actually wrong, per case:
+`EXPECTED_CITATIONS`. What is actually wrong, per case:
 
 - `botsv3_web_shell_url` -- host `po18-s92-l01` and the `shell.php` URL appear
   nowhere in BOTSv3; VT NOT FOUND.
@@ -378,8 +393,9 @@ none of them has a documented answer, so none appears in
   BOTSv3 (VT NOT FOUND). The domain `coinhive.com` and the IP
   `217.182.164.14` are both genuine BOTSv3 data. Repointing the hash is a
   scope decision left to the controller, not made here; this case stays out
-  of `EXPECTED_DISPOSITIONS` because a fabricated indicator sits alongside two
-  real ones and no single disposition can be asserted for the case as a whole.
+  of `EXPECTED_CITATIONS` because a fabricated indicator sits alongside two
+  real ones and no single citation expectation can be asserted for the case
+  as a whole.
 """
 
 
@@ -415,20 +431,32 @@ class RunMetrics(BaseModel):
     index_scoping_correct: bool
     findings_completeness: dict[str, int]
     routing_correctness: bool
-    disposition_correct: bool | None = None
-    """Whether the analysts' per-domain dispositions matched `EXPECTED_DISPOSITIONS`.
+    citation_coverage_correct: bool | None = None
+    """Whether each domain's citations covered at least one category from its
+    entry in `EXPECTED_CITATIONS`. Renamed from `disposition_correct`
+    (2026-08-31): the sub-analysts no longer emit a `Disposition` to compare --
+    they translate rows into a narrative and cite the sets it rests on -- so
+    the question this field answers moved from "did the verdict match" to "did
+    the narrative cite the row that proves the documented fact".
 
     Three states, not two. `None` covers both "no answer key for this case"
-    (absent from `EXPECTED_DISPOSITIONS`) and "no findings to score at all"
-    (no `SMARTOPS_ANALYST_MODEL_ARN`, or `--scripted`) -- the same
+    (absent from `EXPECTED_CITATIONS`) and "no findings to score at all" (no
+    `SMARTOPS_ANALYST_MODEL_ARN`, or `--scripted`) -- the same
     no-answer-vs-wrong-answer distinction `StepOutcome.evaluated` and
     `RetrievalSummary` exist to preserve elsewhere in this codebase. Only a
-    genuine mismatch, on a domain the case DOES have a documented answer for,
-    is `False`. Always `None` today: `_execute_single_run` calls only
+    genuine miss, on a domain the case DOES have a documented answer for, is
+    `False`. Always `None` today: `_execute_single_run` calls only
     `broker_task`, never `smartops.subagent_analysts.analyze`, so no
     per-domain findings ever reach this scope to compare -- see
-    `compute_disposition_correct` and the 2026-08-30 benchmark answer-sheet
-    report.
+    `compute_citation_coverage`.
+
+    That "always `None` today" is not evidence this field is dead. Rescoping
+    it from a `Disposition` comparison to a citation-category comparison is
+    precisely what makes it scoreable WITHOUT a model verdict, the moment
+    something wires the analyst tier into this bench -- a decision left to the
+    controller, not made here (see the 2026-08-30 benchmark answer-sheet
+    report). Deleting this field for being permanently `None` would delete
+    that plan along with it.
     """
     stop_reason: str
     dispatched: list[str]
@@ -636,25 +664,40 @@ def extract_findings_completeness(results: list[SubtaskResult]) -> dict[str, int
     return counts
 
 
-def compute_disposition_correct(
+def compute_citation_coverage(
     case_id: str,
-    findings: dict[AnalystDomain, Disposition] | None,
+    findings: dict[AnalystDomain, list[str]] | None,
 ) -> bool | None:
-    """Whether `findings` matches the case's entry in `EXPECTED_DISPOSITIONS`.
+    """Whether `findings` cites, per domain, at least one category required by
+    the case's entry in `EXPECTED_CITATIONS`.
+
+    `findings` maps each domain to the citation header ids its narrative used
+    (e.g. `["dns_resolutions#1", "reputation#1"]`); only the prefix before `#`
+    is compared against the required categories. A domain's requirement is a
+    tuple -- see `EXPECTED_CITATIONS` for why it is a disjunction, not a
+    checklist: any one listed category appearing among the domain's citations
+    satisfies it.
 
     Only the domains present in the case's expectation are compared -- a
-    domain `EXPECTED_DISPOSITIONS` says nothing about is not scored, silence
-    is not a wrong answer. Returns `None`, never `False`, in either of two
+    domain `EXPECTED_CITATIONS` says nothing about is not scored, silence is
+    not a wrong answer. Returns `None`, never `False`, in either of two
     distinct no-basis-to-score states: the case has no documented answer at
-    all (absent from `EXPECTED_DISPOSITIONS`), or no findings were produced
-    for this run (`findings is None`). Collapsing those into `False` would
-    read as "the analyst got it wrong" when the truth is "we have no answer
-    key" or "nobody looked" -- see `RunMetrics.disposition_correct`.
+    all (absent from `EXPECTED_CITATIONS`), or no findings were produced for
+    this run (`findings is None`). Collapsing those into `False` would read as
+    "the analyst got it wrong" when the truth is "we have no answer key" or
+    "nobody looked" -- see `RunMetrics.citation_coverage_correct`.
     """
-    expected = EXPECTED_DISPOSITIONS.get(case_id)
+    expected = EXPECTED_CITATIONS.get(case_id)
     if expected is None or findings is None:
         return None
-    return all(findings.get(domain) == disposition for domain, disposition in expected.items())
+
+    def _cited_categories(citations: list[str]) -> set[str]:
+        return {citation.split("#", 1)[0] for citation in citations}
+
+    return all(
+        bool(_cited_categories(findings.get(domain, [])) & set(required))
+        for domain, required in expected.items()
+    )
 
 
 async def _execute_single_run(
@@ -720,10 +763,10 @@ async def _execute_single_run(
     routing_correct = set(outcome.dispatched) == set(expected_families)
     # No `HypothesisFindings` reaches this scope: this function calls only
     # `broker_task`, never `smartops.subagent_analysts.analyze`, so there is
-    # nothing here to compare against `EXPECTED_DISPOSITIONS` yet. Wiring the
+    # nothing here to compare against `EXPECTED_CITATIONS` yet. Wiring the
     # analyst step into the bench so a real comparison can happen is a design
     # decision left to the controller, not made here.
-    disposition_correct = compute_disposition_correct(task.task_id, None)
+    citation_coverage_correct = compute_citation_coverage(task.task_id, None)
 
     if outcome.classification and outcome.classification.rationale:
         if "stop_reason=" in outcome.classification.rationale:
@@ -747,7 +790,7 @@ async def _execute_single_run(
         index_scoping_correct=scoping_correct,
         findings_completeness=findings_map,
         routing_correctness=routing_correct,
-        disposition_correct=disposition_correct,
+        citation_coverage_correct=citation_coverage_correct,
         stop_reason=stop_reason,
         dispatched=[str(d) for d in outcome.dispatched],
         skills_enabled=skills_enabled(),
