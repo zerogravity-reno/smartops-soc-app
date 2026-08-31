@@ -70,7 +70,7 @@ from .packing import (
     pack_evidence,
 )
 from .parse import FindingParseError, parse_finding, split_reasoning
-from .prompts import _FINDING_ANSWER_BLOCK, build_facts_user_turn, facts_system_prompt
+from .prompts import _NARRATIVE_ANSWER_BLOCK, build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
@@ -333,15 +333,15 @@ def _apply_grounding(
 
 _FINDING_REASK = (
     "\n\nYour previous reply did not end with the required block. "
-    "Reply again, ending with exactly:\n" + _FINDING_ANSWER_BLOCK
+    "Reply again, ending with exactly:\n" + _NARRATIVE_ANSWER_BLOCK
 )
-"""Built from `prompts._FINDING_ANSWER_BLOCK`, not a second hand-written copy.
+"""Built from `prompts._NARRATIVE_ANSWER_BLOCK`, not a second hand-written copy.
 
 This is appended to the user turn (`model.invoke(system, user + reask)`), so it
 is the LAST and most explicit instruction the model reads on a re-ask -- a
 divergence here overrides the first-ask footer rather than merely duplicating
 it. It used to be independently written out with OBSERVATIONS first and NO
-DISPOSITION line at all; see `_FINDING_ANSWER_BLOCK`'s docstring for what that
+DISPOSITION line at all; see `_NARRATIVE_ANSWER_BLOCK`'s docstring for what that
 caused. Deriving it from the same constant the footer uses makes the two
 incapable of saying different things; `test_analyst_prompts.py` pins that they
 still agree on field set and order."""

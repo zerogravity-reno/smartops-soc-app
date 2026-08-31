@@ -33,7 +33,7 @@ _THINK_CLOSE = "</think>"
 # `auth_events#1`, manufacturing confidence=1.0 from a reply that gave none.
 _CONFIDENCE_RE = re.compile(r"CONFIDENCE[^\n\d]*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 # Every label the prompts emit: `_VERDICT_FOOTER` for a hypothesis-shown verdict,
-# `_FINDING_FOOTER` for a blind finding. Closed on purpose: the terminator used to
+# `_NARRATIVE_FOOTER` for a blind finding. Closed on purpose: the terminator used to
 # be a generic uppercase run, `[A-Z][A-Z ]+:`, which under IGNORECASE matches any
 # ordinary prose line ending in a colon -- so a rationale reading "Note the
 # following: ..." was cut at "Note the following", and an un-bulleted observation

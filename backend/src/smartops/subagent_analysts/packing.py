@@ -273,7 +273,7 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
     numbered by position instead, so the network slice of
     `cli-20260825T100434` emitted `connections#1..#9` and then
     `dns_resolutions#10..` -- with no `dns_resolutions#1`, which is the exact
-    worked example `prompts._FINDING_FOOTER` hands the model. A model citing it
+    worked example `prompts._NARRATIVE_FOOTER` hands the model. A model citing it
     failed `valid_citation_ids`, lost the observation to
     `_resolve_observation_citations`, and had its disposition downgraded to
     `inconclusive` by `_finalize_finding`. That reads as a cautious analyst,
