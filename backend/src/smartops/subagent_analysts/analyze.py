@@ -84,11 +84,27 @@ from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
 
-_OBSERVATION_CITE_RE = re.compile(r"\[([A-Za-z_]+#\d+)\]")
-"""A `[header_id]` citation embedded in an observation line.
+_OBSERVATION_CITE_RE = re.compile(r"\[?\b([A-Za-z_]+#\d+)\]?")
+"""A header id cited in an observation line, bracketed or not.
 
-Both prompt footers ask for one per observation (`prompts.py:65`, `:238`), and
-`parse._parse_observations` keeps the line verbatim, brackets included.
+Both prompt footers ask for `[header_id]` (`prompts.py:65`, `:238`), and
+`parse._parse_observations` keeps the line verbatim, brackets included. **The
+brackets are not load-bearing and must not be required.** This pattern demanded
+them until 2026-09-01, and the live run `cli-20260901T075503` showed what that
+costs: the model wrote its ids in prose that run -- `(dns_resolutions#11 and
+#34)`, `Processes#16 and #18` -- so `findall` matched nothing, every observation
+took `_resolve_observation_citations`'s "cited nothing at all" branch, and the
+per-claim gate validated NOTHING across all three domains. Two endpoint
+observations claiming 1,573,654 and 240,882 events crossed the boundary citing
+sets that never resolved.
+
+A bare `category#N` is safe to match. Every id carries a category prefix -- the
+prompt bans writing `#1` alone precisely because a bare number cannot be
+resolved -- and nothing else in this prose has the `word#digits` shape.
+
+Case is normalised at the point of use: the same run wrote `Processes#16`, and
+`valid_ids` keys are lowercase, so a capitalised id would have missed even
+bracketed.
 """
 
 
@@ -111,7 +127,9 @@ def _resolve_observation_citations(
     kept: list[str] = []
     found: set[str] = set()
     for observation in observations:
-        cited = set(_OBSERVATION_CITE_RE.findall(observation))
+        # Lowercased because `valid_ids` keys are: a reply writing `Processes#16`
+        # is citing `processes#16` and must be held to it, not waved through.
+        cited = {c.lower() for c in _OBSERVATION_CITE_RE.findall(observation)}
         if not cited:
             kept.append(observation)
             continue
@@ -126,7 +144,11 @@ def _resolve_observation_citations(
             continue
         text = observation
         for invented in sorted(cited - resolving):
-            text = text.replace(f"[{invented}]", "").replace("  ", " ").strip()
+            # Bracketed or bare, and any case -- `.replace(f"[{invented}]", ...)`
+            # silently no-opped on both `Processes#16` and an unbracketed id,
+            # leaving the invented reference sitting in the kept line.
+            text = re.sub(rf"\[?{re.escape(invented)}\]?", "", text, flags=re.IGNORECASE)
+            text = text.replace("  ", " ").strip()
         kept.append(text)
         found |= resolving
     return kept, found

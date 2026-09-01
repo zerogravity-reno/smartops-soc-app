@@ -398,6 +398,76 @@ class TestInlineObservationCitations:
         assert out.observations == ["powershell -enc observed [processes#1]"]
 
 
+class TestACitationCountsWhateverTheModelWrapsItIn:
+    """The brackets are not the citation; the id is.
+
+    `_OBSERVATION_CITE_RE` required `[header_id]` until 2026-09-01. The live run
+    `cli-20260901T075503` wrote its ids in prose instead -- `(dns_resolutions#11
+    and #34)`, `Processes#16 and #18`, `Uncategorised#1-20` -- so nothing matched,
+    every observation took the "cited nothing at all" branch, and the per-claim
+    gate validated NOTHING in all three domains. Two endpoint observations
+    claiming 1,573,654 and 240,882 events crossed the boundary on sets that never
+    resolved, unmarked, because the downgrade note needs a finding to have zero
+    surviving citations and this one had two.
+
+    Requiring a punctuation style is asking the model to arm the gate that exists
+    to check the model.
+    """
+
+    def test_a_parenthesised_id_is_validated_not_waved_through(self):
+        finding = DomainFinding(
+            domain="network",
+            narrative="dns and one claim that rests on nothing.",
+            citations=["dns_resolutions#11"],
+            observations=[
+                "BSTOLL-L performed 21 DNS lookups (dns_resolutions#11).",
+                "eight flows of exactly one byte (connections#42).",
+            ],
+        )
+        out = _finalize_finding(finding, {"dns_resolutions#11": []}, 10, 20)
+        assert out.observations == ["BSTOLL-L performed 21 DNS lookups (dns_resolutions#11)."]
+
+    def test_a_capitalised_prose_id_resolves_against_the_lowercase_key(self):
+        """`valid_ids` keys are lowercase; `Processes#16` is still citing one."""
+        finding = DomainFinding(
+            domain="endpoint",
+            narrative="processes.",
+            citations=[],
+            observations=["Processes#16 and #18 each contained 240,882 events."],
+        )
+        out = _finalize_finding(finding, {"processes#16": []}, 10, 20)
+        assert out.observations == ["Processes#16 and #18 each contained 240,882 events."]
+        assert out.citations == ["processes#16"]
+
+    def test_the_live_run_failure_is_now_caught(self):
+        """The exact shape that escaped: a prose id naming a set that does not exist."""
+        finding = DomainFinding(
+            domain="endpoint",
+            narrative="a great deal that did not happen.",
+            citations=["processes#3"],
+            observations=[
+                "Processes#3 grouped 25 events into four sets.",
+                "Uncategorised#1 aggregated 1,573,654 events across 17 groups.",
+                "Processes#16 and #18 each contained 240,882 events.",
+            ],
+        )
+        out = _finalize_finding(finding, {"processes#3": []}, 10, 20)
+        assert out.observations == ["Processes#3 grouped 25 events into four sets."]
+
+    def test_an_invented_id_is_stripped_from_a_line_that_survives(self):
+        """The strip assumed brackets and exact case, so it silently no-opped and
+        left the invented reference sitting in the kept line."""
+        finding = DomainFinding(
+            domain="endpoint",
+            narrative="mixed.",
+            citations=["processes#1"],
+            observations=["powershell ran processes#1 and also Processes#42 somewhere"],
+        )
+        out = _finalize_finding(finding, {"processes#1": []}, 10, 20)
+        assert "42" not in out.observations[0]
+        assert "processes#1" in out.observations[0]
+
+
 def test_a_verdict_records_which_evidence_its_citations_resolve_to():
     from contracts import AnalystVerdict
     from smartops.subagent_analysts.shown import _finalize
