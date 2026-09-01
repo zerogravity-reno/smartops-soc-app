@@ -584,7 +584,19 @@ class AnalystPayload(BaseModel):
     added to the record should not silently start crossing the boundary.
     """
 
-    schema_version: int = 1
+    schema_version: int = Field(
+        default=1,
+        description=(
+            "This contract's own version, counted independently of "
+            "`HypothesisFindings.schema_version`. It is 1 because `AnalystPayload` "
+            "is a NEW shape, not a successor: `findings.json` stays at v2 beside "
+            "this file and is not superseded by it. The two land in the same run "
+            "directory, so a reader seeing 2 in one and 1 in the other will "
+            "reasonably wonder which is stale -- neither is. They are separate "
+            "contracts on separate version lines, and they will drift apart the "
+            "first time either shape changes without the other."
+        ),
+    )
     task_id: str
     run_id: str | None = None
     hypothesis_id: str

@@ -175,3 +175,23 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
     def test_the_projection_is_much_smaller_than_the_record(self):
         record = self._findings()
         assert len(record.for_analyst().model_dump_json()) < len(record.model_dump_json())
+
+    def test_its_version_line_is_its_own_and_starts_at_one(self):
+        """1 beside the record's 2 is not staleness, and the field says so.
+
+        Both files land in the same run directory. A reader seeing
+        `schema_version: 2` in `findings.json` and `1` here will reasonably ask
+        which is out of date; neither is. `AnalystPayload` is a new contract, not
+        a successor, and `HypothesisFindings` is not superseded by it.
+        """
+        record = self._findings()
+        assert record.schema_version == 2
+        assert record.for_analyst().schema_version == 1
+
+        from contracts import AnalystPayload
+
+        described = AnalystPayload.model_fields["schema_version"].description or ""
+        assert "independently" in described, (
+            "the field most likely to be misread must explain itself in the "
+            "published schema, not only in the class docstring"
+        )
