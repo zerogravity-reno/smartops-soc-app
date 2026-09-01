@@ -488,6 +488,35 @@ class HypothesisFindings(BaseModel):
         ),
     )
 
+    def for_analyst(self) -> AnalystPayload:
+        """Project onto the wire: prose and observations, nothing else.
+
+        The record keeps `citations`, `exhibits` and `retrieval`; the message
+        carries neither. See `AnalystPayload` for why the two differ and
+        `DomainNarrative` for what the difference costs.
+
+        A method rather than a free function so the projection lives on the shape
+        it projects from -- a field added above is one edit away from this list,
+        and the test that pins the field set fails until someone decides whether
+        it crosses the boundary. That is the intended friction: `_as_judgement`
+        once gained fields by being edited in sympathy with the model rather than
+        by decision.
+        """
+        return AnalystPayload(
+            task_id=self.task_id,
+            run_id=self.run_id,
+            hypothesis_id=self.hypothesis_id,
+            hypothesis=self.hypothesis,
+            findings=[
+                DomainNarrative(
+                    domain=f.domain,
+                    narrative=f.narrative,
+                    observations=list(f.observations),
+                )
+                for f in self.findings
+            ],
+        )
+
     # No token totals here, deliberately. Two such methods stood on this model
     # and both summed `self.verdicts` -- a field of `HypothesisAssessment`, not of
     # this one -- so either raised `AttributeError` on call. Copied across with
@@ -497,3 +526,67 @@ class HypothesisFindings(BaseModel):
     # `DomainJudgement` drops the token counts on purpose (see its docstring), so
     # there is nothing on this side of the wire to sum. Token spend is our
     # telemetry, and it stays on `DomainFinding`.
+
+
+class DomainNarrative(BaseModel):
+    """One domain's account of its rows, stripped to what the consumer reads.
+
+    The transmission shape. `DomainJudgement` is the record; this is the message.
+
+    Mohammed's call on 2026-09-01, taken with the trade-off stated twice and
+    accepted: the Analyst Agent is sent the prose and the observations, and
+    nothing else. It is recorded here rather than argued again, and it is cheap
+    to reverse -- add a field back and regenerate.
+
+    **What this costs, so a future reader is not surprised by it.** Dropping
+    `citations` removes the handle for checking a claim against the rows behind
+    it; the ids still exist in `findings.json`, but a consumer holding only this
+    message cannot resolve one. Dropping the envelope's `retrieval` removes the
+    only signal separating "we looked and found nothing" from "we never looked":
+    both arrive as an empty `narrative` with no `observations`, and on
+    2026-09-01, with Splunk unreachable, that is exactly what two of three
+    domains produced.
+
+    Deliberately named for what it carries, unlike `DomainJudgement`, which was
+    left misnamed in v2 to avoid churning the published schema and every test
+    that names it.
+    """
+
+    domain: AnalystDomain
+    narrative: str = Field(
+        default="",
+        description=(
+            "Plain English: what these rows show, in order, naming the hosts, "
+            "accounts, addresses and times. What happened -- NOT a reading of "
+            "what it means."
+        ),
+    )
+    observations: list[str] = Field(
+        default_factory=list,
+        description="One line per distinct thing the rows state.",
+    )
+
+
+class AnalystPayload(BaseModel):
+    """What is actually sent to the Analyst Agent.
+
+    `HypothesisFindings` is the durable record written to `findings.json`: it
+    carries `citations`, `exhibits` and `retrieval`, and it is the audit trail.
+    This is the projection of it that crosses the boundary.
+
+    The reason the two differ is size, and it is not a small effect. On the
+    2026-09-01 live run the record was 42,200 characters, of which **30,809 --
+    73% -- were `exhibits`**: the 584 raw rows the tier exists to compress into
+    prose. Sending those on undoes the compression that is this tier's whole
+    justification for existing. The projection is 5,684 characters.
+
+    Build it with `HypothesisFindings.for_analyst()`, never by hand: a field
+    added to the record should not silently start crossing the boundary.
+    """
+
+    schema_version: int = 1
+    task_id: str
+    run_id: str | None = None
+    hypothesis_id: str
+    hypothesis: str | None = None
+    findings: list[DomainNarrative] = Field(default_factory=list)

@@ -573,7 +573,7 @@ def _persist_reasoning_traces(
 def _persist_findings(
     task_id: str, findings: HypothesisFindings, run_dir: Path | str | None = None
 ) -> None:
-    """Write findings.json beside the broker's run artifacts.
+    """Write findings.json and analyst-payload.json beside the broker's artifacts.
 
     `run_dir` wins over `SMARTOPS_RUNS_DIR` over the default. Named
     `findings.json`, not `assessment.json`: `HypothesisAssessment` is the shape
@@ -581,6 +581,15 @@ def _persist_findings(
     -- deciding for or against the hypothesis is the Analyst Agent's call, on the
     far side of this contract. The writer for `assessment.json` was deleted with
     the rest of the shown path; see `subagent_analysts/shown.py`.
+
+    **Two files, because the record and the message are not the same shape.**
+    `findings.json` is the durable audit trail: citations, exhibits, retrieval
+    summary, every row the analyst read. `analyst-payload.json` is
+    `HypothesisFindings.for_analyst()` -- prose and observations only, and what
+    actually crosses the boundary. On the 2026-09-01 live run that is 5,684
+    characters against 42,200, because 73% of the record is the raw rows this
+    tier exists to compress into prose; shipping them on would undo the
+    compression that justifies the tier.
     """
     target_dir = _resolve_run_dir(task_id, run_dir)
     if target_dir is None:
@@ -594,6 +603,13 @@ def _persist_findings(
         )
         (target_dir / "findings.json").write_text(
             stamped.model_dump_json(indent=2), encoding="utf-8"
+        )
+        # The record is written above; the message is written here. Same call, so
+        # the two cannot drift apart on disk -- an artifact directory holding one
+        # without the other would leave a reader unable to tell which the Analyst
+        # Agent actually received.
+        (target_dir / "analyst-payload.json").write_text(
+            stamped.for_analyst().model_dump_json(indent=2), encoding="utf-8"
         )
 
 
