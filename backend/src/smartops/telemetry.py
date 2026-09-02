@@ -202,11 +202,16 @@ def analyst_span(domain: str) -> Iterator[trace.Span]:
 def record_analyst_finding(finding: Any) -> None:
     """Stamp a `DomainFinding`'s outcome onto the current span.
 
-    What a reader wants from an analyst span is the judgement and what it cost,
-    so both go on. `reasoning_trace` deliberately does NOT: it is the model's
-    private chain of thought, kept for audit and never re-fed, and a span export
-    is not an audit store -- Strands' span-content redaction is opt-in and off by
-    default, so a trace shipped to a collector would carry it in plaintext.
+    What a reader wants from an analyst span is what the finding contains and
+    what it cost, so both go on. This tier carries no verdict -- see
+    `DomainFinding`'s docstring -- so there is no `disposition`/`confidence` to
+    stamp any more; `narrative_chars` replaces them as the cheapest signal of
+    whether a translation actually happened, alongside the observation and
+    citation counts. `reasoning_trace` deliberately does NOT go on: it is the
+    model's private chain of thought, kept for audit and never re-fed, and a
+    span export is not an audit store -- Strands' span-content redaction is
+    opt-in and off by default, so a trace shipped to a collector would carry it
+    in plaintext.
 
     A no-op with no active recording span, same discipline as `record_cost`: this
     must never be the thing that breaks an analysis.
@@ -214,10 +219,9 @@ def record_analyst_finding(finding: Any) -> None:
     span = trace.get_current_span()
     if not span.is_recording():
         return
-    span.set_attribute("analyst.disposition", finding.disposition)
-    span.set_attribute("analyst.confidence", finding.confidence)
     span.set_attribute("analyst.observation_count", len(finding.observations))
     span.set_attribute("analyst.citation_count", len(finding.citations))
+    span.set_attribute("analyst.narrative_chars", len(finding.narrative))
     span.set_attribute("gen_ai.usage.input_tokens", finding.prompt_tokens)
     span.set_attribute("gen_ai.usage.output_tokens", finding.generation_tokens)
 

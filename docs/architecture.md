@@ -29,11 +29,11 @@ The engine runs in two phases with a hard wall between them:
 
 2. **Analyze (grounded by a gate).** Three **subagent-analysts** — identity,
    network, endpoint — each read their routed slice of the fetched evidence and
-   report what it shows: a **`Disposition`** of `benign` / `suspicious` /
-   `malicious` / `inconclusive`. They run on a Bedrock **custom-imported** reasoning
+   translate it into plain English narration with cited observations, never judging
+   what the evidence means. They run on a Bedrock **custom-imported** reasoning
    model (Cisco **Foundation-Sec-8B-Reasoning**, Llama-3.1-8B, 32k context). A
-   citation-validation gate drops any fabricated citation and downgrades ungrounded
-   decisive readings.
+   citation-validation gate drops any fabricated citation and verifies grounding
+   of claims.
 
    **The analysts never see the hypothesis.** An analyst told "20 auth events means
    malicious" and then shown 20 auth events reports malicious — that is the
@@ -189,7 +189,7 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
   (code-assembled) — never `Evidence.raw`.
 - **Packing — `packing.py`.** Fits a slice into a token budget **derived** from the
   32,768-token context window minus four named reserves (system prompt, generation,
-  user-turn scaffolding, an explicit safety margin) — currently 25,751 tokens, not a
+  user-turn scaffolding, an explicit safety margin) — currently 25,150 tokens, not a
   bare constant — via a row-cap ladder (`200→20→10→5→3→1→header-only`), highest-signal
   first (VT, then siem, then untagged), logging any truncation. Returns the evidence text **plus the set of
   valid header ids** for the grounding gate. The ladder's **first rung is a ceiling,
@@ -224,9 +224,9 @@ The analysts consume the `BrokerReport`. Everything up to the model call is code
   decoding) — and labelled text degrades gracefully where JSON fails atomically: a
   reply missing `DISPOSITION` still keeps its observations and defaults to
   `inconclusive`.
-- **Finding — `contracts/reasoning.py` (`DomainFinding`).** `domain`, `disposition`,
-  `confidence`, `rationale`, `observations`, `citations`, `reasoning_trace`, and
-  per-call `prompt_tokens`/`generation_tokens`. Projected to `DomainJudgement` for the
+- **Finding — `contracts/reasoning.py` (`DomainFinding`).** `domain`, `narrative`,
+  `observations`, `citations`, `reasoning_trace`, and per-call
+  `prompt_tokens`/`generation_tokens`. Projected to `DomainJudgement` for the
   wire — see section 7.
 - **The shown arm — `shown.py`.** `run_one` → `AnalystVerdict` (a `Stance` on the
   hypothesis) with its own prompts and parser. **Not in the pipeline.** Its only
@@ -248,10 +248,10 @@ Grounding is enforced at both tiers:
     emitted; any citation the model produces that is not in that set is **dropped**
     and logged (this has caught real fabrications live, e.g. a `uncategoried#49`
     typo).
-  - **Grounding downgrade (the gate).** A decisive disposition (`benign`,
-    `suspicious` or `malicious`) that resolves to **zero** valid citations is
-    downgraded to `inconclusive` with capped confidence and a noted reason — a
-    decisive claim with no evidence behind it does not stand.
+  - **Grounding verification (the gate).** A claim that resolves to **zero** valid
+    citations is flagged with a noted reason — a claim with no evidence behind it
+    does not stand. The narrative is kept as the audit record of what the model
+    claimed.
   - **What the gate does NOT check** is whether a claim *matches* the row it cites.
     One observed draw called an IP "known malicious" whose cited row read `mal=1` of
     91. Citations resolving and claims being accurate are different tests, and only
@@ -259,8 +259,8 @@ Grounding is enforced at both tiers:
   - **Context isolation.** The `<think>` reasoning trace is persisted for audit but
     never fed back into any prompt.
 - **Empty-slice short-circuit.** A domain with no routed evidence returns
-  `inconclusive` (confidence 0) **without** a model call — no invented citation, no
-  wasted token.
+  an **empty narrative and no observations** **without** a model call — no invented citation, no
+  wasted token. `RetrievalSummary` distinguishes this from "we looked and found nothing".
 
 ---
 
@@ -285,9 +285,8 @@ What crosses the boundary, per domain (`DomainJudgement`):
 | field | notes |
 |---|---|
 | `domain` | `identity` \| `network` \| `endpoint` — all three always present |
-| `disposition` | `benign` \| `suspicious` \| `malicious` \| `inconclusive` |
-| `confidence` | bounded to `[0.0, 1.0]` |
-| `rationale`, `observations`, `citations` | the read, and the ids behind it |
+| `narrative` | plain-English translation of the evidence rows, with aggregation and no judgement |
+| `observations`, `citations` | one distinct thing each row shows; the ids proving it |
 | `exhibits` | one per kept citation: the rows themselves, `row_count`, and the `query` |
 
 **Dropped on the way out:** `reasoning_trace`, `prompt_tokens`, `generation_tokens`.
@@ -298,9 +297,10 @@ rather than `model_dump(exclude=...)`, so the published schema does not advertis
 fields a consumer must know to ignore.
 
 **All three domains always appear**, including ones that got no evidence — reported
-`inconclusive` with no observations, never omitted. "We looked and found nothing" and
+with an **empty narrative and no observations**, never omitted. "We looked and found nothing" and
 "we did not look" are different facts, and a missing entry cannot express the
-difference. `RetrievalSummary` carries the fetch side for the same reason.
+difference. **`RetrievalSummary` is now load-bearing:** it is the only signal separating the two.
+That field exists precisely to carry the fetch-side metadata for this reason.
 
 **The shape is published and enforced.**
 `contracts/schemas/hypothesis-findings.v1.schema.json` (JSON Schema draft 2020-12) is
@@ -362,7 +362,7 @@ Depth on this chain, citation by citation, is in
 | Reasoning | thinking | `<think>…</think>`, seeded |
 | Sampling | provider default | **greedy** (`temperature=0`, see below) |
 | Cost model | per-token (`Budget`) | per **CMU-minute** (`analyst_cost`), not per token |
-| Context | large | **32,768** tokens; evidence budget **derived**, currently 25,751 |
+| Context | large | **32,768** tokens; evidence budget **derived**, currently 25,150 |
 
 **Sampling is greedy, and deliberately not the model's own default.**
 `generation_config.json` ships `temperature=0.6, top_p=0.95` — those are the model's
@@ -454,14 +454,14 @@ Key env / CLI knobs:
 - ~~**Analyst verdict variance.**~~ **Resolved 2026-08-29** at `temperature=0` plus
   a prompt reporting floor; the draws are byte-identical on a warm model copy. Two
   residuals: the first call after a scale-up has been observed to differ (mechanism
-  unconfirmed — needs a deliberate >5-minute idle wait to reproduce), and
-  **consistency is not correctness** — see the next item.
-- **Answer key is sparse.** `bench.py` now carries `EXPECTED_DISPOSITIONS`, a real
-  BOTSv3-documented answer per case/domain — but only 3 entries
-  (`botsv3_coinhive`, `botsv3_c2_beacon`, `botsv3_hdoor_tool`) against 11 cases.
-  Most verdicts can still only be shown consistent, not *right*. Labelling the
-  remaining cases with the disposition BOTSv3 documents (where it documents one)
-  is the highest-leverage next work.
+  unconfirmed — needs a deliberate >5-minute idle wait to reproduce), and the tier
+  no longer emits a disposition verdict — see section 2.
+- **Citation coverage validation.** `bench.py` now carries `EXPECTED_CITATIONS`, scoring
+  whether the narrative cited the evidence category needed to prove each documented BOTSv3 fact —
+  only 3 entries (`botsv3_coinhive`, `botsv3_c2_beacon`, `botsv3_hdoor_tool`) against 11 cases.
+  This metric gets *stronger* under pure translation: a translator instructed to account for
+  every set should cite every set it was shown. Labelling the remaining cases is the
+  highest-leverage next work.
 - **The grounding gate does not read claims against rows.** It verifies that citations
   *resolve*, not that the sentence matches the evidence. One observed draw called an IP
   "known malicious" whose cited row read `mal=1` of 91. Defect (c) at
@@ -494,6 +494,6 @@ Key env / CLI knobs:
   `_CHARS_PER_TOKEN` is now `2.5` (the denser of the two ratios measured that day), and
   the hardcoded `_PACK_TOKEN_BUDGET = 20_000` is now **derived** from the model's
   32,768-token context window minus four named reserves (system prompt, generation,
-  user-turn scaffolding, and an explicit safety margin) — currently 25,751 tokens.
+  user-turn scaffolding, and an explicit safety margin) — currently 25,150 tokens.
   `TestTheDerivedBudgetLeavesRoom` in `test_analyst_prompts.py` asserts every domain
   keeps at least the safety margin's headroom.

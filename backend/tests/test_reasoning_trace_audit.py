@@ -39,9 +39,9 @@ from contracts import (
 
 _ANSWER = (
     "I should check the auth rows for a burst. </think>\n"
+    "NARRATIVE: a burst of failures.\n"
     "OBSERVATIONS:\n- repeated failures for one account [auth_events#1]\n"
-    "DISPOSITION: suspicious\nCONFIDENCE: 0.85\n"
-    "RATIONALE: a burst of failures.\nCITATIONS: auth_events#1"
+    "CITATIONS: auth_events#1"
 )
 
 
@@ -87,9 +87,7 @@ def _report() -> BrokerReport:
 def _finding(domain="identity", trace="I checked the rows."):
     return DomainFinding(
         domain=domain,
-        disposition="suspicious",
-        confidence=0.85,
-        rationale="a burst.",
+        narrative="a burst of failures.",
         observations=["failures [auth_events#1]"],
         citations=["auth_events#1"],
         reasoning_trace=trace,
@@ -148,16 +146,17 @@ class TestTracesJson:
         assert written["run_id"] == tmp_path.name
         assert written["traces"][0]["reasoning_trace"] == "I checked the rows."
 
-    def test_it_carries_the_judgement_the_reasoning_produced(self, tmp_path):
-        """So a reader can see which verdict this reasoning led to without
-        opening findings.json and joining on domain."""
+    def test_it_carries_only_the_domain_and_cost_alongside_the_reasoning(self, tmp_path):
+        """No verdict to carry any more -- `DomainFinding` has none. What is left
+        that a reader wants alongside the reasoning is which domain produced it
+        and what it cost, without opening findings.json and joining on domain."""
         _persist_reasoning_traces("t-1", "h-1", [_finding()], run_dir=tmp_path)
 
         entry = json.loads((tmp_path / "traces.json").read_text(encoding="utf-8"))["traces"][0]
 
         assert entry["domain"] == "identity"
-        assert entry["disposition"] == "suspicious"
-        assert entry["confidence"] == 0.85
+        assert "disposition" not in entry
+        assert "confidence" not in entry
         assert entry["prompt_tokens"] == 100
         assert entry["generation_tokens"] == 50
 

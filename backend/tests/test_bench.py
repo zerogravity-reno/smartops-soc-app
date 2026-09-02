@@ -22,7 +22,7 @@ from typing import get_args
 import pytest
 from smartops.bench import (
     BENCHMARK_CASES,
-    EXPECTED_DISPOSITIONS,
+    EXPECTED_CITATIONS,
     SYNTHETIC_INDICATOR_CASES,
     RunMetrics,
     _execute_single_run,
@@ -30,7 +30,7 @@ from smartops.bench import (
     _run,
     check_index_scoping,
     compute_arm_summary,
-    compute_disposition_correct,
+    compute_citation_coverage,
     compute_metric_stats,
     extract_findings_completeness,
     run,
@@ -41,7 +41,7 @@ from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
 
 from contracts import (
     AnalystDomain,
-    Disposition,
+    CimCategory,
     QueryRun,
     ResultSet,
     SiemFindings,
@@ -558,14 +558,14 @@ class TestBenchDisablesTheSkillPack:
 
 
 class TestBOTSv3AnswerSheet:
-    """The BOTSv3 answer key (`EXPECTED_DISPOSITIONS`) and the honest label on
+    """The BOTSv3 answer key (`EXPECTED_CITATIONS`) and the honest label on
     the cases built from indicators the dataset does not contain
     (`SYNTHETIC_INDICATOR_CASES`) must not drift apart from `BENCHMARK_CASES`
     or from each other, and the renamed cases must actually resolve.
     """
 
-    def test_every_expected_disposition_case_exists_in_benchmark_cases(self):
-        for case_id in EXPECTED_DISPOSITIONS:
+    def test_every_expected_citation_case_exists_in_benchmark_cases(self):
+        for case_id in EXPECTED_CITATIONS:
             assert case_id in BENCHMARK_CASES, (
                 f"{case_id!r} has a documented answer but is not a benchmark case"
             )
@@ -576,21 +576,36 @@ class TestBOTSv3AnswerSheet:
                 f"{case_id!r} is marked synthetic but is not a benchmark case"
             )
 
-    def test_expected_dispositions_and_synthetic_cases_are_disjoint(self):
-        overlap = set(EXPECTED_DISPOSITIONS) & SYNTHETIC_INDICATOR_CASES
+    def test_expected_citations_and_synthetic_cases_are_disjoint(self):
+        overlap = set(EXPECTED_CITATIONS) & SYNTHETIC_INDICATOR_CASES
         assert overlap == set(), (
             f"{overlap} has both a documented answer and a fictional indicator"
         )
 
-    def test_every_domain_and_disposition_value_is_valid(self):
+    def test_every_domain_and_category_value_is_valid(self):
         valid_domains = set(get_args(AnalystDomain))
-        valid_dispositions = set(get_args(Disposition))
-        for case_id, per_domain in EXPECTED_DISPOSITIONS.items():
-            for domain, disposition in per_domain.items():
+        # Derived from `CimCategory`, not restated: a literal set here would be
+        # a second copy of the contract's own category list, and the copy is
+        # what goes stale when a category is added. Not `CimCategory` ALONE,
+        # though -- citation headers also cover the VT `reputation#N` lookup,
+        # which is not a CIM category and so has to be added explicitly.
+        valid_categories = set(get_args(CimCategory)) | {"reputation"}
+        for case_id, per_domain in EXPECTED_CITATIONS.items():
+            for domain, required in per_domain.items():
                 assert domain in valid_domains, f"{case_id}: {domain!r} is not an AnalystDomain"
-                assert disposition in valid_dispositions, (
-                    f"{case_id}: {disposition!r} is not a Disposition"
+                assert isinstance(required, tuple) and required, (
+                    f"{case_id}: {domain!r} entry must be a non-empty tuple, got {required!r}"
                 )
+                for category in required:
+                    assert category in valid_categories, (
+                        f"{case_id}: {category!r} is not a known citation category"
+                    )
+
+    def test_hdoor_tool_is_a_disjunction_of_two_categories(self):
+        # The one documented disjunction in the key: either category on its
+        # own proves the analyst saw the row, so both must be present and
+        # neither dropped.
+        assert EXPECTED_CITATIONS["botsv3_hdoor_tool"]["endpoint"] == ("reputation", "processes")
 
     def test_renamed_cases_resolve_and_old_names_are_gone(self):
         assert "botsv3_c2_beacon" in BENCHMARK_CASES
@@ -602,56 +617,65 @@ class TestBOTSv3AnswerSheet:
         """Finding 8: nothing else pins this.
 
         `_execute_single_run` looks the answer key up by `task.task_id`, while
-        `EXPECTED_DISPOSITIONS` is keyed by the `BENCHMARK_CASES` dict key. The
+        `EXPECTED_CITATIONS` is keyed by the `BENCHMARK_CASES` dict key. The
         two agree today for every case, but nothing stops a future rename of
         just one of them from silently disabling scoring for that case --
-        `compute_disposition_correct` would look up a key the answer key never
+        `compute_citation_coverage` would look up a key the answer key never
         populates and quietly return `None` (no answer key) forever.
         """
         for case_id, (task, _expected_families) in BENCHMARK_CASES.items():
             assert task.task_id == case_id, (
                 f"BENCHMARK_CASES key {case_id!r} does not match its "
-                f"AnalystTask.task_id {task.task_id!r} -- disposition scoring "
-                "for this case would silently never match EXPECTED_DISPOSITIONS"
+                f"AnalystTask.task_id {task.task_id!r} -- citation scoring "
+                "for this case would silently never match EXPECTED_CITATIONS"
             )
 
 
-class TestDispositionCorrect:
-    """`disposition_correct` must keep "no answer key", "no findings" and a
-    genuine mismatch as three distinct outcomes -- collapsing any pair of them
+class TestComputeCitationCoverage:
+    """`citation_coverage_correct` must keep "no answer key", "no findings" and a
+    genuine miss as three distinct outcomes -- collapsing any pair of them
     into the same value would hide a real defect behind a plausible-looking
     `None`/`False`.
     """
 
     def test_none_when_the_case_has_no_expectation(self):
-        assert compute_disposition_correct("botsv3_web_shell_url", {"network": "malicious"}) is None
+        assert compute_citation_coverage("botsv3_web_shell_url", {"network": ["dns_resolutions#1"]}) is None
 
     def test_none_when_findings_are_absent(self):
-        assert compute_disposition_correct("botsv3_coinhive", None) is None
+        assert compute_citation_coverage("botsv3_coinhive", None) is None
 
     def test_true_on_a_match(self):
-        assert compute_disposition_correct("botsv3_coinhive", {"network": "malicious"}) is True
+        assert compute_citation_coverage("botsv3_coinhive", {"network": ["dns_resolutions#1"]}) is True
 
-    def test_false_on_a_mismatch(self):
-        assert compute_disposition_correct("botsv3_coinhive", {"network": "benign"}) is False
+    def test_false_on_a_miss(self):
+        assert compute_citation_coverage("botsv3_coinhive", {"network": ["connections#1"]}) is False
 
     def test_a_domain_with_no_expectation_is_not_scored(self):
         # botsv3_coinhive expects only `network`. An extra `endpoint` entry in
         # the findings -- something the answer key says nothing about -- must
         # not flip the result: silence is not a wrong answer.
         assert (
-            compute_disposition_correct(
-                "botsv3_coinhive", {"network": "malicious", "endpoint": "benign"}
+            compute_citation_coverage(
+                "botsv3_coinhive", {"network": ["dns_resolutions#1"], "endpoint": ["processes#1"]}
             )
             is True
         )
 
+    def test_disjunction_matches_on_either_category_alone(self):
+        # botsv3_hdoor_tool accepts EITHER reputation OR processes -- neither
+        # is required in addition to the other.
+        assert compute_citation_coverage("botsv3_hdoor_tool", {"endpoint": ["reputation#1"]}) is True
+        assert compute_citation_coverage("botsv3_hdoor_tool", {"endpoint": ["processes#1"]}) is True
+
+    def test_disjunction_fails_when_neither_category_is_cited(self):
+        assert compute_citation_coverage("botsv3_hdoor_tool", {"endpoint": ["auth_events#1"]}) is False
+
     async def test_execute_single_run_carries_the_measure_and_it_is_none_today(self):
         # `_execute_single_run` never calls the analyst step, so no findings
-        # ever reach it to compare -- see `RunMetrics.disposition_correct`.
+        # ever reach it to compare -- see `RunMetrics.citation_coverage_correct`.
         # This is the plumbing check: the field is on RunMetrics and populated
-        # by `_execute_single_run`, not the disposition logic itself (covered
-        # above against `compute_disposition_correct` directly).
+        # by `_execute_single_run`, not the coverage logic itself (covered
+        # above against `compute_citation_coverage` directly).
         task, expected = BENCHMARK_CASES["botsv3_coinhive"]
 
         metrics = await _execute_single_run(
@@ -663,4 +687,4 @@ class TestDispositionCorrect:
             budget_usd=1.0,
             scripted=True,
         )
-        assert metrics.disposition_correct is None
+        assert metrics.citation_coverage_correct is None

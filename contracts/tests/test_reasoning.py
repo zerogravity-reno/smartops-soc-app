@@ -7,7 +7,9 @@ from pydantic import ValidationError
 
 from contracts import (
     AnalystVerdict,
+    DomainJudgement,
     HypothesisAssessment,
+    HypothesisFindings,
     InvestigationContext,
 )
 
@@ -101,3 +103,95 @@ class TestAssessmentJoinKey:
         back = HypothesisAssessment.model_validate_json(stamped.model_dump_json())
         assert back.task_id == "cli-1"
         assert back.run_id == "20260101T000000000"
+
+
+class TestTheAnalystPayloadIsAProjectionNotTheRecord:
+    """`findings.json` is the audit trail; `analyst-payload.json` is the message.
+
+    Mohammed's call on 2026-09-01: the Analyst Agent receives prose and
+    observations, and nothing else. The record keeps citations, exhibits and the
+    retrieval summary.
+
+    The reason is size, and it is not marginal. On that day's live run the record
+    was 42,200 characters, 73% of it exhibits -- the 584 raw rows this tier exists
+    to compress into prose. Sending them on undoes the compression.
+    """
+
+    @staticmethod
+    def _findings():
+        return HypothesisFindings(
+            task_id="t1",
+            run_id="r1",
+            hypothesis_id="h1",
+            hypothesis="something was compromised",
+            findings=[
+                DomainJudgement(
+                    domain="network",
+                    narrative="six connections to one address.",
+                    observations=["six connections [connections#4]"],
+                    citations=["connections#4"],
+                )
+            ],
+        )
+
+    def test_it_carries_the_prose_and_the_observations(self):
+        payload = self._findings().for_analyst()
+        assert payload.task_id == "t1"
+        assert payload.run_id == "r1"
+        assert payload.hypothesis_id == "h1"
+        assert payload.hypothesis == "something was compromised"
+        assert payload.findings[0].domain == "network"
+        assert payload.findings[0].narrative == "six connections to one address."
+        assert payload.findings[0].observations == ["six connections [connections#4]"]
+
+    def test_a_domain_narrative_carries_nothing_else(self):
+        """The field set is pinned deliberately.
+
+        A field added to `DomainJudgement` should NOT start crossing the boundary
+        because someone edited the projection in sympathy with the model. This
+        test failing is the intended prompt to decide, not a chore to silence.
+        """
+        fields = set(type(self._findings().for_analyst().findings[0]).model_fields)
+        assert fields == {"domain", "narrative", "observations"}
+
+    def test_the_envelope_carries_no_retrieval_summary(self):
+        """What this costs, recorded where it will be found.
+
+        `retrieval` is the only signal separating "we looked and found nothing"
+        from "we never looked" -- both arrive as an empty narrative with no
+        observations. With Splunk unreachable on 2026-09-01 that is exactly what
+        two of three domains produced. Accepted with the trade-off stated; the
+        distinction survives in `findings.json`.
+        """
+        assert "retrieval" not in type(self._findings().for_analyst()).model_fields
+
+    def test_the_record_is_untouched_by_the_projection(self):
+        record = self._findings()
+        record.for_analyst()
+        assert record.findings[0].citations == ["connections#4"]
+        assert record.retrieval is None
+        assert record.schema_version == 2
+
+    def test_the_projection_is_much_smaller_than_the_record(self):
+        record = self._findings()
+        assert len(record.for_analyst().model_dump_json()) < len(record.model_dump_json())
+
+    def test_its_version_line_is_its_own_and_starts_at_one(self):
+        """1 beside the record's 2 is not staleness, and the field says so.
+
+        Both files land in the same run directory. A reader seeing
+        `schema_version: 2` in `findings.json` and `1` here will reasonably ask
+        which is out of date; neither is. `AnalystPayload` is a new contract, not
+        a successor, and `HypothesisFindings` is not superseded by it.
+        """
+        record = self._findings()
+        assert record.schema_version == 2
+        assert record.for_analyst().schema_version == 1
+
+        from contracts import AnalystPayload
+
+        described = AnalystPayload.model_fields["schema_version"].description or ""
+        assert "independently" in described, (
+            "the field most likely to be misread must explain itself in the "
+            "published schema, not only in the class docstring"
+        )

@@ -16,7 +16,7 @@ from smartops.subagent_analysts.packing import (
     pack_evidence,
 )
 from smartops.subagent_analysts.prompts import (
-    _FINDING_ANSWER_BLOCK,
+    _NARRATIVE_ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
 )
@@ -33,6 +33,17 @@ def _scope() -> Scope:
         entities=[Entity(kind="host", value="BSTOLL-L")],
         time_window=(datetime(2018, 8, 20, tzinfo=UTC), datetime(2018, 8, 21, tzinfo=UTC)),
     )
+
+
+def _flat(text: str) -> str:
+    """Whitespace-normalised prompt text.
+
+    The domain bodies are hand-wrapped, so a sentence asserted here can span a
+    line break -- and matching its wrapped form pins the column the prompt
+    happens to wrap at rather than what it says. Same normalisation
+    `test_analyst_analyze.py` uses to find its domain markers.
+    """
+    return " ".join(text.split())
 
 
 class TestSystemPrompt:
@@ -76,32 +87,82 @@ class TestFactsSystemPrompt:
         assert "dns" in facts_system_prompt("network").lower()
         assert "process" in facts_system_prompt("endpoint").lower()
 
-    def test_no_hypothesis_or_verdict_framing(self):
-        for domain in ("identity", "network", "endpoint"):
-            p = facts_system_prompt(domain)
-            assert "HYPOTHESIS" not in p
-            assert "VERDICT" not in p
-            assert "hypothesis" not in p.lower()
-
-    def test_states_finding_format_and_untrusted_regions(self):
+    def test_states_the_answer_format_and_untrusted_regions(self):
         p = facts_system_prompt("identity")
-        assert "OBSERVATIONS:" in p and "CONFIDENCE:" in p and "CITATIONS:" in p
+        assert "NARRATIVE:" in p and "OBSERVATIONS:" in p and "CITATIONS:" in p
         assert "UNTRUSTED" in p
 
-    def test_asks_for_a_disposition_on_the_evidence(self):
-        """Blind does not mean silent: the analyst judges what it sees."""
-        p = facts_system_prompt("network")
-        assert "DISPOSITION:" in p
-        for word in ("benign", "suspicious", "malicious", "inconclusive"):
-            assert word in p
+    # Every word this tier must never be handed, with the reason it is banned.
+    # The reason travels with the assertion because the failure message is half
+    # this test's value: whoever trips it has just reintroduced an authority the
+    # sub-analysts were deliberately stripped of, and the diff that does it will
+    # look locally reasonable.
+    _FORBIDDEN_VOCABULARY = {
+        "hypothesis": "this tier is hypothesis-blind, and naming one invites the model to guess at it",
+        "supports": "a `Stance` word -- it grades the rows against a theory the analyst was never shown",
+        "refutes": "a `Stance` word -- it grades the rows against a theory the analyst was never shown",
+        "disposition": "the analyst translates rows; it no longer rules on them",
+        "confidence": "a confidence score is a claim about a conclusion this tier does not draw",
+        "benign": "a verdict label, and picking one is the Analyst Agent's job",
+        "suspicious": "a verdict label, and picking one is the Analyst Agent's job",
+        "malicious": "a verdict label, and picking one is the Analyst Agent's job",
+        "inconclusive": "a verdict label, and picking one is the Analyst Agent's job",
+        "verdict": "the sub-analysts reach none; they describe what the rows say and stop",
+        "security-relevant": "relevance is a judgement -- every set gets described, none gets filtered out",
+    }
 
-    def test_the_disposition_never_implies_a_hypothesis_exists(self):
-        """Naming one invites the model to guess at it -- the same reason the
-        bodies avoid saying "you are not told the hypothesis"."""
+    def test_no_judgement_vocabulary_reaches_any_domain(self):
+        """The one test standing between this decision and its slow reversal.
+
+        Merged from the two blind-guarantee tests that preceded it: one banned
+        the hypothesis and `Stance` words, the other asserted that a disposition
+        could exist without implying a hypothesis did. The second's premise is
+        gone -- there is no disposition now -- but both were asserting subsets of
+        the same list, so the list itself is the test. Any one of these words
+        reappearing is the sub-analyst tier taking back authority it was
+        deliberately stripped of, whichever word it is.
+        """
         for domain in ("identity", "network", "endpoint"):
-            p = facts_system_prompt(domain).lower()
-            assert "hypothesis" not in p
-            assert "supports" not in p and "refutes" not in p
+            lowered = facts_system_prompt(domain).lower()
+
+            for word, why in self._FORBIDDEN_VOCABULARY.items():
+                assert word not in lowered, (
+                    f"`{word}` is back in the {domain} prompt: {why}. These analysts "
+                    f"translate log rows into plain English -- nothing in the prompt "
+                    f"may ask them to judge what the rows mean."
+                )
+
+    def test_the_narrative_is_asked_for_rather_than_forbidden(self):
+        """The reversal that is easiest to make halfway.
+
+        The old opening read "do not speculate about intent, a narrative, or
+        draw any broader conclusion" -- three prohibitions in one clause, of
+        which only the middle one had to go. Restoring the sentence wholesale
+        would forbid the exact output the tier now exists to produce, while
+        still reading like the careful, well-tested wording it replaced.
+        """
+        for domain in ("identity", "network", "endpoint"):
+            flat = _flat(facts_system_prompt(domain))
+
+            assert "a narrative" not in flat.lower()
+            # The two prohibitions that stay: they are what keeps this tier out
+            # of the Analyst Agent's job.
+            assert "do not speculate about intent" in flat
+            assert "draw no broader conclusion" in flat
+
+    def test_each_domain_explains_that_rows_can_outnumber_printed_lines(self):
+        """`formatting.format_result_set` prints `rows=<TRUE TOTAL>` in the
+        header and then at most `row_cap` lines beneath it, so a model can be
+        shown 20 lines under `rows=4000`. A judge could judge what it saw; a
+        translator that writes "there were 20 connections" has mistranslated."""
+        for domain in ("identity", "network", "endpoint"):
+            p = facts_system_prompt(domain)
+
+            assert "TRUE number of rows the query matched" in _flat(p)
+            # The literal marker `format_result_set` appends, so the model is
+            # told what to watch for rather than left to infer it.
+            assert "… (N more rows not shown)" in p
+            assert "give both numbers" in p
 
     def test_augments_metis_persona_not_replaces_it(self):
         p = facts_system_prompt("network")
@@ -109,37 +170,34 @@ class TestFactsSystemPrompt:
         assert p.index("You are Metis") < p.index("network detection")
 
 
-class TestFactsPromptSteadiesTheVerdict:
-    """The three prompt rules added alongside the temperature drop to 0.3.
+class TestFactsPromptSteadiesTheReport:
+    """Two of the three prompt rules added alongside the temperature drop to 0.3.
 
     Each targets a defect that was MEASURED, not guessed, in
     docs/sessions/handover_2026-08-27_analyst-verdict-variance.md. They are pinned
     because the prompt is the half of that fix which a later edit could silently
     undo -- the temperature change is visible in `.env`, these are not.
+
+    The third rule (a tie-break between `suspicious` and `inconclusive`) went with
+    the disposition itself: there is no longer a label for two draws to disagree
+    on. What the variance run measured about VOLUME still holds, so the floor and
+    the citation preference below survive it -- restated for a prompt that
+    accounts for every set rather than ranking them.
     """
 
     def test_a_reporting_floor_is_stated(self):
         """Finding 2: nothing said how much to report, so one draw gave 1
         observation and another 17 from the same rows. Lowering the temperature
-        without this trades a wandering-thorough analyst for a stable-terse one."""
+        without this trades a wandering-thorough analyst for a stable-terse one.
+
+        The floor is now a coverage rule rather than a thoroughness plea: the
+        answer is short only when the evidence is, and no set may be skipped."""
         for domain in ("identity", "network", "endpoint"):
-            p = facts_system_prompt(domain)
+            flat = _flat(facts_system_prompt(domain))
 
-            assert "HOW MUCH TO REPORT:" in p
-            assert "EVERY distinct security-relevant pattern" in p
-
-    def test_suspicious_and_inconclusive_have_a_tie_break(self):
-        """Finding 3: both labels were defensible on the same rows, with no
-        ordering rule -- which is the coin flip that produced `benign`,
-        `inconclusive`, `inconclusive` on three draws of one slice."""
-        for domain in ("identity", "network", "endpoint"):
-            p = facts_system_prompt(domain)
-
-            assert "CHOOSING BETWEEN `suspicious` AND `inconclusive`:" in p
-            assert "at least `suspicious`" in p
-            # The other half of the rule: a full, clean slice is benign, and
-            # calling it `inconclusive` understates a real negative finding.
-            assert "is `benign`, not `inconclusive`" in p
+            assert "HOW MUCH TO REPORT:" in flat
+            assert "Every set you were given must appear in it." in flat
+            assert "Never drop a set because it looks uninteresting" in flat
 
     def test_category_matched_evidence_is_preferred_over_uncategorised(self):
         """Finding 6: greedy decoding cited an `uncategorised#N` block on a slice
@@ -152,9 +210,9 @@ class TestFactsPromptSteadiesTheVerdict:
     def test_the_new_rules_keep_the_blind_guarantee(self):
         """Regression: the tie-break rule first read "no row you can cite SUPPORTS
         any pattern", which put a `Stance` word into a prompt whose whole point is
-        that no hypothesis framing reaches it. `test_the_disposition_never_implies_a_
-        hypothesis_exists` caught it; this states the constraint at the rules
-        themselves so the next edit sees it in place."""
+        that no hypothesis framing reaches it. The blind-vocabulary test (now
+        `test_no_judgement_vocabulary_reaches_any_domain`) caught it; this states
+        the constraint at the rules themselves so the next edit sees it in place."""
         for domain in ("identity", "network", "endpoint"):
             lowered = facts_system_prompt(domain).lower()
 
@@ -164,51 +222,65 @@ class TestFactsPromptSteadiesTheVerdict:
 
 
 class TestFactsPromptFixesLiveRunRegressions:
-    """Two regressions from `852e090` measured in a live Splunk run on
-    2026-08-30 (see
+    """Regressions from `852e090` measured in a live Splunk run on 2026-08-30
+    (see
     docs/sessions/handover_2026-08-30_splunk-back-answer-sheet-and-siem-trace.md),
-    on top of the rules pinned by `TestFactsPromptSteadiesTheVerdict` above.
+    on top of the rules pinned by `TestFactsPromptSteadiesTheReport` above.
+
+    Defect 1 (`inconclusive` read as a safe default) is gone with the label. The
+    other two were about the answer BLOCK surviving `max_gen_len` and the list
+    staying bounded, which the field rename does not change -- they are restated
+    here against the fields the block now carries.
     """
 
-    def test_inconclusive_states_its_own_precondition(self):
-        """Defect 1: the network analyst chose `inconclusive` with a citable
-        anomalous row in hand, reciting the footer's own definition of
-        `suspicious` as its rationale. The tie-break paragraph correcting that
-        sat AFTER the `inconclusive` bullet, so the bullet itself must now say
-        when the label applies rather than reading as a safe default."""
-        for domain in ("identity", "network", "endpoint"):
-            p = facts_system_prompt(domain)
-
-            assert "no row you can cite matches any pattern" in p
-            assert "not a safe default" in p
-
-    def test_required_block_orders_disposition_before_observations(self):
+    def test_required_block_orders_the_narrative_before_observations(self):
         """Defect 2a: OBSERVATIONS used to come first, so a model that
-        over-produced observations lost DISPOSITION/CONFIDENCE/RATIONALE to
-        `max_gen_len` -- exactly the fields that matter. `parse_finding` is
+        over-produced observations lost the fields after it to `max_gen_len` --
+        exactly the ones that matter. The payload is now the NARRATIVE, so it
+        leads, and the list that can run long comes after it. `parse_finding` is
         proven order-independent in `test_analyst_parse.py`."""
         for domain in ("identity", "network", "endpoint"):
             p = facts_system_prompt(domain)
 
-            assert p.index("DISPOSITION:") < p.index("OBSERVATIONS:")
+            assert p.index("NARRATIVE:") < p.index("OBSERVATIONS:") < p.index("CITATIONS:")
 
     def test_the_reporting_floor_has_a_concrete_ceiling(self):
         """Defect 2b: the floor's own worst-case failure was 82 observations
-        restating ~3 facts once per block. A bare "report EVERY pattern" has no
+        restating ~3 facts once per block. "Account for every set" has no
         backstop against that; the ceiling does, without reintroducing
-        "report a sample" -- which is what the floor was added to remove."""
+        "report a sample" -- which is what the floor was added to remove.
+
+        The ceiling must not become a filter, either: over it, the analyst
+        groups more coarsely rather than deciding which rows earn a line. That
+        is the whole difference between aggregating and selecting.
+
+        And the coarsening must not bottom out ABOVE the ceiling. When one set
+        was the coarsest licensed unit, a slice of more than 10 sets made three
+        rules jointly unsatisfiable -- never drop a set, at most 10 lines, one
+        set per line at coarsest -- with nothing saying which to break, and the
+        cheapest way out was to drop a set. 15-set slices are measured, not
+        hypothetical: see `test_category_matched_evidence_is_preferred_over_
+        uncategorised` above. A line that may span sets makes the three
+        satisfiable at any number of sets."""
         for domain in ("identity", "network", "endpoint"):
             p = facts_system_prompt(domain)
 
-            assert "at most 10 observations" in p
-            assert "ONE observation, not one per block" in p
-            assert "report a sample" not in p.lower()
+            flat = _flat(p)
+            assert "at most 10 observations" in flat
+            assert "ONE observation, not one per block" in flat
+            assert "That ceiling counts DISTINCT GROUPINGS, not importance" in flat
+            assert "one line may cover a whole set, or several sets" in flat
+            assert "report a sample" not in flat.lower()
 
     def test_still_keeps_the_blind_guarantee(self):
         """Regression guard alongside `test_the_new_rules_keep_the_blind_guarantee`
-        above -- both prompt rewrites for this task touched wording right next
-        to the disposition definitions, exactly where a hypothesis word has
-        leaked in before."""
+        above, stated at the rules THIS class pins: the required answer block and
+        the reporting ceiling. Those two get reworded every time either is
+        retuned -- twice already -- and a `Stance` word has leaked in during
+        exactly that kind of edit before ("no row you can cite SUPPORTS any
+        pattern"). Repeating the constraint here is what puts it in front of the
+        next person retuning them, rather than leaving it to a vocabulary test
+        several classes away that they have no reason to open."""
         for domain in ("identity", "network", "endpoint"):
             lowered = facts_system_prompt(domain).lower()
 
@@ -221,15 +293,12 @@ class TestTheReaskCannotDivergeFromTheFooter:
     """Finding 1 of the 2026-08-30 whole-branch review.
 
     `analyze._FINDING_REASK` used to be a SECOND, hand-written copy of the
-    required answer block: OBSERVATIONS -> CONFIDENCE -> RATIONALE -> CITATIONS,
-    with NO DISPOSITION line at all, while `prompts._FINDING_FOOTER` asked for
-    DISPOSITION -> CONFIDENCE -> RATIONALE -> OBSERVATIONS -> CITATIONS. Because
-    the re-ask is appended to the user turn (`model.invoke(system, user +
-    reask)`), it is the LAST and most explicit instruction the model reads, so a
-    model that obeyed it verbatim could never supply a disposition --
-    `parse.parse_finding` then defaulted the missing field to `inconclusive`.
-    Verified as the root cause of a wrong verdict in a live 2026-08-30 run: the
-    documented correct answer was `malicious`.
+    required answer block, and the two drifted into different field sets in
+    different orders. Because the re-ask is appended to the user turn
+    (`model.invoke(system, user + reask)`), it is the LAST and most explicit
+    instruction the model reads, so a model obeying it verbatim answered in a
+    shape the first ask never requested -- the root cause of a wrong answer in a
+    live 2026-08-30 run.
 
     This asserts field set AND order agree, not just that both mention the same
     words -- an order mismatch is exactly the defect that shipped.
@@ -240,20 +309,18 @@ class TestTheReaskCannotDivergeFromTheFooter:
         return re.findall(r"^([A-Z]+):", text, re.MULTILINE)
 
     def test_the_blind_reask_matches_the_blind_footer(self):
-        assert self._fields(_FINDING_REASK) == self._fields(_FINDING_ANSWER_BLOCK)
+        assert self._fields(_FINDING_REASK) == self._fields(_NARRATIVE_ANSWER_BLOCK)
         assert self._fields(_FINDING_REASK) == [
-            "DISPOSITION",
-            "CONFIDENCE",
-            "RATIONALE",
+            "NARRATIVE",
             "OBSERVATIONS",
             "CITATIONS",
         ]
 
     def test_the_reask_is_built_from_the_shared_block_not_a_second_copy(self):
-        """Guards the FIX, not just the symptom: a hand-patched `DISPOSITION:`
-        line with no shared constant would pass the assertion above and still
-        be able to drift again the next time either string is edited alone."""
-        assert _FINDING_ANSWER_BLOCK in _FINDING_REASK
+        """Guards the FIX, not just the symptom: a hand-patched field line with
+        no shared constant would pass the assertion above and still be able to
+        drift again the next time either string is edited alone."""
+        assert _NARRATIVE_ANSWER_BLOCK in _FINDING_REASK
 
     def test_the_shown_arms_reask_already_agreed_with_its_footer(self):
         """Regression guard for the sibling this finding asked us to check.
@@ -281,6 +348,18 @@ class TestFactsUserTurn:
         turn = build_facts_user_turn(_scope(), "# auth_events#1 · rows=1")
         assert "<scope>" in turn and "host: BSTOLL-L" in turn
         assert "<evidence>" in turn and "auth_events#1" in turn
+
+    def test_the_closing_instruction_asks_for_a_description_not_a_filter(self):
+        """The system prompt is not the last thing the model reads -- this line
+        is, and it used to close with "List every security-relevant finding you
+        can support from the evidence above". Left alone it would have reinstated
+        the relevance filter the whole rework removes, from the most emphatic
+        position in the turn, with the system prompt saying the opposite."""
+        turn = build_facts_user_turn(_scope(), "# auth_events#1 · rows=1")
+
+        assert "security-relevant" not in turn.lower()
+        assert "Describe what the evidence above shows" in turn
+        assert "grouping like rows and giving counts" in turn
 
 
 class TestPacking:
@@ -571,7 +650,7 @@ class TestCitationNumberingIsPerCategory:
     numbered by position: the network slice of `cli-20260825T100434` emitted
     `connections#1..#9` and then `dns_resolutions#10..`, with no
     `dns_resolutions#1` -- which is the exact worked example
-    `prompts._FINDING_FOOTER` hands the model. A model citing it failed
+    `prompts._NARRATIVE_FOOTER` hands the model. A model citing it failed
     `valid_citation_ids`, lost the observation to
     `_resolve_observation_citations`, and had its disposition downgraded to
     `inconclusive`. That reads as a cautious analyst, not a bug, which is what
@@ -610,7 +689,7 @@ class TestCitationNumberingIsPerCategory:
 
         ids = valid_citation_ids(self._multi_category_slice())
 
-        # `_FINDING_FOOTER` names these verbatim.
+        # `_NARRATIVE_FOOTER` names these verbatim.
         assert "connections#1" in ids
         assert "dns_resolutions#1" in ids
 

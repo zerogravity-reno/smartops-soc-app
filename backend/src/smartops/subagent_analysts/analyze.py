@@ -6,9 +6,15 @@ contract handed up to the Analyst Agent.
 
 The analysts are **blind**: they never receive the hypothesis. An analyst told
 "20 auth events means malicious" and then shown 20 auth events reports malicious,
-which is the hypothesis talking rather than the evidence. So each one judges what
-its rows show (`DomainFinding`, carrying a `Disposition` --
-benign/suspicious/malicious/inconclusive) and never takes a position on a claim.
+which is the hypothesis talking rather than the evidence.
+
+**They also no longer judge.** Until 2026-08-31 each one returned a `Disposition`
+(benign/suspicious/malicious/inconclusive) about its own rows. That authority was
+removed: deciding which rows matter is the judgement the Analyst Agent exists to
+make, with sight of every domain and of the hypothesis, and a sub-analyst made it
+blind, on one slice, with nothing able to check it. A `DomainFinding` now carries
+a `narrative` -- what the rows say, in plain English -- and `observations`, one
+checkable line each. Nothing here forms a verdict about anything.
 
 **There is no combiner here, deliberately.** Deciding whether these findings
 support or refute the hypothesis is the Analyst Agent's job, on the far side of
@@ -26,11 +32,14 @@ what callers pass. Keep it that way.
 Two helpers here are shared with the hypothesis-shown arm in `shown.py`, which
 `blind_compare` measures this path against: `_invoke_with_one_reask` (pack,
 invoke, re-ask once) and `_apply_grounding` (the citation gate). Each is defined
-once so a change cannot land on one arm and miss the other.
+once so a change cannot land on one arm and miss the other. `shown.py` still has
+a `Stance` and a `confidence` to downgrade; this arm has neither, so the shared
+gate is parameterised rather than branched -- see `_apply_grounding`.
 
 Failure is contained per analyst: a call that errors or stays unparseable becomes
-an `inconclusive` finding that says why, so one domain never sinks the whole run
--- the same discipline the Broker applies to a failing subagent.
+a finding with no observations whose narrative says why, so one domain never
+sinks the whole run -- the same discipline the Broker applies to a failing
+subagent.
 """
 
 from __future__ import annotations
@@ -70,16 +79,32 @@ from .packing import (
     pack_evidence,
 )
 from .parse import FindingParseError, parse_finding, split_reasoning
-from .prompts import _FINDING_ANSWER_BLOCK, build_facts_user_turn, facts_system_prompt
+from .prompts import _NARRATIVE_ANSWER_BLOCK, build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice, route
 
 logger = logging.getLogger(__name__)
 
-_OBSERVATION_CITE_RE = re.compile(r"\[([A-Za-z_]+#\d+)\]")
-"""A `[header_id]` citation embedded in an observation line.
+_OBSERVATION_CITE_RE = re.compile(r"\[?\b([A-Za-z_]+#\d+)\]?")
+"""A header id cited in an observation line, bracketed or not.
 
-Both prompt footers ask for one per observation (`prompts.py:65`, `:238`), and
-`parse._parse_observations` keeps the line verbatim, brackets included.
+Both prompt footers ask for `[header_id]` (`prompts.py:65`, `:238`), and
+`parse._parse_observations` keeps the line verbatim, brackets included. **The
+brackets are not load-bearing and must not be required.** This pattern demanded
+them until 2026-09-01, and the live run `cli-20260901T075503` showed what that
+costs: the model wrote its ids in prose that run -- `(dns_resolutions#11 and
+#34)`, `Processes#16 and #18` -- so `findall` matched nothing, every observation
+took `_resolve_observation_citations`'s "cited nothing at all" branch, and the
+per-claim gate validated NOTHING across all three domains. Two endpoint
+observations claiming 1,573,654 and 240,882 events crossed the boundary citing
+sets that never resolved.
+
+A bare `category#N` is safe to match. Every id carries a category prefix -- the
+prompt bans writing `#1` alone precisely because a bare number cannot be
+resolved -- and nothing else in this prose has the `word#digits` shape.
+
+Case is normalised at the point of use: the same run wrote `Processes#16`, and
+`valid_ids` keys are lowercase, so a capitalised id would have missed even
+bracketed.
 """
 
 
@@ -96,13 +121,15 @@ def _resolve_observation_citations(
     plus `_persist_assessment` would otherwise make it the durable,
     operator-facing record. An observation with a mix keeps only the ids that
     resolve. An observation citing nothing at all is left untouched -- the
-    trailing `CITATIONS:` line may still ground the verdict as a whole, and
+    trailing `CITATIONS:` line may still ground the finding as a whole, and
     dropping uncited prose is a different (and unmade) decision.
     """
     kept: list[str] = []
     found: set[str] = set()
     for observation in observations:
-        cited = set(_OBSERVATION_CITE_RE.findall(observation))
+        # Lowercased because `valid_ids` keys are: a reply writing `Processes#16`
+        # is citing `processes#16` and must be held to it, not waved through.
+        cited = {c.lower() for c in _OBSERVATION_CITE_RE.findall(observation)}
         if not cited:
             kept.append(observation)
             continue
@@ -117,7 +144,11 @@ def _resolve_observation_citations(
             continue
         text = observation
         for invented in sorted(cited - resolving):
-            text = text.replace(f"[{invented}]", "").replace("  ", " ").strip()
+            # Bracketed or bare, and any case -- `.replace(f"[{invented}]", ...)`
+            # silently no-opped on both `Processes#16` and an unbracketed id,
+            # leaving the invented reference sitting in the kept line.
+            text = re.sub(rf"\[?{re.escape(invented)}\]?", "", text, flags=re.IGNORECASE)
+            text = text.replace("  ", " ").strip()
         kept.append(text)
         found |= resolving
     return kept, found
@@ -152,6 +183,13 @@ class _Attempt:
 
     Carries the token counts either way, because a reply that never parsed was
     still generated and still billed.
+
+    `rationale` is the failure note, and keeps that name although the blind arm's
+    prose field was renamed to `narrative` on 2026-08-31: `shown.py:364` reads
+    `attempt.rationale` and builds an `AnalystVerdict`, which still has a
+    `rationale`. One neutral field feeding two differently-named contract fields
+    is the smaller evil; renaming it would edit the arm this rework must not
+    touch.
     """
 
     parsed: Any | None
@@ -201,8 +239,8 @@ def _invoke_with_one_reask(
     # re-run now (the call is spent), but an estimate that was low is worth a
     # line, because the alternative is finding out via a provider length
     # rejection that arrives as a generic model error -- or not finding out at
-    # all, if the provider truncates the tail and the analyst judges confidently
-    # over evidence it was never shown.
+    # all, if the provider truncates the tail and the analyst writes a confident
+    # account of evidence it was never shown.
     if prompt_tokens > _DANGER_THRESHOLD:
         # Compared against `_DANGER_THRESHOLD`, not `token_budget`: `token_budget`
         # bounds the evidence alone, while `prompt_tokens` is the full system+user
@@ -268,11 +306,12 @@ def _apply_grounding(
     generation_tokens: int,
     *,
     observations_field: str,
-    stance_field: str,
-    decisive: Callable[[Any], bool],
     drop_log: str,
     downgrade_log: str,
     note: str,
+    prose_field: str = "rationale",
+    stance_field: str | None = None,
+    decisive: Callable[[Any], bool] | None = None,
 ) -> Any:
     """The anti-hallucination gate, shared by both paths.
 
@@ -280,18 +319,32 @@ def _apply_grounding(
       (the model can only legitimately cite what it was shown).
     - Check observation-level citations too, and count their valid ids toward
       grounding. Filtering only the trailing CITATIONS: line let a fabricated
-      `[auth_events#7]` reach the operator, and -- the converse -- downgraded a
+      `[auth_events#7]` reach the operator, and -- the converse -- flagged a
       reply that had cited correctly inline but omitted the CITATIONS: line.
     - Freeze what each kept citation resolves to, so the gate's decision survives
       into the artifact instead of being reproducible only by re-running `route()`
       with identical ordering.
-    - Downgrade a decisive reply whose citations ALL fail to resolve, capping
-      confidence. A decisive claim with nothing behind it is not one we let stand.
+    - Mark a reply that asserted something and has NO citation left. What
+      "marking" means is the one place the two arms now genuinely differ, and it
+      is a parameter rather than a branch:
 
-    The two paths differ in exactly three ways, and all three are parameters
-    rather than branches: which field holds the observations, what counts as
-    decisive, and what the appended note says. `inconclusive` is exempt on both,
-    needing no citation.
+      **`shown.py` passes `stance_field` and `decisive`.** It still returns an
+      `AnalystVerdict` with a `Stance` and a `confidence`, so a decisive claim
+      with nothing behind it is downgraded to `inconclusive` with capped
+      confidence. `inconclusive` is exempt, needing no citation.
+
+      **The blind arm passes neither**, because since 2026-08-31 it has no
+      verdict to downgrade and no confidence to cap. What it asserted is its
+      observations, so that is the test, and the only consequence is the note:
+      the narrative is KEPT and the note appended to it. Blanking the narrative
+      was considered and rejected -- it is the audit record of what the model
+      claimed, and destroying it destroys the only evidence that a fabrication
+      happened. `observations: []`, `citations: []` and `exhibits: []` are what
+      tell the consumer not to trust it.
+
+    Do not "simplify" this by stripping the stance arm; `shown.py` is the harness
+    whose measurements are the evidence the blind design rests on, and it must
+    keep working.
     """
     kept = [c for c in reply.citations if c in valid_ids]
     dropped = [c for c in reply.citations if c not in valid_ids]
@@ -311,12 +364,34 @@ def _apply_grounding(
         "generation_tokens": generation_tokens,
     }
 
-    current = getattr(reply, stance_field)
-    if decisive(current) and not citations:
-        logger.warning(downgrade_log, reply.domain, current)
-        updates[stance_field] = "inconclusive"
-        updates["confidence"] = min(reply.confidence, 0.3)
-        updates["rationale"] = f"{reply.rationale} [{note}]".strip() if reply.rationale else note
+    if stance_field is not None:
+        assert decisive is not None, "a stance_field needs a decisive() to read it"
+        current = getattr(reply, stance_field)
+        ungrounded = decisive(current) and not citations
+        log_args: tuple = (reply.domain, current)
+    else:
+        # BOTH operands are the PRE-filter values on purpose: a reply that cited
+        # only invented ids has had every one of them dropped by now, and
+        # `_resolve_observation_citations` may have dropped the observations that
+        # carried them too, so testing only the survivors would let exactly the
+        # fabrication case slip through silently. Reading the post-filter
+        # `observations` here was the original defect -- an observation whose only
+        # citation was invented is dropped first and then reads as "empty, not
+        # ungrounded", so the note never landed on the one finding that most needs
+        # it. A reply that asserted nothing and cited nothing -- the empty-slice
+        # and failure findings -- is not ungrounded, it is empty, and gets no
+        # note; both have empty pre-filter observations, so they stay unmarked.
+        asserted = getattr(reply, observations_field) or reply.citations
+        ungrounded = bool(asserted) and not citations
+        log_args = (reply.domain,)
+
+    if ungrounded:
+        logger.warning(downgrade_log, *log_args)
+        if stance_field is not None:
+            updates[stance_field] = "inconclusive"
+            updates["confidence"] = min(reply.confidence, 0.3)
+        prose = getattr(reply, prose_field)
+        updates[prose_field] = f"{prose} [{note}]".strip() if prose else note
 
     return reply.model_copy(update=updates)
 
@@ -333,16 +408,16 @@ def _apply_grounding(
 
 _FINDING_REASK = (
     "\n\nYour previous reply did not end with the required block. "
-    "Reply again, ending with exactly:\n" + _FINDING_ANSWER_BLOCK
+    "Reply again, ending with exactly:\n" + _NARRATIVE_ANSWER_BLOCK
 )
-"""Built from `prompts._FINDING_ANSWER_BLOCK`, not a second hand-written copy.
+"""Built from `prompts._NARRATIVE_ANSWER_BLOCK`, not a second hand-written copy.
 
 This is appended to the user turn (`model.invoke(system, user + reask)`), so it
 is the LAST and most explicit instruction the model reads on a re-ask -- a
 divergence here overrides the first-ask footer rather than merely duplicating
-it. It used to be independently written out with OBSERVATIONS first and NO
-DISPOSITION line at all; see `_FINDING_ANSWER_BLOCK`'s docstring for what that
-caused. Deriving it from the same constant the footer uses makes the two
+it. It used to be written out independently, in a different field set and order
+from the footer's, and the two drifted: that is what cost the 2026-08-30 live
+run its answer. Deriving it from the same constant the footer uses makes the two
 incapable of saying different things; `test_analyst_prompts.py` pins that they
 still agree on field set and order."""
 
@@ -366,11 +441,15 @@ def gather_finding(
     # ran, which is exactly the never-attempted state the rest of this pipeline
     # works to keep distinguishable.
     if not slice_.has_evidence():
-        return DomainFinding(
-            domain=domain,
-            confidence=0.0,
-            rationale=f"no {domain} evidence was retrieved",
-        )
+        # An EMPTY finding, not a sentence saying it is empty. The narrative is
+        # the model's account of rows it read, and no model ran here -- writing
+        # "no identity evidence was retrieved" into it would put words into a
+        # translator's mouth exactly as the old `inconclusive` default put a
+        # verdict there. `RetrievalSummary` on `HypothesisFindings` is what now
+        # separates "we looked and found nothing" from "we did not look"; see
+        # `contracts.reasoning.HypothesisFindings`, which records that this field
+        # became load-bearing here.
+        return DomainFinding(domain=domain)
 
     with analyst_span(domain):
         finding = _gather_finding_traced(model, scope, slice_, domain)
@@ -410,10 +489,14 @@ def _gather_finding_traced(
         return _finalize_finding(
             attempt.parsed, valid_ids, attempt.prompt_tokens, attempt.generation_tokens
         )
+    # UNLIKE the empty-slice branch above, this one keeps its sentence. A model
+    # ran, was billed, and failed; that is not a retrieval fact and
+    # `RetrievalSummary` has nowhere to record it, so blanking the narrative here
+    # would delete the only account of what went wrong. `observations` stays
+    # empty, which is what says nothing was read.
     return DomainFinding(
         domain=domain,
-        confidence=0.0,
-        rationale=attempt.rationale,
+        narrative=attempt.rationale or "",
         reasoning_trace=attempt.reasoning_trace,
         prompt_tokens=attempt.prompt_tokens,
         generation_tokens=attempt.generation_tokens,
@@ -426,18 +509,22 @@ def _finalize_finding(
     prompt_tokens: int,
     generation_tokens: int,
 ) -> DomainFinding:
-    """Drop any citation that does not resolve, and downgrade what is left ungrounded.
+    """Drop any citation that does not resolve, and mark what is left ungrounded.
 
-    Mirrors `_finalize`'s grounding gate on the blind path. This used to say
-    there was "no stance to downgrade here" and defer the equivalent gate to the
-    Aggregator -- true while a `DomainFinding` carried only observations, and
-    false since it gained a `disposition`. A confident `malicious` resting on
-    nothing is exactly the claim `_finalize` refuses to let stand for a verdict,
-    and deferring it was doubly wrong: the Aggregator is the Analyst Agent, which
-    is not ours, and a component that never sees evidence cannot check grounding
-    anyway.
+    Mirrors `_finalize`'s grounding gate on the blind path. It used to say there
+    was "no stance to downgrade here" and defer the equivalent gate to the
+    Aggregator; that was true while a `DomainFinding` carried only observations,
+    false while it carried a `disposition`, and is true again in a different
+    sense now that the disposition is gone -- there is nothing to downgrade, but
+    the gate still has work to do, and deferring it was always doubly wrong. The
+    Aggregator is the Analyst Agent, which is not ours, and a component that
+    never sees the evidence cannot check grounding anyway.
 
-    `inconclusive` is exempt, needing no citation, same as in `_finalize`.
+    What is left after a total citation failure is the note. The narrative is
+    KEPT (see `_apply_grounding`): it is the record of what the model claimed,
+    and it is `observations: []`/`citations: []`/`exhibits: []` beside it that
+    tell the consumer the claim rests on nothing. No `stance_field` and no
+    `decisive` are passed, because this arm has no verdict and no confidence.
     """
     return _apply_grounding(
         finding,
@@ -445,16 +532,11 @@ def _finalize_finding(
         prompt_tokens,
         generation_tokens,
         observations_field="observations",
-        stance_field="disposition",
-        # NOT the decisive pair: a `Disposition` is benign/suspicious/malicious/
-        # inconclusive, and "benign, and I am 95% sure" rests on evidence exactly
-        # as much as "malicious" does -- an uncitable benign call is the one most
-        # likely to close an investigation.
-        decisive=lambda disposition: disposition != "inconclusive",
+        prose_field="narrative",
         drop_log="domain=%s | dropped %d invented citation(s) from a finding: %s",
         downgrade_log=(
-            "domain=%s | disposition '%s' had no citation that resolves; "
-            "downgrading to inconclusive"
+            "domain=%s | finding has no citation that resolves; keeping the "
+            "narrative and marking it ungrounded"
         ),
         note="downgraded: no cited evidence resolved",
     )
@@ -485,34 +567,32 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
         for block in exhibits_for(slice_, finding.citations)
     ]
 
-    # A decisive disposition whose every cited block is EMPTY. Warned about, not
-    # downgraded, and the distinction is the point: an empty result set is
-    # legitimate negative evidence -- "no failed logons in the window" genuinely
-    # supports `benign` -- so penalising it would punish correct reasoning about
-    # an absence. What it cannot support is a claim that something was observed,
-    # and telling those two apart requires reading the claim against the rows,
-    # which is defect (c) and is not decidable here. So this surfaces the case
-    # rather than judging it; `Exhibit.row_count` carries it to the consumer,
-    # which now has the rows and can.
-    if (
-        finding.disposition != "inconclusive"
-        and exhibits
-        and all(e.row_count == 0 for e in exhibits)
-    ):
+    # Observations whose every cited block is EMPTY. Warned about, not removed,
+    # and the distinction is the point: an empty result set is legitimate
+    # negative evidence -- "no failed logons in the window" is a true and useful
+    # thing to report -- so penalising it would punish a correct account of an
+    # absence. What it cannot support is a claim that something WAS observed, and
+    # telling those two apart requires reading the claim against the rows, which
+    # is defect (c) and is not decidable here. So this surfaces the case rather
+    # than judging it; `Exhibit.row_count` carries it to the consumer, which now
+    # has the rows and can.
+    #
+    # The test used to be `finding.disposition != "inconclusive"` -- "the analyst
+    # committed to something". With the disposition gone, the same defect is
+    # stated directly: this tier commits to something by writing an observation,
+    # so an observation standing on nothing but zero-row blocks is the case.
+    if finding.observations and exhibits and all(e.row_count == 0 for e in exhibits):
         logger.warning(
-            "domain=%s | disposition '%s' at confidence %.2f rests entirely on "
-            "cited block(s) with zero rows: %s",
+            "domain=%s | %d observation(s) rest entirely on cited block(s) with "
+            "zero rows: %s",
             finding.domain,
-            finding.disposition,
-            finding.confidence,
+            len(finding.observations),
             ", ".join(e.citation for e in exhibits),
         )
 
     return DomainJudgement(
         domain=finding.domain,
-        disposition=finding.disposition,
-        confidence=finding.confidence,
-        rationale=finding.rationale,
+        narrative=finding.narrative,
         observations=list(finding.observations),
         citations=list(finding.citations),
         exhibits=exhibits,
@@ -529,7 +609,7 @@ async def gather(
     hypothesis: str | None = None,
     trace_sink: Callable[[list[DomainFinding]], None] | None = None,
 ) -> HypothesisFindings:
-    """Run the three blind analysts and attach their judgements to the hypothesis.
+    """Run the three blind analysts and attach their findings to the hypothesis.
 
     The blind-path counterpart to `analyze()`, and the producer of the contract
     handed up to the Analyst Agent. Same routing, same concurrency, same
@@ -545,7 +625,7 @@ async def gather(
 
     Each finding is projected to a `DomainJudgement` before it leaves: the audit
     fields stay here, and the rows behind each kept citation travel with it, so
-    the consumer can check a judgement without holding the evidence store.
+    the consumer can check a narrative against the rows it was written from.
 
     `hypothesis_id` defaults to the report's, which is the normal case; both it
     and `hypothesis` are accepted explicitly for a caller assessing a report
@@ -601,6 +681,13 @@ def _retrieval_summary(report: BrokerReport) -> RetrievalSummary:
     Code-assembled from what the Broker recorded, so nothing here is a fresh
     judgement -- `completed`/`evaluated` come from `broker.evaluate_step()` and
     `covered`/`not_covered` from each subagent's own `Assessment`.
+
+    **This is now the only thing that separates "we looked and found nothing"
+    from "we did not look."** It was a supplement while an empty domain came back
+    as `inconclusive` with a sentence explaining itself; since 2026-08-31 an
+    empty domain comes back as an empty narrative with no observations, and this
+    summary carries the reason instead. See
+    `contracts.reasoning.HypothesisFindings`.
 
     `covered` is the union across dispatches; `not_covered` is the union MINUS
     that, so the two are disjoint. Carrying both unions was the first cut and

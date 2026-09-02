@@ -1399,6 +1399,16 @@ class TestFetchPlanAndReport:
         assert written["task_id"] == "task-1"
         assert written["run_id"] == "run_a"
 
+        # The message lands beside the record, from the same call. A directory
+        # holding one without the other leaves a reader unable to tell which
+        # shape the Analyst Agent actually received.
+        payload = json.loads((run_a / "analyst-payload.json").read_text(encoding="utf-8"))
+        assert payload["task_id"] == "task-1"
+        assert payload["run_id"] == "run_a"
+        # Stripped, not merely reordered: exhibits are 73% of the record.
+        assert "retrieval" not in payload
+        assert not (run_b / "analyst-payload.json").exists()
+
     async def test_the_synthesized_fallback_never_marks_a_step_complete(self, tmp_path, monkeypatch):
         """The regression test for the failure this task exists to remove.
 

@@ -1,0 +1,276 @@
+{
+  "$defs": {
+    "DomainJudgement": {
+      "description": "One domain's judgement as it crosses to the Analyst Agent.\n\nThe wire projection of a `DomainFinding`. Same judgement, minus what is ours\nrather than the consumer's, plus the evidence needed to check it.\n\nDropped from `DomainFinding`: `reasoning_trace`, `prompt_tokens`,\n`generation_tokens`. The token counts are our telemetry. The trace is stronger\nthan that -- it is documented \"persisted for audit, never re-fed\", and putting\na model's private chain-of-thought into a contract handed to another model is\nexactly re-feeding it. A projection rather than a `model_dump(exclude=...)` so\nthe published schema does not advertise fields the consumer must know to\nignore.\n\nAdded: `exhibits`. See `Exhibit`.\n\n**The name predates the shape.** It was named while this tier judged, and it\nwas deliberately NOT renamed when the judging was removed on 2026-08-31: a\nrename would churn the contracts export, `analyze`, `main`, the published\nschema and every test that names the type, for no behavioural gain. Read it\nas \"one domain's contribution\", and read the fields for what it now is.\nThere is no verdict in it -- no `disposition`, no `confidence`, no stance.\nSee `Disposition` for where the deciding happens instead.",
+      "properties": {
+        "citations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "domain": {
+          "enum": [
+            "identity",
+            "network",
+            "endpoint"
+          ],
+          "title": "Domain",
+          "type": "string"
+        },
+        "exhibits": {
+          "description": "The cited evidence, one entry per kept citation.",
+          "items": {
+            "$ref": "#/$defs/Exhibit"
+          },
+          "title": "Exhibits",
+          "type": "array"
+        },
+        "narrative": {
+          "default": "",
+          "description": "Plain English: what these rows show, in order. What happened, NOT what it means -- weighing it against the hypothesis is yours.",
+          "title": "Narrative",
+          "type": "string"
+        },
+        "observations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Observations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "domain"
+      ],
+      "title": "DomainJudgement",
+      "type": "object"
+    },
+    "Exhibit": {
+      "description": "The actual rows behind one citation, rendered as the analyst saw them.\n\nAn `Evidence.id` is a pointer, and a pointer is only useful to a consumer\nholding the evidence store. The Analyst Agent is a separate component and may\nhold nothing; without the rows it can weigh a judgement only by trusting it.\n\nCarrying every routed block instead would be the other failure -- on\n`cli-20260825T100434` each domain was routed 32-35 blocks and cited one, so\nthe full pack is ~13-19k characters per domain against ~250 for the cited\nblocks. Only what was cited travels.\n\n`rows` is the same projected, `_sanitise`d text the domain analyst read, not\na re-render: an exhibit that formatted the rows differently from the evidence\nthe judgement was formed on would be a different exhibit.\n\n`query` is the one thing here the analyst did *not* see, and deliberately so\n-- see `formatting.format_result_set`.",
+      "properties": {
+        "citation": {
+          "description": "The header id, e.g. 'auth_events#1'.",
+          "minLength": 1,
+          "title": "Citation",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "description": "The `Evidence.id`s this block was projected from, for a consumer that does hold the store and wants the untruncated rows.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "query": {
+          "default": "",
+          "description": "The query that retrieved this set. Carried HERE rather than in `rows` because the two consumers differ: the domain analyst is blind to the hypothesis and a query written to test it leaks it (see `formatting.format_result_set`), while the Analyst Agent is not blind and cannot judge an empty set without knowing what was asked. Empty for a `reputation#N` exhibit, which is a reputation lookup rather than a search, and for exhibits written before this field existed.",
+          "title": "Query",
+          "type": "string"
+        },
+        "row_count": {
+          "description": "Rows in the underlying set, which is NOT the number rendered in `rows` -- exhibits are row-capped. Carried separately so a consumer can see that a cited set was empty, which is invisible from an id alone and which the grounding gate does not check for.",
+          "minimum": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "rows": {
+          "default": "",
+          "description": "The rendered block: its `# header` line and the capped rows beneath it.",
+          "title": "Rows",
+          "type": "string"
+        }
+      },
+      "required": [
+        "citation",
+        "row_count"
+      ],
+      "title": "Exhibit",
+      "type": "object"
+    },
+    "RetrievalSummary": {
+      "description": "What was looked for, and what the looking turned up.\n\nThe fetch side, projected for the consumer of `HypothesisFindings`. Without\nit that contract carried three judgements and no account of the retrieval\nbehind them, so an `inconclusive` was unreadable: a domain reports it both\nwhen the rows genuinely decide nothing and when nothing was ever retrieved\nfor it, and only the fetch record tells those apart. Deciding which one\nhappened is exactly the kind of call this contract exists to leave to the\nAnalyst Agent -- so it has to be given the facts to make it.\n\nDeliberately not the whole `BrokerReport`: the consumer needs to know what\nwas asked and what came back, not to be able to re-run the fetch. Costs,\nper-query records, raw `SubtaskResult`s and the classification stay in\n`report.json`, joined by `HypothesisFindings.task_id`.",
+      "properties": {
+        "covered": {
+          "description": "Categories at least one subagent asserted it retrieved data for, unioned across dispatches. Model-authored (see `SiemAssessment.covered`) -- a claim about coverage, not a count of rows.",
+          "items": {
+            "enum": [
+              "dns_resolutions",
+              "connections",
+              "processes",
+              "auth_events"
+            ],
+            "type": "string"
+          },
+          "title": "Covered",
+          "type": "array"
+        },
+        "dispatched": {
+          "description": "Families actually dispatched, observed at dispatch time.",
+          "items": {
+            "enum": [
+              "edr",
+              "ndr",
+              "vt",
+              "siem"
+            ],
+            "type": "string"
+          },
+          "title": "Dispatched",
+          "type": "array"
+        },
+        "not_covered": {
+          "description": "Categories that were asked for and that NO dispatch retrieved. Disjoint from `covered` by construction, and that subtraction is the point: a plain union of every subagent's own `not_covered` is noise, because a step scoped to one category honestly reports the other three as not covered. On `cli-20260825T100434` -- four siem steps, one category each -- the union put all four categories in BOTH lists, which tells a consumer nothing. One dispatch retrieving a category settles it for the investigation.",
+          "items": {
+            "enum": [
+              "dns_resolutions",
+              "connections",
+              "processes",
+              "auth_events"
+            ],
+            "type": "string"
+          },
+          "title": "Not Covered",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/StepSummary"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "title": "RetrievalSummary",
+      "type": "object"
+    },
+    "StepSummary": {
+      "description": "What became of one planned fetch step, as the Analyst Agent needs to see it.\n\nA projection of `contracts.subtask.StepOutcome`, code-assembled, carrying the\nfour facts that change how a judgement should be weighed and nothing else.\nDropped: `dispatches`, `refused_for_budget`, `status`, `reason` and the full\n`FetchStep` -- dispatch counts and budget refusals are our operational\nconcern, not an input to reasoning about evidence.\n\n`evaluated` is here and is load-bearing: `completed=False, evaluated=False`\nmeans nobody ever judged this step, which is a different fact from\n`completed=False, evaluated=True` (\"ran and fell short\"). See\n`StepOutcome.evaluated`.",
+      "properties": {
+        "completed": {
+          "default": false,
+          "title": "Completed",
+          "type": "boolean"
+        },
+        "confirmed_empty": {
+          "default": false,
+          "title": "Confirmed Empty",
+          "type": "boolean"
+        },
+        "evaluated": {
+          "default": true,
+          "title": "Evaluated",
+          "type": "boolean"
+        },
+        "family": {
+          "enum": [
+            "edr",
+            "ndr",
+            "vt",
+            "siem"
+          ],
+          "title": "Family",
+          "type": "string"
+        },
+        "objective": {
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "rows_retrieved": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Rows Retrieved",
+          "type": "integer"
+        },
+        "step_id": {
+          "minLength": 1,
+          "title": "Step Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "family",
+        "objective"
+      ],
+      "title": "StepSummary",
+      "type": "object"
+    }
+  },
+  "$id": "https://renosystems.ai/smartops/schemas/hypothesis-findings.v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Three blind domain judgements, attached to the hypothesis they never saw.\n\n**The contract handed up to the Analyst Agent.** That agent is a separate\ncomponent, owned elsewhere; this is the boundary, and everything about the\nshape follows from which side of it a decision belongs on.\n\nWhat is here: what each domain's evidence shows, judged on the evidence\nalone, and the means to verify that judgement against the rows behind it.\n\nWhat is deliberately NOT here: any position on the hypothesis. There is no\n`overall_stance` and no combiner, because deciding whether these findings\nsupport or refute the hypothesis is the Analyst Agent's job. That absence is\nthe contract, not an omission -- `HypothesisAssessment` is the shape that\ncarries a decided stance, and it is a different shape for that reason.\n\nThe hypothesis appears here only as an id and, optionally, its prose. It is\nthe *attachment point*: the analysts formed their judgements without it, and\nthis is where the two are joined. A consumer that renders `hypothesis` into\na prompt MUST fence and escape it -- it is attacker-influenceable, the same\nas `InvestigationContext.hypothesis`.\n\nAll three domains always appear in `findings`, including ones that got no\nevidence. An empty domain appears with an **empty narrative and no\nobservations**, never silently omitted: \"we looked and found nothing\" and\n\"we did not look\" are different facts, and the consumer cannot recover the\ndifference from a missing entry.\n\nIt can no longer recover it from the entry itself either, which is what\nmakes **`RetrievalSummary` the only signal separating those two facts.** An\nempty domain used to at least say `inconclusive`; with the verdict gone\n(2026-08-31) an empty finding is silent by construction, so `retrieval` is\nno longer a supplement to `findings` -- it is the whole answer to \"was\nanything ever fetched for this domain?\". A reader who takes it for a\nredundant projection of the fetch side and deletes it takes that\ndistinction with it.",
+  "properties": {
+    "findings": {
+      "description": "One per analysis domain, including domains that saw no evidence.",
+      "items": {
+        "$ref": "#/$defs/DomainJudgement"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "hypothesis": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The hypothesis prose, if the producer had it. Carried so the artifact is self-describing rather than resolvable only against a live `InvestigationContext`. Attacker-influenceable -- fence and escape it before it reaches any prompt.",
+      "title": "Hypothesis"
+    },
+    "hypothesis_id": {
+      "minLength": 1,
+      "title": "Hypothesis Id",
+      "type": "string"
+    },
+    "retrieval": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RetrievalSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "What the fetch side looked for and turned up. See `RetrievalSummary`: without it an `inconclusive` judgement cannot be told apart from a domain that was never given anything to read. Optional because artifacts written before this field exist and must still load."
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The timestamped run directory these findings belong to. Unlike `HypothesisAssessment.run_id`, `gather()` sets this at construction wherever the caller knows it, rather than leaving it for the persistence layer to stamp on write. Stamping on write is fine for an artifact whose next stop is our own disk; this one is handed to another system and may never be persisted here at all, so a null `run_id` would make it unidentifiable at exactly the moment it crosses the boundary. Still optional, because a caller genuinely may not know it -- but it should be the exception now, not the default.",
+      "title": "Run Id"
+    },
+    "schema_version": {
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "task_id": {
+      "description": "The `BrokerReport.task_id` these findings were drawn from -- the join key back to `report.json`, and the prefix every `Evidence.id` in `citation_evidence` is built from. See docs/superpowers/specs/2026-08-25-evidence-link-contract-design.md.",
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "hypothesis_id"
+  ],
+  "title": "HypothesisFindings",
+  "type": "object"
+}

@@ -267,8 +267,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "the hypothesis to test, in plain language. When given AND "
             "SMARTOPS_ANALYST_MODEL_ARN is configured, the identity/network/endpoint "
-            "subagent-analysts analyze the fetched evidence and report whether it "
-            "supports or refutes it. Stub for an upstream Analyst agent"
+            "subagent-analysts translate the fetched evidence into a plain-English "
+            "narrative with cited observations. They are never shown this hypothesis "
+            "and take no position on it -- whether the evidence supports or refutes "
+            "it is the upstream Analyst agent's call. Stub for that agent"
         ),
     )
     parser.add_argument(
@@ -437,23 +439,21 @@ def _print_outcome(outcome, budget: Budget) -> None:
 def _print_findings(findings: HypothesisFindings) -> None:
     """Operator view of the blind path.
 
-    Deliberately prints no overall verdict: there isn't one. Each domain judged
-    its own evidence without seeing the hypothesis, and rolling those into
-    SUPPORTS/REFUTES is the Analyst Agent's job. Printing a stance here would be
+    Deliberately prints no verdict of any kind: there isn't one. Each domain
+    translated its own evidence into plain English without seeing the
+    hypothesis and without judging it, and rolling that into SUPPORTS/REFUTES
+    is the Analyst Agent's job. Printing a stance or disposition here would be
     inventing the very thing this path exists to keep separate.
 
     `rows=N` per citation is shown because it is the cheapest way to see the
-    failure the exhibits exposed: a confident judgement resting on a cited block
-    that returned nothing.
+    failure the exhibits exposed: a narrative resting on a cited block that
+    returned nothing.
     """
     print(f"\ndomain findings for hypothesis {findings.hypothesis_id} (analysts were blind):")
     for judgement in findings.findings:
-        print(
-            f"  [{judgement.domain:<8}] {judgement.disposition:<12} "
-            f"conf={judgement.confidence:.2f}"
-        )
-        if judgement.rationale:
-            print(f"             {judgement.rationale}")
+        print(f"  [{judgement.domain:<8}]")
+        if judgement.narrative:
+            print(f"             {judgement.narrative}")
         for observation in judgement.observations:
             print(f"               - {observation}")
         for exhibit in judgement.exhibits:
@@ -490,8 +490,9 @@ def _print_findings(findings: HypothesisFindings) -> None:
             print(f"  not covered: {', '.join(retrieval.not_covered)}")
 
     print(
-        "\nno overall stance: deciding whether this supports or refutes the "
-        "hypothesis is the Analyst Agent's call, not this layer's."
+        "\nno overall stance and no disposition: deciding whether this supports "
+        "or refutes the hypothesis, or what it means at all, is the Analyst "
+        "Agent's call, not this layer's."
     )
 
 
@@ -557,10 +558,6 @@ def _persist_reasoning_traces(
         "traces": [
             {
                 "domain": finding.domain,
-                # Carried alongside so a reader can see WHICH judgement this
-                # reasoning produced without opening findings.json and joining.
-                "disposition": finding.disposition,
-                "confidence": finding.confidence,
                 "prompt_tokens": finding.prompt_tokens,
                 "generation_tokens": finding.generation_tokens,
                 "reasoning_trace": finding.reasoning_trace,
@@ -576,7 +573,7 @@ def _persist_reasoning_traces(
 def _persist_findings(
     task_id: str, findings: HypothesisFindings, run_dir: Path | str | None = None
 ) -> None:
-    """Write findings.json beside the broker's run artifacts.
+    """Write findings.json and analyst-payload.json beside the broker's artifacts.
 
     `run_dir` wins over `SMARTOPS_RUNS_DIR` over the default. Named
     `findings.json`, not `assessment.json`: `HypothesisAssessment` is the shape
@@ -584,6 +581,15 @@ def _persist_findings(
     -- deciding for or against the hypothesis is the Analyst Agent's call, on the
     far side of this contract. The writer for `assessment.json` was deleted with
     the rest of the shown path; see `subagent_analysts/shown.py`.
+
+    **Two files, because the record and the message are not the same shape.**
+    `findings.json` is the durable audit trail: citations, exhibits, retrieval
+    summary, every row the analyst read. `analyst-payload.json` is
+    `HypothesisFindings.for_analyst()` -- prose and observations only, and what
+    actually crosses the boundary. On the 2026-09-01 live run that is 5,684
+    characters against 42,200, because 73% of the record is the raw rows this
+    tier exists to compress into prose; shipping them on would undo the
+    compression that justifies the tier.
     """
     target_dir = _resolve_run_dir(task_id, run_dir)
     if target_dir is None:
@@ -597,6 +603,13 @@ def _persist_findings(
         )
         (target_dir / "findings.json").write_text(
             stamped.model_dump_json(indent=2), encoding="utf-8"
+        )
+        # The record is written above; the message is written here. Same call, so
+        # the two cannot drift apart on disk -- an artifact directory holding one
+        # without the other would leave a reader unable to tell which the Analyst
+        # Agent actually received.
+        (target_dir / "analyst-payload.json").write_text(
+            stamped.for_analyst().model_dump_json(indent=2), encoding="utf-8"
         )
 
 

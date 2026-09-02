@@ -6,11 +6,18 @@ Bedrock-imported reasoning model (Foundation-Sec-8B-Reasoning). Distinct from th
 *fetch* subagents in `smartops.subagents`, which retrieve evidence and draw no
 conclusions.
 
-They are **blind**: no analyst is shown the hypothesis, so each reports a
-`Disposition` on its evidence (benign/suspicious/malicious/inconclusive) rather
-than a position on a claim. Whether the evidence supports or refutes the
-hypothesis is decided by the Analyst Agent, above the `HypothesisFindings`
-contract this package produces.
+They are **blind**: no analyst is shown the hypothesis. Since 2026-08-31 they
+also **judge nothing** -- each returns a plain-English `narrative` of what its
+rows say, plus cited observations, and no verdict of any kind. Not a
+`Disposition`, not a confidence, not a position on a claim. Deciding what the
+evidence means, and whether it supports or refutes the hypothesis, belongs to
+the Analyst Agent above the `HypothesisFindings` contract this package produces.
+
+The blindness and the silence are separate guarantees with separate reasons.
+Blind, so the hypothesis cannot anchor the read; silent, because judgement is
+the consumer's job and this tier has no standing to do it. An earlier design
+kept the first and rejected the second -- "blind does not mean silent" -- and
+that line was deliberately moved.
 
 Layout, live path first:
 - `routing`    -- split a `BrokerReport` into per-domain evidence slices

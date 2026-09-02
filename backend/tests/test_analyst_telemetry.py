@@ -30,9 +30,8 @@ from contracts import Entity, ResultSet, Scope
 
 _ANSWER = (
     "some reasoning </think>\n"
+    "NARRATIVE: repeated failures for one account.\n"
     "OBSERVATIONS:\n- a burst of failures [auth_events#1]\n"
-    "DISPOSITION: suspicious\nCONFIDENCE: 0.85\n"
-    "RATIONALE: repeated failures for one account.\n"
     "CITATIONS: auth_events#1"
 )
 
@@ -106,14 +105,13 @@ class TestTheAnalystTierIsTraced:
         assert analyst.parent.span_id == root.context.span_id
         assert analyst.context.trace_id == root.context.trace_id
 
-    def test_the_judgement_and_its_cost_are_on_the_span(self, spans):
+    def test_the_finding_and_its_cost_are_on_the_span(self, spans):
         with analysis_span("t-1", "h-1"):
             gather_finding(_FakeModel(), _scope(), _populated())
 
         a = _by_name(spans)["smartops.analyst.identity"].attributes
 
-        assert a["analyst.disposition"] == "suspicious"
-        assert a["analyst.confidence"] == 0.85
+        assert a["analyst.narrative_chars"] == len("repeated failures for one account.")
         assert a["analyst.citation_count"] == 1
         assert a["analyst.observation_count"] == 1
         # OTel GenAI semantic-convention names, so a collector that already reads

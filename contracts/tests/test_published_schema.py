@@ -1,6 +1,6 @@
 """The published JSON Schema must not drift from the models it describes.
 
-`contracts/schemas/hypothesis-findings.v1.schema.json` is what a consumer of
+`contracts/schemas/hypothesis-findings.v<N>.schema.json` is what a consumer of
 `findings.json` validates against -- the Analyst Agent is a separate component,
 owned elsewhere, and this file is the boundary written down. A schema file that
 silently falls behind the model is worse than no schema file: a consumer that
@@ -13,7 +13,15 @@ changes, this test fails and the fix is to regenerate:
     uv run python contracts/schemas/generate.py
 
 and, if the change is breaking for a consumer, to bump `schema_version` and
-publish a new `vN` file beside this one rather than editing it in place.
+publish a new `vN` file beside the old one rather than editing it in place.
+
+**Both halves of that rule are tested.** `CURRENT` is resolved from the model's
+own `schema_version`, the same way `generate.py` names its output, so this file
+follows a bump automatically. `V1_PATH` is pinned to the literal v1 name and
+asserted to still carry the shape v1 was published with -- because a test that
+only ever looks at the current version passes just as happily when someone
+bumps `schema_version` and edits the old file in place, which is the one thing
+the rule forbids.
 """
 
 from __future__ import annotations
@@ -24,13 +32,18 @@ from pathlib import Path
 import pytest
 from contracts import DomainJudgement, HypothesisFindings
 
-SCHEMA_PATH = (
-    Path(__file__).resolve().parents[1] / "schemas" / "hypothesis-findings.v1.schema.json"
-)
+SCHEMA_DIR = Path(__file__).resolve().parents[1] / "schemas"
+CURRENT = HypothesisFindings.model_fields["schema_version"].default
+SCHEMA_PATH = SCHEMA_DIR / f"hypothesis-findings.v{CURRENT}.schema.json"
+V1_PATH = SCHEMA_DIR / "hypothesis-findings.v1.schema.json"
 
 
 def _published() -> dict:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _v1() -> dict:
+    return json.loads(V1_PATH.read_text(encoding="utf-8"))
 
 
 class TestThePublishedFileMatchesTheModels:
@@ -60,27 +73,54 @@ class TestThePublishedFileMatchesTheModels:
         published = _published()
 
         assert published["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-        assert published["$id"].endswith("hypothesis-findings.v1.schema.json")
+        assert published["$id"].endswith(f"hypothesis-findings.v{CURRENT}.schema.json")
 
 
 class TestTheConstraintsAConsumerReliesOnSurvive:
     """Field-level assertions, not just "the file matches".
 
     Equality above catches drift but says nothing about whether the schema is
-    *useful*. These pin the four properties a consumer would actually validate
-    on, so that loosening one in the model fails here with a message naming it.
+    *useful*. These pin the properties a consumer would actually validate on --
+    and, since 2026-08-31, the two it must NOT find -- so that changing one in
+    the model fails here with a message naming it.
     """
 
-    def test_disposition_is_a_closed_enum(self):
-        prop = _published()["$defs"]["DomainJudgement"]["properties"]["disposition"]
+    def test_the_wire_shape_carries_no_verdict(self):
+        """The inverse of the guard that stood here.
 
-        assert set(prop["enum"]) == {"benign", "suspicious", "malicious", "inconclusive"}
+        Until 2026-08-31 this pinned `disposition` as a closed enum and
+        `confidence` to the unit interval -- the two properties a consumer was
+        told it could rely on. The sub-analysts no longer judge, so the useful
+        assertion is the opposite one: neither field may reappear on the wire,
+        because a consumer that finds one has been handed a verdict this tier
+        has no standing to form.
+        """
+        judgement = _published()["$defs"]["DomainJudgement"]["properties"]
 
-    def test_confidence_is_bounded_to_the_unit_interval(self):
-        prop = _published()["$defs"]["DomainJudgement"]["properties"]["confidence"]
+        assert "disposition" not in judgement
+        assert "confidence" not in judgement
+        assert "narrative" in judgement, "the prose the analyst does produce"
 
-        assert prop["minimum"] == 0.0
-        assert prop["maximum"] == 1.0
+    def test_v1_on_disk_still_carries_the_shape_it_was_published_with(self):
+        """The half that proves the version bump was honoured rather than faked.
+
+        Removing `disposition` and `confidence` is breaking, so it published
+        `hypothesis-findings.v2.schema.json` beside v1 instead of editing v1.
+        A test that looked only at the current version would pass identically
+        if someone had bumped `schema_version` and overwritten v1 in place --
+        which leaves a pinned consumer validating green against a file that
+        changed under it, the exact failure the versioning exists to prevent.
+        """
+        v1 = _v1()
+        judgement = v1["$defs"]["DomainJudgement"]["properties"]
+
+        assert v1["properties"]["schema_version"]["default"] == 1
+        assert set(judgement["disposition"]["enum"]) == {
+            "benign", "suspicious", "malicious", "inconclusive"
+        }
+        assert judgement["confidence"]["minimum"] == 0.0
+        assert judgement["confidence"]["maximum"] == 1.0
+        assert CURRENT > 1, "a breaking change must bump `schema_version`"
 
     def test_the_join_keys_are_required(self):
         """`task_id` joins back to report.json and prefixes every `Evidence.id`;
@@ -116,9 +156,7 @@ class TestAllThreeDomainsProduceTheSameShape:
     def test_a_populated_judgement_has_the_published_key_set(self, domain):
         judgement = DomainJudgement(
             domain=domain,
-            disposition="suspicious",
-            confidence=0.85,
-            rationale="a read.",
+            narrative="one account authenticated twice from 10.0.1.50.",
             observations=["something [auth_events#1]"],
             citations=["auth_events#1"],
         )
@@ -131,16 +169,16 @@ class TestAllThreeDomainsProduceTheSameShape:
         `HypothesisFindings` requires all three domains present precisely so a
         consumer cannot mistake an empty one for an absent one."""
         populated = DomainJudgement(
-            domain="identity", disposition="malicious", confidence=0.95,
+            domain="identity", narrative="two logons for bostoll.",
             observations=["x [auth_events#1]"], citations=["auth_events#1"],
         )
-        empty = DomainJudgement(domain="endpoint", disposition="inconclusive", confidence=0.0)
+        empty = DomainJudgement(domain="endpoint")
 
         assert set(populated.model_dump()) == set(empty.model_dump())
 
     def test_the_three_domains_are_the_only_accepted_values(self):
         with pytest.raises(ValueError):
-            DomainJudgement(domain="cloud", disposition="benign", confidence=0.5)
+            DomainJudgement(domain="cloud", narrative="something happened.")
 
 
 class TestEveryAssessmentTellsTheModelWhatNoteIsFor:

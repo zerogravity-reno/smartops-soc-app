@@ -160,6 +160,58 @@ class TestRealSplunkFieldNames:
         assert "udp" in line
 
 
+class TestAggregateSetsCarryTheirEventTotal:
+    """`rows=N` counts GROUPS on a `| stats count by` set, not events.
+
+    Nothing said so, and the analyst was left summing a `count=` column in prose
+    -- across rows the cap may have withheld from it. Measured on
+    `cli-20260823T112627`: a 72-row `auth_events` set totalling 7,656 events was
+    reported as "1,063 successes" in the narrative and "1,083" in an observation
+    drawn from the same set. Wrong twice, inconsistent with itself, and invisible
+    to the grounding gate because the citation resolved perfectly.
+
+    Code sums it now, which is this package's standing rule -- code supplies
+    every number, the model authors none.
+    """
+
+    @staticmethod
+    def _agg(counts):
+        rows = [{"user": f"u{i}", "action": "success", "count": c}
+                for i, c in enumerate(counts)]
+        return ResultSet(query="| stats count by user", row_count=len(rows), rows=rows)
+
+    def test_the_event_total_is_rendered_beside_the_row_count(self):
+        out = format_result_set("auth_events", self._agg([24, 2, 1]), index=2)
+        assert "rows=3" in out
+        assert "events=27" in out
+
+    def test_the_total_covers_rows_the_cap_withheld(self):
+        """The withheld rows are exactly the ones the analyst cannot add up."""
+        out = format_result_set("auth_events", self._agg([10] * 50), index=1, row_cap=5)
+        assert "events=500" in out
+        assert "45 more rows not shown" in out
+
+    def test_a_row_without_a_count_is_one_event(self):
+        """`_count_suffix` omits the field on single-event rows rather than
+        writing `count=1`, so a mixed set still totals correctly."""
+        rows = [{"user": "a", "count": 5}, {"user": "b"}, {"user": "c", "count": "-"}]
+        rs = ResultSet(query="q", row_count=3, rows=rows)
+        assert "events=7" in format_result_set("auth_events", rs, index=1)
+
+    def test_a_non_aggregate_set_gets_no_second_number(self):
+        """`rows=N` already IS the event total there; a second number would only
+        invite the reader to look for a difference that is not there."""
+        rs = ResultSet(query="q", row_count=2,
+                       rows=[{"user": "a"}, {"user": "b"}])
+        assert "events=" not in format_result_set("auth_events", rs, index=1)
+
+    def test_an_unparseable_count_does_not_crash_the_render(self):
+        rs = ResultSet(query="q", row_count=2,
+                       rows=[{"user": "a", "count": "lots"}, {"user": "b", "count": 3}])
+        out = format_result_set("auth_events", rs, index=1)
+        assert "events=4" in out  # the bad row counts as one
+
+
 class TestResultSetRendering:
     def test_header_is_citation_anchor(self):
         rs = ResultSet(query="sourcetype=stream:dns", row_count=1,

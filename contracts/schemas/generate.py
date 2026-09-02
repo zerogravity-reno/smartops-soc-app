@@ -27,7 +27,14 @@ BASE_URI = "https://renosystems.ai/smartops/schemas"
 
 
 def main() -> None:
-    target = SCHEMA_DIR / "hypothesis-findings.v1.schema.json"
+    # Derived from the model, not hardcoded. This read `...v1.schema.json`
+    # literally, so bumping `schema_version` and running the generator would have
+    # overwritten v1 with the v2 shape -- silently breaking every consumer pinned
+    # to v1 while doing exactly what the docstring above forbids. Deriving the
+    # name means a bump publishes a new file and leaves the old ones alone,
+    # without anyone having to remember to edit this line.
+    version = HypothesisFindings.model_fields["schema_version"].default
+    target = SCHEMA_DIR / f"hypothesis-findings.v{version}.schema.json"
     schema = HypothesisFindings.model_json_schema()
     # Pydantic emits neither, and a schema without them is not publishable: a
     # validator has to guess the dialect, and a consumer has no stable name to

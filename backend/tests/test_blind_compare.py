@@ -117,8 +117,8 @@ class _RecordingModel:
         "CITATIONS: auth_events#1"
     )
     _BLIND = (
-        "</think> OBSERVATIONS:\n- two 4624 logons ten seconds apart [auth_events#1]\n"
-        "CONFIDENCE: 0.7\nRATIONALE: a cached interactive logon and an unlock.\n"
+        "</think> NARRATIVE: a cached interactive logon and an unlock.\n"
+        "OBSERVATIONS:\n- two 4624 logons ten seconds apart [auth_events#1]\n"
         "CITATIONS: auth_events#1"
     )
 

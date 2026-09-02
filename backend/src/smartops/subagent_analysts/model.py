@@ -103,10 +103,17 @@ need.
 
 Why it matters more here than it looks: a throttled analyst raises out of
 `AnalystModel.invoke`, `_invoke_with_one_reask` catches it and returns an unparsed
-`_Attempt`, and the domain lands on the wire as `inconclusive` with confidence 0.0. A
-transient capacity blip is therefore indistinguishable from "the evidence does not
-support a judgement" -- the single most misleading way for this to fail, since
-`inconclusive` is a legitimate verdict a reader has no reason to doubt.
+`_Attempt`, and the domain lands on the wire with an EMPTY NARRATIVE and no
+observations. Before 2026-08-31 that surfaced as `inconclusive` with confidence 0.0,
+and the hazard was that a capacity blip read as a legitimate verdict. Removing the
+verdict did not remove the hazard, it moved it: an empty narrative is now what a
+genuinely empty slice also produces, so a transient failure is indistinguishable from
+"we looked and there was nothing" by the narrative alone.
+
+`RetrievalSummary` is the only thing that separates them, which is precisely why it
+is load-bearing rather than supplementary -- see `contracts.reasoning`. A reader who
+judges emptiness from the findings alone will get this wrong; the step's `completed`
+flag is the field that answers it.
 
 `mode` is deliberately not `standard`: standard retries the same call on a fixed
 backoff, adaptive additionally slows the *next* caller, which is what stops three

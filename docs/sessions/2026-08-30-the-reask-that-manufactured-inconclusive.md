@@ -103,13 +103,19 @@ anywhere; its "analyst" hits were all the upstream Analyst Agent. Corrected, plu
 five stale figures across `architecture.md` and the two tracked confluence pages.
 
 **Token accounting, twice.** `_PACK_TOKEN_BUDGET` is now derived:
-`32,768 − system prompt − generation − scaffold − safety margin = 25,392`. The
+`32,768 − system prompt − generation − scaffold − safety margin = 25,751`. The
 system-prompt reserve is measured at import from the rendered prompt, so a future
 prompt edit costs evidence budget rather than silently eating the margin. Two
 rounds were needed: the first derivation landed exactly on the ceiling with a
 scaffold reserve short at one entity, and the second measured the scaffold against
-a 20-entity worst case (474 → 833). Per-domain margins now: identity 577, network
-500, endpoint 590.
+a 20-entity worst case (474 → 833). **As of 2026-08-31, per-domain spare margins:**
+identity 601, network 500, endpoint 575. When the Disposition/confidence blocks were deleted
+(§T2), the system prompt shrank, so `_SYSTEM_PROMPT_RESERVE` (the MAX across domains)
+decreased, allowing `_PACK_TOKEN_BUDGET` to grow. Network shrunk by exactly `_SAFETY_MARGIN`
+by construction (pinned). Identity grew 577→601. Endpoint shrank 590→575 despite the pack
+budget growing: it shrank by 15 tokens while network's 33-token drop allowed the pack budget to
+expand by 25 tokens. That expansion feeds identity and network; since endpoint shrank less than
+the overall reserve, its spare margin *decreased*.
 
 **`SMARTOPS_ANALYST_MAX_GEN_LEN` is clamped.** The budget is frozen at import from
 the module default while `analyst_model_from_env` read the env var at runtime — so

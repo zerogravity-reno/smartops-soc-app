@@ -20,6 +20,8 @@ edit the session file and re-run `python docs/compile_docs.py`._
 - [2026-08-30 — The docs describe the code again, and 6.9MB left the tracked tree](#the-docs-describe-the-code-again-and-69mb-left-the-tracked-tree)
 - [2026-08-30 — The planner never worked, and the first live trace is what found it](#the-planner-never-worked-and-the-first-live-trace-is-what-found-it)
 - [2026-08-30 — The re-ask template never asked for a disposition — and two PROJECT_DOCS entries this supersedes](#the-re-ask-template-never-asked-for-a-disposition--and-two-projectdocs-entries-this-supersedes)
+- [2026-08-31 — Preflight rulings for the translate rework, and one defect in its own handover](#preflight-rulings-for-the-translate-rework-and-one-defect-in-its-own-handover)
+- [2026-08-31 — "REVERSAL: the three domain analysts translate evidence, they do not judge it"](#reversal-the-three-domain-analysts-translate-evidence-they-do-not-judge-it)
 - [2026-08-13 — First live smoke run — Splunk never ran, and why](#first-live-smoke-run--splunk-never-ran-and-why)
 - [2026-08-23 — Asana epic hierarchy clarified; Findings Pipeline / Evidence Store scoped, discriminator gap fixed](#asana-epic-hierarchy-clarified-findings-pipeline--evidence-store-scoped-discriminator-gap-fixed)
 - [2026-08-23 — Hypothesis-blind Tier 1 lands, then a real run explains why the "fix" isn't proof yet](#hypothesis-blind-tier-1-lands-then-a-real-run-explains-why-the-fix-isnt-proof-yet)
@@ -33,6 +35,7 @@ edit the session file and re-run `python docs/compile_docs.py`._
 - [2026-08-29 — The analyst verdict is reproducible now, and half the analyst layer is gone](#the-analyst-verdict-is-reproducible-now-and-half-the-analyst-layer-is-gone)
 - [2026-08-30 — Splunk is back — fill the answer sheet from BOTSv3's published answers, and verify the SIEM path is traced](#splunk-is-back--fill-the-answer-sheet-from-botsv3s-published-answers-and-verify-the-siem-path-is-traced)
 - [2026-08-31 — The three sub-analysts translate logs into plain English. They do not judge.](#the-three-sub-analysts-translate-logs-into-plain-english-they-do-not-judge)
+- [2026-09-01 — The translate rework is complete and measured; three defects remain, none reachable by the gate](#the-translate-rework-is-complete-and-measured-three-defects-remain-none-reachable-by-the-gate)
 
 ---
 
@@ -2822,13 +2825,19 @@ anywhere; its "analyst" hits were all the upstream Analyst Agent. Corrected, plu
 five stale figures across `architecture.md` and the two tracked confluence pages.
 
 **Token accounting, twice.** `_PACK_TOKEN_BUDGET` is now derived:
-`32,768 − system prompt − generation − scaffold − safety margin = 25,392`. The
+`32,768 − system prompt − generation − scaffold − safety margin = 25,751`. The
 system-prompt reserve is measured at import from the rendered prompt, so a future
 prompt edit costs evidence budget rather than silently eating the margin. Two
 rounds were needed: the first derivation landed exactly on the ceiling with a
 scaffold reserve short at one entity, and the second measured the scaffold against
-a 20-entity worst case (474 → 833). Per-domain margins now: identity 577, network
-500, endpoint 590.
+a 20-entity worst case (474 → 833). **As of 2026-08-31, per-domain spare margins:**
+identity 601, network 500, endpoint 575. When the Disposition/confidence blocks were deleted
+(§T2), the system prompt shrank, so `_SYSTEM_PROMPT_RESERVE` (the MAX across domains)
+decreased, allowing `_PACK_TOKEN_BUDGET` to grow. Network shrunk by exactly `_SAFETY_MARGIN`
+by construction (pinned). Identity grew 577→601. Endpoint shrank 590→575 despite the pack
+budget growing: it shrank by 15 tokens while network's 33-token drop allowed the pack budget to
+expand by 25 tokens. That expansion feeds identity and network; since endpoint shrank less than
+the overall reserve, its spare margin *decreased*.
 
 **`SMARTOPS_ANALYST_MAX_GEN_LEN` is clamped.** The budget is frozen at import from
 the module default while `analyst_model_from_env` read the env var at runtime — so
@@ -2871,6 +2880,364 @@ The transferable rule is narrow: **when you change a string a model is instructe
 by, grep for every other place that string is specified.** A per-task review sees
 one diff. Duplication that spans modules needs the whole-branch pass, and this
 session is the argument for keeping that pass.
+
+---
+
+<a id="preflight-rulings-for-the-translate-rework-and-one-defect-in-its-own-handover"></a>
+## 2026-08-31 — Preflight rulings for the translate rework, and one defect in its own handover
+
+Supplement to
+`docs/sessions/handover_2026-08-31_subanalysts-translate-not-judge.md`. Read that
+first — it is the spec. This file carries only what was decided after it was written,
+during the conflict scan that precedes execution. **No code has been written yet.**
+
+## Branch
+
+`prompt-contract`, forked from `task-broker-agent` at **8969785** — Mohammed's call,
+to keep the blast radius of a contract-breaking change off the integration branch.
+`8969785` is also the MERGE_BASE for the eventual whole-branch review. Baseline
+**856 tests passing**.
+
+## The handover's task split does not survive a conflict scan
+
+**R1 — the plan's six tasks become four. T1 + T3 + T4 must be ONE task.**
+
+Removing a required contract field, its only producer, and its three readers is one
+atomic breaking change:
+
+- T1 deletes `disposition`/`confidence` from `DomainFinding`/`DomainJudgement`
+- T3 (`parse_finding`) is the **only** thing that produces them
+- T4 (`main.py:452`, `telemetry.py:217`, `blind_compare.py:824`) are the **only**
+  things that read them
+
+Landed as three tasks, the first two each commit a red suite, and each task review
+can only see a fragment of a change whose entire point is that the field is gone
+everywhere. Execution order:
+
+| | Was | Scope |
+|---|---|---|
+| **A** | plan T2 | the prompt rewrite |
+| **B** | plan T1+T3+T4 | the shape change, atomic |
+| **C** | plan T5 | the answer key, rescoped |
+| **D** | plan T6 | docs |
+
+The prompt goes **first** so no commit exists in which the prompt asks for a field
+the parser has stopped reading. Task B is large (~13 files) and must commit in three
+readable stages — contracts, then producers, then consumers — with its final commit
+green.
+
+## R7 — the handover is wrong about the packing margin test
+
+The handover says `test_analyst_prompts.py:394-420` pins the per-domain margins
+(identity 577 / network 500 / endpoint 590) and **"will fail. That failure is
+correct."**
+
+It will not fail. That test asserts `spare >= _SAFETY_MARGIN` — an **inequality**.
+`_PACK_TOKEN_BUDGET` is derived from the system-prompt reserve measured at import, so
+deleting the judging blocks makes the prompt *shorter*, spare *larger*, and the
+assertion *easier* to satisfy. Task A must not touch it, and must not "fix" a
+passing test to match a plan sentence.
+
+The 577/500/590 figures live in **docs**, not tests, and are task D's to re-measure.
+
+## The five open decisions, now settled
+
+**R2 — keep `DomainJudgement`'s name** (resolving D-E *against* the handover's own
+recommendation to rename it `DomainNarrative`). Mohammed's instruction when opening
+this branch was to "mitigate changing too much from the source code"; the rename
+touches the contracts export, `analyze.py`, `main.py`, the published schema and every
+test naming the type — pure churn against that constraint. The docstring carries the
+correction instead. *Cost:* a wire type named "Judgement" that carries none. A
+recorded naming smell; v3 is the cheap moment to fix it.
+
+**R3 — D-A: an all-citations-fabricated narrative keeps its narrative.** Append the
+existing `[downgraded: no cited evidence resolved]` note and let `observations: []` /
+`citations: []` / `exhibits: []` tell the consumer. The narrative is the audit record
+of what the model claimed; blanking it destroys the only evidence of a fabrication.
+
+**R4 — D-B: keep the `Disposition` type in contracts**, docstring rewritten as the
+vocabulary the Analyst Agent decides in.
+
+**R5 — D-C: `ArmSample.confidence: float | None`**; confidence columns in
+`blind_compare` become shown-arm-only.
+
+**R6 — D-D: telemetry replaces the two span attributes with counts** —
+`analyst.observation_count`, `analyst.citation_count`, `analyst.narrative_chars`.
+
+## R8 — one declared cross-task file overlap
+
+Renaming `prompts._FINDING_*` to `_NARRATIVE_*` breaks `analyze.py:73`'s import.
+**That one import line belongs to task A**; the rest of `analyze.py` is task B's.
+`analyze._FINDING_REASK` keeps its own name until task B owns the file. Without this,
+task A lands a red suite.
+
+## Conflict scan, for the record
+
+Checked every pair of tasks sharing a file or an interface, and every task against
+itself. Beyond R1, R7 and R8 above: T1→T5 is clean (the `Disposition` type survives
+per R4); T3→T4 is a chain with no contradiction; T1–T5→T6 is ordering only
+(`check_anchors.py` runs after T6). Task-internal checks were consistent in every
+case — T1's schema-v2 item already rewrites the `.v1` assertion it would otherwise
+break, and T3's `_apply_grounding` item parameterises the shared function rather than
+stripping the arm `shown.py` still needs.
+
+---
+
+<a id="reversal-the-three-domain-analysts-translate-evidence-they-do-not-judge-it"></a>
+## 2026-08-31 — "REVERSAL: the three domain analysts translate evidence, they do not judge it"
+
+# The Reversal — Domain Analysts Translate, Not Judge
+
+**Branch `prompt-contract` at `a79a2c3`, 862 tests passing**, tree clean, 0 stale doc anchors.
+Code work is complete. This session documents the architectural reversal explicitly.
+
+## What reversed
+
+The 2026-08-23 hypothesis-blind design gave the three domain analysts (identity/network/endpoint)
+a deliberate, *reduced* mandate: they read evidence and reported only `Disposition` (benign /
+suspicious / malicious / inconclusive), explicitly *not* `Stance` (supports / refutes), on the
+reasoning that "blind does not mean silent — the analyst still judges." The division of labor was:
+analysts judge evidence; the Analyst Agent (separate component) judges the hypothesis.
+
+**That line moved, and significantly.** Mohammed's 2026-08-30/31 architectural call: the tier
+judges nothing. It translates — converts ~170 rows per domain into plain-English prose that
+names the hosts, accounts, addresses, processes and times involved, groups like rows, gives
+counts and time ranges, and says what happened. It produces a `narrative` plus `observations`
+(one distinct thing each row shows) and `citations` (which rows prove it). **The Analyst Agent
+decides verdicts: did these rows mean the host was compromised, the connection was malicious,
+the account was abused?**
+
+This reversal dissolves four specific things the old design asked the tier to do:
+
+1. **The `Disposition` field** on `DomainFinding` / `DomainJudgement`. Deleted.
+2. **The `confidence` field.** Deleted. No verdict means no referent.
+3. **"Identify every security-relevant finding"** in the prompts — a relevance filter. Deleted.
+4. **"WHAT TO LOOK FOR"** (beaconing, DNS tunneling, brute force, etc.) — a detection checklist.
+   Deleted. Telling a translator which patterns matter is asking it to assess them.
+
+The defect that made this reversal urgent: an old template had two forms: the first-ask for
+initial findings, and a re-ask to fill missing blocks. The re-ask accidentally omitted the
+`DISPOSITION:` label, so a model obeying the form could only ever land `inconclusive` — it
+defaulted to that when the field was missing. Fixing that required stopping asking for a
+disposition at all, because a field with no meaning has nothing to ask for.
+
+## What replaces it
+
+The tier compresses ~170 rows per domain into prose that fits the consumer's context budget,
+every claim is citation-checked by the grounding gate, and three domains run concurrently.
+
+- **Compression:** a live network slice on 2026-08-30 was 46 `dns_resolutions` + 124
+  `connections` rows. Those cannot be recounted line-by-line inside a 3,072-token budget. The old
+  prompt resolved that by *selecting* ("report every security-relevant pattern") — a relevance
+  judgement, the thing we just stopped. The replacement is aggregation: "Group like rows and
+  describe the group. Give counts, distinct values, time ranges and the shape of any repetition.
+  Host ABUNGST-L opened 124 connections to 12 distinct destinations between 03:14 and 04:02; 46
+  of them went to 45.77.53.176 at roughly 60-second intervals" accounts for every row without
+  picking a winner.
+
+- **Citation integrity:** the grounding gate checks that every claim rests on valid citations —
+  ids that code actually emitted when rendering evidence. A claim with zero valid citations is
+  flagged.
+
+- **Concurrency:** the three analysts run in parallel via `asyncio.gather(asyncio.to_thread)`,
+  so wall-clock cost is one analyst instead of three. Wall-clock cost is the billing metric
+  (Bedrock's Custom Model Unit charges per minute, not per token).
+
+**If that stops being true, the tier is a pass-through.** If compression degrades to selecting,
+citation checking fails, or the Analyst Agent absorbs the concurrency anyway (e.g., by calling
+them sequentially on its side), then this tier no longer buys anything, and its existence is a
+pure compliance layer.
+
+## What is now load-bearing
+
+- **`RetrievalSummary`** is now the **only signal** separating "we looked and found nothing" from
+  "we did not look." When a domain gets no evidence, the analysts return an empty narrative and no
+  observations — they never make a model call, so there is nothing distinguishing the two cases
+  from the fact of an empty message. That field (which carries what the fetch tier looked for, and
+  what it turned up per category) is what tells the consumer which case it was. It existed for
+  precisely this reason; this change makes it essential rather than supplementary.
+
+  **Live evidence (2026-08-31 run with Splunk unreachable):** a run produced empty narratives for
+  identity and endpoint while `RetrievalSummary` recorded `completed: false, rows_retrieved: 0`
+  for all three SIEM steps. That distinction worked in practice — an empty narrative means "we
+  did not look", proved by the retrieval summary. Without `RetrievalSummary`, the consumer could
+  not tell it apart from actual negative evidence ("we looked and found nothing").
+
+- **The evidence fence integrity.** The previous design accepted the grounding gate's citation
+  checking as sufficient guard against injection. This design makes that mechanism critical —
+  without it, a narrative could claim things the evidence never showed. The sanitisation that
+  prevents fence injection (`&`, `<`, `>` escaped; whitespace collapsed) becomes the
+  fail-safe, not an implementation detail.
+
+## How `HypothesisFindings` changed
+
+**Old shape (v1.0):**
+```
+DomainJudgement:
+  domain, disposition, confidence, rationale,
+  observations, citations, exhibits
+```
+
+**New shape (v2.0):**
+```
+DomainJudgement:
+  domain, narrative, observations, citations, exhibits
+```
+
+Dropped: `disposition`, `confidence`. Renamed: `rationale` → `narrative` (explicitly a translation,
+not a reading of what the evidence means).
+
+Per-domain spare token margins (the headroom left over after packing evidence): changed because
+the system prompt shrank when the judging blocks were deleted. Network is pinned at exactly
+`_SAFETY_MARGIN` by construction; when the reserve decreased, the pack budget grew for everyone,
+but identity and endpoint did not shrink equally, so their margins *changed* asymmetrically.
+- Identity: 577 → 601 (+24)
+- Network: 500 → 500 (±0, pinned)
+- Endpoint: 590 → 575 (−15); now 576 after the prompt-fidelity fix below
+
+The mechanism: `_PACK_TOKEN_BUDGET` is derived from the 32,768-token context window minus named
+reserves. One of those reserves is `_SYSTEM_PROMPT_RESERVE`, the max spare bytes across all three
+domain system prompts, measured at import. When a prompt shrank, that max shrunk, the pack budget
+grew, and the margin allocation rebalanced. Endpoint did not shrink as much as the overall reserve,
+so it lost margin to growth elsewhere.
+
+### The derived budget, re-measured — and a figure that was stale in five places
+
+`_PACK_TOKEN_BUDGET` was documented as **25,751** in `architecture.md` (three sites) and both
+Confluence pages. That figure predates this branch: it was already wrong at the docs commit,
+where the real value was **25,426**. Corrected everywhere to the measured value.
+
+The number moves whenever any domain prompt changes length, because it is derived rather than
+declared — which is the property the docs are careful to state and then undermined by printing a
+literal. Anyone quoting it should re-measure:
+
+    uv run python -c "from smartops.subagent_analysts.packing import _PACK_TOKEN_BUDGET as b; print(b)"
+
+Current value after the prompt-fidelity fix below: **25,150**, with margins identity 601 /
+network 500 (pinned) / endpoint 576.
+
+## The prompts were then measured against real evidence, and three defects fixed
+
+The verdict removal was verified by tests; the *quality* of the translation was not, and could
+not be — no test can see whether prose recounts rows or explains them. A full three-domain replay
+of `cli-20260823T112627` (identity 80 rows, network 46, endpoint 165) against the live model
+exposed three mechanical defects that a single-row run had hidden:
+
+1. **Time ranges ran backwards** — "between 17:07:34 and 15:41:29", four times. Rows are not
+   printed in a consistent time order: most sets print oldest-first, but `processes#8` prints
+   newest-first. The model took first-printed → last-printed as a period, which is accidentally
+   right on ascending sets and inverted on descending ones. The prompt's word "in order" meant
+   printed-order in one place and chronological in another — flagged as a deferred minor during
+   Task A's review, and made real here.
+2. **Content asserted on `rows=0` sets** — "Network flows occurred between 192.168.247.131 and
+   217.182.164.14 [uncategorised#2]", where that set is literally `(no rows returned)`. The
+   grounding gate cannot catch this: the cited id resolves, it is merely empty.
+3. **Cross-set attribution** — one claim merging `processes#2` through `#6` while citing only
+   `#2`. Its own reasoning trace admits the merge.
+
+Three rules were added to `_NARRATIVE_FOOTER` (shared, so one edit covers all three domains) and
+the identical replay re-run at temperature 0: backwards ranges **4 → 0**, zero-row assertions
+**2 → 0**, attribution corrected to one set per claim. Two unasked improvements came with it —
+identity moved from "successes outnumbered failures significantly" to "1,063 successes and 19
+failures", and endpoint found both PowerShell executions where it had reported one.
+
+Cost: +172 system-prompt tokens, taken out of the evidence budget (25,426 → 25,150). All three
+domains stay above the 500-token floor.
+
+### The counts are now code's job, not the model's
+
+The worst of the defects was arithmetic. `| stats count by ...` rows are **groups**, so
+`rows=72` on an `auth_events` set stood for 7,656 events — and nothing said so. The analyst
+was left summing a `count=` column in prose, across rows the row cap may have withheld from
+it. It reported "1,063 successes" in the narrative and "1,083" in an observation drawn from
+the same set; the truth was 5,032 successes and 518 failures out of 7,656 events. Wrong
+twice, inconsistent with itself inside one finding, and invisible to the grounding gate,
+because the citation resolved perfectly. **Only the reading was wrong.**
+
+This is not a prompt problem, and a fourth prompt rule would have been the wrong answer. It
+is the package's standing division of labour — *code supplies every number, the model authors
+none* — with one number left on the wrong side of the line. `formatting._event_total()` now
+sums the column over ALL rows, and the header carries it:
+
+    # auth_events#2 · rows=72 · events=7656
+
+The prompt gains one rule pointing at it: quote `events=M`, never add the `count=` values up
+yourself. Re-running the same replay, the narrative now reads *"72 events logged 7,656
+operations"* — the exact figure. Because the header is embedded in `Exhibit.rows`, the true
+total also crosses the contract boundary, so the Analyst Agent can check a total rather than
+trusting one.
+
+A set with no `count` on any row gets no `events=`: `rows=N` already IS the event total there,
+and a second number would only invite a reader to hunt for a difference that is not there.
+
+**Still open — a fabricated IP digit.** The run that verified the count fix also wrote
+`217.182.184.14` for an address the evidence spells `217.182.164.14`. One digit, in a SOC
+narrative, on an indicator. It did not occur in the previous run, so it is not obviously
+caused by any rule added here — but it is the most consequential error class on this tier
+(citations are checked; the prose around them is not), and it wants a transcription check
+that compares entity-shaped strings in the narrative against the rows.
+
+**Still open — one drift got worse.** The reputation rows read
+`ip=217.182.164.14 FOUND mal=1 susp=0 harmless=90`. Before the fix the network analyst wrote
+"low malware presence (mal=1)"; after, "flagged … as suspicious/malicious". One engine of 91 is
+not "flagged", and grading a count with a word is the judgement this tier gave up. It also
+asserted "217.182.164.14 (IP associated with coinhive.com)" — a link the evidence does not make,
+and one the DNS rows contradict, since they resolve coinhive subdomains to `192.168.247.2`. The
+next rule to write is that a number is reported as a number; it should be measured the same way
+rather than assumed. **The grounding gate cannot help with any of this** — every such claim cites
+an id that resolves. Only the *reading* of the cited rows is wrong, and nothing automated sees it.
+
+## What the schema version meant
+
+**v1** carried the design in which the tier judges and the Analyst Agent filters its verdict by
+hypothesis. This was never deployed; the hypothesis-blind design changed the premise on day one,
+but the v1 schema sat on disk as if it matched the code.
+
+**v2** reflects the translator design: the tier produces prose, not a verdict. v1 is kept on disk
+for replay of old runs; v2 is the current wire. The published schema file is enforced by a
+test assertion: `hypothesis-findings.v2.schema.json` must match the models in `contracts/reasoning.py`,
+or a consumer reading it gets wrong guidance authoritatively, which is worse than publishing none.
+
+## What the answer key now means
+
+`bench.py:EXPECTED_CITATIONS` (was `EXPECTED_DISPOSITIONS`) maps BOTSv3 cases to the evidence
+categories the narrative *must cite* to have seen the row proving the documented fact.
+
+- `botsv3_coinhive` → network must cite `dns_resolutions` (to have seen the coinhive.com query)
+- `botsv3_c2_beacon` → network must cite `connections` (to have seen the beacon interval)
+- `botsv3_hdoor_tool` → endpoint must cite `reputation` OR `processes` (to have seen the hash or the execution)
+
+This metric gets *stronger* under pure translation: a translator instructed to "account for
+every set" should cite every set it was shown. Citation coverage becomes a fair test of whether
+it did its job rather than a proxy for a verdict.
+
+Only 3 of 11 cases are labelled; the rest remain unscored until the decision record can cite
+what BOTSv3 documents about them.
+
+## What stays the same
+
+- **Grounding gate:** code validates citations; invented ids are dropped.
+- **Cross-domain guardrails:** the prompts still forbid inferring across domains (identity does
+  not infer network behavior, network does not assert our host acted on a reputation verdict).
+- **Empty-slice short-circuit:** a domain with no evidence makes no model call, so there is no
+  wasted token or false confidence.
+- **Bounded re-ask:** one unparseable reply earns one more attempt; both are billed.
+- **`shown.py` on disk:** the hypothesis-shown arm is not deleted because it is how we measured
+  whether blindness worked — `blind_compare` runs both and compares. It still uses the old
+  design (it has a verdict) and still exports `AnalystVerdict` with `Stance`. That is
+  deliberate; the A/B harness is the evidence the blindness rests on.
+
+## Process note
+
+This reversal was in the decision record 2026-08-23, but as a design that the code never
+implemented. The code landed on 2026-08-30 (discovering it was wrong via a production run), and the
+architectural reversal was spoken by Mohammed the same day. This session documents what was built,
+not what the prior record said would be built — and that is Jasper's job.
+
+No architectural question raised here is open. The four decisions made (R2–R6 in the preflight
+rulings) settled every decision-point the handover listed. The next edge case that surfaces will
+likely require a decision, but this reversal is architecturally clean: the tier judges nothing, the
+Analyst Agent decides verdicts, the contract is narrower and clearer for it.
 
 ---
 
@@ -5944,3 +6311,121 @@ explicitly. This branch has already been bitten by exactly this twice.
   If that answer stops being true, the tier is a pass-through.
 - **Carried, unresolved:** does `docs/confluence-subagent-analysts.md` belong in git?
   (R14)
+
+---
+
+<a id="the-translate-rework-is-complete-and-measured-three-defects-remain-none-reachable-by-the-gate"></a>
+## 2026-09-01 — The translate rework is complete and measured; three defects remain, none reachable by the gate
+
+# Handover — the tier translates, and now we know how well
+
+**Branch `prompt-contract` at `80d5e13`**, 10 commits past the fork at `8969785`
+(the MERGE_BASE for whole-branch review), **867 tests passing**, tree clean, 0 stale
+doc anchors. The rework the 2026-08-31 handover specified is **done**: tasks A, B,
+C and D all landed, and the docs describe what shipped.
+
+What this handover adds is the part no test could give: the tier has now been
+**measured against real evidence**, and it has three defects. None of them is
+reachable by the grounding gate.
+
+## What landed
+
+| Commit | |
+|---|---|
+| `95fe13c`, `698f8d9` | task A — the prompts translate, they no longer judge |
+| `80fc5e2` | task B/1 — contracts, schema v2 (v1 byte-identical on disk) |
+| `105aa6f` | task B/2 — `parse.py`, `analyze.py`; no verdict is produced |
+| `180c9ce` | task B/3 — `main.py`, `telemetry.py`, `blind_compare.py`; none read one |
+| `a79a2c3` | task C — the answer key scores citation coverage |
+| `1a5afa6` | task D — README, architecture, both Confluence pages, PROJECT_DOCS |
+| `35b7b56` | prompt fidelity: time ranges, zero-row sets, cross-set attribution |
+| `80d5e13` | `events=M` in the header; code sums the count column |
+
+`docs/confluence-subagent-analysts.md` is **tracked now** (Mohammed's call this
+session, reversing the standing instruction and closing the R14 open question).
+
+## How it was measured, and how to repeat it
+
+Splunk was down all session. That is not a blocker — a **saved run replays through
+the live analysts** with no Splunk and no re-fetch:
+
+```python
+report = load_run_artifacts(".smartops/runs/cli-20260823T112627/20260823T112855536")
+scope  = Scope.model_validate(json.load(open(
+             "docs/blind-vs-shown-cli-20260823T112627-n15.json"))["scope"])
+findings = await gather(report, scope, analyst_model_from_env())
+```
+
+Two things to know or you will lose an hour:
+
+- **The rich runs are at repo-root `.smartops/runs/`, not `backend/.smartops/runs/`.**
+  The `backend/` tree holds VT-only runs with no SIEM rows. `cli-20260823T112627` is
+  the five-entity multivector case — identity 80 rows, network 46, endpoint 165 —
+  and the only saved run with real evidence in all three domains.
+- **`report.scope` is `None` on saved reports.** Take the scope from the
+  `blind-vs-shown-*.json` beside it (as above) or from `BENCHMARK_CASES`.
+- `load_dotenv(find_dotenv(usecwd=True))` before importing, and run under
+  `env -u AWS_PROFILE` — a set `AWS_PROFILE` shadows the explicit keys in `.env`.
+- Point `SMARTOPS_RUNS_DIR` at a scratch directory. Never write under `.smartops/runs/`.
+
+## The three open defects
+
+All three share one property that matters more than any of them individually:
+**every one cites an id that resolves.** The grounding gate checks that a citation
+exists, not that the sentence around it is a fair reading of the rows it names. That
+is the gap, and it is structural.
+
+**1 — The narrative grades numbers with words.** The reputation rows read
+`ip=217.182.164.14 FOUND mal=1 susp=0 harmless=90`. The analyst wrote "flagged …
+as suspicious/malicious". One engine of 91 is not "flagged", and grading a count is
+the judgement this tier gave up. It also **regressed**: before the `35b7b56` prompt
+edit it wrote the faithful "low malware presence (mal=1)". A rule saying a number is
+reported as a number is drafted but unwritten — measure it, do not assume it.
+
+**2 — A fabricated IP digit.** The run verifying the count fix wrote
+`217.182.184.14` where the evidence spells `217.182.164.14`. One digit, on an
+indicator, in a SOC narrative. It did not occur in the previous run. **This is the
+most consequential class left** and the one to fix first: it wants a transcription
+check comparing entity-shaped strings (IPs, hashes, hostnames, domains) in the
+narrative against the cited rows, and flagging any that appear in neither. That is
+code, not a prompt rule — the same reasoning that moved the count sum.
+
+**3 — Host attribution and small counts.** "Host BSTOLL-L made 28 DNS queries"
+where the rows read `src=192.168.247.131`; "101 processes" where `processes#11`
+holds 100. Lower severity, same root: prose about rows is unchecked.
+
+### What is already fixed, so do not re-fix it
+
+`35b7b56` and `80d5e13` closed three others, verified by re-running the same replay
+at temperature 0: **backwards time ranges 4 → 0** (print order is not time order —
+most sets print oldest-first, `processes#8` prints newest-first), **content asserted
+on `rows=0` sets 2 → 0**, and **cross-set attribution** (one claim merging
+`processes#2`–`#6` while citing `#2`). The count defect — 7,656 events reported as
+"1,063" and "1,083" in the same finding — is fixed in code, not prompt:
+`_event_total()` sums the column and the header carries `events=M`.
+
+## Two things nothing has exercised yet
+
+- **Truncation fidelity.** Every set in every run so far printed in full, so the
+  rule "say you are describing a sample of N" has never fired. It needs a slice
+  large enough to bite the row cap.
+- **A live end-to-end run with Splunk up.** Everything above replays saved evidence.
+  The fetch path has not been exercised against this contract.
+
+## Cost of the prompt work, for the next person editing prompts
+
+`_PACK_TOKEN_BUDGET` is **derived**, and every system-prompt token comes straight out
+of the evidence budget: 25,426 → 25,150 across this session's two prompt edits.
+Margins are identity 601 / network 500 / endpoint 576 against a 500 floor — **network
+is pinned at the floor by construction**, because it is the largest prompt and sizes
+the reserve every domain's budget derives from. Re-measure rather than quoting a
+literal; a stale `25,751` survived in five documents precisely because someone wrote
+the number down.
+
+    uv run python -c "from smartops.subagent_analysts.packing import _PACK_TOKEN_BUDGET as b; print(b)"
+
+## State
+
+24 commits ahead of `origin/task-broker-agent`; nothing pushed, nothing merged.
+`8969785` is the MERGE_BASE for the whole-branch review. Untracked and deliberately
+so: `.claude/`, `scratchpad/`.
