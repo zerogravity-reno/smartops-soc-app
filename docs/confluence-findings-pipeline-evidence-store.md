@@ -79,9 +79,9 @@ Nine steps. **One involves a model.**
 | 4 | `packing.pack_evidence()` — `packing.py:376` | Renders a slice under a token budget **derived** from the 32,768-token context window minus named reserves (currently 25,150 tokens, not a fixed constant), shrinking the row cap down a ladder (**200 → 20 → 10 → 5 → 3 → 1 → header-only**) instead of truncating mid-block. Returns the rung it settled on, so `exhibits_for` renders at the same one. |
 | 5 | `packing.blocks()` — `packing.py:259` | **The single definition of block order and citation numbering.** `_render`, `valid_citation_ids` (`:358`) and `exhibits_for` (`:328`) are thin readings of it. |
 | 6 | **the analyst** | Reads the packed evidence and authors a plain-English `narrative`, observations and citations — **no verdict of any kind** since 2026-08-31; judging is the Analyst Agent's job, above this boundary. **The only model-authored step.** It never sees the raw tool output behind those rows, and can cite only ids code minted. |
-| 7 | `analyze._finalize_finding()` — `analyze.py:484` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, flags ungrounded claims with a noted reason, and **freezes `citation_evidence`**. |
-| 8 | `analyze._as_judgement()` — `analyze.py:523` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
-| 9 | `analyze.gather()` — `analyze.py:580` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:656`). Assembles — does not decide. |
+| 7 | `analyze._finalize_finding()` — `analyze.py:506` | The grounding gate: drops citations that do not resolve and observations resting only on invented ids, flags ungrounded claims with a noted reason, and **freezes `citation_evidence`**. |
+| 8 | `analyze._as_judgement()` — `analyze.py:545` | Projects onto the wire: audit fields (`reasoning_trace`, token counts) off, `Exhibit`s on. |
+| 9 | `analyze.gather()` — `analyze.py:602` | Assembles `HypothesisFindings` plus `_retrieval_summary()` (`:678`). Assembles — does not decide. Its `for_analyst()` projection is what crosses to the Analyst Agent; see `analyst-payload.json`. |
 
 **Numbering is per category, not per slice.** One counter over the whole slice numbered by
 position instead, so a network slice emitted `connections#1..#9` then `dns_resolutions#10..`
@@ -178,7 +178,7 @@ pack**.
 | `backend/src/smartops/subagent_analysts/routing.py` | `route()` (`:95`) — CIM category + entity kind → three `DomainSlice`s; the uncategorised fan-out. |
 | `backend/src/smartops/subagent_analysts/formatting.py` | Per-record-type field projectors; the `# {category}#{index} · rows=N` header — **no query, deliberately**. |
 | `backend/src/smartops/subagent_analysts/packing.py` | `blocks()` (`:259`) — the single source of order and numbering; `pack_evidence()` (`:376`); `valid_citation_ids()` (`:358`); `exhibits_for()` (`:328`); `fitted_row_cap()` (`:421`). |
-| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:180`), `_apply_grounding()` (`:280`), `_finalize_finding()` (`:484`), `_as_judgement()` (`:523`), `gather()` (`:580`), `_retrieval_summary()` (`:656`). |
+| `backend/src/smartops/subagent_analysts/analyze.py` | `_invoke_with_one_reask()` (`:202`), `_apply_grounding()` (`:302`), `_finalize_finding()` (`:506`), `_as_judgement()` (`:545`), `gather()` (`:602`), `_retrieval_summary()` (`:678`). |
 | `backend/src/smartops/broker.py` | `save_run_artifacts()` and `load_run_artifacts()`. |
 | `backend/src/smartops/replay.py` | Offline replay against a stored run: `evidence_by_id()`, `ReplayToolset`. |
 | `backend/src/smartops/main.py` | `_print_findings()` (`:439`) / `_persist_findings()` (`:573`) write the operator view and `findings.json`. |
