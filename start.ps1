@@ -1,0 +1,15 @@
+﻿# SmartOps SOC — Quick Start
+# Run this after filling in .env
+
+# Load .env
+Get-Content .env | Where-Object { $_ -notmatch "^#" -and $_ -match "=" } | ForEach-Object {
+    $k, $v = $_ -split "=", 2
+    [System.Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), "Process")
+}
+
+# Install dependencies
+uv sync
+
+# Start server
+Write-Host "Starting SmartOps SOC on http://localhost:8001" -ForegroundColor Green
+uv run uvicorn webapp.main:app --host 0.0.0.0 --port 8001 --reload

@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "MCP servers, in the standard `mcpServers` shape consumed by",
+    "strands.tools.mcp.MCPClient.load_servers(). Which server serves which",
+    "ToolFamily is our own mapping, in smartops.tools.registry.",
+    "",
+    "Credentials are ${VAR} references resolved against the process",
+    "environment, so no secret belongs in this file."
+  ],
+
+  "mcpServers": {
+    "splunk": {
+      "command": "python",
+      "args": ["local_splunk_mcp.py"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "SPLUNK_TOKEN": "${SPLUNK_TOKEN}"
+      },
+      "continue_on_error": false,
+      "startup_timeout": 30
+    },
+
+    "edr": { "disabled": true },
+
+    "ndr": { "disabled": true }
+  }
+}

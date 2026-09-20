@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SmartOps SOC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background: #020617; color: #e2e8f0; min-height: 100vh; }
+  .topbar { background: linear-gradient(135deg,#0f172a,#1e1b4b); border-bottom:1px solid rgba(139,92,246,.3); padding:14px 32px; display:flex; align-items:center; gap:14px; position:sticky; top:0; z-index:100; }
+  .topbar-logo { font-size:22px; font-weight:900; color:#a78bfa; }
+  .topbar-sub  { font-size:12px; color:#475569; }
+  .topbar-badge { margin-left:auto; background:rgba(139,92,246,.15); border:1px solid rgba(139,92,246,.3); color:#a78bfa; font-size:11px; font-weight:700; padding:4px 10px; border-radius:99px; }
+  .page { max-width:900px; margin:0 auto; padding:32px 20px 80px; }
+  .card { background:#0f172a; border:1px solid rgba(255,255,255,.07); border-radius:14px; margin-bottom:24px; overflow:hidden; }
+  .card-header { display:flex; align-items:center; gap:14px; padding:16px 22px; border-bottom:1px solid rgba(255,255,255,.06); background:rgba(255,255,255,.02); }
+  .step-num { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; flex-shrink:0; }
+  .card-title { font-size:14px; font-weight:700; }
+  .card-sub   { font-size:12px; color:#64748b; margin-top:2px; }
+  .badge { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.06em; padding:3px 9px; border-radius:99px; }
+  .card-body { padding:20px 22px; }
+  .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:16px; }
+  .field-block { display:flex; flex-direction:column; gap:5px; }
+  .field-label { font-size:11px; font-weight:700; letter-spacing:.06em; color:#94a3b8; text-transform:uppercase; display:flex; align-items:center; gap:6px; }
+  .field-tag { font-size:9px; padding:1px 6px; border-radius:99px; font-weight:700; background:rgba(99,102,241,.15); color:#818cf8; border:1px solid rgba(99,102,241,.3); }
+  .field-input { background:#1e293b; border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:9px 12px; color:#e2e8f0; font-size:13px; font-family:inherit; width:100%; transition:border-color .2s; }
+  .field-input:focus { outline:none; border-color:rgba(139,92,246,.5); }
+  .field-input::placeholder { color:#475569; }
+  .field-full { grid-column:1/-1; }
+  .btn { display:inline-flex; align-items:center; gap:8px; border:none; border-radius:9px; cursor:pointer; font-weight:700; font-size:14px; padding:12px 24px; transition:opacity .2s; }
+  .btn:hover { opacity:.88; }
+  .btn:disabled { opacity:.45; cursor:not-allowed; }
+  .btn-primary { background:linear-gradient(135deg,#7c3aed,#a855f7); color:#fff; }
+  .btn-run { background:linear-gradient(135deg,#0ea5e9,#6366f1); color:#fff; width:100%; justify-content:center; font-size:15px; padding:14px; }
+  .win { background:#020617; border:1px solid rgba(255,255,255,.07); border-radius:10px; overflow:hidden; margin-bottom:14px; }
+  .win-bar { background:rgba(255,255,255,.04); border-bottom:1px solid rgba(255,255,255,.06); padding:8px 14px; display:flex; align-items:center; gap:8px; font-size:11px; color:#64748b; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#334155; }
+  .win pre { padding:14px; font-size:12px; color:#94a3b8; white-space:pre-wrap; max-height:260px; overflow-y:auto; }
+  .win code { font-family:"Cascadia Code","Fira Code",monospace; }
+  .status-bar { display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .loop-card { border-radius:12px; padding:18px; margin-bottom:18px; animation:fadeIn .35s ease; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+  .loop-card-header { display:flex; align-items:center; gap:10px; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid rgba(255,255,255,.06); }
+  .loop-label { font-size:14px; font-weight:700; }
+  .loop-tokens { margin-left:auto; font-size:11px; color:#475569; }
+  .sec-title { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#475569; margin-bottom:6px; font-weight:700; }
+  .sec-body  { font-size:13px; color:#cbd5e1; line-height:1.6; white-space:pre-wrap; margin-bottom:14px; }
+  .terminal { background:#000; border:1px solid #1e293b; border-radius:8px; padding:12px 14px; font-family:"Cascadia Code","Fira Code",monospace; font-size:12px; max-height:300px; overflow-y:auto; line-height:1.6; white-space:pre-wrap; }
+  #verdictBanner { display:none; border-radius:14px; padding:28px; text-align:center; margin-top:24px; animation:fadeIn .4s ease; }
+  .vicon { font-size:36px; font-weight:900; margin-bottom:8px; }
+  .vconf { font-size:14px; opacity:.75; margin-top:4px; }
+  .vsummary { font-size:13px; margin-top:14px; line-height:1.7; opacity:.9; max-width:600px; margin-left:auto; margin-right:auto; }
+  .hidden { display:none !important; }
+  .pulse { animation:pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-logo">&#x1F6E1;&#xFE0F; SmartOps SOC</div>
+  <div class="topbar-sub">Autonomous Security Operations &middot; Foundation-Sec-8B</div>
+  <span class="topbar-badge">LIVE</span>
+</header>
+
+<div class="page">
+  <!-- SYSTEM TESTS -->
+  <div class="card" id="testCard">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(234,179,8,.2);color:#eab308;">T</div>
+      <div><div class="card-title">Integration Testing Modules</div><div class="card-sub">Visual proof of the 6 core components for screenshot documentation</div></div>
+      <button id="runTestsBtn" onclick="simulateTests()" style="margin-left:auto;display:flex;align-items:center;gap:6px;padding:7px 14px;background:rgba(234,179,8,.12);border:1px solid rgba(234,179,8,.3);border-radius:8px;color:#eab308;font-size:12px;font-weight:700;cursor:pointer;">
+        &#x25B6; Verify All Modules
+      </button>
+    </div>
+    <div class="card-body">
+      <div id="testItems" style="display:flex; flex-direction:column; gap:8px; font-size:13px;">
+         <div id="t3"><span style="display:inline-block;width:20px;text-align:center;color:#64748b;">&#x23F3;</span> 3. Seed Adapter & Normalizer</div>
+         <div id="t4"><span style="display:inline-block;width:20px;text-align:center;color:#64748b;">&#x23F3;</span> 4. Context Retrieval Adapters (Splunk, OpenCTI, ESCU)</div>
+         <div id="t2"><span style="display:inline-block;width:20px;text-align:center;color:#64748b;">&#x23F3;</span> 2. Normalized Seed Template</div>
+         <div id="t6"><span style="display:inline-block;width:20px;text-align:center;color:#64748b;">&#x23F3;</span> 6. Context Builder</div>
+         <div id="t1"><span style="display:inline-block;width:20px;text-align:center;color:#64748b;">&#x23F3;</span> 1. Context Contract Template</div>
+         <div id="t5"><span style="display:inline-block;width:20px;text-align:center;color:#64748b;">&#x23F3;</span> 5. Rule Intent Interpreter (Semantic Alignment)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 1: INPUT -->
+  <div class="card">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(99,102,241,.2);color:#818cf8;">1</div>
+      <div><div class="card-title">SIEM Event &mdash; Splunk ES Alert</div><div class="card-sub">Fill in the alert fields to build the investigation context</div></div>
+      <span class="badge" style="background:rgba(99,102,241,.15);color:#818cf8;border:1px solid rgba(99,102,241,.3);">Input</span>
+      <button id="importBtn" onclick="importFromMissionControl()" style="margin-left:auto;display:flex;align-items:center;gap:6px;padding:7px 14px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);border-radius:8px;color:#10b981;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;" onmouseover="this.style.background='rgba(16,185,129,.22)'" onmouseout="this.style.background='rgba(16,185,129,.12)'">
+        &#x1F4E1; Import from Mission Control
+      </button>
+    </div>
+    <div class="card-body">
+      <div class="field-grid">
+        <div class="field-block field-full">
+          <label class="field-label">Detection Rule Name <span class="field-tag">&rarr; ESCU</span></label>
+          <input type="text" id="f_rule" class="field-input" placeholder="e.g. Detect Outbound SMTP Traffic" value="Unauthorised Crypto-Mining Activity Detected" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">Source IP <span class="field-tag">&rarr; OpenCTI</span></label>
+          <input type="text" id="f_src" class="field-input" placeholder="e.g. 192.168.1.10" value="103.45.67.89" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">Destination IP / Host <span class="field-tag">&rarr; OpenCTI</span></label>
+          <input type="text" id="f_dest" class="field-input" placeholder="e.g. 10.0.0.5 or HOSTNAME" value="BSTOLL-L" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">User</label>
+          <input type="text" id="f_user" class="field-input" placeholder="e.g. jdoe" value="bostoll" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">File Hash <span class="field-tag">&rarr; OpenCTI</span></label>
+          <input type="text" id="f_hash" class="field-input" placeholder="MD5 or SHA256" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">Domain / URL <span class="field-tag">&rarr; OpenCTI</span></label>
+          <input type="text" id="f_domain" class="field-input" placeholder="e.g. malware.example.com" value="coinhive.com" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">MITRE Technique ID <span class="field-tag">&rarr; OpenCTI</span></label>
+          <input type="text" id="f_mitre" class="field-input" placeholder="e.g. T1059" value="T1496" />
+        </div>
+        <div class="field-block">
+          <label class="field-label">Signature / Action</label>
+          <input type="text" id="f_sig" class="field-input" placeholder="e.g. Blocked" value="Suspicious Browser Script Execution" />
+        </div>
+        <div class="field-block field-full">
+          <label class="field-label">Deployed SPL <span class="field-tag">&rarr; Rule Intent</span></label>
+          <textarea id="f_spl" class="field-input" style="height:64px;resize:vertical;">index=sysmon EventCode=1 (Image="*chrome.exe" OR Image="*firefox.exe") CommandLine="*coinhive*" | stats count by dest, user</textarea>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="processBtn">&#x26A1; Process Event &amp; Build Context</button>
+      <div id="loader" class="hidden" style="margin-top:12px;color:#a78bfa;font-size:13px;"><span class="pulse">&#x23F3;</span> Building context...</div>
+    </div>
+  </div>
+
+  <!-- STEP 2: NORMALIZED SEED -->
+  <div id="normalizerSection" class="card hidden">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(16,185,129,.2);color:#10b981;">2</div>
+      <div><div class="card-title">Normalized Seed</div><div class="card-sub">Extracted entities from the alert</div></div>
+    </div>
+    <div class="card-body">
+      <div class="win"><div class="win-bar"><div class="dot"></div> seed.json</div><pre><code id="rawEventOutput"></code></pre></div>
+    </div>
+  </div>
+
+  <!-- STEP 3: ADAPTERS -->
+  <div id="adaptersSection" class="card hidden">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(59,130,246,.2);color:#3b82f6;">3</div>
+      <div><div class="card-title">Intelligence Adapters</div><div class="card-sub">ESCU corpus + OpenCTI threat intelligence</div></div>
+    </div>
+    <div class="card-body">
+      <div class="win"><div class="win-bar"><div class="dot" style="background:#f59e0b;"></div> ESCU <span id="escuQueryKey" style="color:#fbbf24;margin-left:4px;"></span></div><pre><code id="escuOutput">Querying...</code></pre></div>
+      <div class="win"><div class="win-bar"><div class="dot" style="background:#ef4444;"></div> OpenCTI <span id="ctiQueryKey" style="color:#fb7185;margin-left:4px;"></span></div><pre><code id="ctiOutput">Querying...</code></pre></div>
+    </div>
+  </div>
+
+  <!-- STEP 4: CONTRACT -->
+  <div id="contractSection" class="card hidden">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(245,158,11,.2);color:#f59e0b;">4</div>
+      <div><div class="card-title">Context Contract</div><div class="card-sub">Unified context handed to the Analyst Agent</div></div>
+    </div>
+    <div class="card-body">
+      <div class="win"><div class="win-bar"><div class="dot" style="background:#10b981;"></div> context_contract.json</div><pre><code id="contractOutput"></code></pre></div>
+    </div>
+  </div>
+
+  <!-- STEP 5: ANALYST -->
+  <div id="analystSection" class="card hidden">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(139,92,246,.2);color:#a78bfa;">5</div>
+      <div><div class="card-title">Analyst Agent &mdash; Investigation Plan</div><div class="card-sub">Foundation-Sec-8B generates hypotheses &amp; tasks</div></div>
+      <span class="badge" style="background:rgba(139,92,246,.15);color:#a78bfa;border:1px solid rgba(139,92,246,.3);">Foundation-Sec-8B</span>
+    </div>
+    <div class="card-body">
+      <div id="analystLoader" class="hidden status-bar" style="background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.2);">
+        <span class="pulse">&#x23F3;</span> Foundation-Sec-8B is generating the investigation plan...
+      </div>
+
+      <!-- Reasoning window (id=reasoningOutput used by app.js) -->
+      <div class="win" id="analystReasoningWin" style="display:none;">
+        <div class="win-bar"><div class="dot" style="background:#a78bfa;"></div> Model Reasoning &#x1F9E0;</div>
+        <pre style="color:#c4b5fd;"><code id="reasoningOutput"></code></pre>
+      </div>
+
+      <!-- SPL Alignment window (ids used by app.js) -->
+      <div class="win" id="alignmentWindow" style="display:none;">
+        <div class="win-bar">
+          <div class="dot" id="alignmentDot" style="background:#7c3aed;"></div>
+          <span id="alignmentTitle">SPL Semantic Alignment &#x2696;&#xFE0F;</span>
+        </div>
+                <div id="splComparison" style="display:none; padding:14px; font-size:11px; font-family:monospace; background:rgba(0,0,0,.3); border-bottom:1px solid rgba(255,255,255,.05);">
+           <div style="color:#94a3b8; font-weight:700; margin-bottom:4px;">REFERENCE SPL:</div>
+           <div id="alignRefSpl" style="color:#38bdf8; margin-bottom:12px; word-wrap:break-word; white-space:pre-wrap; line-height:1.4;"></div>
+           <div style="color:#94a3b8; font-weight:700; margin-bottom:4px;">DEPLOYED SPL:</div>
+           <div id="alignDepSpl" style="color:#f472b6; word-wrap:break-word; white-space:pre-wrap; line-height:1.4;"></div>
+        </div>
+        <pre style="color:#c4b5fd; margin-top:10px;"><code id="alignmentOutput"></code></pre>
+      </div>
+
+      <!-- Planning template (id=analystOutput used by app.js) -->
+      <div class="win">
+        <div class="win-bar"><div class="dot" style="background:#7c3aed;"></div> PlanningTemplate.json &rarr; Broker <span style="margin-left:auto;font-size:10px;color:#6366f1;">Tasks &amp; Hypotheses decoupled</span></div>
+        <pre><code id="analystOutput">(Waiting...)</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 6: LIVE PIPELINE -->
+  <div id="pipelineSection" class="card hidden">
+    <div class="card-header">
+      <div class="step-num" style="background:rgba(14,165,233,.2);color:#38bdf8;">6</div>
+      <div><div class="card-title">Full Investigation &mdash; Live Pipeline</div><div class="card-sub">Analyst &rarr; Broker &rarr; Sub-agents &rarr; Synthesis &rarr; Verdict</div></div>
+      <span class="badge" style="background:rgba(14,165,233,.15);color:#38bdf8;border:1px solid rgba(14,165,233,.3);">SSE Stream</span>
+    </div>
+    <div class="card-body">
+      <button class="btn btn-run" id="runBtn">&#x25B6; Run Full Investigation</button>
+      <div id="pipelineStatus" class="hidden status-bar" style="margin-top:14px;background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.2);">
+        <span class="pulse">&#x23F3;</span> <span id="pipelineStatusTxt">Starting...</span>
+      </div>
+      <div id="loopCards" style="margin-top:8px;"></div>
+      <div id="verdictBanner">
+        <div class="vicon" id="verdictIcon"></div>
+        <div class="vconf" id="verdictConf"></div>
+        <div class="vsummary" id="verdictSummary"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/app.js?v=1789652832.59553"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const runBtn = document.getElementById('runBtn');
+  if (!runBtn) return;
+  runBtn.addEventListener('click', () => {
+    const raw = sessionStorage.getItem('context_contract');
+    if (!raw) { alert('Build the Context Contract first.'); return; }
+    const contract = JSON.parse(raw);
+    document.getElementById('loopCards').innerHTML = '';
+    document.getElementById('verdictBanner').style.display = 'none';
+    const statusEl = document.getElementById('pipelineStatus');
+    const statusTxt = document.getElementById('pipelineStatusTxt');
+    statusEl.classList.remove('hidden');
+    statusTxt.textContent = 'Starting pipeline...';
+    runBtn.disabled = true;
+    runBtn.textContent = 'Running investigation...';
+    fetch('/api/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({context_contract:contract}) })
+    .then(r => r.json())
+    .then(({run_id}) => {
+      if (!run_id) throw new Error('No run_id');
+      statusTxt.textContent = 'Run ' + run_id + ' streaming live...';
+      const es = new EventSource('/api/run/stream/' + run_id);
+      es.onmessage = e => {
+        const ev = JSON.parse(e.data);
+        handleSSE(ev);
+        if (ev.type === 'done' || ev.type === 'error') {
+          es.close();
+          runBtn.disabled = false; runBtn.textContent = 'Run Full Investigation';
+          statusTxt.textContent = ev.type === 'done' ? 'Investigation complete.' : 'Error: ' + (ev.message||'');
+        }
+      };
+      es.onerror = () => { es.close(); runBtn.disabled=false; runBtn.textContent='Run Full Investigation'; statusTxt.textContent='SSE connection lost.'; };
+    })
+    .catch(err => { statusTxt.textContent = err.message; runBtn.disabled=false; runBtn.textContent='Run Full Investigation'; });
+  });
+});
+
+function handleSSE(ev) {
+  const loop = ev.loop || 1;
+  const data = ev.data || {};
+  if (ev.type === 'analyst') {
+    if (!data.hypotheses) return;
+    _add(_analystCard(loop, data, ev.tokens));
+  } else if (ev.type === 'broker') {
+    if (!document.getElementById('bk-'+loop)) _add(_brokerShell(loop));
+    if (data && Object.keys(data).length > 0) {
+      const st = document.getElementById('bk-st-'+loop);
+      if (st) { st.textContent = 'Complete'; st.style.color='#4ade80'; st.className=''; }
+      const fd = document.getElementById('bk-fd-'+loop);
+      if (fd) {
+        fd.style.display='block';
+        const slim = Object.fromEntries(Object.entries(data).filter(([k])=>!k.startsWith('_raw')));
+        fd.querySelector('code').textContent = JSON.stringify(slim,null,2).slice(0,2000);
+      }
+    }
+  } else if (ev.type === 'broker_log') {
+    if (!document.getElementById('bk-'+loop)) _add(_brokerShell(loop));
+    const term = document.getElementById('bk-term-'+loop);
+    if (!term) return;
+    const txt = data.line || '';
+    const span = document.createElement('span');
+    if      (/\[ok|success/i.test(txt))          span.style.color='#4ade80';
+    else if (/\[rejected|\[error|ERROR/i.test(txt)) span.style.color='#f87171';
+    else if (/task|Task|\[T\d/i.test(txt))         span.style.color='#fbbf24';
+    else if (/subagent|agent/i.test(txt))           span.style.color='#818cf8';
+    else                                            span.style.color='#64748b';
+    span.textContent = txt + '\n';
+    term.appendChild(span);
+    term.scrollTop = term.scrollHeight;
+  } else if (ev.type === 'synthesis') {
+    if (!data.status) return;
+    _add(_synthCard(loop, data, ev.reasoning, ev.tokens));
+  } else if (ev.type === 'verdict') {
+    _verdict(data);
+  }
+}
+
+function _add(html) { document.getElementById('loopCards').insertAdjacentHTML('beforeend', html); }
+
+function _analystCard(loop, data, tokens) {
+  const tok = tokens ? '<span class="loop-tokens">'+( tokens.prompt_tokens||0)+'p + '+(tokens.generation_tokens||0)+'g tok</span>' : '';
+  const hyps = (data.hypotheses||[]).map(h=>{
+    const c={TRUE_POSITIVE:'#ef4444',FALSE_POSITIVE:'#10b981',BENIGN:'#3b82f6'}[h.verdict]||'#94a3b8';
+    return '<span style="color:'+c+';font-weight:700">['+h.id+' \u2014 '+h.verdict+']</span>\n  '+h.description;
+  }).join('\n\n')||'\u2014';
+  const tasks=(data.tasks||[]).map(t=>'* ['+t.task_id+'] '+(t.question||t)).join('\n')||'\u2014';
+  return '<div class="loop-card" style="border:1px solid #3b82f644;background:#3b82f60a;"><div class="loop-card-header"><span style="font-size:20px;">&#x1F9E0;</span><span class="loop-label" style="color:#3b82f6;">Loop '+loop+' \u2014 ANALYST \u2014 Planning</span>'+tok+'</div><div class="sec-title">Hypotheses</div><div class="sec-body">'+hyps+'</div><div class="sec-title">Tasks &rarr; Broker</div><div class="sec-body">'+tasks+'</div>'+(data.reasoning?'<div class="sec-title">Reasoning</div><div class="sec-body" style="color:#94a3b8;">'+data.reasoning+'</div>':'')+'</div>';
+}
+
+function _brokerShell(loop) {
+  return '<div id="bk-'+loop+'" class="loop-card" style="border:1px solid #f59e0b44;background:#f59e0b0a;"><div class="loop-card-header"><span style="font-size:20px;">&#x1F50D;</span><span class="loop-label" style="color:#f59e0b;">Loop '+loop+' \u2014 BROKER \u2014 Evidence Gathering</span><span id="bk-st-'+loop+'" class="loop-tokens pulse" style="color:#64748b;">Running...</span></div><div class="sec-title">Engine &amp; Sub-Agent Logs</div><div class="terminal" id="bk-term-'+loop+'"></div><div id="bk-fd-'+loop+'" style="display:none;margin-top:14px;"><div class="sec-title">Findings</div><div class="win" style="margin-bottom:0;"><pre style="color:#e2e8f0;"><code></code></pre></div></div></div>';
+}
+
+function _synthCard(loop, data, reasoning, tokens) {
+  const tok = tokens ? '<span class="loop-tokens">'+( tokens.prompt_tokens||0)+'p + '+(tokens.generation_tokens||0)+'g tok</span>' : '';
+  const sc = data.hypothesis_scores||{};
+  const scores=Object.entries(sc).map(([id,s])=>{const f='█'.repeat(Math.round((s||0)/10));const e='░'.repeat(10-Math.round((s||0)/10));return id+': '+f+e+' '+s+'/100';}).join('\n')||'\u2014';
+  const gaps=(data.evidence_gaps||[]).map(g=>'* '+g).join('\n')||'\u2014';
+  const sc2=data.status==='VERDICT_REACHED'?'#4ade80':'#fbbf24';
+  return '<div class="loop-card" style="border:1px solid #8b5cf644;background:#8b5cf60a;"><div class="loop-card-header"><span style="font-size:20px;">&#x2696;&#xFE0F;</span><span class="loop-label" style="color:#8b5cf6;">Loop '+loop+' \u2014 SYNTHESIS \u2014 Evaluation</span>'+tok+'</div><div class="sec-title">Hypothesis Scores</div><div class="sec-body">'+scores+'</div><div class="sec-title">Status</div><div class="sec-body" style="color:'+sc2+';font-weight:700;">'+( data.status||'\u2014')+'</div><div class="sec-title">Evidence Gaps</div><div class="sec-body">'+gaps+'</div>'+(reasoning?'<div class="sec-title">Reasoning</div><div class="sec-body" style="color:#94a3b8;">'+reasoning+'</div>':'')+'</div>';
+}
+
+function _verdict(data) {
+  const v=(data.verdict||'').toUpperCase();
+  const map={TRUE_POSITIVE:{color:'#ef4444',icon:'&#x1F534; TRUE POSITIVE'},FALSE_POSITIVE:{color:'#10b981',icon:'&#x1F7E2; FALSE POSITIVE'},BENIGN:{color:'#10b981',icon:'&#x1F7E2; BENIGN'}};
+  const {color,icon}=map[v]||{color:'#f59e0b',icon:'&#x26A0;&#xFE0F; '+(v||'UNKNOWN')};
+  const b=document.getElementById('verdictBanner');
+  b.style.display='block'; b.style.background=color+'18'; b.style.border='2px solid '+color;
+  document.getElementById('verdictIcon').style.color=color;
+  document.getElementById('verdictIcon').innerHTML=icon;
+  document.getElementById('verdictConf').textContent=data.confidence?'Confidence: '+data.confidence+'%':'';
+  document.getElementById('verdictSummary').textContent=data.reasoning||data.executive_summary||'';
+  b.scrollIntoView({behavior:'smooth'});
+}
+
+function _onAnalystComplete() {
+  const s=document.getElementById('pipelineSection');
+  if(!s)return;
+  s.classList.remove('hidden');
+  setTimeout(()=>s.scrollIntoView({behavior:'smooth',block:'start'}),300);
+  setTimeout(()=>{const b=document.getElementById('runBtn');if(b&&!b.disabled)b.click();},900);
+}
+
+async function importFromMissionControl() {
+  const btn = document.getElementById('importBtn');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '&#x23F3; Importing...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/import-from-splunk');
+    const data = await res.json();
+
+    if (data.status === 'error') {
+      alert('Import failed: ' + data.message);
+      return;
+    }
+    if (data.status === 'empty') {
+      alert('No notable events found in the last 72h in Splunk ES Mission Control.');
+      return;
+    }
+
+    // Clear all fields first so old dummy data doesn't mix with the new alert
+    document.getElementById('f_rule').value   = '';
+    document.getElementById('f_src').value    = '';
+    document.getElementById('f_dest').value   = '';
+    document.getElementById('f_user').value   = '';
+    document.getElementById('f_hash').value   = '';
+    document.getElementById('f_domain').value = '';
+    document.getElementById('f_mitre').value  = '';
+    document.getElementById('f_sig').value    = '';
+    document.getElementById('f_spl').value    = '';
+
+    // Fill the form fields with the imported data
+    if (data.rule_name)    document.getElementById('f_rule').value   = data.rule_name;
+    if (data.src)          document.getElementById('f_src').value    = data.src;
+    if (data.dest)         document.getElementById('f_dest').value   = data.dest;
+    if (data.user)         document.getElementById('f_user').value   = data.user;
+    if (data.file_hash)    document.getElementById('f_hash').value   = data.file_hash;
+    if (data.domain)       document.getElementById('f_domain').value = data.domain;
+    if (data.mitre)        document.getElementById('f_mitre').value  = data.mitre;
+    if (data.sig)          document.getElementById('f_sig').value    = data.sig;
+    if (data.deployed_spl) document.getElementById('f_spl').value    = data.deployed_spl;
+
+    // Attach raw full data to a global or a hidden field for the run endpoint to pick up
+    window.lastImportedRaw = data.raw_event_data || {};
+    console.log("Full Raw Event from ES:", window.lastImportedRaw);
+
+    // Visual feedback
+    btn.innerHTML = '&#x2705; Imported!';
+    btn.style.background = 'rgba(16,185,129,.25)';
+    btn.style.borderColor = '#10b981';
+
+    // Show toast
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#0f172a;border:1px solid #10b981;color:#10b981;padding:12px 18px;border-radius:10px;font-size:13px;font-weight:600;z-index:9999;animation:fadeIn .3s ease;';
+    toast.innerHTML = '&#x1F4E1; Imported from Mission Control' + (data.urgency ? ' &mdash; Urgency: <b>' + data.urgency + '</b>' : '') + (data.event_time ? '<br><span style="color:#64748b;font-size:11px;">' + data.event_time + '</span>' : '');
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 5000);
+
+    setTimeout(() => {
+      btn.innerHTML = '&#x1F4E1; Import from Mission Control';
+      btn.disabled = false;
+      btn.style.background = 'rgba(16,185,129,.12)';
+      btn.style.borderColor = 'rgba(16,185,129,.3)';
+    }, 3000);
+
+  } catch (e) {
+    alert('Network error: ' + e.message);
+    btn.innerHTML = orig;
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+

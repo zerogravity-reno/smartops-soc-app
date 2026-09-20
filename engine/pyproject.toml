@@ -1,0 +1,58 @@
+[project]
+name = "smartops-backend"
+version = "0.1.0"
+description = "SmartOps SOC triage/IR engine: budget, subagents, aggregator"
+requires-python = ">=3.13"
+dependencies = [
+    "smartops-contracts",
+    "pydantic>=2.9",
+    # Pinned exactly: several APIs this package relies on are real in 1.51.0 but
+    # absent from strandsagents.com, which documents an older surface (and whose
+    # source repo is archived). A minor bump could move them without notice, so
+    # the tests are the contract -- see backend/tests/test_strands_compliance.py,
+    # which fails the suite on a Strands deprecation or on the private helper
+    # registry.py imports changing shape.
+    # [openai] is for DeepSeek, not OpenAI: DeepSeek is OpenAI-API-compatible,
+    # so it is reached via OpenAIModel with base_url overridden. Without this
+    # extra, `bedrock` is the only importable model provider.
+    "strands-agents[otel,openai]==1.51.0",
+    "opentelemetry-api>=1.20",
+    # Direct, not transitive: VirusTotal lookups need an async HTTP client, and
+    # a blocking one would serialize the Broker's concurrent dispatch. httpx
+    # already arrives via strands, but depending on that is depending on someone
+    # else's dependency graph.
+    "httpx>=0.27",
+    # Loads .env at CLI startup. Without it every setting is read from
+    # os.environ and a .env file is inert -- which makes the documented
+    # `cp .env.example .env` appear to do nothing.
+    "python-dotenv>=1.0",
+    # Direct, not transitive: the subagent-analysts invoke a Bedrock CUSTOM
+    # IMPORTED model (Foundation-Sec-8B-Reasoning) with raw invoke_model, which
+    # needs boto3 directly. It already arrives via strands' Bedrock support, but
+    # depending on that is depending on someone else's dependency graph -- the
+    # same reasoning as httpx above.
+    "boto3>=1.34",
+]
+
+[project.scripts]
+smartops-broker = "smartops.main:run"
+smartops-bench = "smartops.bench:run"
+smartops-blind-compare = "smartops.blind_compare:run"
+
+
+
+[tool.uv.sources]
+smartops-contracts = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smartops"]

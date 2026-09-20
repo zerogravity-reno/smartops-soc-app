@@ -1,0 +1,249 @@
+:root {
+    --bg-dark: #0c0e12;
+    --card-bg: #13161d;
+    --card-border: #1e2330;
+    --text-primary: #e2e8f0;
+    --text-secondary: #64748b;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --escu-color: #f59e0b;
+    --escu-bg: rgba(245, 158, 11, 0.08);
+    --cti-color: #8b5cf6;
+    --cti-bg: rgba(139, 92, 246, 0.08);
+    --contract-color: #10b981;
+    --contract-bg: rgba(16, 185, 129, 0.08);
+    --code-bg: #090b0f;
+    --input-bg: #0f1219;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    line-height: 1.6;
+    padding: 2rem;
+    min-height: 100vh;
+}
+
+.container { max-width: 1300px; margin: 0 auto; }
+
+/* Header */
+header {
+    display: flex;
+    align-items: center;
+    gap: 1.2rem;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--card-border);
+}
+.logo { font-size: 2.2rem; }
+header h1 { font-size: 1.6rem; font-weight: 700; }
+header p { color: var(--text-secondary); font-size: 0.95rem; margin-top: 0.2rem; }
+
+/* Cards */
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    margin-bottom: 1.8rem;
+    overflow: hidden;
+}
+
+.card-header {
+    padding: 1.1rem 1.5rem;
+    border-bottom: 1px solid var(--card-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(255,255,255,0.015);
+}
+
+.card-title { display: flex; align-items: center; gap: 0.75rem; }
+.card-title h2 { font-size: 1.05rem; font-weight: 600; }
+
+.step-badge {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    font-size: 0.78rem;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.escu-step  { background: var(--escu-color); }
+.cti-step   { background: var(--cti-color); }
+.contract-step { background: var(--contract-color); }
+
+.badge {
+    padding: 0.22rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.input-badge   { background: rgba(255,255,255,0.07); color: var(--text-secondary); }
+.escu-badge    { background: var(--escu-bg); color: var(--escu-color); }
+.cti-badge     { background: var(--cti-bg); color: var(--cti-color); }
+.contract-badge{ background: var(--contract-bg); color: var(--contract-color); }
+
+.card-body { padding: 1.5rem; }
+
+/* Form Grid */
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.1rem;
+    margin-bottom: 1.5rem;
+}
+
+.field-group { display: flex; flex-direction: column; gap: 0.4rem; }
+
+.field-group label {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.tag {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+.escu-tag { background: var(--escu-bg); color: var(--escu-color); }
+.cti-tag  { background: var(--cti-bg); color: var(--cti-color); }
+
+.field-input {
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    padding: 0.65rem 0.9rem;
+    font-size: 0.9rem;
+    font-family: 'Inter', sans-serif;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+}
+.field-input:focus { border-color: var(--accent); }
+.field-input::placeholder { color: #2e3748; }
+
+/* Button */
+.primary-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.85rem 1.5rem;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+.primary-btn:hover { background: var(--accent-hover); }
+.primary-btn:active { transform: scale(0.99); }
+
+/* Adapters Grid */
+.adapters-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+}
+
+/* Query pill */
+.query-pill {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--code-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 0.5rem 0.85rem;
+    margin-bottom: 1rem;
+    font-size: 0.82rem;
+}
+.pill-label { color: var(--text-secondary); white-space: nowrap; }
+.pill-value {
+    color: var(--text-primary);
+    font-family: 'Fira Code', monospace;
+    font-size: 0.82rem;
+    word-break: break-all;
+}
+
+/* Code window */
+.code-window {
+    background: var(--code-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.window-header {
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--card-border);
+    padding: 0.45rem 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    font-family: 'Fira Code', monospace;
+}
+
+.dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.escu-dot     { background: var(--escu-color); }
+.cti-dot      { background: var(--cti-color); }
+.contract-dot { background: var(--contract-color); }
+
+pre {
+    padding: 1rem;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.82rem;
+    color: #7c9cbf;
+    max-height: 380px;
+    overflow-y: auto;
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.contract-window pre { color: #34d399; max-height: 500px; }
+
+/* Loader */
+.loader-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 3rem 0;
+    gap: 1rem;
+    color: var(--text-secondary);
+}
+.spinner {
+    width: 36px; height: 36px;
+    border: 3px solid rgba(255,255,255,0.07);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.hidden { display: none !important; }
+
+@media (max-width: 900px) {
+    .form-grid, .adapters-grid { grid-template-columns: 1fr; }
+}
