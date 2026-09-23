@@ -116,6 +116,52 @@ appended to the user turn, it is the LAST and most explicit instruction the
 model reads -- a divergence there overrides the footer rather than merely
 duplicating it."""
 
+_ANSWER_RULES = """\
+HOW TO WRITE EACH LINE. Every rule below fixes something a real reply got wrong on the
+2026-09-05 run; follow them exactly.
+
+1. NARRATIVE is PROSE. No numbered lists, no "First… Second… Sixth…", no headings.
+   Name the sets you describe by their header id as you go — prose naming no set cannot
+   be checked against anything. (How long, and how the paragraphs map to sets, is
+   already set out above; this rule is about the prose, not the grouping.)
+
+2. Each OBSERVATIONS line ends with the header id(s) it rests on, in brackets, each
+   carrying its full category prefix: `[auth_events#6] [auth_events#9]`, never
+   `[auth_events#6, #9]` and never a bare `#9`.
+
+3. TIMES ARE COPIED, NEVER CONVERTED. Take the range verbatim from the set's computed
+   summary, offset included — if it reads `2018-08-20T15:35:34+02:00`, write exactly
+   that. Do not re-render it as prose, do not restate it in another zone, do not do
+   arithmetic on it. A converted time is a time you have got wrong.
+
+4. WHEN A SET HAS NO TIME, SAY SO IN THOSE WORDS. If its summary line reads that the rows
+   carry no timestamp, end that observation with `(these rows carry no time)`. Never
+   invent a range, and never write a placeholder such as "unknown" into one.
+
+5. NAME THE DIMENSION THE SUMMARY NAMED. A distinct count belongs to the field it was
+   counted over: a summary line reading `user: 3 distinct` is THREE DISTINCT USERS, not
+   three distinct anything-else. Quote the field name the summary used."""
+"""Rules both the first ask and the re-ask must state identically.
+
+Separate from `_NARRATIVE_ANSWER_BLOCK`, which is the literal shape of the block, and
+included by BOTH `_NARRATIVE_FOOTER` and `analyze._FINDING_REASK` for the reason that
+constant's own docstring records: a second hand-written copy of what the answer must look
+like drifted out of step once and cost a live run its answer. The rules are as
+divergence-prone as the field list, and the re-ask is the LAST thing the model reads.
+
+Every numbered rule is a defect from the 2026-09-05 replay, in order: identity wrote three
+paragraphs naming no set; two domains of three wrote bare `#N` continuations, which used
+to be discarded silently; identity rendered the row value `15:35:34+02:00` as
+`11:35:34 AM UTC`, which is not a reformatting but wrong arithmetic; endpoint wrote
+`between unknown and unknown times` seven times because the prompt forbade inventing a
+range without ever sanctioning what to write instead; and endpoint reported "3 of them
+distinct images" where 3 was the distinct USER count and "142 distinct images" where 142
+was the row count.
+
+Rule 4 is the load-bearing one for rule 3's prohibition. A prohibition with no permitted
+alternative is what produced `unknown and unknown` -- the model had a slot, no value, and
+no sanctioned way to say so."""
+
 _NARRATIVE_FOOTER = f"""\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
@@ -153,6 +199,13 @@ sets, make each paragraph shorter; never drop one to make room. Around 400 words
 total is right, and a longer account is correct only when the evidence is genuinely
 larger.
 
+UNTAGGED SETS: a header reading `uncategorised#N` is a set whose query no category could
+be inferred from, so it MAY HOLD ANOTHER DOMAIN'S DATA, or estate bookkeeping rather than
+investigation rows. Give each one a single sentence saying what it contains, cited — do
+not elaborate on it, and do not attribute what it holds to your own domain.
+
+{_ANSWER_RULES}
+
 HOW MUCH TO REPORT: OBSERVATIONS carries one line per distinct thing the rows state, so
 that each line can be checked against the rows it cites. Two observations that cite the
 same rows for the same reason are one observation; two that rest on different rows, or
@@ -179,19 +232,36 @@ conclusion beyond the specific rows you can cite.
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
 can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. "Account bostoll appears in 124 events from 3
-source addresses between 03:14 and 04:02, 78 of them successes against WIN-DC01 and 46
-failures against WEB-PROD01" accounts for every row without picking a winner. Never drop
-a set because it looks uninteresting — say what it contains.
+ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
+numbers, which are placeholders and are not in your evidence — is: "Account <account>
+appears in <count> events from <count> source addresses between <earliest> and <latest>,
+<count> of them successes against <host> and <count> failures against <other host>". That accounts for every
+row without picking a winner. When the set's summary says its rows carry no timestamp,
+drop the time clause and end with `(these rows carry no time)` instead — never write a
+placeholder into it. Never drop a set because it looks uninteresting — say what it
+contains.
 
 EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
 `auth_events#1`:
   <timestamp> user=<account> src=<source addr> dest=<host> action=<success|failure> app=<log source>
+Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
+one line of a `| stats count by ...` result standing for many events, and it ends in
+`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
+Never give a time range for a set whose rows show no timestamp.
+
 A header may say rows=0 — the query ran and found nothing.
 `rows=N` in a header is the TRUE number of rows the query matched, and can be larger
 than the number of lines printed beneath it. When lines were held back you will see a
 trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
 4,000 rows are printed here"), rather than counting the printed lines as the whole set.
+
+THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
+`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
+including the ones not printed — and it gives you the event total, the distinct count and
+top values of each field, and the true earliest-to-latest time range. Take every count,
+every distinct count and every time range from it, and never by counting the printed
+lines: those are a sample. Where its time line says the rows carry no timestamp, the set
+has no time range and you must not state one.
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
@@ -218,20 +288,37 @@ conclusion beyond the specific rows you can cite.
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
 can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. "Host ABUNGST-L opened 124 connections to 12
-distinct destinations between 03:14 and 04:02; 46 of them went to 45.77.53.176 at
-roughly 60-second intervals" accounts for every row without picking a winner. Never drop
-a set because it looks uninteresting — say what it contains.
+ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
+numbers, which are placeholders and are not in your evidence — is: "Host <host> opened
+<count> connections to <count> distinct destinations between <earliest> and <latest>;
+<count> of them went to <address> at roughly <interval> intervals". That accounts for every
+row without picking a winner. When the set's summary says its rows carry no timestamp,
+drop the time clause and end with `(these rows carry no time)` instead — never write a
+placeholder into it. Never drop a set because it looks uninteresting — say what it
+contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
   dns_resolutions#1 <timestamp> query=<domain>→<answer> rtype=<type>
   connections#1     <timestamp> <src>:<port>→<dst>:<port> proto=<t> bytes=<n> action=<>
+Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
+one line of a `| stats count by ...` result standing for many events, and it ends in
+`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
+Never give a time range for a set whose rows show no timestamp.
+
 A header may say rows=0 — the query ran and found nothing.
 `rows=N` in a header is the TRUE number of rows the query matched, and can be larger
 than the number of lines printed beneath it. When lines were held back you will see a
 trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
 4,000 rows are printed here"), rather than counting the printed lines as the whole set.
+
+THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
+`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
+including the ones not printed — and it gives you the event total, the distinct count and
+top values of each field, and the true earliest-to-latest time range. Take every count,
+every distinct count and every time range from it, and never by counting the printed
+lines: those are a sample. Where its time line says the rows carry no timestamp, the set
+has no time range and you must not state one.
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
@@ -260,19 +347,36 @@ broader conclusion beyond the specific rows you can cite.
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
 can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. "Host BSTOLL-L ran 124 processes under user
-bstoll between 03:14 and 04:02, 18 of them distinct images; 46 repeated one command line
-at roughly 60-second intervals" accounts for every row without picking a winner. Never
-drop a set because it looks uninteresting — say what it contains.
+ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
+numbers, which are placeholders and are not in your evidence — is: "Host <host> ran
+<count> processes under user <account> between <earliest> and <latest>, <count> of them
+distinct images; <count> repeated one command line at roughly <interval> intervals". That accounts for every
+row without picking a winner. When the set's summary says its rows carry no timestamp,
+drop the time clause and end with `(these rows carry no time)` instead — never write a
+placeholder into it. Never drop a set because it looks uninteresting — say what it
+contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
   processes#1  <timestamp> host=<> user=<> process=<name> parent=<name> cmdline=<...>
   reputation#1 kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
+Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
+one line of a `| stats count by ...` result standing for many events, and it ends in
+`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
+Never give a time range for a set whose rows show no timestamp.
+
 A header may say rows=0 — the query ran and found nothing.
 `rows=N` in a header is the TRUE number of rows the query matched, and can be larger
 than the number of lines printed beneath it. When lines were held back you will see a
 trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
 4,000 rows are printed here"), rather than counting the printed lines as the whole set.
+
+THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
+`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
+including the ones not printed — and it gives you the event total, the distinct count and
+top values of each field, and the true earliest-to-latest time range. Take every count,
+every distinct count and every time range from it, and never by counting the printed
+lines: those are a sample. Where its time line says the rows carry no timestamp, the set
+has no time range and you must not state one.
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.

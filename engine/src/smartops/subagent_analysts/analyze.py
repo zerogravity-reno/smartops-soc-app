@@ -70,6 +70,7 @@ from contracts import (
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel
+from .formatting import NO_TIME_MARKER
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -79,8 +80,13 @@ from .packing import (
     pack_evidence,
 )
 from .parse import FindingParseError, parse_finding, split_reasoning
-from .prompts import _NARRATIVE_ANSWER_BLOCK, build_facts_user_turn, facts_system_prompt
-from .routing import DomainSlice, route
+from .prompts import (
+    _ANSWER_RULES,
+    _NARRATIVE_ANSWER_BLOCK,
+    build_facts_user_turn,
+    facts_system_prompt,
+)
+from .routing import DomainSlice, domains_for_family, route
 
 logger = logging.getLogger(__name__)
 
@@ -268,8 +274,23 @@ def _invoke_with_one_reask(
 
     try:
         return _Attempt(parse(response.generation, domain=domain), prompt_tokens, generation_tokens)
-    except parse_error:
-        logger.info("domain=%s | first reply had no parseable %s, re-asking once", domain, noun)
+    except parse_error as exc:
+        logger.info(
+            "domain=%s | first reply had no parseable %s (%s), re-asking once",
+            domain,
+            noun,
+            exc,
+        )
+        # The re-ask names WHAT broke, not just what the block should look like.
+        # `parse_finding` now raises for five distinct reasons -- no narrative, a
+        # placeholder observation, observations citing nothing, an unanchored
+        # narrative paragraph, no answer block -- and a fixed "did not end with the
+        # required block" tells the model none of them. Each message already says
+        # which rule broke and shows the offending text; putting it LAST, after the
+        # rules and before the block, makes it the most specific instruction the
+        # model reads. Applies to both arms: `shown.py`'s `_REASK` gets the same
+        # treatment because the helper is shared.
+        reask = f"{reask}\n\nWhat was wrong with your previous reply: {exc}"
 
     try:
         retry = model.invoke(system, user + reask)
@@ -407,8 +428,11 @@ def _apply_grounding(
 # ---------------------------------------------------------------------------
 
 _FINDING_REASK = (
-    "\n\nYour previous reply did not end with the required block. "
-    "Reply again, ending with exactly:\n" + _NARRATIVE_ANSWER_BLOCK
+    "\n\nYour previous reply was not accepted. Reply again, obeying these rules and "
+    "ending with exactly the block below.\n\n"
+    + _ANSWER_RULES
+    + "\n\n"
+    + _NARRATIVE_ANSWER_BLOCK
 )
 """Built from `prompts._NARRATIVE_ANSWER_BLOCK`, not a second hand-written copy.
 
@@ -487,7 +511,11 @@ def _gather_finding_traced(
     )
     if attempt.parsed is not None:
         return _finalize_finding(
-            attempt.parsed, valid_ids, attempt.prompt_tokens, attempt.generation_tokens
+            attempt.parsed,
+            valid_ids,
+            attempt.prompt_tokens,
+            attempt.generation_tokens,
+            slice_,
         )
     # UNLIKE the empty-slice branch above, this one keeps its sentence. A model
     # ran, was billed, and failed; that is not a retrieval fact and
@@ -503,11 +531,190 @@ def _gather_finding_traced(
     )
 
 
+# Digits that are part of a citation, not a claim. `_OBSERVATION_CITE_RE` above
+# matches a full `category#N`; this also strips the BARE `#N` continuations the
+# model writes when it runs ids together (`[uncategorised#2, #4, ... #23]`, on
+# the 2026-09-02 authorization run). Without it the gate reads `23` as a figure
+# the observation asserts, and reports it unsupported -- a false positive drawn
+# from punctuation.
+_CITATION_DIGITS_RE = re.compile(r"[A-Za-z_]*#\d+")
+
+# Times, stripped before figures are read. Every false positive in a trial run
+# of this gate over the nine recorded findings was a fragment of one: `15` and
+# `35` out of `15:35`, `02` out of `+02:00`, `11` and `19` out of `11:00-19:00`.
+# Order matters -- the full ISO form first, so its date is consumed whole rather
+# than leaving `2018` and `08` behind.
+_MONTHS = (
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?"
+    r"|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+)
+
+_TIME_TOKEN_RE = re.compile(
+    # ISO, longest first so its date is consumed whole rather than leaving 2018
+    # and 08 behind.
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?"
+    r"|\d{4}-\d{2}-\d{2}"
+    # Prose dates. The model keeps writing "August 20, 2018" despite the rule to
+    # copy times verbatim, and a DATE IS NOT A COUNT: reading 20 and 2018 as
+    # figures the observation asserts made every dated line unsupported on the
+    # 2026-09-05 re-measure, which emptied all three domains. Whether the model
+    # obeys the verbatim rule is a separate question from whether this gate may
+    # treat a calendar date as a claim about the rows. It may not.
+    rf"|(?:{_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?"
+    rf"|\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MONTHS})\.?(?:,?\s+\d{{4}})?"
+    r"|\b(?:19|20)\d{2}\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)\b"
+    r"|[+-]\d{2}:\d{2}"
+    r"|\d{1,2}:\d{2}(?::\d{2})?",
+    re.IGNORECASE,
+)
+
+# What counts as a figure the observation is asserting. Two digits or more:
+# single digits are too common in prose ("3 hosts") to check usefully, and a
+# fabricated count that matters has never been one digit.
+_FIGURE_RE = re.compile(r"(?<![\w.-])(\d{2,})(?![\w.-])")
+
+# Whether an observation states a time at all. Deliberately the clock form
+# rather than the date: a set can legitimately be described as covering a day
+# named in the scope, but a clock time can only come from a row.
+_TIME_CLAIM_RE = re.compile(r"\d{1,2}:\d{2}")
+
+
+def _figures(text: str) -> set[str]:
+    """Multi-digit figures an observation asserts, less its citations and times."""
+    stripped = _TIME_TOKEN_RE.sub(" ", _CITATION_DIGITS_RE.sub(" ", text))
+    return set(_FIGURE_RE.findall(stripped.replace(",", "")))
+
+
+def _drop_unsupported_figures(
+    observations: list[str], slice_: DomainSlice, domain: str
+) -> list[str]:
+    """Drop observations asserting a number, or a time, their own rows do not carry.
+
+    The citation gate above checks that an id RESOLVES. This checks that what the
+    observation says about the rows behind that id is actually in them, which is
+    the failure the resolving-id check cannot see: on the 2026-09-02
+    authorization run the endpoint finding's lead observation read "Host BSTOLL-L
+    ran 124 processes under user bstoll between 11:04 and 17:17, with 18 distinct
+    images and 46 repeated command lines [processes#2]" -- a real id, a resolving
+    citation, and 124/18/46 are the three figures in the endpoint prompt's own
+    worked example. `processes#2` holds 100 rows totalling 654 events, carries no
+    timestamp at all, and contains none of those numbers.
+
+    `formatting.summarise_rows` is what makes this checkable rather than merely
+    strict: the true counts, distinct counts and time range of the WHOLE set are
+    now rendered into the block the analyst read, so a figure absent from that
+    text was not in front of the model in any form.
+
+    Two rules, both keyed to the sets the observation itself cites:
+
+    - **Figures.** A multi-digit number appearing nowhere in those blocks is
+      unsupported. Citation digits and timestamps are stripped first; commas are
+      normalised, so `88,851` is checked against `88851`.
+    - **Times.** An observation stating a clock time whose cited blocks all
+      report `NO_TIME_MARKER` has invented it. This is the `processes#2` failure
+      exactly, and it is checked separately because a time range is not a figure.
+
+    An observation citing nothing is left alone, matching
+    `_resolve_observation_citations`: dropping uncited prose is a different
+    decision, and this gate should not make it by a side door.
+
+    Blind arm only. `shown.py` shares `_apply_grounding` but not this -- its
+    verdicts are measured against the blind ones by `blind_compare`, and gating
+    one arm's output and not the other's would change what that measures.
+    """
+    if not observations:
+        return observations
+
+    kept: list[str] = []
+    for observation in observations:
+        cited = sorted({c.lower() for c in _OBSERVATION_CITE_RE.findall(observation)})
+        if not cited:
+            # Dropped, where `_resolve_observation_citations` above leaves it
+            # alone. That function's docstring calls dropping uncited prose "a
+            # different (and unmade) decision" -- this is where it is made, and
+            # the measurement that made it: 4 of the 9 observations in the
+            # 2026-09-02 consent endpoint finding cited nothing, and one of them
+            # put "240,882 total events" on the wire resting on no set at all. An
+            # uncited line is a claim nothing can check, which is exactly what
+            # this gate drops everywhere else.
+            #
+            # Here rather than in the parser because the parser cannot tell an
+            # uncited observation from an un-bulleted prose line swept into the
+            # block; raising there over the latter costs a re-ask and can cost the
+            # domain. `parse._check_observations` still raises when NO observation
+            # cites anything, which is unambiguous.
+            logger.warning(
+                "domain=%s | dropped an observation citing no evidence: %s",
+                domain,
+                observation[:120],
+            )
+            continue
+
+        blocks = exhibits_for(slice_, cited)
+        if not blocks:
+            kept.append(observation)
+            continue
+        # Tokenised on BOTH sides, then compared as sets. A raw substring test
+        # (`f not in haystack`) was the first shape of this and it silently
+        # passed any figure that occurs INSIDE a longer number: `18` is "found"
+        # in `count=2018`, in `1080`, in an IP octet. That is not hypothetical --
+        # `18` is one of the three fabricated figures in the 2026-09-02 defect
+        # this gate exists to catch (124 / 18 / 46), and it was never caught,
+        # because `processes#2` happens to contain a longer number containing it.
+        #
+        # The failure was invisible for a second reason worth recording: every
+        # hand-verification of this gate checked the observations it DROPPED and
+        # none of the ones it KEPT, so false negatives were never in view.
+        #
+        # `_figures` on both sides also makes the two symmetric -- times and
+        # citation digits are stripped from the evidence exactly as they are from
+        # the claim, so a timestamp in the rows cannot "support" a count. The
+        # residue is that a count equal to a year (`2018` events) is stripped
+        # from both and therefore unchecked; that is a narrow, deliberate hole,
+        # and it fails open rather than dropping a sound line.
+        asserted = _figures(observation)
+        supported_by_rows = _figures(" ".join(b.text for b in blocks))
+        unsupported = sorted(asserted - supported_by_rows)
+        if unsupported:
+            # Both halves, deliberately. The unsupported figures say WHY the line
+            # went; the supported ones say how much of it was sound, which is the
+            # only way a reader can tell an invented line from a mostly-right one
+            # this gate took whole. Dropping whole is the decision (a line is not
+            # rewritten to remove a clause -- that puts words in the analyst's
+            # mouth, which is the failure the `inconclusive` default already
+            # taught this package), so the log is where the salvage lives.
+            logger.warning(
+                "domain=%s | dropped an observation asserting figure(s) absent from "
+                "the rows it cites (%s): unsupported=%s supported=%s",
+                domain,
+                ", ".join(cited),
+                ", ".join(unsupported),
+                ", ".join(sorted(asserted - set(unsupported))) or "none",
+            )
+            continue
+
+        if _TIME_CLAIM_RE.search(_CITATION_DIGITS_RE.sub(" ", observation)) and all(
+            NO_TIME_MARKER in b.text for b in blocks
+        ):
+            logger.warning(
+                "domain=%s | dropped an observation stating a time for set(s) whose "
+                "rows carry none: %s",
+                domain,
+                ", ".join(cited),
+            )
+            continue
+
+        kept.append(observation)
+    return kept
+
+
 def _finalize_finding(
     finding: DomainFinding,
     valid_ids: dict[str, list[str]],
     prompt_tokens: int,
     generation_tokens: int,
+    slice_: DomainSlice,
 ) -> DomainFinding:
     """Drop any citation that does not resolve, and mark what is left ungrounded.
 
@@ -526,7 +733,7 @@ def _finalize_finding(
     tell the consumer the claim rests on nothing. No `stance_field` and no
     `decisive` are passed, because this arm has no verdict and no confidence.
     """
-    return _apply_grounding(
+    grounded = _apply_grounding(
         finding,
         valid_ids,
         prompt_tokens,
@@ -540,6 +747,17 @@ def _finalize_finding(
         ),
         note="downgraded: no cited evidence resolved",
     )
+    # Second gate, and a different question. `_apply_grounding` asks whether the
+    # cited id exists; this asks whether the rows behind it say what the
+    # observation claims they say. Run after, so it only ever sees observations
+    # whose citations already resolve. Narrative is untouched for the same reason
+    # `_apply_grounding` keeps it: it is the record of what the model claimed.
+    survivors = _drop_unsupported_figures(
+        list(grounded.observations), slice_, grounded.domain
+    )
+    if len(survivors) == len(grounded.observations):
+        return grounded
+    return grounded.model_copy(update={"observations": survivors})
 
 
 def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:

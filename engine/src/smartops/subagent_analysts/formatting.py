@@ -15,6 +15,7 @@ code-assembled `ResultSet.rows`; `Evidence.raw` blobs are never rendered here.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from typing import Any
 
 from smartops.guards import escape_untrusted
@@ -88,50 +89,130 @@ def _count_suffix(row: dict[str, Any]) -> str:
     two thirds of rows, not all of them, and a `count=-` on every single-event
     row would spend budget saying nothing.
     """
-    value = _first(row, "count", default="")
+    value = _first(row, *_COUNT_FIELD, default="")
     return f" count={value}" if value not in ("", "-") else ""
 
 
-def _format_auth_event(row: dict[str, Any]) -> str:
-    return (
-        f"{_first(row, 'time', '_time', 'timestamp')} "
-        f"user={_first(row, 'user', 'src_user', 'Account_Name', 'AccountName', 'userPrincipalName')} "
-        f"src={_first(row, 'src', 'src_ip', 'Source_Network_Address', 'ipAddress', 'Workstation_Name')} "
-        f"dest={_first(row, 'dest', 'dest_host', 'Computer', 'host')} "
-        f"action={_first(row, 'action', 'status', 'signature', 'failureReason')} "
+# Per-category field candidates, named once and read by two consumers: the row
+# formatters below and the aggregate that reports on the rows the cap withheld.
+# They used to live inline in each formatter's f-string, which was fine while
+# the formatters were the only reader -- an aggregate that restated them would
+# drift the first time a Splunk sourcetype spelled a field differently and only
+# one copy learned about it.
+#
+# Order is meaningful: it is the order the aggregate reports dimensions in.
+# `time` is first in every category and is handled apart from the rest -- it
+# yields a range, not a distribution.
+_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "auth_events": {
+        "time": ("time", "_time", "timestamp"),
+        "user": ("user", "src_user", "Account_Name", "AccountName", "userPrincipalName"),
+        "src": ("src", "src_ip", "Source_Network_Address", "ipAddress", "Workstation_Name"),
+        "dest": ("dest", "dest_host", "Computer", "host"),
+        "action": ("action", "status", "signature", "failureReason"),
         # `code`/`logon_type` are the discriminating pair: without them, a
         # CachedInteractive unlock (EventCode 4624, Logon_Type 11) and a real
         # password spray render as identical near-blank rows. Both raw Windows
         # spellings appear across BOTS v3 sourcetypes (`Logon_Type` on some,
         # `LogonType` on others); `logon_type` is the CIM-normalised alias.
-        f"code={_first(row, 'EventCode', 'signature_id', 'event_id')} "
-        f"logon_type={_first(row, 'Logon_Type', 'LogonType', 'logon_type')} "
-        f"app={_first(row, 'app', 'sourcetype')}"
+        "code": ("EventCode", "signature_id", "event_id"),
+        "logon_type": ("Logon_Type", "LogonType", "logon_type"),
+        "app": ("app", "sourcetype"),
+    },
+    "dns_resolutions": {
+        "time": ("time", "_time", "timestamp"),
+        "src": ("src", "src_ip", "host"),
+        # `query{}` / `name{}` / `answer{}` are Splunk Stream's multivalue field
+        # spellings -- the literal braces are part of the JSON key, so a
+        # candidate list naming only `query` misses every Stream DNS row (66 of
+        # them across the saved runs).
+        "query": ("query", "query{}", "domain", "name", "name{}"),
+        "answer": ("answer", "answer{}", "answers", "ip", "dest_ip"),
+        "rtype": ("record_type", "query_type", "type"),
+        "rcode": ("reply_code", "response_code", "rcode"),
+    },
+    "connections": {
+        "time": ("time", "_time", "timestamp"),
+        "src": ("src", "src_ip"),
+        "src_port": ("src_port",),
+        "dest": ("dest", "dest_ip"),
+        "dest_port": ("dest_port",),
+        "proto": ("transport", "protocol", "proto"),
+        "bytes_in": ("bytes_in",),
+        "bytes_out": ("bytes_out",),
+        "bytes": ("bytes",),
+        "uri": ("uri_path", "uri", "url", "site"),
+        "action": ("action", "status", "http_method"),
+    },
+    "processes": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "user": ("user", "User", "Account_Name", "AccountName", "SubjectUserName"),
+        # Windows Security 4688 writes `New_Process_Name` /
+        # `Creator_Process_Name` / `Account_Name`, and the same event arrives
+        # under three casings depending on sourcetype. None were candidates,
+        # which is why 1,648 of 1,887 real process rows lost data -- while
+        # `projection.py:_infer_cim_category` already matched on
+        # `new_process_name` to decide the row WAS a process event. The
+        # categoriser and the projector disagreed about the shape of one record.
+        "process": (
+            "process_name", "New_Process_Name", "NewProcessName",
+            "new_process_name", "process_exec", "Image",
+        ),
+        "parent": (
+            "parent_process_name", "Creator_Process_Name", "ParentProcessName",
+            "creator_process_name", "parent_process", "ParentImage",
+        ),
+        "code": ("EventCode", "signature_id", "event_id"),
+        "cmdline": (
+            "process", "Process_Command_Line", "process_command_line",
+            "command_line", "cmd_line", "CommandLine",
+        ),
+    },
+}
+
+# The `count=` column, which is not a dimension: it weights every other one.
+# Named here so `_count_suffix` and the aggregate agree about where a group's
+# size is read from.
+_COUNT_FIELD: tuple[str, ...] = ("count",)
+
+
+def _field(row: dict[str, Any], category: str, name: str, default: str = "-") -> str:
+    """Resolve one named field for `category` through `_FIELDS`."""
+    return _first(row, *_FIELDS[category][name], default=default)
+
+
+def _format_auth_event(row: dict[str, Any]) -> str:
+    return (
+        f"{_field(row, 'auth_events', 'time')} "
+        f"user={_field(row, 'auth_events', 'user')} "
+        f"src={_field(row, 'auth_events', 'src')} "
+        f"dest={_field(row, 'auth_events', 'dest')} "
+        f"action={_field(row, 'auth_events', 'action')} "
+        f"code={_field(row, 'auth_events', 'code')} "
+        f"logon_type={_field(row, 'auth_events', 'logon_type')} "
+        f"app={_field(row, 'auth_events', 'app')}"
         f"{_count_suffix(row)}"
     )
 
 
 def _format_dns_resolution(row: dict[str, Any]) -> str:
-    # `query{}` / `name{}` / `answer{}` are Splunk Stream's multivalue field
-    # spellings -- the literal braces are part of the JSON key, so a candidate
-    # list naming only `query` misses every Stream DNS row (66 of them across
-    # the saved runs).
     return (
-        f"{_first(row, 'time', '_time', 'timestamp')} "
-        f"src={_first(row, 'src', 'src_ip', 'host')} "
-        f"query={_first(row, 'query', 'query{}', 'domain', 'name', 'name{}')}"
-        f"→{_first(row, 'answer', 'answer{}', 'answers', 'ip', 'dest_ip')} "
-        f"rtype={_first(row, 'record_type', 'query_type', 'type')} "
-        f"rcode={_first(row, 'reply_code', 'response_code', 'rcode')}"
+        f"{_field(row, 'dns_resolutions', 'time')} "
+        f"src={_field(row, 'dns_resolutions', 'src')} "
+        f"query={_field(row, 'dns_resolutions', 'query')}"
+        f"→{_field(row, 'dns_resolutions', 'answer')} "
+        f"rtype={_field(row, 'dns_resolutions', 'rtype')} "
+        f"rcode={_field(row, 'dns_resolutions', 'rcode')}"
         f"{_count_suffix(row)}"
     )
 
 
 def _format_connection(row: dict[str, Any]) -> str:
-    src = _first(row, "src", "src_ip")
-    src_port = _first(row, "src_port", default="")
-    dest = _first(row, "dest", "dest_ip")
-    dest_port = _first(row, "dest_port", default="")
+    src = _field(row, "connections", "src")
+    src_port = _field(row, "connections", "src_port", default="")
+    dest = _field(row, "connections", "dest")
+    dest_port = _field(row, "connections", "dest_port", default="")
     src_full = f"{src}:{src_port}" if src_port not in ("", "-") else src
     dest_full = f"{dest}:{dest_port}" if dest_port not in ("", "-") else dest
     # Both directions, never one. `bytes_in` and `bytes_out` co-occur on real
@@ -141,38 +222,31 @@ def _format_connection(row: dict[str, Any]) -> str:
     volume = " ".join(
         f"{label}={value}"
         for label, value in (
-            ("bytes_in", _first(row, "bytes_in", default="")),
-            ("bytes_out", _first(row, "bytes_out", default="")),
+            ("bytes_in", _field(row, "connections", "bytes_in", default="")),
+            ("bytes_out", _field(row, "connections", "bytes_out", default="")),
         )
         if value not in ("", "-")
-    ) or f"bytes={_first(row, 'bytes')}"
+    ) or f"bytes={_field(row, 'connections', 'bytes')}"
     return (
-        f"{_first(row, 'time', '_time', 'timestamp')} "
+        f"{_field(row, 'connections', 'time')} "
         f"{src_full}→{dest_full} "
-        f"proto={_first(row, 'transport', 'protocol', 'proto')} "
+        f"proto={_field(row, 'connections', 'proto')} "
         f"{volume} "
-        f"uri={_truncate(_first(row, 'uri_path', 'uri', 'url', 'site'), 120)} "
-        f"action={_first(row, 'action', 'status', 'http_method')}"
+        f"uri={_truncate(_field(row, 'connections', 'uri'), 120)} "
+        f"action={_field(row, 'connections', 'action')}"
         f"{_count_suffix(row)}"
     )
 
 
 def _format_process(row: dict[str, Any]) -> str:
-    # Windows Security 4688 writes `New_Process_Name` / `Creator_Process_Name` /
-    # `Account_Name`, and the same event arrives under three casings depending
-    # on sourcetype (`New_Process_Name`, `NewProcessName`, `new_process_name`).
-    # None were candidates, which is why 1,648 of 1,887 real process rows lost
-    # data -- while `projection.py:_infer_cim_category` already matched on
-    # `new_process_name` to decide the row WAS a process event. The categoriser
-    # and the projector disagreed about the shape of the same record.
     return (
-        f"{_first(row, 'time', '_time', 'timestamp')} "
-        f"host={_first(row, 'dest', 'host', 'Computer', 'ComputerName')} "
-        f"user={_first(row, 'user', 'User', 'Account_Name', 'AccountName', 'SubjectUserName')} "
-        f"process={_first(row, 'process_name', 'New_Process_Name', 'NewProcessName', 'new_process_name', 'process_exec', 'Image')} "
-        f"parent={_first(row, 'parent_process_name', 'Creator_Process_Name', 'ParentProcessName', 'creator_process_name', 'parent_process', 'ParentImage')} "
-        f"code={_first(row, 'EventCode', 'signature_id', 'event_id')} "
-        f"cmdline={_truncate(_first(row, 'process', 'Process_Command_Line', 'process_command_line', 'command_line', 'cmd_line', 'CommandLine'), _CMDLINE_LIMIT)}"
+        f"{_field(row, 'processes', 'time')} "
+        f"host={_field(row, 'processes', 'host')} "
+        f"user={_field(row, 'processes', 'user')} "
+        f"process={_field(row, 'processes', 'process')} "
+        f"parent={_field(row, 'processes', 'parent')} "
+        f"code={_field(row, 'processes', 'code')} "
+        f"cmdline={_truncate(_field(row, 'processes', 'cmdline'), _CMDLINE_LIMIT)}"
         f"{_count_suffix(row)}"
     )
 
@@ -296,6 +370,184 @@ def _event_total(rows: Sequence[dict[str, Any]]) -> int | None:
     return total
 
 
+# Which fields the aggregate groups by, per category. A subset of `_FIELDS`
+# rather than all of it: `time` yields a range instead of a distribution, and
+# the continuous columns (`bytes_in`, `bytes_out`, `bytes`) have no meaningful
+# top-N. `cmdline` and `uri` are left out for a different reason -- they are
+# near-unique per row, so a distribution over them is a list of the rows with
+# extra steps, and it is the wide field that would spend the budget.
+_SUMMARY_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    "auth_events": ("user", "src", "dest", "action", "logon_type"),
+    "dns_resolutions": ("src", "query", "answer", "rtype", "rcode"),
+    "connections": ("src", "dest", "dest_port", "proto", "action"),
+    "processes": ("host", "user", "process", "parent"),
+}
+
+_TOP_N = 5
+"""How many values per dimension the aggregate names.
+
+Bounded on purpose, and the bound is what keeps the summary a fixed cost: it must
+not grow with the rows, or a large set would buy its own summary by pushing
+`pack_evidence` down a rung of `_ROW_CAP_LADDER` and truncating further -- which
+is the very hole this aggregate exists to close. See `packing.pack_evidence`."""
+
+_SUMMARY_VALUE_LIMIT = 60
+"""Per-value truncation inside the summary. A process path or a DNS name can be
+long, and five of them on one line is where a dimension stops being compact."""
+
+NO_TIME_MARKER = "no timestamp on these rows — they have no time range"
+"""What the summary's time line says when the rows carry no timestamp.
+
+Read by `analyze._drop_unsupported_figures`, which uses it to decide whether a
+cited set can support a time range at all. A second hand-written copy of this
+string there would silently stop matching the day the wording is improved, and
+the gate would quietly pass every invented range -- so it is named here, beside
+the code that emits it, and imported rather than restated."""
+
+_MAX_GENERIC_DIMENSIONS = 6
+"""How many keys an `uncategorised` set is summarised over.
+
+Untagged sets have no known schema (`_format_generic` says why), so the keys are
+whatever the rows carry -- which on an estate-summary set is a handful and on a
+raw event set can be dozens. Bounded for the same reason as `_TOP_N`."""
+
+
+def _row_weight(row: dict[str, Any]) -> int:
+    """How many events one row stands for: its `count=`, else 1.
+
+    The same reading of the same column `_count_suffix` renders and
+    `_event_total` sums, so a `| stats count by ...` set aggregates by events
+    rather than by groups. A row whose `count` is not an integer weighs 1 --
+    the alternative is discarding the row from every distribution because one
+    column was malformed.
+    """
+    raw = _first(row, *_COUNT_FIELD, default="")
+    try:
+        return max(int(str(raw).strip()), 0)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _generic_dimensions(rows: Sequence[dict[str, Any]]) -> list[str]:
+    """Dimension keys for a set with no CIM schema: the row keys themselves.
+
+    Ordered by how many rows carry them, so a key present on every row is
+    summarised before one that appears on a handful. `count` is excluded -- it
+    is the weight, not a dimension -- as is anything that looks like the time
+    column, which `_time_range` reports instead.
+    """
+    tally: dict[str, int] = {}
+    for row in rows:
+        for key in row:
+            name = str(key)
+            if name.lower() in _COUNT_FIELD or name.lower() in _TIME_KEYS:
+                continue
+            tally[name] = tally.get(name, 0) + 1
+    ranked = sorted(tally, key=lambda k: (-tally[k], k))
+    return ranked[:_MAX_GENERIC_DIMENSIONS]
+
+
+_TIME_KEYS = frozenset({"time", "_time", "timestamp"})
+
+
+def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> str | None:
+    """Earliest and latest timestamp across ALL rows, or `None` if they carry none.
+
+    `None` is a real answer and the caller renders it as such. A `| stats count
+    by <fields>` set that did not group by `_time` has no time of its own, and
+    the analyst asked to describe it used to supply one anyway: on the
+    2026-09-02 authorization run a `processes` set whose rows carry no time at
+    all was reported as spanning 11:04 to 17:17.
+
+    Sorted by parsed value where every value parses, and lexically otherwise --
+    ISO-8601 strings sort correctly as text only while their offsets agree, and
+    falling back rather than raising keeps an odd sourcetype from costing the
+    whole summary.
+    """
+    values = [v for v in (_first(row, *candidates, default="") for row in rows) if v]
+    if not values:
+        return None
+    try:
+        ordered = sorted(values, key=lambda v: datetime.fromisoformat(v.replace("Z", "+00:00")))
+    except ValueError:
+        ordered = sorted(values)
+    if ordered[0] == ordered[-1]:
+        return ordered[0]
+    return f"{ordered[0]} … {ordered[-1]}"
+
+
+def summarise_rows(
+    category: str, rows: Sequence[dict[str, Any]], *, header_id: str = ""
+) -> str | None:
+    """A computed account of EVERY row in a set, for the rows the cap withheld.
+
+    This is `_event_total`'s rule applied to the rest of the numbers: *code
+    supplies every number, the model authors none*, computed over all rows and
+    not the capped subset, because the rows the cap withheld are exactly the
+    ones the analyst cannot count. `_event_total` did that for one figure -- the
+    event total in the header -- after a model summing a `count=` column by hand
+    reported 1,063 in a narrative and 1,083 in an observation drawn from the
+    same set (`cli-20260823T112627`).
+
+    The hole this closes is larger than that one. `pack_evidence` settles on a
+    rung of `_ROW_CAP_LADDER` and the analyst reads that many rows, while the
+    prompt asks it to group and count the whole set -- 20 of `processes#2`'s 100
+    rows on the 2026-09-02 authorization run. It cannot, so it interpolates:
+    that finding's lead observation reported "124 processes … 18 distinct images
+    … 46 repeated command lines", which are the three figures in the endpoint
+    prompt's own worked example and appear nowhere in the rows.
+
+    Returns `None` for an empty set -- `format_result_set` already renders
+    `(no rows returned)` and a summary of nothing would say it twice.
+
+    Cost is bounded and independent of row count (`_TOP_N`,
+    `_SUMMARY_VALUE_LIMIT`, `_MAX_GENERIC_DIMENSIONS`); see `_TOP_N` for why
+    that is load-bearing rather than tidiness.
+    """
+    if not rows:
+        return None
+
+    weights = [_row_weight(row) for row in rows]
+    total = sum(weights)
+    # The header id is repeated here, and it is not decoration. Sets are rendered
+    # back to back, so an unlabelled summary sits between two headers and reads as
+    # belonging to either -- on the 2026-09-05 replay the model wrote an
+    # observation about `processes#6` out of `processes#2`'s parent distribution
+    # (110, 206, 74, 52), and cited `processes#6` for all four. Naming the set on
+    # its own summary is what makes the block self-identifying.
+    lines = [
+        f"~ {header_id + ' — ' if header_id else ''}computed over all {len(rows)} rows"
+        + (f" ({total} events)" if total != len(rows) else "")
+        + ":"
+    ]
+
+    time_candidates = _FIELDS.get(category, {}).get("time", ("time", "_time", "timestamp"))
+    span = _time_range(rows, time_candidates)
+    lines.append(f"  time: {span}" if span else f"  time: {NO_TIME_MARKER}")
+
+    dimensions = _SUMMARY_DIMENSIONS.get(category)
+    generic = dimensions is None
+    names = list(dimensions) if dimensions else _generic_dimensions(rows)
+
+    for name in names:
+        tally: dict[str, int] = {}
+        for row, weight in zip(rows, weights):
+            value = (
+                _first(row, name, default="-") if generic else _field(row, category, name)
+            )
+            tally[value] = tally.get(value, 0) + weight
+        if len(tally) == 1 and "-" in tally:
+            continue  # the field is absent from every row; saying so per row is noise
+        top = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:_TOP_N]
+        rendered = ", ".join(
+            f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}" for value, count in top
+        )
+        more = f", … {len(tally) - _TOP_N} more" if len(tally) > _TOP_N else ""
+        lines.append(f"  {name}: {len(tally)} distinct — {rendered}{more}")
+
+    return "\n".join(lines)
+
+
 def format_result_set(
     category: str, result_set: ResultSet, *, index: int, row_cap: int = 20
 ) -> str:
@@ -335,6 +587,15 @@ def format_result_set(
     lines = [format_row(category, row) for row in shown]
     if len(result_set.rows) > row_cap:
         lines.append(f"… ({len(result_set.rows) - row_cap} more rows not shown)")
+
+    # Rendered for EVERY set, not only a truncated one. A capped set needs it
+    # because the analyst cannot count rows it was never shown; a fully printed
+    # set needs it too, because being visible has not been enough -- on the
+    # 2026-09-02 consent run `uncategorised#16` was printed whole and still had
+    # seven index totals attributed to it that appear nowhere in its rows.
+    summary = summarise_rows(category, result_set.rows, header_id=f"{category}#{index}")
+    if summary:
+        lines.append(summary)
     return header + "\n" + "\n".join(lines)
 
 

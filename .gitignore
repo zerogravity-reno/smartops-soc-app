@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -34,5 +34,5 @@ bm25_corpus.json
 
 # scratch files
 scratch_*.py
-test_*.py
+/test_*.py
 
