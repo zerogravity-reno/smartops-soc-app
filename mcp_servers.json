@@ -5,18 +5,25 @@
     "ToolFamily is our own mapping, in smartops.tools.registry.",
     "",
     "Credentials are ${VAR} references resolved against the process",
-    "environment, so no secret belongs in this file."
+    "environment, so no secret belongs in this file. An unset variable raises",
+    "inside load_servers() and, because every server sets continue_on_error,",
+    "that server is skipped rather than aborting the run -- which is how this",
+    "config behaves correctly with no credentials at all.",
+    "",
+    "Override this file's location with SMARTOPS_MCP_CONFIG.",
+    "",
+    "edr and ndr are disabled because no vendor has been picked. To enable one,",
+    "add its `url` and `headers` and drop `disabled`. Keep entries free of extra",
+    "keys -- Strands warns about anything outside its MCPServerConfig schema."
   ],
 
   "mcpServers": {
     "splunk": {
-      "command": "python",
-      "args": ["local_splunk_mcp.py"],
-      "env": {
-        "PYTHONIOENCODING": "utf-8",
-        "SPLUNK_TOKEN": "${SPLUNK_TOKEN}"
+      "url": "${SPLUNK_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${SPLUNK_TOKEN}"
       },
-      "continue_on_error": false,
+      "continue_on_error": true,
       "startup_timeout": 30
     },
 

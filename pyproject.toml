@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "smartops-soc"
 version = "1.0.0"
 description = "SmartOps SOC — Unified Web UI + Engine"
@@ -12,11 +12,64 @@ dependencies = [
     "pydantic>=2.0",
     "python-dotenv>=1.0",
     "requests>=2.32",
+    # The webapp launches the engine and shares its MCP client; both are workspace members.
+    "smartops-backend",
+    "smartops-contracts",
+    "mcp",
+    "httpx",
 ]
 
+# An application, not a library: uv installs the workspace members and never
+# tries to build the root (hatchling finds no `smartops_soc` package to ship).
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+smartops-backend = { workspace = true }
+smartops-contracts = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+
 [tool.uv.workspace]
-members = ["engine"]
+members = ["engine/contracts", "engine"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# At the root rather than per-member so a bare `pytest` from the repo root
+# collects both workspace members. It previously lived only in backend/ (now engine/), so
+# running pytest from the root failed every async test with "async def
+# functions are not natively supported". Also covers contracts/ for any future
+# async test there.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["engine/contracts/tests", "engine/tests", "tests"]
+# `webapp` is imported from the repo root; it is an app, not an installed package.
+pythonpath = ["."]
+
+# Strands deprecations must fail the suite, not scroll past it. The Broker spent
+# an unknown number of runs passing `smartops=request` through the `**kwargs`
+# channel Strands warns is deprecating; it fired on every invocation and nothing
+# was configured to surface it.
+#
+# Both categories, deliberately. Strands is inconsistent about which it uses:
+# most calls pass DeprecationWarning, `models/bedrock.py` passes UserWarning, and
+# the two `**kwargs` deprecations (`agent/agent.py`, `multiagent/base.py`) pass no
+# category at all -- which defaults to UserWarning. A DeprecationWarning-only
+# filter would have missed the exact warning that motivated this.
+#
+# Not scoped to a module: Strands warns with `stacklevel=2`, so the warning is
+# attributed to *our* calling module, and a `:strands.*` filter would match
+# nothing while reading as protection.
+#
+# The baseline is zero warnings across the suite, so this is not currently
+# suppressing anything. If a third-party dependency starts warning, add a
+# targeted `"ignore:<message regex>:<Category>"` line above rather than weakening
+# these -- the point is that a new warning is a decision, not a scroll-by.
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    "error::UserWarning",
+]

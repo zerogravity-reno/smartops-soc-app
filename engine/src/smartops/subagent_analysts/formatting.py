@@ -15,7 +15,7 @@ code-assembled `ResultSet.rows`; `Evidence.raw` blobs are never rendered here.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from smartops.guards import escape_untrusted
@@ -177,9 +177,29 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
 _COUNT_FIELD: tuple[str, ...] = ("count",)
 
 
+def _utc(value: str) -> str:
+    """An offset-bearing ISO timestamp restated in UTC (`...Z`); anything else as is.
+
+    The task window reaches the prompt in UTC, while Splunk returns `_time` in
+    the searching user's zone. On run `cecd266a` the endpoint analyst compared a
+    `14:53:35Z-14:54:15Z` window against rows stamped `17:53:53+03:00` -- the
+    same instant -- and reported "no process activity" in the window before
+    describing those very rows. One zone on both sides removes that arithmetic.
+    Naive or unparseable values are left alone: guessing their zone is worse.
+    """
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        return value
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _field(row: dict[str, Any], category: str, name: str, default: str = "-") -> str:
     """Resolve one named field for `category` through `_FIELDS`."""
-    return _first(row, *_FIELDS[category][name], default=default)
+    value = _first(row, *_FIELDS[category][name], default=default)
+    return _utc(value) if name == "time" else value
 
 
 def _format_auth_event(row: dict[str, Any]) -> str:
@@ -261,7 +281,9 @@ def _format_generic(row: dict[str, Any]) -> str:
     """
     items = list(row.items())[:8]
     return " ".join(
-        f"{_sanitise(str(k))}={_truncate(_sanitise(str(v)), 80)}" for k, v in items
+        f"{_sanitise(str(k))}="
+        + _truncate(_utc(_sanitise(str(v))) if str(k).lower() in _TIME_KEYS else _sanitise(str(v)), 80)
+        for k, v in items
     ) or "(empty row)"
 
 
@@ -299,18 +321,16 @@ def _projection_is_empty(line: str) -> bool:
       most important field as the bare `src:port→dest:port` tuple, so an
       earlier version of this check saw only `proto=-`/`bytes=-`/`action=-`,
       declared a fully populated connection row empty, and discarded the tuple
-      by falling back. A bare token counts as content unless it is built
-      purely from `_PLACEHOLDER_CHARS`.
+      by falling back. Both bare tokens and key=value values count as content
+      unless built purely from `_PLACEHOLDER_CHARS`.
     """
     tokens = line.split()[1:]
     if not tokens:
         return True
     for token in tokens:
         _, sep, value = token.partition("=")
-        if sep:
-            if value not in ("", "-"):
-                return False
-        elif set(token) - _PLACEHOLDER_CHARS:
+        target = value if sep else token
+        if set(target) - _PLACEHOLDER_CHARS:
             return False
     return True
 
@@ -464,7 +484,7 @@ def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> 
     falling back rather than raising keeps an odd sourcetype from costing the
     whole summary.
     """
-    values = [v for v in (_first(row, *candidates, default="") for row in rows) if v]
+    values = [_utc(v) for v in (_first(row, *candidates, default="") for row in rows) if v]
     if not values:
         return None
     try:
@@ -584,7 +604,20 @@ def format_result_set(
         return f"{header}\n(no rows returned)"
 
     shown = result_set.rows[:row_cap]
-    lines = [format_row(category, row) for row in shown]
+    formatter = _FORMATTERS.get(category)
+    lines: list[str] = []
+    empty_count = 0
+
+    for row in shown:
+        if formatter is not None and _projection_is_empty(formatter(row)):
+            empty_count += 1
+            lines.append(_format_generic(row))
+        else:
+            lines.append(format_row(category, row))
+
+    if empty_count > 0:
+        lines.append(f"… ({empty_count} of {len(shown)} shown rows projected nothing into {category} schema)")
+
     if len(result_set.rows) > row_cap:
         lines.append(f"… ({len(result_set.rows) - row_cap} more rows not shown)")
 

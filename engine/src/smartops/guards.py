@@ -8,6 +8,7 @@ message comes back to the model as the tool result, so the model can correct
 itself rather than simply failing.
 """
 
+import json
 import logging
 import re
 from typing import Any
@@ -183,6 +184,153 @@ class IndexScopeGuard:
         )
 
 
+_IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+# The shortest identifier fragment allowed to satisfy the scope. A domain's first
+# label is accepted alongside its full value (see `_match_terms`), and a
+# one- or two-character label would match almost any SPL, which would make the
+# guard pass everything for a scope containing `a.com`.
+_MIN_TERM = 4
+
+
+def _match_terms(entities: Any) -> set[str]:
+    """The lowercased fragments a query may carry to prove it is in scope.
+
+    An entity's own value, plus -- for a dotted value -- its first label. Both
+    are needed, and the run that motivated this shows why in one pair of queries:
+    the scope holds the domain `coinhive.com`, and the model wrote
+    `index=botsv3 "coinhive" | stats count by sourcetype, host`, which contains
+    no substring `coinhive.com` at all. Requiring the full value would have
+    cancelled a search that was squarely in scope -- and a good one: it is what
+    found a second host contacting the same domain.
+
+    Values shorter than `_MIN_TERM` are dropped rather than accepted, so a short
+    label cannot turn the guard into a no-op.
+    """
+    terms: set[str] = set()
+    for entity in entities:
+        value = str(getattr(entity, "value", entity)).strip().lower()
+        if len(value) >= _MIN_TERM:
+            terms.add(value)
+        label = value.partition(".")[0]
+        if len(label) >= _MIN_TERM:
+            terms.add(label)
+    return terms
+
+
+class ScopeGuard:
+    """Rejects a domain's queries that are anchored to nothing in the scope.
+
+    `IndexScopeGuard`'s sibling, and deliberately not part of it: that guard asks
+    "does this search target an allowed index", which is a question about the
+    deployment. This one asks "does this search have anything to do with what we
+    were asked about", which is a question about the mission. The 2026-09-02 run
+    passed every one of these through the index guard, correctly, and still put a
+    different host's DNS traffic into a delivered contract.
+
+    The rule, on anything that looks like a search: it must carry at least one
+    scope term (`_match_terms`). What that catches, from that run:
+
+        index=botsv3 sourcetype="stream:dns" | head 5
+        index=botsv3 sourcetype="stream:dns" | top 10 host
+        index=botsv3 sourcetype=stream:dns | stats count by src_ip | head 20
+
+    None names a host, user or domain. The first is where a hypothesis about
+    `bostoll` on `BSTOLL-L` acquired a network narrative describing `JWORTOS-L`.
+
+    **Identifiers learned during the run count as in scope**, harvested from the
+    rows of calls that were themselves in scope. Without this the guard would
+    break the legitimate pivot: resolving `BSTOLL-L` to `192.168.247.131` and
+    then querying that address is how network evidence is actually reached, and
+    the address is in no entity. Harvesting is restricted to IPv4 and to in-scope
+    calls, and both restrictions are load-bearing -- harvesting hostnames would
+    let one aggregate that slipped through name seven new hosts and adopt them
+    all, and harvesting from out-of-scope calls would let the guard bootstrap
+    itself open.
+
+    **What this does not do.** It cannot bound which rows come back, only which
+    searches go out, so a scoped search that returns a neighbouring host's rows
+    still delivers them -- `index=botsv3 "coinhive" | stats count by host` is in
+    scope and legitimately reports every host that hit the domain. Distinct
+    hostnames in evidence is therefore not expected to reach one; what is
+    expected is that every one of them traces to a query anchored on a real
+    entity.
+
+    Cancelled queries are recorded on `blocked` for the same reason
+    `IndexScopeGuard` records them: a cancelled call yields an error tool result,
+    `_EvidenceCollector` drops those, and nothing else would show the attempt.
+    """
+
+    def __init__(self, family: str, scope: Any) -> None:
+        self._family = family
+        self._terms = _match_terms(scope.entities)
+        self._entities = ", ".join(f"{e.kind}={e.value}" for e in scope.entities)
+        self.blocked: list[str] = []
+        """Every query string this guard cancelled, in the order it cancelled them."""
+        self.learned: set[str] = set()
+        """Addresses harvested from in-scope results and since treated as in scope."""
+
+    def register_hooks(self, registry: Any, **kwargs: Any) -> None:
+        from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookOrder
+
+        registry.add_callback(BeforeToolCallEvent, self._check)
+        # Same lowest-priority claim `_EvidenceCollector` makes, and for the same
+        # reason: a plugin that rewrites an oversized result would otherwise
+        # replace the rows this harvests the pivot addresses from.
+        registry.add_callback(AfterToolCallEvent, self._learn, order=HookOrder.SDK_FIRST)
+
+    def _in_scope(self, value: str) -> bool:
+        haystack = value.lower()
+        return any(term in haystack for term in self._terms | self.learned)
+
+    def _check(self, event: Any) -> None:
+        tool_use = event.tool_use or {}
+        name = tool_use.get("name", "unknown")
+
+        for value in _strings_in(tool_use.get("input")):
+            if not _LOOKS_LIKE_SEARCH.search(value) or self._in_scope(value):
+                continue
+            reason = (
+                f"Rejected: this search names nothing in the investigation's scope. "
+                f"Every query must reference at least one of: {self._entities} "
+                f"(or an address already resolved from one). Reissue it with a host, "
+                f"user, address or domain predicate -- a survey of the whole index "
+                f"returns other people's data and cannot answer this question."
+            )
+            logger.warning(
+                "family=%s, tool=%s | tool call cancelled by scope guard: query "
+                "carries no scope term -- query=%r",
+                self._family,
+                name,
+                value[:200],
+            )
+            self.blocked.append(value)
+            event.cancel_tool = reason
+            return
+
+    def _learn(self, event: Any) -> None:
+        """Adopt addresses returned by a call that was itself in scope."""
+        if getattr(event, "exception", None) is not None:
+            return
+        result = event.result
+        if isinstance(result, dict) and result.get("status") == "error":
+            return
+
+        searches = [
+            value
+            for value in _strings_in((event.tool_use or {}).get("input"))
+            if _LOOKS_LIKE_SEARCH.search(value)
+        ]
+        if not searches or not all(self._in_scope(value) for value in searches):
+            return
+
+        try:
+            body = json.dumps(result, default=str)
+        except (TypeError, ValueError):
+            body = str(result)
+        self.learned.update(_IPV4.findall(body))
+
+
 def _unquote(token: str) -> str:
     if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
         return token[1:-1]
@@ -203,3 +351,188 @@ def _strings_in(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [s for item in value for s in _strings_in(item)]
     return []
+
+
+_TSTATS_DATAMODEL = re.compile(
+    r"\|\s*tstats\b.*?\bfrom\s+datamodel\s*=\s*([^\s()|,]+)", re.IGNORECASE
+)
+
+# `summariesonly=t`, or the ESCU macro that expands to it. Absent means `f`.
+_SUMMARIES_ONLY = re.compile(
+    r"\bsummariesonly\s*=\s*(?:t|true|1)\b|`security_content_summariesonly`", re.IGNORECASE
+)
+
+_DATAMODEL_ALTERNATIVES: dict[str, str] = {
+    "network_resolution": "sourcetype=stream:dns",
+    "network_traffic": "sourcetype=stream:tcp or sourcetype=stream:ip",
+    "endpoint.processes": "sourcetype=WinEventLog EventCode=4688 or Sysmon EventCode=1",
+    "endpoint": "sourcetype=WinEventLog EventCode=4688 or Sysmon EventCode=1",
+    "authentication": "sourcetype=WinEventLog EventCode=4624",
+}
+
+
+class TstatsDeadEndGuard:
+    """Cancels `tstats` queries against datamodels known to return zero rows.
+
+    Learned per run, in two steps, because "0 rows" means two different things:
+
+    1. `summariesonly=t` returned 0 rows. The datamodel may simply be
+       unaccelerated -- the raw events are still there. `X` goes on
+       `summaries_empty`, and a further `summariesonly=t` query against it is
+       cancelled with an instruction to retry the same query as
+       `summariesonly=f`, which searches the raw events through the model.
+    2. `summariesonly=f` (or no flag, which is `f`) returned 0 rows. Now the
+       datamodel really is empty here. `X` goes on `dead_datamodels`, and every
+       further `tstats` against it is cancelled with the raw-sourcetype
+       alternative.
+
+    Step 1 used to be the whole rule, so one empty accelerated query sent the
+    subagent to hand-written sourcetype searches and it never tried the
+    unaccelerated path, which is also CIM-normalised across sourcetypes.
+    """
+
+    def __init__(self, family: str) -> None:
+        self._family = family
+        self.blocked: list[str] = []
+        """Every query string this guard cancelled, in the order it cancelled them."""
+        self.dead_datamodels: set[str] = set()
+        """Datamodels whose unaccelerated tstats returned 0 rows in this run."""
+        self.summaries_empty: set[str] = set()
+        """Datamodels whose `summariesonly=t` tstats returned 0 rows in this run."""
+
+    def register_hooks(self, registry: Any, **kwargs: Any) -> None:
+        from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookOrder
+
+        registry.add_callback(BeforeToolCallEvent, self._check)
+        registry.add_callback(AfterToolCallEvent, self._learn, order=HookOrder.SDK_FIRST)
+
+    def _extract_datamodel(self, value: str) -> str | None:
+        match = _TSTATS_DATAMODEL.search(value)
+        if not match:
+            return None
+        return _unquote(match.group(1)).strip().lower()
+
+    def _check(self, event: Any) -> None:
+        tool_use = event.tool_use or {}
+        name = tool_use.get("name", "unknown")
+
+        for value in _strings_in(tool_use.get("input")):
+            dm = self._extract_datamodel(value)
+            if dm is None:
+                continue
+            if dm in self.dead_datamodels:
+                alt = _DATAMODEL_ALTERNATIVES.get(dm, f"specific sourcetypes directly for {dm}")
+                reason = (
+                    f"Rejected: `tstats` against datamodel '{dm}' returned 0 rows both from "
+                    f"acceleration summaries and from raw events (summariesonly=f), so it is "
+                    f"unpopulated in this environment. "
+                    f"Query specific sourcetypes directly instead (e.g., {alt})."
+                )
+            elif dm in self.summaries_empty and _SUMMARIES_ONLY.search(value):
+                reason = (
+                    f"Rejected: `summariesonly=t` against datamodel '{dm}' already returned 0 rows, "
+                    f"which usually means the datamodel is not accelerated, not that the data is "
+                    f"absent. Run the same query with `summariesonly=f` instead: it searches the "
+                    f"raw events through the datamodel. The time window is applied for you."
+                )
+            else:
+                continue
+            logger.warning(
+                "family=%s, tool=%s | tool call cancelled by tstats dead-end guard: datamodel=%s",
+                self._family,
+                name,
+                dm,
+            )
+            self.blocked.append(value)
+            event.cancel_tool = reason
+            return
+
+    def _learn(self, event: Any) -> None:
+        """Record datamodels whose `tstats` query yielded 0 rows."""
+        if getattr(event, "exception", None) is not None:
+            return
+        result = event.result
+        if isinstance(result, dict) and result.get("status") == "error":
+            return
+
+        for value in _strings_in((event.tool_use or {}).get("input")):
+            dm = self._extract_datamodel(value)
+            if dm is None:
+                continue
+
+            if self._result_is_empty(result):
+                if _SUMMARIES_ONLY.search(value):
+                    self.summaries_empty.add(dm)
+                else:
+                    self.dead_datamodels.add(dm)
+
+    def _result_is_empty(self, result: Any) -> bool:
+        if result is None:
+            return True
+        if isinstance(result, dict):
+            # The official Splunk MCP server answers `{"results": [...]}` inside the
+            # ToolResult's `structuredContent`, which no key below looked at -- so
+            # against the real server this never saw an empty result.
+            inner = result.get("structuredContent")
+            if isinstance(inner, dict):
+                return self._result_is_empty(inner)
+            rows = result.get("rows", result.get("results"))
+            if isinstance(rows, (list, tuple)):
+                return len(rows) == 0
+            count = result.get("row_count", result.get("total", result.get("count")))
+            if isinstance(count, int):
+                return count == 0
+        res_str = str(result)
+        if "rows=0" in res_str or "(no rows returned)" in res_str or res_str.strip() in ("", "[]", "{}"):
+            return True
+        if isinstance(result, (list, tuple)):
+            return len(result) == 0
+        return False
+
+
+class TimeWindowPin:
+    """Pins every search a time-scoped domain makes to the mission's window.
+
+    Not a guard in the cancelling sense: it rewrites. When the selected tool
+    declares `earliest_time` and `latest_time` in its input schema, both are set
+    to the scope's epoch bounds on every call, overwriting whatever the model
+    passed. The prompt already asks for these values; asking was not enough --
+    43 of 45 siem queries on 2026-09-14 ran over all time, so evidence from
+    outside the alert window was reported as in scope.
+
+    The window is part of `Scope`, which is the authorization boundary, so the
+    model does not get a vote. A tool that takes no time parameters is left
+    alone: there is nothing to pin, and inventing SPL `earliest=` terms here
+    would be string surgery on a query this code does not parse.
+    """
+
+    def __init__(self, family: str, time_window: tuple[Any, Any]) -> None:
+        self._family = family
+        self._earliest = str(int(time_window[0].timestamp()))
+        self._latest = str(int(time_window[1].timestamp()))
+        self.blocked: list[str] = []
+        """Always empty -- this never cancels. Present so callers can pool `blocked`
+        across every guard a subagent runs under."""
+
+    def register_hooks(self, registry: Any, **kwargs: Any) -> None:
+        from strands.hooks import BeforeToolCallEvent
+
+        registry.add_callback(BeforeToolCallEvent, self._pin)
+
+    def _pin(self, event: Any) -> None:
+        tool = event.selected_tool
+        tool_use = event.tool_use or {}
+        if tool is None or not isinstance(tool_use.get("input"), dict):
+            return
+        properties = tool.tool_spec.get("inputSchema", {}).get("json", {}).get("properties", {})
+        if not {"earliest_time", "latest_time"} <= set(properties):
+            return
+        args = tool_use["input"]
+        asked = (args.get("earliest_time"), args.get("latest_time"))
+        if asked != (self._earliest, self._latest) and any(asked):
+            logger.info(
+                "family=%s, tool=%s | model asked for window %s, pinned to %s..%s",
+                self._family, tool_use.get("name", "unknown"), asked, self._earliest, self._latest,
+            )
+        args["earliest_time"] = self._earliest
+        args["latest_time"] = self._latest

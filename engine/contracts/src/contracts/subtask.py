@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self, get_args
 
 from pydantic import (
     BaseModel,
@@ -78,6 +78,35 @@ def evidence_id(task_id: str, index: int) -> str:
     is open question A there. Do not change the formula without settling it.
     """
     return f"{task_id}:{index}"
+
+def mission_family(mission_task_id: str) -> ToolFamily | None:
+    """The `ToolFamily` a mission id belongs to, or None if it carries no family.
+
+    The inverse of the one place mission ids are minted --
+    `f"{task.task_id}:{family}:{toolUseId}"` in `smartops.broker` -- and it lives
+    beside `evidence_id()` for the same reason that does: a format with one
+    writer and several readers needs one reader too, or the readers drift.
+
+    There were three ad-hoc copies of this before it existed, each spelled
+    `task_id.split(":")[1]`, in `smartops.main`, `smartops.bench` and the
+    analysis tier. That form is subtly wrong in two ways this is not. It indexes
+    from the LEFT, so it silently returns a fragment of the task id if a task id
+    ever contains a colon (now refused by `AnalystTask`, but that rule postdates
+    those call sites). And it returns whatever it finds, so a caller cannot tell
+    a real family from a malformed id -- `bench.py` defaults such a value to
+    `"siem"`, which is a guess presented as a fact.
+
+    Parses from the RIGHT (`rsplit`) because the family is the second-to-last
+    segment, and validates against `ToolFamily` before returning, so an
+    unrecognised value comes back as None rather than as a family that does not
+    exist.
+    """
+    parts = mission_task_id.rsplit(":", 2)
+    if len(parts) < 2:
+        return None
+    candidate = parts[-2] if len(parts) == 3 else parts[-1]
+    return candidate if candidate in get_args(ToolFamily) else None
+
 
 _FORBIDDEN_IN_ENTITY_VALUE = frozenset("<>")
 """The two characters checked first, for a message more specific than "not

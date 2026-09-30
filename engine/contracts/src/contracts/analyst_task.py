@@ -14,9 +14,70 @@ Until an Analyst agent exists, `smartops.main` mimics this handover, which is
 what the `schema_version` below is for.
 """
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 from contracts.subtask import Scope, ToolFamily
+
+MAX_ID_LENGTH = 128
+"""Upper bound on `task_id` / `hypothesis_id`. An identifier is not a payload.
+
+Comfortably above anything a producer would generate and below the ~255-byte
+limit a filesystem puts on a single path component -- which matters because
+`task_id` becomes a directory name (see `_SAFE_ID`).
+"""
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+"""What a `task_id` or `hypothesis_id` may contain.
+
+**This is a path-safety rule, not a style rule.** `task_id` is not merely an
+identifier: `smartops.broker.save_run_artifacts()` writes a run to
+`<runs_dir>/<task_id>/<stamp>/` and `main._resolve_run_dir()` reads
+`<runs_dir>/<task_id>/latest.txt`, so the value becomes a filesystem path
+component. It is also the prefix of every `Evidence.id` (`evidence_id()`) and
+the first segment of every mission id (`<task_id>:<family>:<toolUseId>`, minted
+in `smartops.broker`).
+
+That was harmless while the only producer was `smartops.main`, which built
+`cli-<timestamp>` itself. It stopped being harmless when `contracts.TaskInput`
+made `task_id` arrive from a JSON file written by another team: `../../etc/foo`
+validated fine and would have written a run directory outside the runs tree.
+
+So the allowlist, and each exclusion earns its place:
+
+* `/` and `\\` -- path separators, the traversal itself.
+* A leading `.` -- rejects `..` and `.` outright (the anchor requires the first
+  character to be alphanumeric) along with dotfiles, without having to special-
+  case the two names.
+* `:` -- the mission-id separator. A colon here would make
+  `<task_id>:<family>:<toolUseId>` ambiguous to parse, and on Windows it is also
+  an alternate-data-stream marker in a path.
+* Whitespace and control characters -- fall outside the class, so a newline or
+  tab cannot reach a directory name, a log line, or a telemetry attribute.
+
+Applied to `AnalystTask` only, deliberately. `SubtaskResult.task_id` holds
+mission ids, which contain colons by construction, and `BrokerReport.task_id` is
+loaded from artifacts written before this rule existed -- tightening either would
+break reading the saved runs used as replay fixtures.
+"""
+
+
+def _validated_id(value: str, field: str) -> str:
+    if len(value) > MAX_ID_LENGTH:
+        raise ValueError(
+            f"{field} is {len(value)} characters, over the {MAX_ID_LENGTH}-character "
+            f"limit -- an identifier this long is far more likely to be pasted junk"
+        )
+    if not _SAFE_ID.match(value):
+        raise ValueError(
+            f"{field} {value!r} is not a safe identifier: it must start with a letter "
+            f"or digit and contain only letters, digits, '.', '-' and '_'. This value "
+            f"becomes a directory name under the runs directory and a segment of every "
+            f"evidence id, so path separators, ':' , leading dots and whitespace are "
+            f"refused"
+        )
+    return value
 
 
 class AnalystTask(BaseModel):
@@ -36,6 +97,19 @@ class AnalystTask(BaseModel):
     hypothesis_id: str = Field(min_length=1)
     goal: str = Field(min_length=1)
     scope: Scope
+
+    @field_validator("task_id", "hypothesis_id")
+    @classmethod
+    def _ids_are_path_safe(cls, value: str, info) -> str:
+        """Both ids, because both cross into places a raw string should not.
+
+        See `_SAFE_ID` for why this is a safety rule rather than a naming
+        convention. Enforced here, on the Analyst -> Broker contract, so that it
+        holds for every producer at once -- the CLI's own `cli-<timestamp>`, a
+        `contracts.TaskInputFile` written by another team, and whatever the real
+        Analyst agent eventually sends.
+        """
+        return _validated_id(value, info.field_name)
 
 
 class TaskClassification(BaseModel):

@@ -1,5 +1,82 @@
 {
   "$defs": {
+    "DomainGap": {
+      "description": "A domain that could not be searched, and why.\n\n**The third retrieval state.** `RetrievalSummary` already separates \"we\nlooked and found nothing\" from \"we did not look\"; this separates both from\n\"we *could not* look, because the instrument is not there.\" Without it a\nconsumer reading a thin `endpoint` narrative cannot tell a quiet host from a\nhost nobody was able to observe -- and the two justify opposite conclusions.\n\nNot hypothetical. On `botsv3-coinhive-*` (2026-09-02) `edr` and `ndr` are\n`{\"disabled\": true}` in `mcp_servers.json`, the Broker planned an\n`edr_host_processes` step it had no tool to dispatch, and the siem subagents\nthemselves reported `gaps=['edr']`. Every one of those facts was recorded on\nthe fetch side and none of it crossed this boundary, so the Analyst Agent was\nhanded an endpoint judgement built entirely from SIEM process rows with no\nindication that a dedicated endpoint instrument was expected and absent.\n\n**A gap is not the same as a domain being irrelevant, and not the same as a\nfailure.** A missing `edr` does not mean endpoint questions went unanswered:\nSIEM carries Sysmon process events and answered them on that run. What it\nmeans is that the answer rests on one instrument rather than two, which is a\nfact about confidence that only the Analyst Agent can price.\n\nDeliberately NOT shown to the domain analysts. They are blind by\nconstruction, and \"no EDR instrument exists here\" is a hint about what to\nexpect to find. It belongs on the record, not in a prompt.",
+      "properties": {
+        "advised_by": {
+          "description": "Families whose subagents flagged this one as able to close a gap they hit, via `SubagentAnswer.gaps`. Evidence that the gap mattered to the investigation rather than being a domain nobody wanted: a `not_configured` edr that three siem steps all asked for is a different fact from one nothing missed. Empty when the family was planned or dispatched but no subagent asked for it.",
+          "items": {
+            "enum": [
+              "edr",
+              "ndr",
+              "vt",
+              "siem"
+            ],
+            "type": "string"
+          },
+          "title": "Advised By",
+          "type": "array"
+        },
+        "detail": {
+          "default": "",
+          "description": "The refusal message produced at the point of refusal, verbatim. Code-assembled, never model-authored -- it is the same string the fetch side already recorded on `SubtaskResult.reason` or `StepOutcome.reason`, carried across rather than re-derived, so the artifact and the run log cannot disagree about why.",
+          "minLength": 0,
+          "title": "Detail",
+          "type": "string"
+        },
+        "family": {
+          "enum": [
+            "edr",
+            "ndr",
+            "vt",
+            "siem"
+          ],
+          "title": "Family",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "not_configured",
+            "no_tools_resolved",
+            "no_observable_in_scope"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "served_domains": {
+          "description": "The analysis domains this instrument would have supplied evidence for, from `subagent_analysts.routing.domains_for_family()` -- so `edr` names `endpoint`. A statement about what the missing instrument COULD have covered, not about what any query retrieved.",
+          "items": {
+            "enum": [
+              "identity",
+              "network",
+              "endpoint"
+            ],
+            "type": "string"
+          },
+          "title": "Served Domains",
+          "type": "array"
+        },
+        "unanswered_domains": {
+          "description": "The subset of `served_domains` that received no evidence from ANY source. This is the field that resolves what the gap actually cost, and the two ends of it mean opposite things:\n\n**Empty** -- something else covered every domain this instrument would have served, so the investigation is not missing an answer, only a second opinion. A missing `edr` whose `endpoint` domain was filled by SIEM process events lands here, which is the normal case in a SIEM-only deployment.\n\n**Non-empty** -- those domains have no evidence AND the instrument that would most directly have produced it was unavailable, so \"nothing happened\" and \"nobody could look\" are indistinguishable for them. That ambiguity is the finding. It is recorded rather than resolved because resolving it needs a fact nobody here has: whether the environment was quiet, or merely unobserved. A consumer must not read an empty narrative for one of these domains as evidence of absence.",
+          "items": {
+            "enum": [
+              "identity",
+              "network",
+              "endpoint"
+            ],
+            "type": "string"
+          },
+          "title": "Unanswered Domains",
+          "type": "array"
+        }
+      },
+      "required": [
+        "family",
+        "reason"
+      ],
+      "title": "DomainGap",
+      "type": "object"
+    },
     "DomainJudgement": {
       "description": "One domain's judgement as it crosses to the Analyst Agent.\n\nThe wire projection of a `DomainFinding`. Same judgement, minus what is ours\nrather than the consumer's, plus the evidence needed to check it.\n\nDropped from `DomainFinding`: `reasoning_trace`, `prompt_tokens`,\n`generation_tokens`. The token counts are our telemetry. The trace is stronger\nthan that -- it is documented \"persisted for audit, never re-fed\", and putting\na model's private chain-of-thought into a contract handed to another model is\nexactly re-feeding it. A projection rather than a `model_dump(exclude=...)` so\nthe published schema does not advertise fields the consumer must know to\nignore.\n\nAdded: `exhibits`. See `Exhibit`.\n\n**The name predates the shape.** It was named while this tier judged, and it\nwas deliberately NOT renamed when the judging was removed on 2026-08-31: a\nrename would churn the contracts export, `analyze`, `main`, the published\nschema and every test that names the type, for no behavioural gain. Read it\nas \"one domain's contribution\", and read the fields for what it now is.\nThere is no verdict in it -- no `disposition`, no `confidence`, no stance.\nSee `Disposition` for where the deciding happens instead.",
       "properties": {
@@ -119,6 +196,14 @@
             "type": "string"
           },
           "title": "Dispatched",
+          "type": "array"
+        },
+        "gaps": {
+          "description": "Domains that could not be searched at all, with the reason. See `DomainGap`: this is what tells a reader that a hypothesis was not searched in full because an instrument is missing, as distinct from a domain that was searched and had nothing to say. Empty means every family the investigation wanted was available -- NOT that every family was dispatched, which `dispatched` answers.",
+          "items": {
+            "$ref": "#/$defs/DomainGap"
+          },
+          "title": "Gaps",
           "type": "array"
         },
         "not_covered": {

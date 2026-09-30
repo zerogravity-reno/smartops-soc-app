@@ -13,9 +13,10 @@ Shape only. Routing, prompt construction, model invocation, and parsing live in
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from contracts.findings import CimCategory
 from contracts.subtask import ToolFamily
@@ -356,6 +357,110 @@ class StepSummary(BaseModel):
     rows_retrieved: int = Field(default=0, ge=0)
 
 
+class DomainGap(BaseModel):
+    """A domain that could not be searched, and why.
+
+    **The third retrieval state.** `RetrievalSummary` already separates "we
+    looked and found nothing" from "we did not look"; this separates both from
+    "we *could not* look, because the instrument is not there." Without it a
+    consumer reading a thin `endpoint` narrative cannot tell a quiet host from a
+    host nobody was able to observe -- and the two justify opposite conclusions.
+
+    Not hypothetical. On `botsv3-coinhive-*` (2026-09-02) `edr` and `ndr` are
+    `{"disabled": true}` in `mcp_servers.json`, the Broker planned an
+    `edr_host_processes` step it had no tool to dispatch, and the siem subagents
+    themselves reported `gaps=['edr']`. Every one of those facts was recorded on
+    the fetch side and none of it crossed this boundary, so the Analyst Agent was
+    handed an endpoint judgement built entirely from SIEM process rows with no
+    indication that a dedicated endpoint instrument was expected and absent.
+
+    **A gap is not the same as a domain being irrelevant, and not the same as a
+    failure.** A missing `edr` does not mean endpoint questions went unanswered:
+    SIEM carries Sysmon process events and answered them on that run. What it
+    means is that the answer rests on one instrument rather than two, which is a
+    fact about confidence that only the Analyst Agent can price.
+
+    Deliberately NOT shown to the domain analysts. They are blind by
+    construction, and "no EDR instrument exists here" is a hint about what to
+    expect to find. It belongs on the record, not in a prompt.
+    """
+
+    family: ToolFamily
+    reason: Literal["not_configured", "no_tools_resolved", "no_observable_in_scope"]
+    """Why the domain could not be searched. Closed set, and each member is a
+    different kind of problem for the reader:
+
+    `not_configured` -- nothing is wired up for this family in this deployment
+    (no MCP server built and no native tools), so no tool was ever offered to
+    the Broker. An instrumentation gap: it will recur on every run until
+    something is deployed, and no retry can help.
+
+    `no_tools_resolved` -- the family IS configured but its server returned no
+    usable tools. Transient or operational rather than structural;
+    `registry.warm_mcp_clients()` retries this case before it is reported, so
+    seeing it here means the retries were exhausted.
+
+    `no_observable_in_scope` -- the tool exists and works, but this task's scope
+    carries none of the observables it needs (`vt` cannot be queried without a
+    hash, address, domain, or URL). A fact about the task, not the deployment,
+    and the *correct* outcome rather than a defect -- it is recorded so the
+    reader knows the domain was considered and ruled out on preconditions rather
+    than forgotten.
+    """
+    detail: str = Field(
+        default="",
+        min_length=0,
+        description=(
+            "The refusal message produced at the point of refusal, verbatim. "
+            "Code-assembled, never model-authored -- it is the same string the "
+            "fetch side already recorded on `SubtaskResult.reason` or "
+            "`StepOutcome.reason`, carried across rather than re-derived, so the "
+            "artifact and the run log cannot disagree about why."
+        ),
+    )
+    advised_by: list[ToolFamily] = Field(
+        default_factory=list,
+        description=(
+            "Families whose subagents flagged this one as able to close a gap "
+            "they hit, via `SubagentAnswer.gaps`. Evidence that the gap mattered "
+            "to the investigation rather than being a domain nobody wanted: a "
+            "`not_configured` edr that three siem steps all asked for is a "
+            "different fact from one nothing missed. Empty when the family was "
+            "planned or dispatched but no subagent asked for it."
+        ),
+    )
+    served_domains: list[AnalystDomain] = Field(
+        default_factory=list,
+        description=(
+            "The analysis domains this instrument would have supplied evidence "
+            "for, from `subagent_analysts.routing.domains_for_family()` -- so "
+            "`edr` names `endpoint`. A statement about what the missing "
+            "instrument COULD have covered, not about what any query retrieved."
+        ),
+    )
+    unanswered_domains: list[AnalystDomain] = Field(
+        default_factory=list,
+        description=(
+            "The subset of `served_domains` that received no evidence from ANY "
+            "source. This is the field that resolves what the gap actually cost, "
+            "and the two ends of it mean opposite things:\n\n"
+            "**Empty** -- something else covered every domain this instrument "
+            "would have served, so the investigation is not missing an answer, "
+            "only a second opinion. A missing `edr` whose `endpoint` domain was "
+            "filled by SIEM process events lands here, which is the normal case "
+            "in a SIEM-only deployment.\n\n"
+            "**Non-empty** -- those domains have no evidence AND the instrument "
+            "that would most directly have produced it was unavailable, so "
+            "\"nothing happened\" and \"nobody could look\" are "
+            "indistinguishable for them. That ambiguity is the finding. It is "
+            "recorded rather than resolved because resolving it needs a fact "
+            "nobody here has: whether the environment was quiet, or merely "
+            "unobserved. A consumer must not read an empty narrative for one of "
+            "these domains as evidence of absence."
+        ),
+    )
+
+
 class RetrievalSummary(BaseModel):
     """What was looked for, and what the looking turned up.
 
@@ -398,6 +503,17 @@ class RetrievalSummary(BaseModel):
             "one category each -- the union put all four categories in BOTH "
             "lists, which tells a consumer nothing. One dispatch retrieving a "
             "category settles it for the investigation."
+        ),
+    )
+    gaps: list[DomainGap] = Field(
+        default_factory=list,
+        description=(
+            "Domains that could not be searched at all, with the reason. See "
+            "`DomainGap`: this is what tells a reader that a hypothesis was not "
+            "searched in full because an instrument is missing, as distinct from "
+            "a domain that was searched and had nothing to say. Empty means "
+            "every family the investigation wanted was available -- NOT that "
+            "every family was dispatched, which `dispatched` answers."
         ),
     )
 
@@ -602,3 +718,67 @@ class AnalystPayload(BaseModel):
     hypothesis_id: str
     hypothesis: str | None = None
     findings: list[DomainNarrative] = Field(default_factory=list)
+    # NOTE: `RetrievalSummary.gaps` deliberately does NOT cross this boundary
+    # yet -- whether it should is an open question for the producing team, see
+    # docs/open-questions-for-team.md (2026-09-02). Until that is settled the
+    # gap is on the record only, so `findings.json` carries it and this does not.
+
+
+class AnalystPayloadBatch(BaseModel):
+    """Every hypothesis from one task file, in one message.
+
+    **The unit of handover is the task file, not the hypothesis.** A file arrives
+    carrying several hypotheses about one alert -- "did this happen", "was it
+    legitimate instead", "was it authorised" -- and the Analyst Agent has to weigh
+    them against each other. Three separate `AnalystPayload` files leave that
+    grouping implicit: the recipient gets three messages and has to infer, from
+    nothing in the payloads themselves, that they belong to one question.
+
+    That inference is exactly what this shape removes. It is also the answer to a
+    question left open on 2026-09-02: `HypothesisFindings` has no case-level id,
+    the received template has none either, and the working assumption had been
+    that the grouping lived with the producer. It does not have to -- a batch
+    carries it explicitly, without a `HypothesisFindings` version bump, because
+    the grouping goes on the envelope rather than into any per-hypothesis shape.
+
+    **`AnalystPayload` is unchanged and is the member type.** It stays at its own
+    `schema_version` 1 and keeps its own `task_id`, `run_id` and `hypothesis_id`,
+    so every member is still independently resolvable back to the run directory
+    that produced it. This envelope adds grouping and nothing else -- it does not
+    merge, summarise, or reconcile the members, because comparing hypotheses is
+    the Analyst Agent's job and doing any of it here would be this tier forming
+    the judgement it exists not to form.
+
+    Written per task-file run, including a run of one, so the consumer has a
+    single predictable input shape rather than a batch sometimes and a bare
+    payload other times. The per-task `analyst-payload.json` files are still
+    written beside each run's own report and evidence -- that is the per-run-dir
+    record, joined by `run_id`, and this is the message.
+
+    `batch_id` is OURS, not the producer's: the template carries no such field,
+    so this is a name we mint for a grouping the file implies. Raised with the
+    producing team rather than presented as settled -- if their generator has its
+    own case or alert id, that is the value that belongs here.
+    """
+
+    schema_version: int = 1
+    batch_id: str = Field(min_length=1)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    payloads: list[AnalystPayload] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _hypotheses_are_distinct(self) -> Self:
+        """One batch must not carry the same hypothesis twice.
+
+        `TaskInputFile` already refuses a duplicate `hypothesis_id` at load, so
+        this cannot fire from a well-formed task file. It is here because this
+        shape can also be assembled by hand or by a future producer, and a
+        duplicate would be unrecoverable in exactly the way it is on the input
+        side: the id is the join key, so two members sharing one are
+        indistinguishable to the recipient.
+        """
+        ids = [p.hypothesis_id for p in self.payloads]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValueError(f"hypothesis_id must be unique within a batch, duplicated: {dupes}")
+        return self

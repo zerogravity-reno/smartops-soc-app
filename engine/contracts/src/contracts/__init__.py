@@ -17,10 +17,12 @@ from contracts.reasoning import (
     AnalystVerdict,
     Disposition,
     DomainFinding,
+    DomainGap,
     DomainJudgement,
     Exhibit,
     HypothesisAssessment,
     AnalystPayload,
+    AnalystPayloadBatch,
     DomainNarrative,
     HypothesisFindings,
     InvestigationContext,
@@ -48,6 +50,13 @@ from contracts.subtask import (
     ToolFamily,
     answer_tool_name,
     make_answer_model,
+    mission_family,
+)
+from contracts.task_input import (
+    TaskEntity,
+    TaskInput,
+    TaskInputFile,
+    TaskTimeWindow,
 )
 
 BrokerReport.model_rebuild()
@@ -62,11 +71,13 @@ __all__ = [
     "CimCategory",
     "Disposition",
     "DomainFinding",
+    "DomainGap",
     "DomainJudgement",
     "Exhibit",
     "EdrAssessment",
     "HypothesisAssessment",
     "AnalystPayload",
+    "AnalystPayloadBatch",
     "DomainNarrative",
     "HypothesisFindings",
     "InvestigationContext",
@@ -93,11 +104,16 @@ __all__ = [
     "SubtaskResult",
     "SubtaskStatus",
     "TaskClassification",
+    "TaskEntity",
+    "TaskInput",
+    "TaskInputFile",
+    "TaskTimeWindow",
     "ToolFamily",
     "VtAssessment",
     "VtFindings",
     "VtVerdict",
     "answer_tool_name",
     "make_answer_model",
+    "mission_family",
 ]
 

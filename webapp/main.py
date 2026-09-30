@@ -23,7 +23,14 @@ from pydantic import BaseModel
 # Add engine to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine", "src"))
 
+# Before the service imports: llm_service reads its model settings at import time.
+# override=False, so a variable already set by the shell or container wins.
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
+
 from webapp.services.llm_service import call_llm, extract_json
+from webapp.services import run_trace, splunk_mcp
 
 
 app = FastAPI(title="SmartOps SOC")
@@ -44,7 +51,7 @@ def index():
 app.mount("/static", StaticFiles(directory=STATIC_DIR, html=False), name="static")
 
 # â”€â”€ Load ESCU corpus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-CORPUS_PATH = os.path.join(os.path.dirname(__file__), "..", "bm25_corpus.json")
+CORPUS_PATH = os.path.join(os.path.dirname(__file__), "..", "docs", "corpus", "bm25_corpus.json")
 try:
     with open(CORPUS_PATH, "r", encoding="utf-8") as f:
         bm25_corpus = json.load(f)
@@ -78,7 +85,7 @@ class OpenCTIRequest(BaseModel):
 # â”€â”€ OpenCTI config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import requests as _http_requests
 OPENCTI_URL   = os.environ.get("OPENCTI_URL",   "http://localhost:8080/graphql")
-OPENCTI_TOKEN = os.environ.get("OPENCTI_TOKEN",  "607c0c8e-ba29-4e00-9d6b-8e33e33d0f92")
+OPENCTI_TOKEN = os.environ.get("OPENCTI_TOKEN",  "")
 OPENCTI_HEADERS = {
     "Authorization": f"Bearer {OPENCTI_TOKEN}",
     "Content-Type":  "application/json",
@@ -144,42 +151,14 @@ def _classify_observable(value: str) -> str:
 def import_from_splunk():
     """Pull the latest notable event from Splunk ES Mission Control and
     enrich it with the matching detection rule SPL from Content Management."""
-    import httpx, time as _time
-
-    base_url = os.environ.get("SPLUNK_WEB_URL", "https://wobbly-erased-starter.ngrok-free.dev")
-    user = os.environ.get("SPLUNK_USER", "ysalah")
-    pwd  = os.environ.get("SPLUNK_PASS", "12345679")
-    skip = {"ngrok-skip-browser-warning": "true"}
-
     try:
-        # --- Auth ---
-        client = httpx.Client(verify=False, follow_redirects=True)
-        client.get(f"{base_url}/en-US/account/login", headers=skip, timeout=60)
-        cval = client.cookies.get("cval", "")
-        client.post(f"{base_url}/en-US/account/login", headers=skip,
-                    data={"username": user, "password": pwd, "cval": cval, "return_to": "/en-US/"}, timeout=60)
-        csrf = client.cookies.get("splunkweb_csrf_token_8000", "")
-        client.headers.update({**skip, "X-Splunk-Form-Key": csrf, "X-Requested-With": "XMLHttpRequest"})
-
         # --- Step 1: Get latest notable event ---
-        spl_notable = (
-            "search index=notable earliest=-30d"
-            " | sort -_time"
-            " | head 1"
-            " | table _time rule_name urgency status src dest user src_ip rule_id search_name *")
-        r = client.post(f"{base_url}/en-US/splunkd/__raw/services/search/jobs?output_mode=json",
-                        data={"search": spl_notable, "exec_mode": "normal", "splunk_form_key": csrf}, timeout=60)
-        r.raise_for_status()
-        sid = r.json()["sid"]
-        for _ in range(60):
-            sr = client.get(f"{base_url}/en-US/splunkd/__raw/services/search/jobs/{sid}?output_mode=json", timeout=60)
-            if sr.status_code != 200: break
-            if sr.json()["entry"][0]["content"]["dispatchState"] in ("DONE", "FAILED"): break
-            _time.sleep(1)
-        rr = client.get(f"{base_url}/en-US/splunkd/__raw/services/search/jobs/{sid}/results?output_mode=json&count=1", timeout=60)
-        events = rr.json().get("results", [])
+        events = splunk_mcp.run_query(
+            "search index=notable | sort -_time | head 1"
+            " | table _time rule_name urgency status src dest user src_ip rule_id search_name *",
+            earliest_time="-30d", latest_time="now", row_limit=1)
         if not events:
-            return {"status": "empty", "message": "No notable events found in the last 72 hours."}
+            return {"status": "empty", "message": "No notable events found in the last 30 days."}
 
         ev = events[0]
         
@@ -213,19 +192,15 @@ def import_from_splunk():
         # --- Step 2: Find matching detection rule SPL ---
         deployed_spl = ""
         if rule_name:
-            import urllib.parse
-            encoded = urllib.parse.quote(rule_name)
-            ru = client.get(
-                f"{base_url}/en-US/splunkd/__raw/servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches"
-                f"?output_mode=json&count=1&f=name&f=search"
-                f"&search=name%3D%22{encoded}%22",
-                timeout=60,)
-            if ru.status_code == 200:
-                entries = ru.json().get("entry", [])
-                if entries:
-                    deployed_spl = entries[0].get("content", {}).get("search", "")
+            # `| rest` is read-only; the quote escape keeps a rule name from closing the filter.
+            escaped = rule_name.replace("\\", "\\\\").replace('"', '\\"')
+            rules = splunk_mcp.run_query(
+                "| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches splunk_server=local"
+                f' search="name=\\"{escaped}\\"" | head 1 | fields search',
+                row_limit=1)
+            if rules:
+                deployed_spl = rules[0].get("search", "")
 
-        client.close()
         return {
             "status": "ok",
             "event_time": event_time,
@@ -524,8 +499,9 @@ def stream_run(run_id: str):
                 if item.get("type") in ("done", "error"):
                     break
             except Empty:
-                yield "data: {\"type\":\"error\",\"message\":\"timeout\"}\n\n"
-                break
+                # Silence is not failure: a cold model or a long broker round can go
+                # minutes without an event. The worker always ends with done/error.
+                yield ": keepalive\n\n"
     return StreamingResponse(event_gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -561,17 +537,28 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         r1 = call_llm(system_prompt, user_msg)
         plan = extract_json(r1["answer"]) or {}
         plan["reasoning"] = r1["reasoning"]
-        _emit(q, "analyst", plan, message="Loop 1 complete",
-              tokens={"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]})
+        tokens1 = {"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]}
+        _emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
+        run_trace.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1)
 
         # â”€â”€ LOOPS 2..N: Broker + Synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         all_findings = {}
+        tasks = plan.get("tasks", [])
         for loop_num in range(2, req.max_loops + 2):
-            # Broker â€” stream each CLI output line as broker_log event
-            _emit(q, "broker", {}, loop=loop_num, message=f"Loop {loop_num} â€” Broker starting...")
-            findings = _run_broker_proc_streaming(req, alert_context, q, loop_num)
+            # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
+            # its own event, so the UI shows the handshake rather than a JSON dump.
+            findings, link = _run_broker_proc_streaming(tasks, run_id, loop_num, q)
+            run_trace.record(run_id, "broker", loop_num, **link)
+            if "broker_runs" in link:
+                _emit(q, "broker", {"runs": link["broker_runs"], "handshake": link["handshake"]},
+                      loop=loop_num, message=f"Loop {loop_num}: Broker complete")
+            if link.get("error"):
+                # Never fall back to another run's artifacts: that is how eleven
+                # loops were once judged on an unrelated alert's evidence.
+                q.put({"type": "error", "message": f"Loop {loop_num} broker failed: {link['error']}", "trace": link})
+                return
             all_findings[f"Round {loop_num}"] = findings
-            _emit(q, "broker", findings, loop=loop_num, message=f"Loop {loop_num} â€” Broker complete")
+            _emit(q, "payload", findings, loop=loop_num, message=f"Loop {loop_num}: sub-analyst findings returned to the Analyst")
 
             # Synthesis â€” build accumulated findings sections
             _emit(q, "synthesis", {}, loop=loop_num, message=f"Loop {loop_num} â€” Synthesis evaluating...")
@@ -584,6 +571,8 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                   tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
                   message=f"Loop {loop_num} â€” Synthesis complete: {synth.get('status','?')}")
+            run_trace.record(run_id, "synthesis", loop_num, output=synth, reasoning=rN["reasoning"],
+                             tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]})
 
             status  = synth.get("status", "")
             verdict = synth.get("verdict", "")
@@ -594,6 +583,11 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             if loop_num == req.max_loops + 1:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"}, message="Max loops reached")
                 break
+            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"])
+            if not tasks:
+                _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"},
+                      message="No actionable follow-up tasks")
+                break
 
         q.put({"type": "done", "message": "Investigation complete"})
 
@@ -603,64 +597,77 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         _run_queues.pop(run_id, None)
 
 
-def _run_broker_proc_streaming(req: "RunRequest", alert_context: dict, q: Queue, loop_num: int) -> dict:
-    """Run SmartOps Engine CLI. Stream every stdout/stderr line to UI as broker_log SSE. Return findings JSON."""
-    from pathlib import Path as _Path
-    import subprocess
+def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue) -> tuple[dict, dict]:
+    """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
 
-    event_time = alert_context.get("normalized_seed", {}).get("event_time", "")
-    since_arg: list[str] = []
-    if event_time:
-        try:
-            from datetime import datetime as _dt, timedelta as _td
-            dt = _dt.fromisoformat(event_time.replace("Z", "+00:00"))
-            since = (dt - _td(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            until = (dt + _td(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            since_arg = ["--since", since, "--until", until]
-        except Exception:
-            since_arg = ["--hours", "24"]
-    else:
-        since_arg = ["--hours", "24"]
+    The tasks go as a `task-input.v1` file (`--task-file`), and what comes back is
+    the batch `analyst-payload.json` the sub-analysts wrote -- read from the batch
+    id this call named, never from "the newest run on disk". The link says where
+    everything for this round lives; it has an `error` key when there is nothing
+    to judge.
+    """
+    run_dir = run_trace.runs_dir() / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num)
+    task_path = run_dir / f"tasks-L{loop_num}.json"
+    task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")
+    task_ids = [t["task_id"] for t in task_file["tasks"]]
+    link = {"task_file": str(task_path), "task_ids": task_ids, "tasks": task_file["tasks"], "dropped": dropped}
+    # The Analyst -> Broker half of the handshake: exactly what was sent, and what was not.
+    _emit(q, "handoff", {"tasks": task_file["tasks"], "dropped": dropped, "task_file": str(task_path)},
+          loop=loop_num, message=f"Loop {loop_num}: {len(task_ids)} task(s) handed to the Broker")
+    if not task_ids:
+        return {}, {**link, "error": "no task could be converted for the broker"}
 
-    engine_src = str(Path(__file__).parent.parent / "engine" / "src")
-    mcp_config = str(Path(__file__).parent.parent / "mcp_servers.json")
+    repo = Path(__file__).parent.parent
+    batch_id = f"{run_id}-L{loop_num}"
+    log_path = run_dir / f"broker-L{loop_num}.log"
     env = {
         **os.environ,
-        "PYTHONPATH": engine_src,
+        # contracts lives beside the engine, not inside engine/src.
+        "PYTHONPATH": os.pathsep.join([str(repo / "engine" / "src"), str(repo / "engine" / "contracts" / "src")]),
         "PYTHONIOENCODING": "utf-8",
-        "SMARTOPS_MCP_TLS_NO_VERIFY": "splunk",  # skip TLS verify for ngrok tunnel
+        # Piped stdout is block-buffered; without this the "live" log arrives at exit.
+        "PYTHONUNBUFFERED": "1",
     }
-
-    # Extract dynamic goal and entities from alert_context
-    goal = alert_context.get("goal", req.alert_name)
-    alert_name = alert_context.get("normalized_seed", {}).get("alert_name", req.alert_name)
-    
     cmd = [sys.executable, "-m", "smartops.main",
-           "--goal", goal,
-           "--hypothesis", f"Investigate alert: {alert_name}",
-           "--mcp-config", mcp_config,
-           *since_arg, "--budget-usd", "10"]
-           
-    entities = alert_context.get("normalized_seed", {}).get("entities", {})
-    if entities:
-        for kind, value in entities.items():
-            if value:
-                cmd.extend(["--entity", f"{kind}:{value}"])
-    else:
-        # Fallback if somehow missing
-        cmd.extend(["--entity", f"host:{req.host}", "--entity", f"domain:{req.domain}"])
+           "--task-file", str(task_path),
+           "--batch-id", batch_id,
+           "--mcp-config", str(repo / "mcp_servers.json")]
+    # Streamed line by line: it fills the UI's log panel, and it keeps the SSE
+    # queue alive -- a silent 30-minute subprocess tripped the stream's 300 s
+    # timeout and the UI reported a failure while the broker was still working.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace", env=env, cwd=str(repo))
+    timed_out = threading.Event()
 
+    def _kill():
+        timed_out.set()
+        proc.kill()
+
+    killer = threading.Timer(1800, _kill)
+    killer.start()
     try:
-        subprocess.run(cmd, capture_output=True, text=True, env=env,
-                       cwd=str(Path(__file__).parent.parent), timeout=300)
-    except Exception:
-        pass
+        with log_path.open("w", encoding="utf-8") as log:
+            log.write(f"$ {' '.join(cmd)}\n\n")
+            for line in proc.stdout:
+                log.write(line)
+                _emit(q, "broker_log", {"line": line.rstrip()}, loop=loop_num)
+        returncode = proc.wait()
+    finally:
+        killer.cancel()
+    link.update(exit_code=returncode, log=str(log_path))
 
-    runs_dir = Path(__file__).parent.parent / ".smartops" / "runs"
-    if runs_dir.exists():
-        for pattern in ("findings.json", "report.json"):
-            hits = sorted(runs_dir.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-            if hits:
-                return json.loads(hits[0].read_text(encoding="utf-8"))
-    return {"_note": "No findings returned"}
+    link["broker_runs"] = run_trace.broker_runs(task_ids)
+    payload_path = run_trace.runs_dir() / batch_id / "analyst-payload.json"
+    link["payload"] = str(payload_path)
+    payload = json.loads(payload_path.read_text(encoding="utf-8")) if payload_path.is_file() else None
+    link["handshake"] = run_trace.handshake(task_ids, link["broker_runs"], payload)
+    if timed_out.is_set():
+        return {}, {**link, "error": f"broker timed out after 30 minutes, see {log_path}"}
+    if returncode != 0:
+        return {}, {**link, "error": f"broker exited {returncode}, see {log_path}"}
+    if payload is None:
+        return {}, {**link, "error": f"broker wrote no analyst payload (analyst model configured?), see {log_path}"}
+    return payload, link
 

@@ -97,6 +97,27 @@ under every other family.
 """
 
 
+WARM_ATTEMPTS = 3
+"""How many times `warm_mcp_clients()` will try to resolve a client's tools.
+
+Three, not one, because the failure it recovers from is transient and its cost is
+total: a single malformed handshake response leaves a family with no tools for the
+whole process (see `warm_mcp_clients` for the measured case). Three, not more,
+because this runs before any dispatch and each failed attempt is paid in startup
+latency -- and a server that is genuinely down should be reported as such rather
+than retried at length.
+"""
+
+WARM_RETRY_BACKOFF_SECONDS = 1.0
+"""Base delay between warm attempts, multiplied by the attempt number.
+
+Enough to let a server that answered one request badly finish whatever it was
+doing, short enough not to matter at startup. Linear rather than exponential:
+with three attempts the difference is a second, and the shape of the backoff is
+not what decides whether this works.
+"""
+
+
 def _default_config_path() -> Path | None:
     """Where to look for the `mcpServers` config, in precedence order.
 
@@ -236,20 +257,93 @@ async def warm_mcp_clients() -> None:
     Call once at startup, after `load_mcp_servers()`. A server that cannot be
     reached is *not* an error: it yields no tools here exactly as it would at
     dispatch, and its family goes on to report honestly that nothing resolved.
+
+    **Retried, because one bad handshake here costs the whole run.** Measured on
+    a live run (2026-09-02): Splunk's MCP endpoint answered the initialize POST
+    with `500 bad character (49) in reply size` -- splunkd emitting a malformed
+    chunked response, transient, and a fresh process resolved all 10 tools
+    seconds later. But `continue_on_error` swallowed it into
+    `_connection_failed = True`, and because that flag is checked before
+    anything is retried (`mcp_client.py:401-403`, "a previously swallowed init
+    failure is not retried on subsequent calls") every later `tools_for('siem')`
+    returned `[]`. All three siem steps were rejected, the investigation ran with
+    no SIEM at all, and it reported as "configured but returning no tools
+    (unreachable, unauthorized, or exposing nothing)" -- which reads as a
+    misconfiguration rather than as one 500.
+
+    Two details make the retry work rather than merely look like it does:
+
+    1. **`stop()` first.** Retrying `load_tools()` alone hits that early return
+       and is a no-op. `stop()` is the only thing that clears the flag
+       (`mcp_client.py:557`) and is documented as safe on a partially
+       initialized client, which is exactly the state a swallowed failure leaves.
+    2. **Re-claim `PROCESS_CONSUMER`.** `stop()` also resets `_consumers`, so
+       skipping this would silently drop the claim `load_mcp_servers()` took --
+       see `PROCESS_CONSUMER` for what that claim is protecting against.
+
+    The SDK has its own version of this reset, keyed on the consumer count
+    dropping to zero (`mcp_client.py:474-476`, whose comment says it exists so
+    "the sticky `_connection_failed` flag resets and the client can reconnect").
+    It can never fire here, precisely because we hold a process-lifetime
+    consumer -- so the recovery has to be explicit.
+
+    Retries are bounded and short: this runs before any dispatch, so the cost of
+    an attempt is startup latency, while the cost of giving up too early is an
+    entire investigation's worth of one domain. A client still resolving nothing
+    after the last attempt is logged at WARNING rather than INFO -- the old code
+    logged "warmed an MCP client: 0 tool(s)" at INFO, so a total outage was
+    recorded in the same words as a success and was invisible without --verbose.
     """
     clients = mcp_clients()
     if not clients:
         return
 
+    def reset(client: MCPClient) -> None:
+        """Clear the sticky failure flag, then restore our consumer claim."""
+        client.stop(None, None, None)
+        claim = getattr(client, "add_consumer", None)
+        if callable(claim):
+            claim(PROCESS_CONSUMER)
+
     async def warm(client: MCPClient) -> None:
-        try:
-            tools = await _load_tools_off_loop(client)
-        except Exception:
-            # Same trade `tools_for()` makes: one dead vendor must not stop the
-            # others from being resolved.
-            logger.warning("failed to warm an MCP client, it will resolve no tools", exc_info=True)
-            return
-        logger.info("warmed an MCP client: %d tool(s)", len(tools))
+        for attempt in range(1, WARM_ATTEMPTS + 1):
+            try:
+                tools = await _load_tools_off_loop(client)
+            except Exception:
+                # Same trade `tools_for()` makes: one dead vendor must not stop
+                # the others from being resolved.
+                logger.warning(
+                    "attempt %d/%d to warm an MCP client raised",
+                    attempt, WARM_ATTEMPTS, exc_info=True,
+                )
+                tools = []
+            if tools:
+                logger.info(
+                    "warmed an MCP client: %d tool(s)%s",
+                    len(tools),
+                    f" (on attempt {attempt})" if attempt > 1 else "",
+                )
+                return
+            if attempt < WARM_ATTEMPTS:
+                logger.warning(
+                    "an MCP client resolved no tools on attempt %d/%d; resetting it "
+                    "and retrying (a swallowed init failure is sticky until stop())",
+                    attempt, WARM_ATTEMPTS,
+                )
+                try:
+                    await asyncio.to_thread(reset, client)
+                except Exception:
+                    # A client that cannot even be reset is not recoverable here;
+                    # let the remaining attempts fall through to the warning.
+                    logger.warning("could not reset an MCP client", exc_info=True)
+                await asyncio.sleep(WARM_RETRY_BACKOFF_SECONDS * attempt)
+
+        logger.warning(
+            "an MCP client resolved NO tools after %d attempt(s) -- every family it "
+            "serves will reject its dispatches with 'configured but returning no "
+            "tools', so this run will have no evidence from that domain",
+            WARM_ATTEMPTS,
+        )
 
     await asyncio.gather(*(warm(client) for client in clients))
 
@@ -497,6 +591,10 @@ async def _load_tools_off_loop(client: MCPClient) -> Sequence[Any]:
     uncontended. The lock is what makes the property hold anyway for a caller
     that never warmed, which is how this failed the first time.
     """
-    lock = _resolve_locks.setdefault(id(client), asyncio.Lock())
+    current_loop = asyncio.get_running_loop()
+    lock = _resolve_locks.get(id(client))
+    if lock is None or (getattr(lock, "_loop", None) is not None and lock._loop is not current_loop):
+        lock = asyncio.Lock()
+        _resolve_locks[id(client)] = lock
     async with lock:
         return await asyncio.to_thread(asyncio.run, client.load_tools())

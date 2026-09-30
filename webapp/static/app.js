@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const mitre        = document.getElementById('f_mitre').value.trim();
         const signature    = document.getElementById('f_sig').value.trim();
         const deployed_spl = document.getElementById('f_spl').value.trim();
+        if (!rule_name) { alert('Import an alert or enter the detection rule name first.'); return; }
 
         // Auto-extract observables (non-empty cti fields only)
                         const raw = window.lastImportedRaw || {};
@@ -85,7 +86,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // --- Simulate Normalized Seed ---
             const normalized_seed = {
                 event_id: "evt-" + Math.floor(Math.random() * 1000000),
-                event_time: new Date().toISOString(),
+                // The alert's own time, in UTC. It was the browser's "now", which sent
+                // run cecd266a searching 3 hours after a +03:00 alert. null = unknown.
+                event_time: (() => { const d = new Date([].concat(raw._time)[0] || NaN); return isNaN(d) ? null : d.toISOString(); })(),
                 ingest_time: new Date().toISOString(),
                 detection: {
                     detection_id: null,

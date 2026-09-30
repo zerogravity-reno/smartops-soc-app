@@ -466,70 +466,6 @@ async def _stub_subagent(mission: SubagentMission) -> SubtaskResult:
             reason=f"no tools resolved for {family}: {reason}",
         )
 
-    if family == "siem" and resolved:
-        search_tool = next((t for t in resolved if getattr(t, "tool_name", "") == "search_splunk" or getattr(t, "name", "") == "search_splunk"), None)
-        if search_tool:
-            terms = []
-            for kind in ["host", "ip", "domain", "user"]:
-                val = getattr(mission.scope, kind, None)
-                if val:
-                    terms.append(f'"{val}"')
-            query = " OR ".join(terms) if terms else "*"
-            # Use sysmon and main indexes, and limit to 50 results
-            spl = f"search index=sysmon OR index=main ({query}) | head 50"
-            try:
-                # Strands MCPAgentTool delegates to mcp_client.call_tool
-                client = getattr(search_tool, "mcp_client", None)
-                if client:
-                    raw_result = await client.call_tool_async(
-                        name=search_tool.mcp_tool.name, 
-                        arguments={"query": spl, "count": 50},
-                        tool_use_id="stub"
-                    )
-                else:
-                    raise AttributeError("search_tool has no mcp_client")
-                
-                
-                from contracts import SiemFindings
-                from contracts.findings import ResultSet
-                from contracts.subtask import evidence_id
-                
-                text_content = ""
-                if hasattr(raw_result, "content") and raw_result.content:
-                    text_content = getattr(raw_result.content[0], "text", str(raw_result.content[0]))
-                else:
-                    text_content = str(raw_result)
-                
-                import json
-                try:
-                    rows = json.loads(text_content)
-                    if not isinstance(rows, list):
-                        rows = [{"raw": text_content}]
-                except Exception:
-                    rows = [{"raw": text_content}]
-                    
-                from contracts.subtask import QueryRun, Evidence
-                from datetime import UTC, datetime
-                e_id = evidence_id(mission.task_id, 0)
-                
-                # Mock a result structure
-                findings = SiemFindings(
-                    uncategorised=[
-                        ResultSet(query=spl, row_count=len(rows), rows=rows, evidence_id=e_id)
-                    ]
-                )
-                
-                return SubtaskResult(
-                    task_id=mission.task_id,
-                    status=SubtaskStatus.OK,
-                    findings=findings,
-                    queries_run=[QueryRun(query=spl)],
-                    reason="scripted siem subagent executed search_splunk automatically",
-                    evidence=[Evidence(id=e_id, tool_family=family, raw=text_content, collected_at=datetime.now(UTC))]
-                )
-            except Exception as e:
-                logger.error(f"Failed to auto-execute search_splunk: {e}")
-
     return SubtaskResult(
         task_id=mission.task_id,
         status=SubtaskStatus.NO_DATA,
@@ -584,6 +520,15 @@ def _digest(result: SubtaskResult) -> str:
     return " | ".join(parts)
 
 
+_NOT_RETRIEVAL: frozenset[str] = frozenset({"discovery"})
+"""Payload buckets whose rows are not retrieval about the estate.
+
+Named here rather than in `evaluate_step` so the reason sits beside
+`_finding_counts`, which is what makes such a bucket visible to the sum at all.
+See `SiemFindings.discovery`.
+"""
+
+
 def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     """Per-category row counts, for the digest.
 
@@ -635,10 +580,20 @@ def evaluate_step(
     # The names line up by construction: `CimCategory` is exactly the field
     # names of the `SiemFindings` buckets (`contracts/findings.py:21`), which is
     # what `_finding_counts` yields. `uncategorised` is not among them, so rows
-    # the subagent never tagged cannot satisfy a category claim -- see
+    # code could attribute to no category cannot satisfy a category claim -- see
     # `CompletionRule.categories` for why that is deliberate.
+    #
+    # `_NOT_RETRIEVAL` is subtracted because `_finding_counts` reads *every* list
+    # field the family's payload declares, so a bucket added there joins this sum
+    # silently. `SiemFindings.discovery` holds index and sourcetype listings --
+    # 100 rows describing what Splunk contains -- and a step whose plan named no
+    # categories (`not wanted`) would otherwise close on one, reporting retrieval
+    # that never happened. The digest still shows the bucket; only the completion
+    # rule ignores it.
     wanted = set(step.completion.categories)
-    rows_retrieved = sum(n for name, n in counts if not wanted or name in wanted)
+    rows_retrieved = sum(
+        n for name, n in counts if name not in _NOT_RETRIEVAL and (not wanted or name in wanted)
+    )
     outcome.rows_retrieved += rows_retrieved
 
     # `confirmed_empty` is a claim about the *data*: we looked, and it is not
@@ -917,6 +872,31 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
             "(siem-1, vt-1) keeps them distinct across families."
         )
 
+    # `available_broker_tools()` withholds the tool of an unconfigured family, but
+    # a withheld tool did not stop the model planning for it: on run `cecd266a`
+    # it planned `edr` and called `investigate_edr` three times ("tool not found
+    # in registry"), then reported EDR as a failed call. Refused here, before it
+    # is recorded, the model re-plans with the families it actually has.
+    unserved = sorted({s.family for s in plan.steps if not _plannable(s.family)})
+    if unserved:
+        served = [f for f in TOOL_BY_FAMILY if _plannable(f)]
+        logger.warning(
+            "task_id=%s | fetch plan refused, unconfigured families: %s",
+            req.task.task_id,
+            unserved,
+        )
+        return (
+            f"status=refused | the fetch plan was NOT recorded: no tool serves "
+            f"{', '.join(unserved)} in this environment. Call plan_fetch again using "
+            f"only these families: {', '.join(served) or 'none'}."
+            + (
+                " Endpoint and network telemetry indexed in Splunk (Sysmon, process "
+                "creation, firewall, DNS) is searched through siem."
+                if "siem" in served and {"edr", "ndr"} & set(unserved)
+                else ""
+            )
+        )
+
     replacing = req.plan is not None
     carried = req.step_outcomes
     req.plan = plan
@@ -997,6 +977,15 @@ FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
 BROKER_TOOLS = [plan_fetch] + FAMILY_TOOLS
 
 
+def _plannable(family: ToolFamily) -> bool:
+    """`plan_fetch`'s gate: a family can be planned iff its tool is offered.
+
+    A seam of its own so the suite -- which loads no MCP servers -- can open
+    planning without also marking every family configured for dispatch.
+    """
+    return family_is_configured(family)
+
+
 def family_is_configured(family: ToolFamily) -> bool:
     """Whether anything at all could serve `family` in this process.
 
@@ -1021,12 +1010,42 @@ def available_broker_tools() -> list:
     `load_mcp_servers()` runs after this module is imported -- a module-level
     constant would be computed while every family still had zero servers.
 
-    This is a precondition, not a second classifier. `PROJECT_DOCS.md` drew that
-    line for entity preconditions: dispatchability is "a fact rather than a
-    judgement", and withholding a tool for a domain that provably cannot answer
-    takes no decision away from the Broker. What it removes is the planner
-    spending output tokens on steps that can only be rejected, and the rejected
-    families landing in `dispatched` where they corrupt routing metrics.
+    **This gates on configuration ONLY -- `family_is_configured()` -- and
+    deliberately not on the task's entities.** An earlier version of this
+    docstring said otherwise: it claimed the gate applied "entity
+    preconditions", withholding a tool for "a domain that provably cannot
+    answer". The code has never done that, and after 2026-09-02 it should not,
+    so the claim is removed rather than implemented.
+
+    Why not, decided on evidence rather than symmetry with the entity gate in
+    `smartops.subagents.domain_runner`: **a family's own tool is not the only way
+    its questions get answered.** SIEM carries auth, DNS, connection and process
+    events, so it answers endpoint and network questions routinely -- on the
+    `botsv3-coinhive-*` runs it produced a full `endpoint` narrative from 244
+    Sysmon process rows with no EDR configured at all. Withholding a specialist's
+    tool because this task's scope lacks the observables that specialist needs
+    would suppress a tool without improving coverage, and it would pre-empt a
+    retrieval decision the Broker is better placed to make with the scope in
+    front of it.
+
+    So the entity precondition stays where it is -- checked at dispatch by
+    `domain_runner`, which refuses the mission and says why -- and what the
+    investigation could not search is *recorded* instead of prevented, as
+    `contracts.DomainGap` on `RetrievalSummary.gaps`. See
+    `subagent_analysts.analyze._domain_gaps`.
+
+    **Two costs this therefore does NOT remove, accepted knowingly:** the planner
+    can spend output tokens on a step that will be refused on preconditions, and
+    a family refused that way still appears in `BrokerReport.dispatched`, where
+    it overstates what was engaged for anything counting dispatches. Both are
+    real -- `vt` on a `user`+`host` scope did exactly this -- and both are now
+    visible in the artifact rather than silent, which is the trade: a recorded
+    refusal a reader can see beats a tool quietly withheld.
+
+    Withholding the tool is not enough on its own: the model still planned an
+    `edr` step and called the withheld `investigate_edr` on run `cecd266a`. So
+    `plan_fetch` applies the same gate (`_plannable`) and refuses such a plan
+    before it is recorded.
     """
     return [plan_fetch] + [
         tool for family, tool in TOOL_BY_FAMILY.items() if family_is_configured(family)

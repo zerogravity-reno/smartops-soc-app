@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "TaskEntity": {
+      "description": "One observable in a task's scope, in the producer's spelling.\n\n`type` rather than `kind` because that is what the template sends. Typed as\n`EntityKind` and not `str`, so an unknown value (`md5`, `hostname`,\n`account`, `email`) is refused at load with pydantic naming all seven\npermitted members. That refusal is the point: mapping a name we do not\nrecognise onto one we do would be a silent coercion of the thing that\ndecides which domains can be dispatched at all.",
+      "properties": {
+        "type": {
+          "enum": [
+            "host",
+            "user",
+            "ip",
+            "file_hash",
+            "domain",
+            "url",
+            "process"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "title": "TaskEntity",
+      "type": "object"
+    },
+    "TaskInput": {
+      "description": "One hypothesis the producer wants investigated.\n\n`question` is required, and that is a contract guarantee the Broker relies\non: it is both the retrieval intent (it becomes `AnalystTask.goal`) and the\nhypothesis prose that `HypothesisFindings.hypothesis` records. A task file\ntherefore never has a \"no hypothesis\" case, unlike the legacy `--hypothesis`\nCLI flag it replaces, so `smartops.main` runs the analysis tier\nunconditionally for file input.\n\n`entity` accepts **one object or a list of them**. The received template\nsends a single object; the list form is our extension, and it is load-bearing\nrather than speculative -- a single entity cannot express a real multi-vector\ntask (`bench.BOTSV3_HARD_MULTI_VECTOR_TASK` has five), which is the case used\nto prove this loader reproduces a hand-built task before a live run is spent.\nA producer sending one object is unaffected. Raised as an open question for\nthe producing team rather than assumed settled.",
+      "properties": {
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskEntity"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/TaskEntity"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Entity"
+        },
+        "hypothesis_id": {
+          "minLength": 1,
+          "title": "Hypothesis Id",
+          "type": "string"
+        },
+        "question": {
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "time_window": {
+          "$ref": "#/$defs/TaskTimeWindow"
+        }
+      },
+      "required": [
+        "task_id",
+        "hypothesis_id",
+        "question",
+        "entity",
+        "time_window"
+      ],
+      "title": "TaskInput",
+      "type": "object"
+    },
+    "TaskTimeWindow": {
+      "description": "A task's window as the template sends it: two named ISO 8601 instants.\n\nDeliberately not validated here. `Scope._window_is_ordered_and_aware` already\nrejects a naive or inverted window, and it is the one that has to be right --\na second copy of the rule in this module could only ever disagree with it.\n`to_tuple()` feeds `Scope`, and `TaskInputFile` builds one at load so the\nrejection still happens while the file is being read.",
+      "properties": {
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "TaskTimeWindow",
+      "type": "object"
+    }
+  },
+  "$id": "https://renosystems.ai/smartops/schemas/task-input.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A file of tasks handed to the Broker: `{\"tasks\": [...]}`.\n\n`schema_version` defaults to 1 because the received template does not carry\nthe field, so a file sent today validates unchanged. It is declared anyway,\nfor the same reason `AnalystTask` declares one: the producer is a component\nthat does not exist in this repo, and extension by it should be a versioned\nevent rather than a break.",
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/TaskInput"
+      },
+      "minItems": 1,
+      "title": "Tasks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "tasks"
+  ],
+  "title": "TaskInputFile",
+  "type": "object"
+}

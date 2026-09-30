@@ -56,6 +56,7 @@ from contracts import (
     BrokerReport,
     CimCategory,
     DomainFinding,
+    DomainGap,
     DomainJudgement,
     Exhibit,
     HypothesisAssessment,
@@ -65,8 +66,19 @@ from contracts import (
     Scope,
     Stance,
     StepSummary,
+    SubtaskStatus,
+    ToolFamily,
+    mission_family,
 )
 
+# `family_is_configured` distinguishes a family with nothing wired up from one
+# whose server merely returned nothing -- see `_domain_gaps`. Imported from the
+# broker rather than reimplemented: it is the same predicate
+# `available_broker_tools()` gates on, and the two must agree about what
+# "configured" means or a gap would be classified differently from the way it
+# was caused. No cycle -- `smartops.broker` imports nothing from this package.
+from smartops.broker import family_is_configured
+from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel
@@ -889,11 +901,123 @@ async def gather(
         findings=[
             _as_judgement(f, s) for f, s in zip(findings, slices, strict=True)
         ],
-        retrieval=_retrieval_summary(report),
+        retrieval=_retrieval_summary(report, scope, slices),
     )
 
 
-def _retrieval_summary(report: BrokerReport) -> RetrievalSummary:
+def _domain_gaps(
+    report: BrokerReport, scope: Scope, slices: list[DomainSlice]
+) -> list[DomainGap]:
+    """Families the investigation could not search, and why.
+
+    **Classified structurally, never by reading the refusal text.** The `reason`
+    strings are carried into `DomainGap.detail` verbatim, but which of the three
+    reasons applies is decided from facts: whether the family has anything wired
+    up (`family_is_configured`), and whether the scope carries an observable it
+    requires (`DOMAINS[...].required_kinds`). Matching on message text would
+    make an error-message edit silently re-classify a gap.
+
+    Two ways a family reaches this list, and both were observed on
+    `botsv3-coinhive-*` (2026-09-02):
+
+    * **Planned but never dispatched.** The Broker authored an
+      `edr_host_processes` step while `investigate_edr` was withheld from it --
+      `available_broker_tools()` only offers configured families -- so no
+      dispatch, no `SubtaskResult`, and the step sits in `step_outcomes` with
+      `evaluated=False`. Nothing else in the report says why.
+    * **Dispatched and rejected outright.** `vt` was dispatched for a task whose
+      scope was `user` + `host`, and `domain_runner`'s entity precondition
+      refused it before any tool call. A family every one of whose results is
+      `rejected` retrieved nothing at all, which is a gap however honest the
+      refusal was.
+
+    A family that returned `no_data` is deliberately NOT a gap: it was searched
+    and had nothing, which is exactly the case `covered`/`confirmed_empty`
+    already speak to.
+
+    **What the gap cost is answered from `slices`, not from the fetch side.**
+    Those are the routed slices the domain analysts actually read, so
+    "did anything else cover this domain?" is decided by the same evidence the
+    narrative was written from rather than by a second, parallel judgement. A
+    missing `edr` whose `endpoint` slice is full of SIEM process events is a gap
+    with nothing unanswered -- the substitution worked -- while one whose
+    `endpoint` slice is empty leaves "nothing happened" and "nobody could look"
+    indistinguishable, which is the ambiguity `unanswered_domains` records.
+    """
+    gaps: list[DomainGap] = []
+    kinds = scope.kinds()
+    has_evidence = {s.domain: s.has_evidence() for s in slices}
+
+    # Which families did any subagent ask for? `SubagentAnswer.gaps` was
+    # advisory-only and read by nothing but a log line and a print; this is where
+    # it finally crosses the boundary.
+    advisers: dict[ToolFamily, list[ToolFamily]] = {}
+    for result in report.results:
+        source = mission_family(result.task_id)
+        for wanted in result.gaps:
+            if source is not None and source not in advisers.setdefault(wanted, []):
+                advisers[wanted].append(source)
+
+    planned = {outcome.step.family for outcome in report.step_outcomes}
+    considered = planned | set(report.dispatched) | set(advisers)
+
+    for family in sorted(considered):
+        results = [r for r in report.results if mission_family(r.task_id) == family]
+        if results and any(r.status != SubtaskStatus.REJECTED for r in results):
+            continue  # it ran; whatever it found, it was not a gap
+
+        # Order matters, and it is not arbitrary: a family can satisfy more than
+        # one of these at once, and the *binding* reason is the one that would
+        # still hold if the others were fixed.
+        #
+        # `not_configured` is checked first for that reason. On the
+        # `botsv3-coinhive-authorization` run, `ndr` was both unconfigured
+        # (`{"disabled": true}`) and unsupported by the scope (`user` + `host`,
+        # where ndr needs an ip/domain/url). Reporting the scope was actively
+        # misleading -- it implies that a task carrying an IP would have got an
+        # answer, when no ndr instrument exists to answer with. Fix the scope and
+        # nothing changes; deploy an ndr and the scope question becomes real.
+        required = DOMAINS[family].required_kinds
+        if not family_is_configured(family):
+            reason = "not_configured"
+        elif required is not None and not (required & kinds):
+            reason = "no_observable_in_scope"
+        else:
+            reason = "no_tools_resolved"
+
+        # The message from wherever the refusal was actually recorded, so the
+        # artifact quotes the run rather than paraphrasing it.
+        detail = next(
+            (r.reason for r in results if r.reason),
+            next(
+                (
+                    o.reason
+                    for o in report.step_outcomes
+                    if o.step.family == family and o.reason
+                ),
+                "",
+            ),
+        )
+        served = list(domains_for_family(family))
+        gaps.append(
+            DomainGap(
+                family=family,
+                reason=reason,
+                detail=detail or "",
+                advised_by=advisers.get(family, []),
+                served_domains=served,
+                # `has_evidence.get(d, False)` -- a domain absent from `slices`
+                # has certainly not been covered, so treat it as unanswered
+                # rather than quietly dropping it from the caveat.
+                unanswered_domains=[d for d in served if not has_evidence.get(d, False)],
+            )
+        )
+    return gaps
+
+
+def _retrieval_summary(
+    report: BrokerReport, scope: Scope, slices: list[DomainSlice]
+) -> RetrievalSummary:
     """Project the fetch side of the report for the Analyst Agent.
 
     Code-assembled from what the Broker recorded, so nothing here is a fresh
@@ -928,6 +1052,7 @@ def _retrieval_summary(report: BrokerReport) -> RetrievalSummary:
     not_covered = [category for category in unmet if category not in covered]
 
     return RetrievalSummary(
+        gaps=_domain_gaps(report, scope, slices),
         dispatched=list(report.dispatched),
         steps=[
             StepSummary(

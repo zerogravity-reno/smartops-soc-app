@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "task_id": "botsv3-coinhive-consent",
+      "hypothesis_id": "coinhive-without-consent",
+      "question": "Did process Image= \"chrome.exe\" or \"firefox.exe\" on BSTOLL-L execute command line containing \"coinhive\" without explicit user consent?",
+      "entity": [
+        { "type": "host", "value": "BSTOLL-L" },
+        { "type": "domain", "value": "coinhive.com" }
+      ],
+      "time_window": {
+        "start": "2018-08-20T00:00:00Z",
+        "end": "2018-08-21T00:00:00Z"
+      }
+    },
+    {
+      "task_id": "botsv3-coinhive-legitimate",
+      "hypothesis_id": "coinhive-legitimate-activity",
+      "question": "Is process Image= \"chrome.exe\" or \"firefox.exe\" on BSTOLL-L executing \"coinhive\" part of a security tool's legitimate scan or developer activity?",
+      "entity": [
+        { "type": "host", "value": "BSTOLL-L" },
+        { "type": "domain", "value": "coinhive.com" }
+      ],
+      "time_window": {
+        "start": "2018-08-20T00:00:00Z",
+        "end": "2018-08-21T00:00:00Z"
+      }
+    },
+    {
+      "task_id": "botsv3-coinhive-authorization",
+      "hypothesis_id": "coinhive-mining-authorized",
+      "question": "Does bostoll have written authorization for cryptocurrency mining on BSTOLL-L?",
+      "entity": [
+        { "type": "user", "value": "bostoll" },
+        { "type": "host", "value": "BSTOLL-L" }
+      ],
+      "time_window": {
+        "start": "2018-08-20T00:00:00Z",
+        "end": "2018-08-21T00:00:00Z"
+      }
+    }
+  ]
+}

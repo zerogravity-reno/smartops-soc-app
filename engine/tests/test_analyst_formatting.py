@@ -387,7 +387,7 @@ class TestComputedAggregate:
             {"_time": "2018-08-20T11:04:21+02:00", "host": "H1"},
         ]
         summary = summarise_rows("processes", rows)
-        assert "2018-08-20T11:04:21+02:00 … 2018-08-20T17:17:22+02:00" in summary
+        assert "2018-08-20T09:04:21Z … 2018-08-20T15:17:22Z" in summary
 
     def test_top_values_are_capped_regardless_of_cardinality(self):
         rows = [{"host": f"H{i}", "process_name": "a.exe"} for i in range(50)]
@@ -457,3 +457,23 @@ class TestTheAggregateReachesTheAnalyst:
         text = format_result_set("processes", result_set, index=1, row_cap=20)
         assert "(no rows returned)" in text
         assert "computed over" not in text
+
+
+class TestTimesInUtc:
+    """Row times match the UTC task window (run `cecd266a` compared +03:00 to Z)."""
+
+    def test_offset_time_is_restated_in_utc(self):
+        line = format_row("processes", {"_time": "2026-09-27T17:53:53.000+03:00", "dest": "h"})
+        assert line.startswith("2026-09-27T14:53:53Z ")
+
+    def test_naive_and_unparseable_times_are_left_alone(self):
+        assert format_row("processes", {"_time": "2026-09-27T17:53:53", "dest": "h"}).startswith("2026-09-27T17:53:53 ")
+        assert format_row("processes", {"_time": "1695826433", "dest": "h"}).startswith("1695826433 ")
+
+    def test_generic_row_time_is_utc(self):
+        assert "_time=2026-09-27T14:53:53Z" in format_row("uncategorised", {"_time": "2026-09-27T17:53:53+03:00"})
+
+    def test_summary_range_is_utc_across_mixed_offsets(self):
+        rows = [{"_time": "2026-09-27T17:53:53+03:00"}, {"_time": "2026-09-27T14:54:10Z"}]
+        summary = summarise_rows("processes", rows)
+        assert "time: 2026-09-27T14:53:53Z … 2026-09-27T14:54:10Z" in summary
