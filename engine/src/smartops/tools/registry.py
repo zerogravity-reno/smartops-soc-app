@@ -517,6 +517,27 @@ def server_count(family: ToolFamily) -> int:
     return len(_clients_by_family.get(family, []))
 
 
+def family_is_configured(family: ToolFamily) -> bool:
+    """Whether anything at all could serve `family` in this process.
+
+    Lives here, beside `server_count()`, so the Broker, the subagents and
+    `domains.describe()` callers share one definition -- `domains` cannot hold
+    it, because this module already imports `domains`.
+
+    Deliberately *configured*, not *reachable*: `native_tools` is static data and
+    `server_count()` counts clients that were built, so this answers without a
+    network round trip and without the `await` that `tools_for()` needs. A
+    configured-but-unreachable server still gets dispatched and still produces
+    the "configured but returning no tools" rejection, which is the distinction
+    `broker._dispatch()` exists to preserve.
+
+    Both halves are load-bearing. `vt` carries `mcp_servers=()` and answers
+    entirely through native VirusTotal tools, so gating on `server_count()` alone
+    would withhold the one family that needs no server.
+    """
+    return bool(DOMAINS[family].native_tools) or server_count(family) > 0
+
+
 def mcp_clients() -> list[MCPClient]:
     """Every MCP client this process built, deduplicated.
 

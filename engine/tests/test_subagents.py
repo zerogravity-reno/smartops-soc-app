@@ -105,6 +105,24 @@ class TestEnricherIsNotAShortCircuit:
         assert enrich_calls == []
         assert result.status == SubtaskStatus.OK
 
+    async def test_an_unconfigured_family_is_dropped_from_gaps(self, monkeypatch):
+        # The model can name any ToolFamily; advising an unconnected `edr` is
+        # what turned into three `investigate_edr` calls on `cecd266a`.
+        monkeypatch.setattr(registry_module, "server_count", lambda f: 1 if f == "siem" else 0)
+        monkeypatch.setattr(subagents, "tools_for", _async_returning(["vt_lookup_ip"]))
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            _async_returning(
+                _Result(SubagentAnswer(status=SubtaskStatus.OK, gaps=["edr", "siem"]))
+            ),
+        )
+        run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
+
+        result = await run(mission("vt", kinds=("ip",)))
+
+        assert result.gaps == ["siem"]
+
     async def test_the_entity_gate_still_applies_to_vt(self):
         # A model does not make an unqueryable observable queryable.
         run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
@@ -341,6 +359,19 @@ class TestEvidenceAssembly:
 
 
 class TestPrompt:
+    def test_the_gaps_line_names_only_configured_families(self, monkeypatch):
+        monkeypatch.setattr(registry_module, "server_count", lambda f: 1 if f == "siem" else 0)
+
+        gaps_line = next(
+            line
+            for line in subagents._system_prompt_for("siem", turns=14).splitlines()
+            if line.startswith("- gaps:")
+        )
+
+        assert "vt" in gaps_line
+        assert "edr" not in gaps_line
+        assert "ndr" not in gaps_line
+
     def test_the_window_is_given_as_epoch_and_readable_utc(self):
         # Epoch because that is what the tools take; readable so a model does not
         # "correct" a window it thinks looks wrong.

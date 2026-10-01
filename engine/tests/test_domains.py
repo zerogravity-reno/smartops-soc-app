@@ -10,7 +10,7 @@ import re
 from typing import get_args
 
 import pytest
-from smartops.domains import ALL_FAMILIES, DOMAINS, DomainSpec, spec_for
+from smartops.domains import ALL_FAMILIES, DOMAINS, DomainSpec, describe, spec_for
 from smartops.tools.native import virustotal
 
 from contracts import (
@@ -164,10 +164,28 @@ class TestDescriptions:
             assert spec.description.strip()
 
     def test_a_description_says_what_the_domain_is_not_for(self):
-        # Each carries a "Do NOT use" clause; that negative guidance is what
-        # stops the Broker calling the wrong specialist.
+        # Each carries a "Do NOT use" clause once every family is configured;
+        # that negative guidance is what stops the Broker calling the wrong
+        # specialist. Redirects moved out of the static text into `describe()`,
+        # so an unconfigured target is never named.
         for spec in DOMAINS.values():
-            assert "Do NOT use" in spec.description
+            assert "Do NOT use" in describe(spec, lambda family: True)
+
+    def test_an_unconfigured_family_is_never_named_and_siem_covers_it(self):
+        only_siem_and_vt = lambda family: family in ("siem", "vt")  # noqa: E731
+
+        described = describe(DOMAINS["siem"], only_siem_and_vt)
+
+        assert "investigate_edr" not in described
+        assert "investigate_ndr" not in described
+        assert "Sysmon EID 1" in described
+        assert "investigate_vt" in described
+
+    def test_a_configured_redirect_target_is_named(self):
+        described = describe(DOMAINS["siem"], lambda family: True)
+
+        assert "use investigate_edr" in described
+        assert "Sysmon EID 1" not in described
 
 
 class TestImmutability:
@@ -200,7 +218,8 @@ class TestGeneratedTools:
 
         for family, tool in TOOL_BY_FAMILY.items():
             described = tool.tool_spec["description"]
-            assert "Do NOT use" in described
+            # No "Do NOT use" check here: redirects are rendered by `describe()`
+            # in `available_broker_tools()`, not baked into the static tools.
             assert described.splitlines()[0] in DOMAINS[family].description
 
     def test_question_and_step_id_are_the_models_only_parameters(self):

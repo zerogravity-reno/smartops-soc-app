@@ -28,18 +28,19 @@ ladder are live; tests still inject a fake `BrokerInvoker` of the same shape.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from contracts.findings import VtFindings, VtVerdict
 from contracts.subtask import evidence_id
-from pydantic import ValidationError
+from pydantic import Field, ValidationError, create_model
 from strands import ToolContext, tool
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
 
@@ -59,7 +60,7 @@ from contracts import (
     ToolFamily,
 )
 from smartops.budget import Budget, ModelChoice, Usage
-from smartops.domains import DOMAINS, DomainSpec
+from smartops.domains import DOMAINS, DomainSpec, describe
 from smartops.errors import NotConfigured
 from smartops.guards import escape_untrusted, fenced
 from smartops.telemetry import (
@@ -69,7 +70,7 @@ from smartops.telemetry import (
     record_cost,
     record_result_status,
 )
-from smartops.tools.registry import enricher_for, server_count, tools_for
+from smartops.tools.registry import enricher_for, family_is_configured, server_count, tools_for
 
 logger = logging.getLogger(__name__)
 
@@ -986,23 +987,6 @@ def _plannable(family: ToolFamily) -> bool:
     return family_is_configured(family)
 
 
-def family_is_configured(family: ToolFamily) -> bool:
-    """Whether anything at all could serve `family` in this process.
-
-    Deliberately *configured*, not *reachable*: `native_tools` is static data and
-    `server_count()` counts clients that were built, so this answers without a
-    network round trip and without the `await` that `tools_for()` needs. A
-    configured-but-unreachable server still gets dispatched and still produces
-    the "configured but returning no tools" rejection, which is the distinction
-    `_dispatch()` exists to preserve.
-
-    Both halves are load-bearing. `vt` carries `mcp_servers=()` and answers
-    entirely through native VirusTotal tools, so gating on `server_count()` alone
-    would withhold the one family that needs no server.
-    """
-    return bool(DOMAINS[family].native_tools) or server_count(family) > 0
-
-
 def available_broker_tools() -> list:
     """`BROKER_TOOLS` minus the families nothing is wired up for.
 
@@ -1046,10 +1030,51 @@ def available_broker_tools() -> list:
     `edr` step and called the withheld `investigate_edr` on run `cecd266a`. So
     `plan_fetch` applies the same gate (`_plannable`) and refuses such a plan
     before it is recorded.
+
+    The tools offered here are rebuilt with `describe()`, not taken from
+    `TOOL_BY_FAMILY`: a static description naming `investigate_edr` told the model
+    EDR existed and steered host questions away from Splunk on run `cecd266a`.
     """
-    return [plan_fetch] + [
-        tool for family, tool in TOOL_BY_FAMILY.items() if family_is_configured(family)
+    configured = [family for family in DOMAINS if family_is_configured(family)]
+    return [_plan_fetch_for(configured)] + [
+        make_investigate_tool(replace(spec, description=describe(spec, family_is_configured)))
+        for spec in (DOMAINS[family] for family in configured)
     ]
+
+
+def _plan_fetch_for(families: list[ToolFamily]):
+    """`plan_fetch` with its step `family` enum narrowed to `families`.
+
+    The schema derives the enum from `ToolFamily`, so the model was shown
+    `edr`/`ndr` regardless of configuration -- on `check-T3` the plan rationale
+    still said "EDR may also have relevant file/process telemetry". A copy, so the
+    module-level tool (and the scripted path) keep the full enum; `plan_fetch`'s
+    own refusal stays the backstop.
+    """
+    narrowed = copy.copy(plan_fetch)
+    spec = copy.deepcopy(plan_fetch.tool_spec)
+    spec["inputSchema"]["json"]["$defs"]["FetchStep"]["properties"]["family"]["enum"] = families
+    narrowed.tool_spec = spec
+    return narrowed
+
+
+def _classification_model() -> type[TaskClassification]:
+    """`TaskClassification` with `tool_families` narrowed to configured families.
+
+    Same leak as `_plan_fetch_for`, through the structured-output schema: on
+    `check-T3b` the classification still said "No EDR or NDR specialists were
+    engaged". A subclass under the same name, so Strands' answer tool keeps its
+    name and every consumer still sees a `TaskClassification`.
+    """
+    configured = tuple(family for family in DOMAINS if family_is_configured(family))
+    if len(configured) == len(DOMAINS):
+        return TaskClassification
+    return create_model(
+        "TaskClassification",
+        __base__=TaskClassification,
+        __doc__=TaskClassification.__doc__,
+        tool_families=(list[Literal[configured]], Field(default_factory=list)),
+    )
 
 _DISPATCH_TOOL_PREFIX = "investigate_"
 
@@ -1152,7 +1177,7 @@ def default_broker_invoker(
             model=choice.build(),
             tools=available_broker_tools(),
             system_prompt=choice.system_prompt_blocks(_SYSTEM_PROMPT),
-            structured_output_model=TaskClassification,
+            structured_output_model=_classification_model(),
             callback_handler=None,
             hooks=[MissingStepIdGuard()],
             retry_strategy=ModelRetryStrategy(max_attempts=2),

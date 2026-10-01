@@ -28,6 +28,7 @@ from smartops.broker import (
     plan_fetch,
 )
 from smartops.budget import Budget
+from smartops.tools import registry
 from smartops.domains import DOMAINS, spec_for
 
 from contracts import (
@@ -720,7 +721,7 @@ class TestDefaultInvoker:
         # without this only `vt` -- the one family with native tools -- would
         # survive `available_broker_tools()`. That gating has its own tests in
         # `TestAnUnconfiguredFamilyIsNotOfferedToThePlanner`.
-        monkeypatch.setattr(broker_module, "server_count", lambda family: 1)
+        monkeypatch.setattr(registry, "server_count", lambda family: 1)
 
         with patch("strands.Agent", return_value=fake_agent) as agent_cls:
             invoker = default_broker_invoker(MODEL, max_output_tokens=500, turns=6)
@@ -2315,7 +2316,7 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
     def test_a_family_with_neither_native_tools_nor_a_server_is_withheld(
         self, monkeypatch
     ):
-        monkeypatch.setattr(broker_module, "server_count", lambda family: 0)
+        monkeypatch.setattr(registry, "server_count", lambda family: 0)
 
         names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
 
@@ -2327,17 +2328,62 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
 
     def test_a_family_whose_server_is_configured_is_offered(self, monkeypatch):
         monkeypatch.setattr(
-            broker_module, "server_count", lambda family: 1 if family == "ndr" else 0
+            registry, "server_count", lambda family: 1 if family == "ndr" else 0
         )
 
         names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
 
         assert "investigate_ndr" in names
 
+    def test_no_offered_description_names_an_unconfigured_family(self, monkeypatch):
+        # On `cecd266a` the static siem description said "use investigate_edr",
+        # telling the model EDR existed and steering host questions off Splunk.
+        monkeypatch.setattr(
+            registry, "server_count", lambda family: 1 if family == "siem" else 0
+        )
+
+        descriptions = [
+            t.tool_spec["description"] for t in broker_module.available_broker_tools()
+        ]
+
+        for described in descriptions:
+            assert "investigate_edr" not in described
+            assert "investigate_ndr" not in described
+
+    def test_the_plan_schema_offers_only_configured_families(self, monkeypatch):
+        # The `family` enum came from `ToolFamily`, so the planner still read
+        # `edr`/`ndr` and wrote "EDR may also have relevant..." on `check-T3`.
+        monkeypatch.setattr(
+            registry, "server_count", lambda family: 1 if family == "siem" else 0
+        )
+
+        offered = next(
+            t for t in broker_module.available_broker_tools() if t.tool_name == "plan_fetch"
+        )
+
+        family = offered.tool_spec["inputSchema"]["json"]["$defs"]["FetchStep"]["properties"]["family"]
+        assert family["enum"] == ["siem", "vt"]
+        # The shared module-level tool keeps the full enum.
+        assert "edr" in json.dumps(broker_module.plan_fetch.tool_spec)
+
+    def test_the_classification_schema_offers_only_configured_families(self, monkeypatch):
+        # The same leak through the structured-output schema: on `check-T3b` the
+        # classification still said "No EDR or NDR specialists were engaged".
+        monkeypatch.setattr(
+            registry, "server_count", lambda family: 1 if family == "siem" else 0
+        )
+
+        model = broker_module._classification_model()
+
+        assert model.__name__ == "TaskClassification"
+        assert issubclass(model, TaskClassification)
+        families = model.model_json_schema()["properties"]["tool_families"]["items"]["enum"]
+        assert families == ["siem", "vt"]
+
     def test_planning_is_always_offered(self, monkeypatch):
         # `plan_fetch` is not a family tool and must survive any gating -- a
         # Broker that cannot plan cannot dispatch anything at all.
-        monkeypatch.setattr(broker_module, "server_count", lambda family: 0)
+        monkeypatch.setattr(registry, "server_count", lambda family: 0)
 
         names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
 

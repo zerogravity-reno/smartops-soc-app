@@ -560,6 +560,40 @@ class TestTstatsDeadEndGuard:
         other._learn(_AfterEvent(query, populated))
         assert not other.dead_datamodels
 
+    def test_a_filtered_empty_tstats_does_not_mark_the_datamodel_dead(self):
+        """On 072fd610 one narrow empty `tstats` cancelled 34 later ones, while
+        `Endpoint.Processes` held 106 rows on a wider filter."""
+
+        class _AfterEvent:
+            def __init__(self, query, result):
+                self.tool_use = {"input": query}
+                self.result = result
+                self.exception = None
+
+        guard = TstatsDeadEndGuard("siem")
+        filtered = (
+            "| tstats count from datamodel=Endpoint.Processes "
+            "where Processes.process_name=powershell.exe by Processes.dest"
+        )
+        guard._learn(_AfterEvent(filtered, {"rows": []}))
+        assert not guard.dead_datamodels
+
+        event = _BeforeEvent(
+            "splunk_run_query", "| tstats count from datamodel=Endpoint.Processes by Processes.dest"
+        )
+        guard._check(event)
+        assert event.cancel_tool is False
+
+    def test_a_non_cim_field_is_cancelled_with_the_cim_name(self):
+        guard = TstatsDeadEndGuard("siem")
+        event = _BeforeEvent(
+            "splunk_run_query",
+            "| tstats count from datamodel=Endpoint.Processes by Processes.host, Processes.process",
+        )
+        guard._check(event)
+        assert isinstance(event.cancel_tool, str)
+        assert "use `Processes.dest`" in event.cancel_tool
+
     def test_non_tstats_or_populated_datamodel_is_not_cancelled(self):
         class _AfterEvent:
             def __init__(self, query, result):

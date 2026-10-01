@@ -362,6 +362,34 @@ _SUMMARIES_ONLY = re.compile(
     r"\bsummariesonly\s*=\s*(?:t|true|1)\b|`security_content_summariesonly`", re.IGNORECASE
 )
 
+# A tstats `where` clause, up to its `by` or the next pipe.
+_TSTATS_WHERE = re.compile(r"\bwhere\b(.*?)(?=\bby\b|\||$)", re.IGNORECASE | re.DOTALL)
+_NODENAME_TERM = re.compile(r"\bnodename\s*=\s*\S+|\band\b", re.IGNORECASE)
+
+# Raw-event field names that no CIM data model has, and the CIM field to use.
+# Grouping or filtering by one returns 0 rows, not an error: 34 of 143 tstats
+# calls on the 072fd610 runs used `Processes.host` / `All_Traffic.host`.
+_NON_CIM_FIELDS: dict[str, str] = {
+    "host": "dest",
+    "Computer": "dest",
+    "CommandLine": "process",
+    "Image": "process_path",
+    "ParentImage": "parent_process_path",
+}
+_NON_CIM_FIELD = re.compile(r"\b(\w+)\.(" + "|".join(_NON_CIM_FIELDS) + r")\b")
+
+
+def _is_inventory(query: str) -> bool:
+    """Whether a tstats query is unfiltered: no `where`, or one naming only `nodename=`.
+
+    Only such a query can show a data model empty. A filtered one that returns 0
+    rows says nothing about the model -- on 072fd610 that misreading cancelled 34
+    tstats while `Endpoint.Processes` held 106 rows on a wider filter.
+    """
+    match = _TSTATS_WHERE.search(query)
+    return match is None or not _NODENAME_TERM.sub("", match.group(1)).strip()
+
+
 _DATAMODEL_ALTERNATIVES: dict[str, str] = {
     "network_resolution": "sourcetype=stream:dns",
     "network_traffic": "sourcetype=stream:tcp or sourcetype=stream:ip",
@@ -389,6 +417,10 @@ class TstatsDeadEndGuard:
     Step 1 used to be the whole rule, so one empty accelerated query sent the
     subagent to hand-written sourcetype searches and it never tried the
     unaccelerated path, which is also CIM-normalised across sourcetypes.
+
+    Both steps learn only from an unfiltered query (`_is_inventory`). And a
+    `tstats` naming a raw-event field (`Processes.host`) is cancelled up front
+    with the CIM field to use, since it would return 0 rows silently.
     """
 
     def __init__(self, family: str) -> None:
@@ -420,7 +452,16 @@ class TstatsDeadEndGuard:
             dm = self._extract_datamodel(value)
             if dm is None:
                 continue
-            if dm in self.dead_datamodels:
+            bad = _NON_CIM_FIELD.search(value)
+            if bad:
+                dataset, field_name = bad.groups()
+                reason = (
+                    f"Rejected: `{dataset}.{field_name}` is not a CIM field; use "
+                    f"`{dataset}.{_NON_CIM_FIELDS[field_name]}`. Data models have no "
+                    f"host, Computer, CommandLine, Image or ParentImage field, and "
+                    f"grouping or filtering by one returns 0 rows, not an error."
+                )
+            elif dm in self.dead_datamodels:
                 alt = _DATAMODEL_ALTERNATIVES.get(dm, f"specific sourcetypes directly for {dm}")
                 reason = (
                     f"Rejected: `tstats` against datamodel '{dm}' returned 0 rows both from "
@@ -460,7 +501,7 @@ class TstatsDeadEndGuard:
             if dm is None:
                 continue
 
-            if self._result_is_empty(result):
+            if self._result_is_empty(result) and _is_inventory(value):
                 if _SUMMARIES_ONLY.search(value):
                     self.summaries_empty.add(dm)
                 else:
