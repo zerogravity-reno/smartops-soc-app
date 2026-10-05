@@ -13,6 +13,7 @@ Shape only. Routing, prompt construction, model invocation, and parsing live in
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
@@ -331,6 +332,15 @@ class DomainJudgement(BaseModel):
         default_factory=list,
         description="The cited evidence, one entry per kept citation.",
     )
+    summaries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "One computed account per non-empty set routed to this domain, cited "
+            "or not: totals, distinct counts, top and rarest values and the time "
+            "range, calculated in code over every row. Not model-authored, so it "
+            "holds what the narrative may have left out."
+        ),
+    )
 
 
 class StepSummary(BaseModel):
@@ -604,8 +614,8 @@ class HypothesisFindings(BaseModel):
         ),
     )
 
-    def for_analyst(self) -> AnalystPayload:
-        """Project onto the wire: prose and observations, nothing else.
+    def for_analyst(self, max_chars: int | None = None) -> AnalystPayload:
+        """Project onto the wire: prose, observations and computed summaries.
 
         The record keeps `citations`, `exhibits` and `retrieval`; the message
         carries neither. See `AnalystPayload` for why the two differ and
@@ -617,8 +627,14 @@ class HypothesisFindings(BaseModel):
         it crosses the boundary. That is the intended friction: `_as_judgement`
         once gained fields by being edited in sympathy with the model rather than
         by decision.
+
+        `max_chars` caps the payload's JSON at the Analyst Agent's share of its
+        window (B1). Narratives and observations always cross; what is left is
+        split evenly across the domains holding summaries, each keeps its
+        summaries in order (cited sets first) while its share lasts, and says how
+        many it omitted. `None` sends every summary.
         """
-        return AnalystPayload(
+        payload = AnalystPayload(
             task_id=self.task_id,
             run_id=self.run_id,
             hypothesis_id=self.hypothesis_id,
@@ -632,6 +648,30 @@ class HypothesisFindings(BaseModel):
                 for f in self.findings
             ],
         )
+        with_summaries = [f for f in self.findings if f.summaries]
+        if not with_summaries:
+            return payload
+        if max_chars is None:
+            share = None
+        else:
+            spare = max_chars - len(payload.model_dump_json(indent=2))
+            # -90 keeps room for the omission note itself.
+            share = max(spare, 0) // len(with_summaries) - 90
+        for narrative, f in zip(payload.findings, self.findings, strict=True):
+            used = 0
+            for summary in f.summaries:
+                # +8: the indent, quotes and comma each list item costs on the wire.
+                cost = len(json.dumps(summary)) + 8
+                if share is not None and used + cost > share:
+                    break
+                narrative.summaries.append(summary)
+                used += cost
+            omitted = len(f.summaries) - len(narrative.summaries)
+            if omitted:
+                narrative.summaries.append(
+                    f"… {omitted} set summaries omitted for size (full in findings.json)"
+                )
+        return payload
 
     # No token totals here, deliberately. Two such methods stood on this model
     # and both summed `self.verdicts` -- a field of `HypothesisAssessment`, not of
@@ -653,6 +693,15 @@ class DomainNarrative(BaseModel):
     accepted: the Analyst Agent is sent the prose and the observations, and
     nothing else. It is recorded here rather than argued again, and it is cheap
     to reverse -- add a field back and regenerate.
+
+    Reversed in part on 2026-10-05 (B1): `summaries` now crosses too. On check-B1c
+    the endpoint analyst was shown 4 rows whose parent `splunkd.exe` ran from
+    the Administrator's Desktop, cited their set and
+    described it as "system checks". Whatever a narrative drops is otherwise
+    unrecoverable here. Raw rows still stay out. They are capped to the Analyst
+    Agent's window by `for_analyst(max_chars)`, cited sets first; on 072fd610
+    round 2 that kept T7's `processes#1` (powershell's parents: Desktop and
+    Public `splunkd.exe`) and dropped 11 of its 12 other sets.
 
     **What this costs, so a future reader is not surprised by it.** Dropping
     `citations` removes the handle for checking a claim against the rows behind
@@ -680,6 +729,15 @@ class DomainNarrative(BaseModel):
     observations: list[str] = Field(
         default_factory=list,
         description="One line per distinct thing the rows state.",
+    )
+    summaries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "One computed account per non-empty set routed to this domain, cited "
+            "or not: totals, distinct counts, top and rarest values and the time "
+            "range, calculated in code over every row. Not model-authored, so it "
+            "holds what the narrative may have left out."
+        ),
     )
 
 

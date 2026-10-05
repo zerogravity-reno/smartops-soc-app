@@ -66,6 +66,10 @@ def _first(row: dict[str, Any], *keys: str, default: str = "-") -> str:
     and misaligning the line.
     """
     lower = {str(k).lower(): v for k, v in row.items()}
+    # `tstats` names its columns `Dataset.field` (`Processes.parent_process_path`).
+    # The bare field is a fallback key, so an exact key on the row still wins.
+    for k, v in row.items():
+        lower.setdefault(str(k).lower().rpartition(".")[2], v)
     for key in keys:
         value = lower.get(key.lower())
         if value is not None and str(value).strip():
@@ -159,9 +163,14 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
             "process_name", "New_Process_Name", "NewProcessName",
             "new_process_name", "process_exec", "Image",
         ),
+        # Path spellings first. A masquerading parent shares its name with the
+        # real binary (`splunkd.exe`) and differs only by its path, so name-first
+        # rendering made them look the same: where such rows were retrieved, 0
+        # mentions of the path reached the analyst payload (issue B1).
         "parent": (
-            "parent_process_name", "Creator_Process_Name", "ParentProcessName",
-            "creator_process_name", "parent_process", "ParentImage",
+            "parent_process_path", "ParentImage", "parent_process",
+            "Creator_Process_Name", "creator_process_name", "ParentProcessName",
+            "parent_process_name",
         ),
         "code": ("EventCode", "signature_id", "event_id"),
         "cmdline": (
@@ -264,7 +273,8 @@ def _format_process(row: dict[str, Any]) -> str:
         f"host={_field(row, 'processes', 'host')} "
         f"user={_field(row, 'processes', 'user')} "
         f"process={_field(row, 'processes', 'process')} "
-        f"parent={_field(row, 'processes', 'parent')} "
+        # CIM `parent_process` is the parent's command line, so cap it like cmdline.
+        f"parent={_truncate(_field(row, 'processes', 'parent'), _CMDLINE_LIMIT)} "
         f"code={_field(row, 'processes', 'code')} "
         f"cmdline={_truncate(_field(row, 'processes', 'cmdline'), _CMDLINE_LIMIT)}"
         f"{_count_suffix(row)}"
@@ -558,11 +568,26 @@ def summarise_rows(
             tally[value] = tally.get(value, 0) + weight
         if len(tally) == 1 and "-" in tally:
             continue  # the field is absent from every row; saying so per row is noise
-        top = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:_TOP_N]
+        ranked = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+        more = ""
+        if len(ranked) > _TOP_N:
+            # The rarest values too, at the same fixed cost. A top-N alone hides
+            # the outlier: on check-K1 a parent with 8 of 17,882 events sat in
+            # "… 11 more" under the real binary's 17,280, and the row cap hid
+            # its rows (B1). Counts only -- which value matters is not ours to say.
+            # Strictly rarer than the top five, or "rarest" names an arbitrary tie.
+            floor = ranked[_TOP_N - 1][1]
+            rare = [kv for kv in reversed(ranked[_TOP_N:]) if kv[0] != "-" and kv[1] < floor][:_TOP_N]
+            more = f", … {len(ranked) - _TOP_N} more"
+            if rare:
+                more += "; rarest: " + ", ".join(
+                    f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
+                    for value, count in rare
+                )
         rendered = ", ".join(
-            f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}" for value, count in top
+            f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
+            for value, count in ranked[:_TOP_N]
         )
-        more = f", … {len(tally) - _TOP_N} more" if len(tally) > _TOP_N else ""
         lines.append(f"  {name}: {len(tally)} distinct — {rendered}{more}")
 
     return "\n".join(lines)

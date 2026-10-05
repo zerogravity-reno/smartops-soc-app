@@ -13,6 +13,8 @@ import logging
 import re
 from typing import Any
 
+from contracts import answer_tool_name
+
 logger = logging.getLogger(__name__)
 
 # `index=foo`, `index = "foo"`, `index=*`. The value stops at whitespace or the
@@ -135,7 +137,7 @@ class IndexScopeGuard:
         tool_use = event.tool_use or {}
         name = tool_use.get("name", "unknown")
 
-        for value in _strings_in(tool_use.get("input")):
+        for value in _searched_strings(tool_use, self._family):
             reason = self._reject_reason(value)
             if reason is None:
                 continue
@@ -287,7 +289,7 @@ class ScopeGuard:
         tool_use = event.tool_use or {}
         name = tool_use.get("name", "unknown")
 
-        for value in _strings_in(tool_use.get("input")):
+        for value in _searched_strings(tool_use, self._family):
             if not _LOOKS_LIKE_SEARCH.search(value) or self._in_scope(value):
                 continue
             reason = (
@@ -318,7 +320,7 @@ class ScopeGuard:
 
         searches = [
             value
-            for value in _strings_in((event.tool_use or {}).get("input"))
+            for value in _searched_strings(event.tool_use, self._family)
             if _LOOKS_LIKE_SEARCH.search(value)
         ]
         if not searches or not all(self._in_scope(value) for value in searches):
@@ -351,6 +353,21 @@ def _strings_in(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [s for item in value for s in _strings_in(item)]
     return []
+
+
+def _searched_strings(tool_use: Any, family: str) -> list[str]:
+    """The strings a guard checks: every string in the input, unless the call is
+    the family's structured answer.
+
+    Strands runs the answer as a tool, so it reaches these hooks like a search.
+    Its `assessment` can quote `index=*`, and on `check-T3c` three of
+    `blocked_queries` were that text: the index guard cancelled the answer
+    itself. The answer is the model's report, not a search.
+    """
+    tool_use = tool_use or {}
+    if tool_use.get("name") == answer_tool_name(family):
+        return []
+    return _strings_in(tool_use.get("input"))
 
 
 _TSTATS_DATAMODEL = re.compile(
@@ -448,7 +465,7 @@ class TstatsDeadEndGuard:
         tool_use = event.tool_use or {}
         name = tool_use.get("name", "unknown")
 
-        for value in _strings_in(tool_use.get("input")):
+        for value in _searched_strings(tool_use, self._family):
             dm = self._extract_datamodel(value)
             if dm is None:
                 continue
@@ -496,7 +513,7 @@ class TstatsDeadEndGuard:
         if isinstance(result, dict) and result.get("status") == "error":
             return
 
-        for value in _strings_in((event.tool_use or {}).get("input")):
+        for value in _searched_strings(event.tool_use, self._family):
             dm = self._extract_datamodel(value)
             if dm is None:
                 continue

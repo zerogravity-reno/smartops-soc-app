@@ -116,6 +116,14 @@
           },
           "title": "Observations",
           "type": "array"
+        },
+        "summaries": {
+          "description": "One computed account per non-empty set routed to this domain, cited or not: totals, distinct counts, top and rarest values and the time range, calculated in code over every row. Not model-authored, so it holds what the narrative may have left out.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Summaries",
+          "type": "array"
         }
       },
       "required": [

@@ -129,6 +129,8 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- Data models have no `host`, `Computer`, `CommandLine`, `Image` or `ParentImage` field. Use `dest`, `process`, `process_path` and `parent_process_path`. Grouping or filtering by a field that doesn't exist returns 0 rows, not an error.\n"
         "- If `summariesonly=t` returns 0 rows, the data model is usually just not accelerated: run the SAME query with `summariesonly=f`, which searches the raw events through the data model.\n"
         "- Only if `summariesonly=f` also returns 0 rows, query specific sourcetypes directly (`sourcetype=stream:dns`, `sourcetype=stream:tcp`, `sourcetype=XmlWinEventLog EventCode=1`, `sourcetype=WinEventLog EventCode=4688`, `sourcetype=WinEventLog EventCode=4624`).\n"
+        "- Sourcetype names differ between deployments. If a raw sourcetype search returns 0 rows, list the sourcetypes that actually hold this host's events (`| tstats count where index=<allowed index> host=<host> by sourcetype`) and retry with the real name before concluding the data is absent.\n"
+        "- When grouping process events, always include the parent's path (`Processes.parent_process_path`, or `ParentImage` on raw Sysmon) beside its name: two binaries can share a name and differ only by path.\n"
         "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
         "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events).\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
@@ -232,11 +234,12 @@ Report what your queries already returned, as your structured answer:
 - Every query you ran, in `queries_run`, so the rows you fetched can be
   categorised against them.
 - Whatever your assessment covers, from the results you have.
-- Any category you did not reach, in `gaps`.
+- Any category you did not reach, in your assessment, as not covered.
 
 A partial answer that names its own gaps is the correct outcome here. A query
 that came back empty is a result -- report it as one. Do not report a category
-as absent if you never successfully queried it; that belongs in `gaps`.
+as absent if you never successfully queried it; your assessment names it as not
+covered.
 """
 
 
@@ -725,6 +728,7 @@ async def _build_agent_and_invoke(
     from strands import Agent, ModelRetryStrategy
     from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands.types.agent import Limits
+    from strands.vended_plugins.context_offloader import ContextOffloader, InMemoryStorage
 
     family = mission.tool_family
     # The bare `SubagentAnswer` base has no `assessment` field, so forcing the
@@ -748,6 +752,13 @@ async def _build_agent_and_invoke(
         trace_attributes=trace_attributes_for(mission),
         retry_strategy=ModelRetryStrategy(max_attempts=2),
         conversation_manager=SlidingWindowConversationManager(should_truncate_results=False),
+        # Each turn re-sends every earlier tool result: one 181-row result of
+        # about 837k characters was paid for on every turn of its loop (issue K1).
+        # Oversized results reach the model as a preview. Evidence is unaffected:
+        # the collector and the guards' `_learn` run at SDK_FIRST, before this
+        # rewrites the result, and the sub-analysts read rows from evidence.
+        # No retrieval tool, so the guards and the model see no new tool.
+        plugins=[ContextOffloader(storage=InMemoryStorage(), include_retrieval_tool=False)],
     )
     result = await agent.invoke_async(
         prompt, limits=Limits(turns=turns, output_tokens=max_output_tokens)

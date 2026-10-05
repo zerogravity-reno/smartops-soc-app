@@ -1,5 +1,6 @@
 import json
 import logging
+import pytest
 """Projecting captured tool output into typed findings.
 
 The two-layer payload only works if neither layer can forge the other. Code
@@ -56,6 +57,23 @@ class TestBucketing:
         )
 
         assert findings.dns_resolutions and findings.processes == []
+
+    @pytest.mark.parametrize(
+        ("datamodel", "bucket"),
+        [
+            ("Endpoint.Processes", "processes"),
+            ('"Network_Traffic"', "connections"),
+            ("Network_Resolution.DNS", "dns_resolutions"),
+            ("Authentication", "auth_events"),
+            ("Endpoint.Registry", "uncategorised"),
+        ],
+    )
+    def test_a_tstats_over_a_cim_data_model_lands_in_its_category(self, datamodel, bucket):
+        # On check-K1 every `Endpoint.Processes` set was filed uncategorised.
+        spl = f'| tstats count from datamodel={datamodel} where x.dest="h" by x.user'
+        findings = project_siem([call(spl, [{"count": 1}])], [], task_id="t")
+
+        assert len(getattr(findings, bucket)) == 1
 
 
 class TestNothingIsSilentlyDropped:

@@ -217,6 +217,27 @@ class TestABlockedQueryIsRecorded:
         assert guard.blocked == ["search index=* a", "search index=secret b"]
 
 
+class TestTheAnswerIsNotASearch:
+    """Strands runs the structured answer as a tool, so every guard saw its text.
+    On `check-T3c` an assessment quoting `index=*` was cancelled as a search."""
+
+    ANSWER = {"assessment": "the first try used index=* | stats count and was refused",
+              "queries_run": [{"query": "index=* | head 1"}]}
+
+    def test_no_guard_cancels_the_answer(self):
+        from contracts import answer_tool_name
+
+        for guard in (IndexScopeGuard("siem", ALLOWLIST), ScopeGuard("siem", SCOPE),
+                      TstatsDeadEndGuard("siem")):
+            event = _BeforeEvent(answer_tool_name("siem"), self.ANSWER)
+            guard._check(event)
+            assert event.cancel_tool is False, type(guard).__name__
+            assert guard.blocked == []
+
+    def test_the_same_text_as_a_search_is_still_cancelled(self):
+        assert isinstance(_run(self.ANSWER).cancel_tool, str)
+
+
 class TestRegistration:
     """Which family gets guards is decided by `_guards_for`, and `_hooks_for`
     registers whatever it made. They are separate so `investigate()` can keep a

@@ -108,6 +108,30 @@ class TestRealSplunkFieldNames:
         assert "explorer.exe" in line
         assert "parent=-" not in line
 
+    def test_the_parent_path_wins_over_the_parent_name(self):
+        # B1: a masquerading parent differs from the real binary only by path.
+        row = {
+            "dest": "ar-host",
+            "process_name": "powershell.exe",
+            "parent_process_name": "splunkd.exe",
+            "parent_process_path": "C:\\Users\\Administrator\\Desktop\\splunkd.exe",
+        }
+        path = "parent=C:\\Users\\Administrator\\Desktop\\splunkd.exe"
+        assert path in format_row("processes", row)
+        assert "C:\\Users\\Administrator\\Desktop\\splunkd.exe=1" in summarise_rows("processes", [row])
+
+    def test_tstats_columns_are_read_through_their_dataset_prefix(self):
+        # `tstats` returns `Processes.parent_process_path`, not the bare field.
+        row = {
+            "Processes.process_name": "powershell.exe",
+            "Processes.parent_process_name": "splunkd.exe",
+            "Processes.parent_process_path": "C:\\Users\\Administrator\\Desktop\\splunkd.exe",
+            "count": "5",
+        }
+        line = format_row("processes", row)
+        assert "process=powershell.exe" in line
+        assert "parent=C:\\Users\\Administrator\\Desktop\\splunkd.exe" in line
+
     def test_stats_count_is_carried_into_the_line(self):
         # `| stats count by ...` is the dominant triage SPL shape: `count`
         # appears on 1,260 of 1,887 real process rows and 138 auth rows. The
@@ -394,8 +418,16 @@ class TestComputedAggregate:
         summary = summarise_rows("processes", rows)
         host_line = next(ln for ln in summary.splitlines() if ln.strip().startswith("host:"))
         assert "50 distinct" in host_line          # the true cardinality is still reported
-        assert host_line.count("=") == 5           # but only five are named
+        assert host_line.count("=") == 5           # but only five are named (a tie has no rarest)
         assert "45 more" in host_line
+
+    def test_a_rare_value_is_named_beside_the_common_ones(self):
+        # B1: the masquerading parent was 8 of 17,882 events, below the top five.
+        rare = r"C:\Users\Administrator\Desktop\splunkd.exe"
+        rows = [{"parent_process_path": f"C:\\p{i}.exe", "count": "1000"} for i in range(6)]
+        rows.append({"parent_process_path": rare, "count": "8"})
+        parent = next(ln for ln in summarise_rows("processes", rows).splitlines() if "parent:" in ln)
+        assert f"rarest: {rare}=8" in parent
 
     def test_uncategorised_sets_summarise_their_own_keys(self):
         # No CIM schema, so the dimensions are whatever the rows carry.

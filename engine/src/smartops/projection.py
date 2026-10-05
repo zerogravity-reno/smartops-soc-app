@@ -128,11 +128,34 @@ def _has_eventcode(q: str, code: int) -> bool:
     return re.search(rf"eventcode={code}(?![0-9])", q) is not None
 
 
+_DATAMODEL = re.compile(r"\bdatamodel\s*=\s*[\"']?(\w+(?:\.\w+)?)")
+
+# Data model (or `Model.Dataset`) to category. Only the datasets a category
+# means: `endpoint.filesystem` and `endpoint.registry` are not process rows.
+_DATAMODEL_CATEGORIES: dict[str, CimCategory] = {
+    "endpoint.processes": "processes",
+    "network_traffic": "connections",
+    "network_traffic.all_traffic": "connections",
+    "network_resolution": "dns_resolutions",
+    "network_resolution.dns": "dns_resolutions",
+    "authentication": "auth_events",
+    "authentication.authentication": "auth_events",
+}
+
+
 def _infer_cim_category(query: str | None) -> CimCategory | None:
     """Infer CIM category from SPL predicates when the subagent did not explicitly tag it."""
     if not query:
         return None
     q = query.lower()
+
+    # 0. A `tstats` over a CIM data model names its category outright. The siem
+    # prompt steers the subagent to these, and without this rule every one of
+    # them was filed `uncategorised`: on check-K1, every `Endpoint.Processes`
+    # set, including the rows carrying the masquerading parent's path (B1).
+    datamodel = _DATAMODEL.search(q)
+    if datamodel and datamodel.group(1) in _DATAMODEL_CATEGORIES:
+        return _DATAMODEL_CATEGORIES[datamodel.group(1)]
 
     # 1. DNS Resolution (Network Resolution)
     if (
