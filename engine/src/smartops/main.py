@@ -101,7 +101,12 @@ from smartops.subagent_analysts.analyze import gather
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
 from smartops.telemetry import analysis_span, configure_telemetry
-from smartops.tools.registry import load_mcp_servers, mcp_clients, warm_mcp_clients
+from smartops.tools.registry import (
+    family_is_configured,
+    load_mcp_servers,
+    mcp_clients,
+    warm_mcp_clients,
+)
 
 _ENTITY_KINDS = get_args(EntityKind)
 
@@ -521,11 +526,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--families",
-        default=",".join(ALL_FAMILIES),
+        default=None,
         help=(
-            f"comma-separated families to dispatch, --scripted only (default: all of "
-            f"{','.join(ALL_FAMILIES)}). On the model path this does nothing -- the "
-            "tool gate (available_broker_tools()) decides what is available instead"
+            f"comma-separated families to dispatch, --scripted only (default: the "
+            f"configured ones among {','.join(ALL_FAMILIES)}). On the model path this "
+            "does nothing -- the tool gate (available_broker_tools()) decides what is "
+            "available instead"
         ),
     )
     parser.add_argument(
@@ -1202,7 +1208,13 @@ async def _run(argv: list[str] | None = None) -> int:
         print(f"env file:    {env_file or '(none found)'}")
         print(f"mcp servers: {len(mcp_clients())} built")
 
-    families = _parse_families(args.families)
+    # Defaulting to every family dispatched nothing: plan_fetch refuses a plan
+    # naming an unconfigured one. Read after load_mcp_servers, which decides that.
+    families = (
+        _parse_families(args.families)
+        if args.families
+        else [f for f in ALL_FAMILIES if family_is_configured(f)]
+    )
 
     try:
         tasks = _tasks_from_args(args)
