@@ -1,6 +1,6 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-01. **Code:** branch `task-broker-integration-fix`, commit `58d39c3` plus the Tool Broker fixes for B7 and B8 (PR into `main` pending).
+**As of:** 2026-10-05. **Code:** branch `post-analyst-update-integration`, cut from `main` at `8b07441` (PR #2 merged), plus the hand port of the teammate's analyst branch (`330d1bc`) and the B1c, K2 and O2 fixes.
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail and security. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
@@ -25,7 +25,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 | ID | Area | Issue | Severity | Status |
 |---|---|---|---|---|
-| T1 | Triage | Verdict accepted without meeting the stop rule (no code gate) | High | Open (A1) |
+| T1 | Triage | Verdict accepted without meeting the stop rule (no code gate) | High | Partly fixed (`330d1bc`) |
 | T2 | Triage | Scores unstable on the same input; first evaluation flips | High | Open (A2) |
 | T3 | Triage | Planning framing decides the outcome when evidence is thin | High | Open |
 | T4 | Triage | Parent process judged by name, not path; masquerade missed | High | Open (A5) |
@@ -42,7 +42,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
 | P5 | Context | ESCU matcher scores rule names only | Medium | Open (C5) |
-| B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`); live pipeline re-run pending |
+| B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`, narrative names on this branch); live re-run pending |
 | B2 | Broker | Narrow task windows miss the activity | Medium | Open (follows P1) |
 | B3 | Broker | Planned steps for families with no tool (`investigate_edr`) | Medium | Fixed in `58d39c3` |
 | B4 | Broker | Sub-analyst misread a `+03:00` row as outside a `Z` window | High | Fixed in `58d39c3` |
@@ -59,20 +59,21 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | W6 | Webapp | Model and log text inserted into `innerHTML` unescaped | Medium | Fixed in `58d39c3` |
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
-| K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Open |
-| K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Open (T1, W2) |
+| K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
+| K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate, `max_loops` 3) |
 | O1 | Audit | Context contract not saved with the run | Medium | Fixed (`c85eb93`) |
-| O2 | Audit | Dispatch-to-step link not recorded | Low | Open |
+| O2 | Audit | Dispatch-to-step link not recorded | Low | Fixed on this branch |
 | O3 | Audit | Broker log written only at the end of a loop | Low | Fixed (`c85eb93`) |
-| S1 | Security | Live credentials in git history | Critical | Removed from tree; **rotation pending** (C1–C2) |
+| S1 | Security | Live credentials in git history | Critical | Removed from tree; **rotation pending**; new leak in `33ccf52` (C1–C2) |
 | S2 | Security | Splunk Web scraper replaced the official MCP | High | Fixed (C3) |
 
 ## Triage logic (Analyst plan and synthesis)
 
-**T1. Verdict accepted without meeting the stop rule.** *High. Open (A1).*
+**T1. Verdict accepted without meeting the stop rule.** *High. Partly fixed (`330d1bc`, A1).*
 - **Evidence:** SOC3 stopped at FALSE_POSITIVE with H2 80 / H3 75. That fails the prompt's own rule (top ≥ 85 and leads by ≥ 20). The SOC2 run stopped at H1 35.
 - **Cause:** the loop ends on the model's self-reported `status` (`webapp/main.py:580`), and no code checks `hypothesis_scores`.
 - **Fix:** compute the stop decision in code from the scores. Treat `status` as advisory.
+- **Done (`330d1bc`):** `run_trace.verdict_gate` sets `status` in code: top ≥ 85, a lead of ≥ 20, and at least one non-`ALERT:` entry in `evidence_refs`, which the evaluation schema now asks for. The trace keeps the model's own status as `model_status`. Not yet measured on a live run.
 
 **T2. Scores are unstable on the same input.** *High. Open (A2).*
 - **Evidence:** `04a15495` loop 2 scored 30 / 90 / 90, then loop 3 scored 90 / 60 / 30. `a8118db9` went 40 / 80 / 90, then 75 / 65 / 68, then 95 / 65 / 30. SOC3 drifted 0/0/0 → 30/70/50 → 30/60/70 → 40/80/75 across loops that had *no new evidence*.
@@ -162,6 +163,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fix (`e475a84`):** each domain's finding carries `summaries`, the code-computed account (`formatting.summarise_rows`) of every non-empty set routed to it, cited or not. It crosses into `analyst-payload.json`, while raw rows still stay out. Live `check-B1d` passed: the endpoint summaries showed `C:\Users\Administrator\Desktop\splunkd.exe=4`, even though the narrative left it out. The size of this is capped (B9).
 - **Live re-run `ded5cac1` (2026-10-05):** the path reached the Analyst. T3's endpoint summaries carried 5 sets with the parent `C:\Users\Administrator\Desktop\splunkd.exe`, and T4's showed `svchost.exe=33, C:\Users\Administrator\Desktop\splunkd.exe=24`. The synthesis prompt was 8,751 tokens, well inside the window. Synthesis still returned FALSE_POSITIVE 92 ("splunkd.exe is documented to execute such commands") and never mentioned the path. Delivery is fixed; reading the path is not, which is T4 on the Analyst side.
 - **Open:** the webapp system prompt doesn't yet explain what `summaries` is, so it arrives as unexplained JSON. That's the likely next lever for T4. Also, on `ded5cac1` T5 sent no summaries at all: its long narratives used up the per-task share (B9).
+- **Narrative names (B1c, this branch):** the narrative is what synthesis reads, and it names a file by its short name. `formatting.name_expansions` appends to each narrative, under *Names in this narrative, computed over every row*, one `~` line per file name the narrative mentions, giving the full paths and counts behind it over every routed row. At most 5 names, a name with several files first. Counts only, no judgement, and the model's prose is unchanged. Offline on `ded5cac1`'s stored reports, no model calls: T3 gives `"splunkd.exe" … is 2 files: C:\Users\Administrator\Desktop\splunkd.exe=26, C:\Program Files\SplunkUniversalForwarder\bin\splunkd.exe=20`; T4 gives `1 file: C:\Users\Administrator\Desktop\splunkd.exe=180`; and T5, which sent no summaries, now carries the Desktop path too. Whether synthesis reads it still needs a replay or a live run.
 
 **B9. The handoff to the Analyst had no size limit.** *High. Fixed (`e475a84`).*
 - **Evidence:** B1's summaries took T3's payload from 2,428 to 17,011 characters, and added 27,443 across `072fd610` round 2. The Analyst has a 32,768-token window with 4,096 reserved for output, and the webapp resends every earlier round in each synthesis call (`max_loops` 3). Uncapped, round 2 would probably overflow.
@@ -234,15 +236,16 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fix:** cap long values (command lines) in what the model sees, and keep full rows in `evidence.json`.
 - **Done:** the fetch subagents use Strands' `ContextOffloader` (preview above about 2,500 tokens, no retrieval tool). Evidence is captured first at `SDK_FIRST` and stays full. `072fd610-L2-T3`: $1.56 before, $0.72 and $0.79 after.
 
-**K2. A blank `SMARTOPS_LLM_PROVIDER` doesn't stop Broker model calls.** *Medium. Open.* The engine still finds a model from the other AWS settings. Only `--scripted` is guaranteed free.
+**K2. A blank `SMARTOPS_LLM_PROVIDER` doesn't stop Broker model calls.** *Medium. Fixed on this branch.* The engine still finds a model from the other AWS settings. Only `--scripted` was guaranteed free.
+- **Fix:** `SMARTOPS_LLM_PROVIDER=none` returns no provider (the scripted invoker) even with credentials present. Blank still means "detect", so a blank line in a copied `.env` doesn't change behaviour. The sub-analyst model has its own switch (`SMARTOPS_ANALYST_MODEL_ARN`).
 
-**K3. 19 loops on empty input.** *Medium. Open (T1, W2).* SOC3 spent 18 synthesis calls re-reading the same stale findings.
+**K3. 19 loops on empty input.** *Medium. Fixed.* SOC3 spent 18 synthesis calls re-reading the same stale findings. W2 removed the stale input, `max_loops` is 3, and the T1 gate stops a confident verdict that cites no evidence. The teammate branch's `max_loops` 9999 was not ported.
 
 ## Audit trail
 
 **O1. The context contract isn't saved with the run.** *Medium. Fixed (`c85eb93`).* `investigation.jsonl` recorded the plan, the Broker run and the synthesis, but not the contract the Analyst was given. Comparing runs meant rebuilding it. The `analyst_plan` line now carries it as `context`.
 
-**O2. The dispatch-to-step link isn't recorded.** *Low. Open.* `072fd610` T7 had 2 steps and 2 dispatches, and nothing records which dispatch served which step.
+**O2. The dispatch-to-step link isn't recorded.** *Low. Fixed on this branch.* `072fd610` T7 had 2 steps and 2 dispatches, and nothing records which dispatch served which step. Still true on `ded5cac1`: `step_outcomes[].dispatches` was only a count. `StepOutcome.result_ids` now lists the `SubtaskResult.task_id` of each dispatch that served the step, which is the join to `report.json`'s `results`.
 
 **O3. The Broker log is written only at the end of a loop.** *Low. Fixed (`c85eb93`).* `broker-L<n>.log` stayed at 0 bytes while the loop ran. The child process was unbuffered, but the webapp's own file handle used block buffering. It's now line-buffered.
 
@@ -251,7 +254,8 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 **S1. Live credentials are in git history.** *Critical. Removed from the tree; rotation pending (C1–C2).*
 - **What:** the Bedrock API key, the VirusTotal key, the Splunk JWT and password, and the OpenCTI token. `.env.example` held the real OpenCTI token.
 - **Where:** pushed on `origin/main`, `origin/integration` and `origin/feature/task-broker-input`. `58d39c3` removes them from the tree, not from history.
-- **Action:** rotate all of them.
+- **New (2026-10-05):** `origin/updated-analyst-agent` (`33ccf52`) commits a `.env` with the AWS access and secret keys, the FS8B key, the Splunk token and the VT key, plus a hardcoded OpenCTI token and a Splunk user and password as code defaults. It was ported by hand, not merged, so none of it is on `post-analyst-update-integration`.
+- **Action:** rotate all of them, and have the branch deleted or rewritten.
 
 **S2. A Splunk Web scraper replaced the official MCP server.** *High. Fixed (C3).* `mcp_servers.json` points at the official server again (17 tools, time-bounded queries).
 

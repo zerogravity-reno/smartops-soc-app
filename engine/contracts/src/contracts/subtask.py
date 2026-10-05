@@ -728,6 +728,10 @@ class StepOutcome(BaseModel):
     step: FetchStep
     completed: bool = False
     dispatches: int = 0
+    result_ids: list[str] = Field(default_factory=list)
+    """The `SubtaskResult.task_id` of each dispatch that served this step, in
+    order -- the join from a step to `BrokerReport.results` (O2). `dispatches`
+    alone said how many, not which."""
     rows_retrieved: int = 0
     confirmed_empty: bool = False
     status: SubtaskStatus | None = None

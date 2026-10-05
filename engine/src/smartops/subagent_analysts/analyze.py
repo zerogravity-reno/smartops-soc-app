@@ -82,7 +82,7 @@ from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel
-from .formatting import NO_TIME_MARKER
+from .formatting import NAMES_FOOTER, NO_TIME_MARKER, name_expansions
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -821,9 +821,17 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
             ", ".join(e.citation for e in exhibits),
         )
 
+    # Code-written, after the model's prose and marked `~`: the narrative is what
+    # the Analyst reads, and a name in it can stand for several files (B1c).
+    names = name_expansions(
+        finding.narrative,
+        [*slice_.siem_sets, *(("uncategorised", rs) for rs in slice_.untagged_sets)],
+    )
+    narrative = "\n".join([finding.narrative, "", NAMES_FOOTER, *names]) if names else finding.narrative
+
     return DomainJudgement(
         domain=finding.domain,
-        narrative=finding.narrative,
+        narrative=narrative,
         observations=list(finding.observations),
         citations=list(finding.citations),
         exhibits=exhibits,

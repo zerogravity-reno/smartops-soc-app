@@ -571,6 +571,7 @@ def evaluate_step(
     """
     outcome = prior if prior is not None else StepOutcome(step=step)
     outcome.dispatches += 1
+    outcome.result_ids.append(result.task_id)
 
     counts = _finding_counts(result.findings)
     # A step that named the categories it is responsible for is judged on those

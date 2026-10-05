@@ -14,6 +14,7 @@ code-assembled `ResultSet.rows`; `Evidence.raw` blobs are never rendered here.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -591,6 +592,69 @@ def summarise_rows(
         lines.append(f"  {name}: {len(tally)} distinct — {rendered}{more}")
 
     return "\n".join(lines)
+
+
+_PATH = re.compile(r"^(?:[A-Za-z]:\\|\\\\|/)")
+"""An absolute file path: `C:\\…`, `\\\\server\\…` or `/…`. A URL is not one."""
+
+_PATH_FIELDS: dict[str, tuple[str, ...]] = {"processes": ("process", "parent")}
+"""The path-valued `_FIELDS` per category. `uncategorised` has no schema, so
+every value of its rows that is a `_PATH` counts."""
+
+NAMES_FOOTER = "Names in this narrative, computed over every row:"
+
+
+def _middle(path: str, limit: int = _SUMMARY_VALUE_LIMIT) -> str:
+    """`path` cut in the middle: its root says where, its tail says which file."""
+    if len(path) <= limit:
+        return path
+    head = limit * 2 // 5
+    return path[:head] + "…" + path[-(limit - head - 1):]
+
+
+def name_expansions(narrative: str, sets: Iterable[tuple[str, ResultSet]]) -> list[str]:
+    """What each file name the narrative mentions stands for in its rows.
+
+    A name is not an identity. On `ded5cac1` the rows carried two parents,
+    `C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunkd.exe=20` and
+    `C:\\Users\\Administrator\\Desktop\\splunkd.exe=2`, and the narrative said
+    "from splunkd.exe" -- one name for two files, and the Analyst reasoned from
+    the narrative. Prompting the 8B model to write the path failed twice (B1b,
+    B1c), so code says it: one line per mentioned name, with its full values
+    and counts over ALL rows. Counts only -- which file matters is not ours to say.
+
+    `sets` is `(category, result_set)`; a bare name with no path expands to
+    nothing, since there is nothing more to say than the narrative did.
+    """
+    files: dict[str, dict[str, int]] = {}  # basename (lower) -> full path -> events
+    for category, result_set in sets:
+        for row in result_set.rows:
+            if category == "uncategorised":
+                values = [_sanitise(str(v)) for v in row.values() if isinstance(v, str)]
+            else:
+                values = [_field(row, category, f) for f in _PATH_FIELDS.get(category, ())]
+            for value in {v for v in values if _PATH.match(v)}:
+                base = re.split(r"[\\/]", value)[-1].lower()
+                if base:
+                    tally = files.setdefault(base, {})
+                    tally[value] = tally.get(value, 0) + _row_weight(row)
+
+    mentioned = []
+    for base, tally in files.items():
+        stem = base.rpartition(".")[0] or base
+        hit = re.search(rf"(?<![\w.\\/-]){re.escape(stem)}(?:\.\w+)?(?![\w-])", narrative, re.IGNORECASE)
+        if hit:
+            mentioned.append((len(tally) == 1, hit.start(), base, tally))
+    # ponytail: at most _TOP_N names, one name for several files first -- a
+    # narrative listing fifteen binaries would otherwise spend the B9 budget here.
+    lines = []
+    for _, _, base, tally in sorted(mentioned)[:_TOP_N]:
+        ranked = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+        rendered = ", ".join(f"{_middle(v)}={n}" for v, n in ranked[:_TOP_N])
+        more = f", … {len(ranked) - _TOP_N} more" if len(ranked) > _TOP_N else ""
+        kind = "1 file" if len(ranked) == 1 else f"{len(ranked)} files"
+        lines.append(f'~ "{base}" in these rows is {kind}: {rendered}{more}')
+    return lines
 
 
 def format_result_set(
