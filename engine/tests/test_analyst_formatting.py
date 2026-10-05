@@ -120,6 +120,18 @@ class TestRealSplunkFieldNames:
         assert path in format_row("processes", row)
         assert "C:\\Users\\Administrator\\Desktop\\splunkd.exe=1" in summarise_rows("processes", [row])
 
+    def test_tstats_columns_are_read_through_their_dataset_prefix(self):
+        # `tstats` returns `Processes.parent_process_path`, not the bare field.
+        row = {
+            "Processes.process_name": "powershell.exe",
+            "Processes.parent_process_name": "splunkd.exe",
+            "Processes.parent_process_path": "C:\\Users\\Administrator\\Desktop\\splunkd.exe",
+            "count": "5",
+        }
+        line = format_row("processes", row)
+        assert "process=powershell.exe" in line
+        assert "parent=C:\\Users\\Administrator\\Desktop\\splunkd.exe" in line
+
     def test_stats_count_is_carried_into_the_line(self):
         # `| stats count by ...` is the dominant triage SPL shape: `count`
         # appears on 1,260 of 1,887 real process rows and 138 auth rows. The

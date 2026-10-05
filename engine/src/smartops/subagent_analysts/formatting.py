@@ -66,6 +66,10 @@ def _first(row: dict[str, Any], *keys: str, default: str = "-") -> str:
     and misaligning the line.
     """
     lower = {str(k).lower(): v for k, v in row.items()}
+    # `tstats` names its columns `Dataset.field` (`Processes.parent_process_path`).
+    # The bare field is a fallback key, so an exact key on the row still wins.
+    for k, v in row.items():
+        lower.setdefault(str(k).lower().rpartition(".")[2], v)
     for key in keys:
         value = lower.get(key.lower())
         if value is not None and str(value).strip():
