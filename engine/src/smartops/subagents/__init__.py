@@ -829,6 +829,16 @@ async def _build_agent_and_invoke(
     # time -- overwriting the distinction between "ran out of turns", "ran out of
     # output tokens" and "the model never called its answer tool", which is the
     # whole reason `investigate()` logs a stop reason on this path.
+    # Logged before it is overwritten: on `cecd266a` the recovery also came back
+    # empty and nothing recorded why, so B5 could not be diagnosed.
+    logger.warning(
+        "task_id=%s family=%s | recovery call stop_reason=%s answered=%s (first loop: %s)",
+        mission.task_id,
+        family,
+        getattr(recovered, "stop_reason", None),
+        getattr(recovered, "structured_output", None) is not None,
+        first_stop_reason,
+    )
     if first_stop_reason is not None and hasattr(recovered, "stop_reason"):
         recovered.stop_reason = first_stop_reason
     return recovered

@@ -621,36 +621,16 @@ class HypothesisFindings(BaseModel):
         carries neither. See `AnalystPayload` for why the two differ and
         `DomainNarrative` for what the difference costs.
 
-        A method rather than a free function so the projection lives on the shape
-        it projects from -- a field added above is one edit away from this list,
-        and the test that pins the field set fails until someone decides whether
-        it crosses the boundary. That is the intended friction: `_as_judgement`
+        The field list itself is in `pack_for_analyst`, beside this shape, and the
+        test that pins the field set fails until someone decides whether a new
+        field crosses the boundary. That is the intended friction: `_as_judgement`
         once gained fields by being edited in sympathy with the model rather than
         by decision.
 
         `max_chars` caps the payload's JSON at the Analyst Agent's share of its
-        window (B1). Narratives and observations always cross; what is left is
-        split evenly across the domains holding summaries, each keeps its
-        summaries in order (cited sets first) while its share lasts, and says how
-        many it omitted. `None` sends every summary.
+        window (B1). See `pack_for_analyst`, which this is the one-task case of.
         """
-        payload = AnalystPayload(
-            task_id=self.task_id,
-            run_id=self.run_id,
-            hypothesis_id=self.hypothesis_id,
-            hypothesis=self.hypothesis,
-            findings=[
-                DomainNarrative(
-                    domain=f.domain,
-                    narrative=f.narrative,
-                    observations=list(f.observations),
-                )
-                for f in self.findings
-            ],
-        )
-        with_summaries = [f for f in self.findings if f.summaries]
-        if not with_summaries:
-            return payload
+        return pack_for_analyst([self], max_chars)[0]
         if max_chars is None:
             share = None
         else:
@@ -780,6 +760,67 @@ class AnalystPayload(BaseModel):
     # yet -- whether it should is an open question for the producing team, see
     # docs/open-questions-for-team.md (2026-09-02). Until that is settled the
     # gap is on the record only, so `findings.json` carries it and this does not.
+
+
+def pack_for_analyst(
+    findings: list[HypothesisFindings], max_chars: int | None = None
+) -> list[AnalystPayload]:
+    """Project several tasks onto the wire under ONE size budget (B1, B9).
+
+    Narratives and observations always cross. The space left is water-filled
+    across every domain holding summaries, in every task: the smallest need is
+    met first, and what it leaves flows to the larger ones. Each domain keeps its
+    summaries in order (cited sets first) while its allocation lasts, and says
+    how many it omitted. `None` sends every summary.
+
+    One budget for the batch, not an even split per task and then per domain:
+    on `ded5cac1` that split left T3 2.3k characters it never used while T5,
+    whose narratives filled its own share, sent none of its 31 summaries.
+    """
+    # ponytail: sizes are measured per payload, not inside the batch wrapper,
+    # whose extra nesting HANDOFF_CHAR_BUDGET's margin absorbs.
+    payloads = [
+        AnalystPayload(
+            task_id=h.task_id,
+            run_id=h.run_id,
+            hypothesis_id=h.hypothesis_id,
+            hypothesis=h.hypothesis,
+            findings=[
+                DomainNarrative(domain=f.domain, narrative=f.narrative, observations=list(f.observations))
+                for f in h.findings
+            ],
+        )
+        for h in findings
+    ]
+    def cost(summary: str) -> int:
+        return len(json.dumps(summary)) + 8  # the indent, quotes and comma it costs on the wire
+    units = [
+        (narrative, f)
+        for payload, h in zip(payloads, findings, strict=True)
+        for narrative, f in zip(payload.findings, h.findings, strict=True)
+        if f.summaries
+    ]
+    remaining = None
+    if max_chars is not None:
+        # -90 per domain keeps room for its omission note.
+        remaining = max(max_chars - sum(len(p.model_dump_json(indent=2)) for p in payloads) - 90 * len(units), 0)
+    # Smallest need first, each taking at most an even share of what is left; what
+    # it does not use -- including the crumbs whole summaries leave -- flows on.
+    by_need = sorted(units, key=lambda u: sum(cost(s) for s in u[1].summaries))
+    for left, (narrative, f) in zip(range(len(by_need), 0, -1), by_need):
+        share = None if remaining is None else remaining // left
+        used = 0
+        for summary in f.summaries:
+            if share is not None and used + cost(summary) > share:
+                break
+            narrative.summaries.append(summary)
+            used += cost(summary)
+        if remaining is not None:
+            remaining -= used
+        omitted = len(f.summaries) - len(narrative.summaries)
+        if omitted:
+            narrative.summaries.append(f"… {omitted} set summaries omitted for size (full in findings.json)")
+    return payloads
 
 
 class AnalystPayloadBatch(BaseModel):
