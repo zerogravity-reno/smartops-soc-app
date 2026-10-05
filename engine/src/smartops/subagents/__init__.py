@@ -129,6 +129,8 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- Data models have no `host`, `Computer`, `CommandLine`, `Image` or `ParentImage` field. Use `dest`, `process`, `process_path` and `parent_process_path`. Grouping or filtering by a field that doesn't exist returns 0 rows, not an error.\n"
         "- If `summariesonly=t` returns 0 rows, the data model is usually just not accelerated: run the SAME query with `summariesonly=f`, which searches the raw events through the data model.\n"
         "- Only if `summariesonly=f` also returns 0 rows, query specific sourcetypes directly (`sourcetype=stream:dns`, `sourcetype=stream:tcp`, `sourcetype=XmlWinEventLog EventCode=1`, `sourcetype=WinEventLog EventCode=4688`, `sourcetype=WinEventLog EventCode=4624`).\n"
+        "- Sourcetype names differ between deployments. If a raw sourcetype search returns 0 rows, list the sourcetypes that actually hold this host's events (`| tstats count where index=<allowed index> host=<host> by sourcetype`) and retry with the real name before concluding the data is absent.\n"
+        "- When grouping process events, always include the parent's path (`Processes.parent_process_path`, or `ParentImage` on raw Sysmon) beside its name: two binaries can share a name and differ only by path.\n"
         "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
         "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events).\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
