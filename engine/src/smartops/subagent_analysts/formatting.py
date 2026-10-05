@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from smartops.guards import escape_untrusted
+from smartops.tools.native.decoder import DECODED_FIELD
 
 from contracts import CimCategory, ResultSet, VtVerdict
 
@@ -278,7 +279,9 @@ def _format_process(row: dict[str, Any]) -> str:
         f"parent={_truncate(_field(row, 'processes', 'parent'), _CMDLINE_LIMIT)} "
         f"code={_field(row, 'processes', 'code')} "
         f"cmdline={_truncate(_field(row, 'processes', 'cmdline'), _CMDLINE_LIMIT)}"
-        f"{_count_suffix(row)}"
+        # Written by the Broker's `decode_encoded_commands` (B10); absent otherwise.
+        + (f" decoded={_truncate(_sanitise(str(row[DECODED_FIELD])), _CMDLINE_LIMIT)}" if row.get(DECODED_FIELD) else "")
+        + f"{_count_suffix(row)}"
     )
 
 

@@ -731,6 +731,7 @@ class TestDefaultInvoker:
         assert kwargs["model"] is sentinel
         assert [t.tool_name for t in kwargs["tools"]] == [
             "plan_fetch",
+            "decode_encoded_commands",
             "investigate_siem",
             "investigate_edr",
             "investigate_vt",

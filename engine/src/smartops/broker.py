@@ -71,6 +71,7 @@ from smartops.telemetry import (
     record_result_status,
 )
 from smartops.tools.registry import enricher_for, family_is_configured, server_count, tools_for
+from smartops.tools.native.decoder import decode_encoded_commands
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,10 @@ HOW TO DECOMPOSE:
 specialist's tool with the `step_id` of the planned step that dispatch carries out. A dispatch
 made before `plan_fetch`, or naming a step id that is not in the plan or belongs to another
 family, is refused and retrieves nothing.
+
+Some goals ask for a transformation, not a retrieval -- what an encoded PowerShell command
+says. Dispatch the step that fetches the command lines, then call `decode_encoded_commands`
+with that step's id.
 
 Available specialists and when to use them are described in each tool's own description.
 Dispatch every specialist whose domain can retrieve relevant evidence for the entities and
@@ -976,7 +981,7 @@ def make_investigate_tool(spec: DomainSpec):
 
 TOOL_BY_FAMILY = {spec.family: make_investigate_tool(spec) for spec in DOMAINS.values()}
 FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
-BROKER_TOOLS = [plan_fetch] + FAMILY_TOOLS
+BROKER_TOOLS = [plan_fetch, decode_encoded_commands] + FAMILY_TOOLS
 
 
 def _plannable(family: ToolFamily) -> bool:
@@ -1037,7 +1042,7 @@ def available_broker_tools() -> list:
     EDR existed and steered host questions away from Splunk on run `cecd266a`.
     """
     configured = [family for family in DOMAINS if family_is_configured(family)]
-    return [_plan_fetch_for(configured)] + [
+    return [_plan_fetch_for(configured), decode_encoded_commands] + [
         make_investigate_tool(replace(spec, description=describe(spec, family_is_configured)))
         for spec in (DOMAINS[family] for family in configured)
     ]
