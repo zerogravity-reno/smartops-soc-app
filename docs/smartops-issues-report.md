@@ -37,6 +37,9 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | T10 | Triage | Status and verdict vocabulary mixed | Medium | Open (A8) |
 | T11 | Triage | Task entity kinds the Broker can't search; tasks dropped | Medium | Open (A6) |
 | T12 | Triage | Wrong reference rule; contradictory alignment judgements | Medium | Open (A7, C5) |
+| T13 | Triage | Analyst ignores the parent path even when the narrative spells it out | High | Open |
+| T14 | Triage | Synthesis reads tasks that never ran and cites them as findings | High | Open |
+| T15 | Triage | Synthesis can spend its output budget before writing the verdict JSON | Medium | Open |
 | P1 | Context | `event_time` is detection time, not activity time | High | Partly fixed (C6) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
@@ -80,6 +83,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Evidence:** `04a15495` loop 2 scored 30 / 90 / 90, then loop 3 scored 90 / 60 / 30. `a8118db9` went 40 / 80 / 90, then 75 / 65 / 68, then 95 / 65 / 30. SOC3 drifted 0/0/0 → 30/70/50 → 30/60/70 → 40/80/75 across loops that had *no new evidence*.
 - **Impact:** a verdict can come down to which loop the run stops on. 2 of 3 true-positive runs passed through a confident benign state on the way.
 - **Fix:** define a neutral baseline for "no evidence". Score only from cited observations, and require new evidence before a score can move.
+- **Also (replay of `ded5cac1`, 2026-10-05):** the live synthesis message, rebuilt byte for byte (same prompt, same 8,751 prompt tokens) at temperature 0, matched the live reasoning for 721 characters and then diverged. The live call reached FALSE_POSITIVE 92; the reproduction scored 60 / 50 / 45 and wrote no verdict (T15). Temperature 0 doesn't make the model deterministic on Bedrock, so a single run can't attribute a verdict change to a code change. Trace: `docs/trace-ded5cac1-replay.html`.
 
 **T3. The plan's framing decides the outcome when evidence is thin.** *High. Open.*
 - **Evidence:** given identical context, the same model framed the alert oppositely.
@@ -106,6 +110,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Also:** `04a15495` retrieved **no** row with the alert's masquerading parent (B1).
 - **Impact:** the verdict is right about the host but not demonstrated for the alert. On a host with only this activity, the same reasoning has nothing to stand on.
 - **Fix:** synthesis should separate evidence about the alerted activity from other host context, and base the verdict on the former.
+- **Also (`ded5cac1` replay B):** TRUE_POSITIVE 90 rested partly on host-wide traffic, misread. It called `192.168.40.212:9997` a non-standard exfiltration port (9997 is Splunk's forwarder-to-indexer port, 20 of T3's 21 connections), said `192.168.40.211` was outside the internal subnet (it's RFC 1918), and cited 1,716 HTTPS connections over 26–28 Sep that nothing ties to the alert.
 
 **T7. Alert text and hypothesis wording are cited as evidence.** *High. Open (A4).*
 - **Evidence:** `072fd610`'s verdict says *"through splunkd.exe compromise"*. That's hypothesis H1's own wording; nothing shows the real Splunk was compromised. "CISA AA23-347A" in the verdict comes from the alert annotations.
@@ -127,6 +132,21 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 **T12. Wrong reference rule, and contradictory alignment judgements.** *Medium. Open (A7, C5).*
 - **Evidence:** a Process Discovery alert (T1057) was matched to *Malicious PowerShell Process - Encoded Command* (T1027). In SOC3, the section-5 plan judged the alignment ALIGNED and the loop-1 plan judged it NOT_ALIGNED.
+
+**T13. The Analyst ignores the parent path even when the narrative spells it out.** *High. Open.*
+- **Evidence:** in the `ded5cac1` replay (`docs/trace-ded5cac1-replay.html`), synthesis B's narratives carried the computed name lines from `b50273c` (`"splunkd.exe" in these rows is 2 files: C:\Users\Administrator\Desktop\splunkd.exe=26, C:\Program Files\SplunkUniversalForwarder\bin\splunkd.exe=20`; T4: `1 file: …Desktop\splunkd.exe=180`). Its reasoning never mentions `Desktop`. It names splunkd only through the hypotheses' wording. Synthesis A, without the lines, didn't either. Earlier, the summaries carried the same path (B1, `ded5cac1` live) and were ignored too.
+- **Cause:** not established. The delivery side is done (B1), so this is how the 8B Analyst reads its input. The plan frames splunkd by name: H2 and H3 name `splunkd.exe` as the legitimate source, and T2 asks whether it is *documented* to run these commands (T3, T4).
+- **Fix (Analyst side):** to be decided. Candidates: have the plan name the entity by full value, a code-side check that compares a parent's path against the expected location for its name, or a synthesis step that must state each process's path before scoring. A prompt-only change should be measured with a replay first: it failed twice on the 8B sub-analysts (B1b, B1c).
+
+**T14. Synthesis reads tasks that never ran, and cites them as findings.** *High. Open.*
+- **Evidence:** on `ded5cac1`, T1 and T2 were dropped at handoff (zero-length windows, start equal to end), and only T3–T5 reached the Broker. The plan the Analyst reads still lists all five, with nothing marking T1 and T2 as not run.
+  - The live FALSE_POSITIVE 92 rested on *"T2 … splunkd.exe is documented to run such commands (as seen in the narrative)"*: T3's line about the real forwarder, read as the answer to T2's question.
+  - Replay A cited `T1:powershell.exe` and `T2:splunkd.exe` in `evidence_refs`, and the verdict gate accepted them (T1).
+- **Fix:** `plan_slim` should carry only the tasks that were sent, or mark the dropped ones with their reason. The gate should accept only `evidence_refs` that match a `<task>:<domain>` in the payload. The planning prompt should also stop emitting zero-length windows (see T11 for the same "dropped at handoff" path).
+
+**T15. Synthesis can spend its output budget before writing the verdict JSON.** *Medium. Open.*
+- **Evidence:** the exact reproduction of the `ded5cac1` synthesis used all 4,096 output tokens (`stop_reason=length`): after scoring 60 / 50 / 45, it kept drafting follow-up tasks and never emitted the JSON. `extract_json` returned nothing, so the loop has no status, scores or follow-ups.
+- **Fix:** keep the reasoning bounded (ask for the JSON first, or a shorter reasoning section), and treat a `length` stop as a failed call that is retried or reported, not as an empty evaluation.
 
 ## Context pipeline
 
