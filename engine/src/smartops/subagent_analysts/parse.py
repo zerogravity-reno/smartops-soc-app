@@ -156,6 +156,63 @@ def split_reasoning(generation: str) -> tuple[str | None, str]:
     return None, generation.strip()
 
 
+# A full header id, and a bare `#N` continuation. `_expand_bare_ids` walks a line
+# with both and rewrites the second into the first.
+# Anchored per branch, not across the alternation. A leading `\b` on the whole
+# group never matches a bare `#N`: it is preceded by a space or `(`, and neither
+# forms a word boundary with `#`, so every continuation slipped through unchanged.
+_BARE_OR_FULL_ID_RE = re.compile(r"(?:\b([A-Za-z_]+)#(\d+)|(?<![\w#])#(\d+))")
+
+# "Does this text name a set at all?" -- used by the two checks below, AFTER
+# `_expand_bare_ids` has run, so a continuation counts as the id it became.
+_FULL_ID_SEARCH_RE = re.compile(r"\b[A-Za-z_]+#\d+")
+
+
+def _expand_bare_ids(text: str) -> str:
+    r"""Rewrite `auth_events#6, #9, #11` as three full ids.
+
+    A bare `#N` inherits the category of the nearest full id BEFORE it in the same
+    string. This is a normalisation, not a guess: every id carries a category
+    prefix, the model is writing a list of ids from one category, and a reader
+    resolves the continuation exactly this way.
+
+    **Why expand rather than reject.** `_OBSERVATION_CITE_RE` (`analyze.py`) matches
+    `[A-Za-z_]+#\d+`, so a bare `#N` matches nothing and is silently discarded --
+    on the 2026-09-05 replay the identity finding cited
+    `(auth_events#6, #9, #11, #13)` and three of its four sets never reached the
+    grounding gate at all. Bare `#N` was the dominant style in two domains of three
+    that run, so this is not an edge case.
+
+    It is the same call `_parse_citations` already made one function above, for the
+    same reason: "the model's only mistake was punctuation, and the penalty was its
+    whole read of the evidence." The prompt still asks for full prefixes -- this
+    stops the parser punishing the slip, it does not bless it.
+
+    A bare `#N` with no full id before it is left exactly as it was. There is
+    nothing to inherit, and inventing a category would manufacture a citation the
+    model never wrote -- which is the failure this whole tier exists to prevent.
+    """
+    if "#" not in text:
+        return text
+
+    current: str | None = None
+    out: list[str] = []
+    end = 0
+    for match in _BARE_OR_FULL_ID_RE.finditer(text):
+        category, number, bare = match.group(1), match.group(2), match.group(3)
+        out.append(text[end : match.start()])
+        end = match.end()
+        if category is not None:
+            current = category
+            out.append(f"{category}#{number}")
+        elif current is not None:
+            out.append(f"{current}#{bare}")
+        else:
+            out.append(match.group(0))
+    out.append(text[end:])
+    return "".join(out)
+
+
 def _parse_citations(answer: str) -> list[str]:
     """The header ids on the trailing `CITATIONS:` line.
 
@@ -171,13 +228,85 @@ def _parse_citations(answer: str) -> list[str]:
     match = _CITATIONS_RE.search(answer)
     if not match:
         return []
-    raw = match.group(1).strip()
+    raw = _expand_bare_ids(match.group(1).strip())
     cleaned = (c.strip("[]").strip() for c in re.split(r"[,\s]+", raw))
     return [c for c in cleaned if c]
 
 
 class FindingParseError(ValueError):
     """The generation carried no NARRATIVE, or no OBSERVATIONS and no CITATIONS."""
+
+
+# An observation that states nothing. The 2026-09-02 consent run's identity
+# finding had exactly one observation, `None applicable.`, which is a sentence
+# where a checkable claim should be -- it cites nothing, rests on nothing, and
+# reads downstream as though the domain had been examined and dismissed.
+_PLACEHOLDER_OBSERVATION_RE = re.compile(
+    r"^(none|n/?a|none applicable|not applicable|no observations?|nothing"
+    r"|none found|no findings?)\b[.\s]*$",
+    re.IGNORECASE,
+)
+
+def _check_observations(observations: list[str], domain: AnalystDomain) -> None:
+    """Raise when an observation carries no citation, or states nothing.
+
+    Both were live in the recorded runs -- 5 uncited observations across the nine
+    2026-09-02 findings, and one `None applicable.`. Neither recurred in the
+    2026-09-05 replay, so this is protective rather than currently firing, and
+    that is the point: an uncited observation is prose the grounding gate cannot
+    check (`_resolve_observation_citations` deliberately leaves it alone), so
+    nothing downstream would ever catch it.
+
+    Deliberately NOT raised for a bare `#N`: `_expand_bare_ids` has already
+    recovered it by the time this runs. Rejecting a reply over punctuation the
+    parser can fix is the mistake `_parse_citations` records.
+
+    **The uncited rule is block-level, not per-line, and that is a correction.**
+    Per-line raising was tried and over-fired immediately: an un-bulleted prose
+    line inside the OBSERVATIONS block ("The pattern was: burst, pause, burst")
+    is swept up by `_FINDING_OBSERVATIONS_RE` as an observation, and rejecting the
+    whole reply over a formatting artifact would cost a re-ask and, on a second
+    failure, the domain. So a reply where NOT ONE observation cites anything is
+    the failure raised here -- unambiguous, and untriggerable by a stray line --
+    while a single uncited line among cited ones is dropped by
+    `analyze._drop_unsupported_figures`, which is where every other unsupported
+    claim is already handled and where the drop gets logged rather than costing a
+    round trip.
+    """
+    for observation in observations:
+        if _PLACEHOLDER_OBSERVATION_RE.match(observation.strip()):
+            raise FindingParseError(
+                f"{domain} analyst wrote a placeholder observation "
+                f"({observation.strip()!r}); an evidence set that returned nothing is "
+                f"described in one sentence naming it, not with a placeholder"
+            )
+    if observations and not any(_FULL_ID_SEARCH_RE.search(o) for o in observations):
+        raise FindingParseError(
+            f"{domain} analyst wrote {len(observations)} observation(s) and cited no "
+            f"evidence in any of them; every observation ends with the header id(s) it "
+            f"rests on, e.g. [auth_events#1]"
+        )
+
+
+# WITHDRAWN, and the withdrawal is the record worth keeping.
+#
+# A `_check_narrative_is_anchored` raised here when a substantial narrative
+# paragraph named no evidence set. It was built on one observation: on the first
+# 2026-09-05 replay, endpoint wrote a paragraph per set and named each
+# (`Processes#6 (73 rows, 637 events) ...`), so naming sets looked like a trait
+# the model had and identity merely lacked.
+#
+# Measured on the next replay, that was a one-off. **Five of six generations
+# named no set anywhere in the narrative**, across all three domains, so the rule
+# rejected every reply -- twice each, exhausting the re-ask -- and all three
+# domains came back empty. Relaxing it from per-paragraph to "the narrative names
+# at least one set" was measured too and would still have rejected five of six.
+#
+# The prompt still ASKS for it (`prompts._ANSWER_RULES` rule 1), because it is
+# what a checkable narrative would look like. Nothing enforces it, because
+# enforcing something this model does not reliably do costs a re-ask and then the
+# domain -- and an empty finding is strictly worse than an unanchored one.
+# Re-enforce only against a measurement showing the model complies.
 
 
 def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
@@ -217,13 +346,19 @@ def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
         for line in observations_match.group(1).splitlines():
             line = line.strip().lstrip("-*").strip()
             if line:
-                observations.append(line)
+                # Normalised HERE, so `DomainFinding.observations` carries full
+                # ids and `_OBSERVATION_CITE_RE`, `_resolve_observation_citations`
+                # and `_drop_unsupported_figures` all see them without each
+                # repeating the rule.
+                observations.append(_expand_bare_ids(line))
 
     citations = _parse_citations(answer)
     if not observations and not citations:
         raise FindingParseError(
             f"no OBSERVATIONS or CITATIONS block found in {domain} analyst output"
         )
+
+    _check_observations(observations, domain)
 
     return DomainFinding(
         domain=domain,

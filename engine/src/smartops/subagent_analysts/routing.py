@@ -6,10 +6,18 @@ Routing is by CIM category and entity kind, in code -- not a model decision:
 - network   <- dns_resolutions, connections, and VT verdicts for ip/domain/url
 - endpoint  <- processes, and VT verdicts for file_hash
 
-`uncategorised` SIEM result sets (rows whose query the fetch model never tagged
-with a category -- an honesty bucket, see `SiemFindings.uncategorised`) have no
-known category, so they are routed by the scope's entity kinds and flagged as
-untagged. They are never dropped: they were retrieved and paid for.
+`uncategorised` SIEM result sets (rows whose SPL `projection._infer_cim_category`
+recognised no shape in -- an honesty bucket, see `SiemFindings.uncategorised`)
+have no known category, so they are routed by the scope's entity kinds and
+flagged as untagged. They are never dropped: they were retrieved and paid for.
+
+**`discovery` reaches no slice, and that is deliberate.** It holds output from
+calls that describe the estate -- index and sourcetype listings -- rather than
+querying it, so there is no hypothesis for an analyst to weigh it against. It
+falls out of `route` already, because the loops below name the four CIM buckets
+and `uncategorised` explicitly; stated here so a later reader does not add it
+back on the "never dropped" reasoning above, which is about *retrieved rows*.
+Those listings are kept in `findings.json` for the audit either way.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ from contracts import (
     ResultSet,
     Scope,
     SiemFindings,
+    ToolFamily,
     VtFindings,
     VtVerdict,
 )
@@ -81,6 +90,54 @@ class RoutedEvidence:
 
     def slices(self) -> list[DomainSlice]:
         return [self.identity, self.network, self.endpoint]
+
+
+_FAMILY_DOMAINS: dict[ToolFamily, tuple[AnalystDomain, ...]] = {
+    "edr": ("endpoint",),
+    "ndr": ("network",),
+    # By indicator kind, matching `_VT_KIND_DOMAIN` above: reputation for an
+    # address/domain/URL is network, for a hash it is endpoint.
+    "vt": ("network", "endpoint"),
+    # SIEM is the general instrument -- it carries auth, DNS, connection and
+    # process events, which is precisely why it can stand in for a missing
+    # specialist. It is the reason a `not_configured` edr does not leave the
+    # endpoint domain empty.
+    "siem": ("identity", "network", "endpoint"),
+}
+"""Which analysis domains a fetch-side family can supply evidence for.
+
+**Read this together with `AnalystDomain`'s "not derived from `ToolFamily`".**
+That still holds and this does not contradict it: a domain is not *defined* by a
+family, and `route()` below still assigns every result set by CIM category and
+entity kind, never by which family fetched it. This mapping answers a different
+question, asked from the opposite direction -- *if this family is missing, whose
+evidence might be thinner?* -- and it is needed because nothing else in the
+codebase could answer it.
+
+It exists for `subagent_analysts.analyze._domain_gaps`, so a
+`contracts.DomainGap` can say which domains an unavailable instrument would have
+served and which of those ended up with no evidence at all. Without it, a
+consumer holding "edr was not configured" and "the endpoint narrative is empty"
+has two facts and no stated link between them, and recovering the link requires
+knowing what EDR is -- which is exactly the kind of inference
+`RetrievalSummary`'s docstring exists to avoid asking of a reader.
+
+Deliberately coarse. It is a statement about what an instrument *could* cover,
+not about what any particular query retrieved -- that is what `route()` and the
+per-domain findings already report, from the evidence itself.
+"""
+
+
+def domains_for_family(family: ToolFamily) -> tuple[AnalystDomain, ...]:
+    """The analysis domains `family` can supply evidence for. See `_FAMILY_DOMAINS`.
+
+    Falls back to all three rather than none for an unmapped family: a new
+    `ToolFamily` added without touching this map is far more likely to be
+    another broad source than one that serves no analysis domain at all, and
+    over-reporting which domains a gap touched is the safer error -- it
+    overstates the caveat rather than silently dropping it.
+    """
+    return _FAMILY_DOMAINS.get(family, ("identity", "network", "endpoint"))
 
 
 def _untagged_target_domains(scope: Scope) -> set[AnalystDomain]:

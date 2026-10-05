@@ -1,11 +1,19 @@
 """Turning captured tool output into typed `Findings`. Code only, never a model.
 
 This is the second layer of the two-layer payload. The model authors a small
-assessment and says which CIM category each of its queries was after; **code**
-supplies every row, from what the tools actually returned.
+assessment; **code** supplies every row, from what the tools actually returned,
+**and code decides which CIM category each result set belongs to** by reading the
+SPL the tool was actually called with.
 
 Neither half can forge the other: a model that never sees the rows cannot invent
 them, and code that never reads the prompt cannot be talked into re-categorising.
+
+The category used to come from the model's own `QueryRun.category`, matched to the
+executed call by query text. See `SiemFindings` for the measurement that ended
+that: the model's report of its own queries is a recollection, and the match
+missed on 66 result sets of which only 4 were recoverable by any string
+similarity. Its tag is still read, and a disagreement with the SPL is still
+logged -- it is now the cross-check rather than the decision.
 """
 
 from __future__ import annotations
@@ -16,6 +24,8 @@ from typing import Any
 
 from contracts.findings import VtFindings, VtVerdict
 from contracts.subtask import evidence_id as _evidence_id
+
+from smartops.guards import _LOOKS_LIKE_SEARCH
 
 from contracts import CimCategory, Findings, QueryRun, ResultSet, SiemFindings
 
@@ -180,14 +190,38 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
     return None
 
 
+def _is_search(query: str | None) -> bool:
+    """Whether this call queried the estate, as opposed to describing it.
+
+    A shape test on the recovered query, deliberately not a list of tool names:
+    the tool schema comes from whichever MCP server is configured, which is the
+    same reason `_query_of` and `IndexScopeGuard` scan the whole input rather
+    than naming a parameter. Reuses the guard's own regex so "is this a search"
+    has one definition -- a string that scopes nothing has nothing to categorise
+    and nothing to say about a hypothesis.
+
+    Confirmed against the 2026-09-02 run: `splunk_get_metadata` and
+    `splunk_get_indexes` calls recover `sourcetypes`, a bare epoch
+    (`1534723200`), or nothing at all, and every `splunk_run_query` recovers real
+    SPL.
+    """
+    return bool(query) and _LOOKS_LIKE_SEARCH.search(query) is not None
+
+
 def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) -> SiemFindings:
-    """Bucket each executed call's rows into the CIM category its query was tagged with."""
+    """Bucket each executed call's rows into the CIM category **its SPL** implies.
+
+    `queries_run` is read only to cross-check the model's own tag against what
+    the SPL says, and to log the disagreement. It no longer decides -- see the
+    module docstring.
+    """
     by_query: dict[str, CimCategory | None] = {
         _normalise(q.query): q.category for q in queries_run
     }
 
     buckets: dict[str, list[ResultSet]] = {name: [] for name in _CIM_BUCKETS}
     buckets["uncategorised"] = []
+    buckets["discovery"] = []
 
     for index, call in enumerate(calls):
         rows = _rows_of(call.payload)
@@ -202,65 +236,71 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
             evidence_id=_evidence_id(task_id, index),
         )
 
-        category = by_query.get(_normalise(call.query)) if call.query else None
+        # Estate description, not evidence. Split off BEFORE categorising: these
+        # calls carry no search, so every one of them would otherwise fall
+        # through to `uncategorised` and be offered to an analyst as citable
+        # rows -- which is how a delivered narrative came to describe Splunk's
+        # `_internal` index and hosts outside the scope. See
+        # `SiemFindings.discovery`.
+        if not _is_search(call.query):
+            logger.info(
+                "tool=%s | no search in this call's input, filing as discovery "
+                "(describes the estate, not evidence about the hypothesis)",
+                call.tool,
+            )
+            buckets["discovery"].append(result_set)
+            continue
+
+        category = _infer_cim_category(call.query)
+
+        # The model's own tag, kept as a cross-check. A disagreement means one of
+        # the two read the query differently, and it is worth seeing: before code
+        # took precedence, a Sysmon `EventCode=3` (network connection) tagged
+        # `auth_events` was filed under the tag, and an identity analyst wrote a
+        # narrative from network rows for a hypothesis that had no auth step at
+        # all. Absence of a match is no longer notable -- the model reports fewer
+        # queries than it runs, so most calls have no counterpart to compare.
+        tagged = by_query.get(_normalise(call.query))
+        if tagged in _CIM_BUCKETS and category in _CIM_BUCKETS and tagged != category:
+            logger.warning(
+                "task_id=%s tool=%s | model tagged this query '%s' but its SPL "
+                "infers '%s'; filing under the SPL. query=%r",
+                task_id,
+                call.tool,
+                tagged,
+                category,
+                (call.query or "")[:200],
+            )
+        elif tagged in _CIM_BUCKETS and category is None:
+            # Not a contradiction -- there is nothing to contradict. The tag is
+            # more specific than the SPL, so it is the model's claim that is
+            # dropped here, and these rows go to `uncategorised`. Info rather
+            # than warning: it is the aggregate that means something, and what it
+            # means is that `_infer_cim_category` is meeting a shape it should
+            # learn (`sourcetype=WinEventLog | stats count by EventCode` spans
+            # all four models, so some of these are correctly unlearnable).
+            logger.info(
+                "tool=%s | model tagged this query '%s' but its SPL infers no "
+                "category; filing as uncategorised. query=%r",
+                call.tool,
+                tagged,
+                (call.query or "")[:200],
+            )
+
         if category in _CIM_BUCKETS:
-            # The tag decides. But `_infer_cim_category` can read a category
-            # straight off the SPL, and when the two disagree the model has
-            # mislabelled its own query -- which routes real rows to a domain
-            # analyst whose prompt tells it that data is not its business, while
-            # the analyst that wanted them never sees them. Nothing downstream
-            # can detect that, because every row is intact and every id is
-            # valid, so compute the disagreement here and say so. Reporting it
-            # rather than overriding: the category is the one thing the model is
-            # asked to contribute, and inverting that precedence is a design
-            # change, not a bug fix.
-            contradiction = _infer_cim_category(call.query)
-            if contradiction in _CIM_BUCKETS and contradiction != category:
-                logger.warning(
-                    "task_id=%s tool=%s | model tagged this query '%s' but its SPL "
-                    "infers '%s'; filing under the tag. Rows will reach the '%s' "
-                    "analyst and not the '%s' one -- query=%r",
-                    task_id,
-                    call.tool,
-                    category,
-                    contradiction,
-                    category,
-                    contradiction,
-                    (call.query or "")[:200],
-                )
             buckets[category].append(result_set)
         else:
-            if call.query and by_query and category is None:
-                # Distinct from "the model never tagged it": the model DID report
-                # queries, and none of them matched this one. `_query_of` picks
-                # the longest search-looking string out of a tool input, so a
-                # tool taking two query-shaped arguments can hand back the wrong
-                # one -- and that string is the join key this lookup uses. The
-                # rows survive either way; the model's attribution does not.
-                logger.warning(
-                    "task_id=%s tool=%s | the model reported %d tagged quer%s but none "
-                    "matched this call, so its tag is lost; the recovered query may be "
-                    "the wrong string. query=%r",
-                    task_id,
-                    call.tool,
-                    len(by_query),
-                    "y" if len(by_query) == 1 else "ies",
-                    (call.query or "")[:200],
-                )
-            inferred = _infer_cim_category(call.query)
-            if inferred in _CIM_BUCKETS:
-                logger.info(
-                    "tool=%s | query was untagged by model, inferred CIM category '%s' from SPL",
-                    call.tool,
-                    inferred,
-                )
-                buckets[inferred].append(result_set)
-            else:
-                logger.info(
-                    "tool=%s | result set not tagged with a CIM category, filing as uncategorised",
-                    call.tool,
-                )
-                buckets["uncategorised"].append(result_set)
+            # A search whose shape `_infer_cim_category` does not recognise. The
+            # rows are real and were paid for, so they are kept and offered --
+            # what is missing is the attribution, and a full bucket here is the
+            # signal to teach `_infer_cim_category` a shape it is meeting.
+            logger.info(
+                "tool=%s | no CIM category inferable from this SPL, filing as "
+                "uncategorised -- query=%r",
+                call.tool,
+                (call.query or "")[:200],
+            )
+            buckets["uncategorised"].append(result_set)
 
     return SiemFindings(**buckets)
 

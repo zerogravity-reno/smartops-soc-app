@@ -124,6 +124,16 @@ class DomainSpec:
     today; `edr` and `ndr` stay `None` for the same reason as `assessment_model`.
     """
 
+    redirects: tuple[tuple[ToolFamily, str], ...] = ()
+    """(family, what to send there) pairs, rendered by `describe()` only when that
+    family is configured. Kept out of `description` because a static "use
+    investigate_edr" tells the model EDR exists when nothing serves it."""
+
+    covers_when_absent: tuple[tuple[ToolFamily, str], ...] = ()
+    """Text `describe()` appends when the keyed family is NOT configured: what this
+    domain holds that the absent one would otherwise have answered. Pairs, not a
+    dict, so the frozen spec stays hashable."""
+
     turns: int = 14
     max_output_tokens: int = 12_000
 
@@ -136,8 +146,16 @@ SIEM = DomainSpec(
         "\n"
         "Use for anything needing log history or correlation over time, and as the\n"
         "starting point when you do not yet know which host or address matters.\n"
-        "Works with any observable. Do NOT use for file or domain reputation (use\n"
-        "investigate_vt) or for live host process detail (use investigate_edr)."
+        "Works with any observable."
+    ),
+    redirects=(("vt", "file or domain reputation"), ("edr", "live host process detail")),
+    covers_when_absent=(
+        ("edr", (
+            "Endpoint telemetry is indexed here: process creation (Sysmon EID 1, "
+            "Windows 4688), file and registry events. Use this for host and process "
+            "questions."
+        )),
+        ("ndr", "Network telemetry is indexed here: firewall, DNS and proxy logs."),
     ),
     required_kinds=None,
     time_scoped=True,
@@ -154,9 +172,9 @@ EDR = DomainSpec(
         "historical processes, persistence mechanisms, file activity, local accounts.\n"
         "\n"
         "Use when the question is about what happened *on a machine*. Needs a host,\n"
-        "process, or user observable in scope. Do NOT use for network flow analysis\n"
-        "(use investigate_ndr) or reputation lookups (use investigate_vt)."
+        "process, or user observable in scope."
     ),
+    redirects=(("ndr", "network flow analysis"), ("vt", "reputation lookups")),
     required_kinds=frozenset({"host", "process", "user"}),
     time_scoped=True,
     mcp_servers=("edr",),
@@ -189,9 +207,9 @@ NDR = DomainSpec(
         "protocol anomalies, and traffic to or from an address.\n"
         "\n"
         "Use when the question is about traffic and communication patterns. Needs an\n"
-        "ip, domain, or url observable in scope. Do NOT use for host-local process\n"
-        "detail (use investigate_edr)."
+        "ip, domain, or url observable in scope."
     ),
+    redirects=(("edr", "host-local process detail"),),
     required_kinds=frozenset({"ip", "domain", "url"}),
     time_scoped=True,
     mcp_servers=("ndr",),
@@ -209,3 +227,21 @@ def spec_for(family: ToolFamily) -> DomainSpec:
     """The spec for `family`. Raises `KeyError` for an unregistered family --
     which is a programming error, not a runtime condition."""
     return DOMAINS[family]
+
+
+def describe(spec: DomainSpec, is_configured: Callable[[ToolFamily], bool]) -> str:
+    """`spec.description` as the Broker's model should read it in this process.
+
+    A redirect is named only when its target is configured, and
+    `covers_when_absent` text only when its family is not -- so an unconnected
+    family never appears in anything a model reads. The predicate is passed in
+    (`registry.family_is_configured`) to keep this module free of `registry`.
+    """
+    parts = [spec.description]
+    parts += [
+        f"Do NOT use for {what} (use investigate_{target})."
+        for target, what in spec.redirects
+        if is_configured(target)
+    ]
+    parts += [text for family, text in spec.covers_when_absent if not is_configured(family)]
+    return " ".join(parts)

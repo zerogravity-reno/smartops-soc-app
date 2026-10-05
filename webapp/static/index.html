@@ -51,6 +51,58 @@
   .vconf { font-size:14px; opacity:.75; margin-top:4px; }
   .vsummary { font-size:13px; margin-top:14px; line-height:1.7; opacity:.9; max-width:600px; margin-left:auto; margin-right:auto; }
   .hidden { display:none !important; }
+
+  /* Investigation loop: two lanes and the messages that cross between them. */
+  .xr-lanes { display:grid; grid-template-columns:minmax(0,1fr) 36px minmax(0,1fr); margin-top:8px; background:linear-gradient(#1e293b,#1e293b) center / 2px 100% no-repeat; }
+  .xr-head { font-size:13px; font-weight:700; padding:0 0 12px; }
+  .xr-head.a { color:#a78bfa; } .xr-head.b { color:#f59e0b; grid-column:3; }
+  .xr-block { background:#0f172a; border:1px solid rgba(255,255,255,.07); border-radius:10px; padding:14px 16px; margin-bottom:14px; min-width:0; }
+  .xr-block.a { grid-column:1; border-left:3px solid #a78bfa; }
+  .xr-block.b { grid-column:3; border-left:3px solid #f59e0b; }
+  .xr-title { font-size:14px; font-weight:700; color:#e2e8f0; display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+  .xr-meta { margin-left:auto; font-size:11px; font-weight:400; color:#64748b; white-space:nowrap; }
+  .xr-h { font-size:12px; font-weight:700; color:#94a3b8; margin:12px 0 4px; }
+  .xr-p { font-size:13px; line-height:1.6; color:#cbd5e1; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .xr-p.dim { color:#94a3b8; } .xr-p.bad { color:#f87171; }
+  .xr-mono { font-family:"Cascadia Code","Fira Code",Consolas,monospace; font-size:11.5px; line-height:1.55; color:#94a3b8; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .xr-block details { margin-top:8px; }
+  .xr-block summary { cursor:pointer; font-size:12px; color:#94a3b8; }
+  .xr-block summary:focus-visible, .xr-block a:focus-visible { outline:2px solid #a78bfa; outline-offset:2px; border-radius:4px; }
+  .xr-log { background:#020617; border:1px solid #1e293b; border-radius:8px; padding:10px 12px; max-height:220px; overflow-y:auto; margin-top:6px; }
+  /* A message crossing the spine: sender side, arrow, receiver side. */
+  .xr-cross { grid-column:1 / -1; display:grid; grid-template-columns:minmax(0,1fr) 36px minmax(0,1fr); align-items:center; margin:-4px 0 14px; }
+  .xr-cross .from { text-align:right; font-size:12px; color:#94a3b8; padding-right:10px; }
+  .xr-cross .to   { font-size:12px; color:#94a3b8; padding-left:10px; }
+  .xr-cross .arrow { position:relative; height:2px; background:currentColor; }
+  .xr-cross.ab { color:#14b8a6; } .xr-cross.ba { color:#10b981; }
+  .xr-cross .arrow::after { content:""; position:absolute; top:-5px; border:6px solid transparent; }
+  .xr-cross.ab .arrow::after { right:-6px; border-left-color:currentColor; }
+  .xr-cross.ba .arrow::after { left:-6px; border-right-color:currentColor; }
+  .xr-cross.ba .from { order:3; text-align:left; padding:0 0 0 10px; }
+  .xr-cross.ba .to   { order:1; text-align:right; padding:0 10px 0 0; }
+  .xr-cross.ba .arrow { order:2; }
+  .xr-cross .from b, .xr-cross .to b { color:#e2e8f0; font-weight:700; }
+  /* The handshake stamp sits on the spine: the one thing to check each loop. */
+  .xr-stamp { grid-column:1 / -1; justify-self:center; margin:0 0 16px; padding:8px 16px; border-radius:99px; font-size:13px; font-weight:700; background:#020617; border:2px solid; text-align:center; max-width:90%; }
+  .xr-stamp.ok { color:#4ade80; border-color:#4ade8066; } .xr-stamp.bad { color:#f87171; border-color:#f8717166; }
+  .xr-stamp small { display:block; font-weight:400; font-size:11.5px; margin-top:3px; }
+  .xr-loop { grid-column:1 / -1; justify-self:center; margin:6px 0 14px; padding:3px 12px; border-radius:99px; background:#1e293b; color:#cbd5e1; font-size:12px; font-weight:700; }
+  .xr-step { display:grid; grid-template-columns:18px 1fr; gap:4px 6px; font-size:12.5px; line-height:1.5; margin:6px 0; color:#cbd5e1; }
+  .xr-step .mk { font-weight:700; } .xr-step .mk.ok { color:#4ade80; } .xr-step .mk.no { color:#f87171; } .xr-step .mk.wait { color:#64748b; }
+  .xr-step .sub { grid-column:2; color:#94a3b8; font-size:12px; }
+  .xr-bar { display:inline-block; width:120px; height:8px; background:#1e293b; border-radius:99px; vertical-align:middle; margin:0 8px; overflow:hidden; }
+  .xr-bar i { display:block; height:100%; background:#a78bfa; }
+  .xr-tag { display:none; font-size:11px; font-weight:700; margin-bottom:6px; }
+  @media (max-width: 760px) {
+    .xr-lanes, .xr-cross { grid-template-columns:minmax(0,1fr); }
+    .xr-lanes { background:none; }
+    .xr-head.b { display:none; }
+    .xr-block.a, .xr-block.b { grid-column:1; }
+    .xr-tag { display:block; } .xr-block.a .xr-tag { color:#a78bfa; } .xr-block.b .xr-tag { color:#f59e0b; }
+    .xr-cross .arrow { display:none; }
+    .xr-cross .from, .xr-cross .to, .xr-cross.ba .from, .xr-cross.ba .to { text-align:left; padding:0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation:none; } }
   .pulse { animation:pulse 1.5s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
 </style>
@@ -99,19 +151,19 @@
       <div class="field-grid">
         <div class="field-block field-full">
           <label class="field-label">Detection Rule Name <span class="field-tag">&rarr; ESCU</span></label>
-          <input type="text" id="f_rule" class="field-input" placeholder="e.g. Detect Outbound SMTP Traffic" value="Unauthorised Crypto-Mining Activity Detected" />
+          <input type="text" id="f_rule" class="field-input" placeholder="e.g. Detect Outbound SMTP Traffic" />
         </div>
         <div class="field-block">
           <label class="field-label">Source IP <span class="field-tag">&rarr; OpenCTI</span></label>
-          <input type="text" id="f_src" class="field-input" placeholder="e.g. 192.168.1.10" value="103.45.67.89" />
+          <input type="text" id="f_src" class="field-input" placeholder="e.g. 192.168.1.10" />
         </div>
         <div class="field-block">
           <label class="field-label">Destination IP / Host <span class="field-tag">&rarr; OpenCTI</span></label>
-          <input type="text" id="f_dest" class="field-input" placeholder="e.g. 10.0.0.5 or HOSTNAME" value="BSTOLL-L" />
+          <input type="text" id="f_dest" class="field-input" placeholder="e.g. 10.0.0.5 or HOSTNAME" />
         </div>
         <div class="field-block">
           <label class="field-label">User</label>
-          <input type="text" id="f_user" class="field-input" placeholder="e.g. jdoe" value="bostoll" />
+          <input type="text" id="f_user" class="field-input" placeholder="e.g. jdoe" />
         </div>
         <div class="field-block">
           <label class="field-label">File Hash <span class="field-tag">&rarr; OpenCTI</span></label>
@@ -119,19 +171,19 @@
         </div>
         <div class="field-block">
           <label class="field-label">Domain / URL <span class="field-tag">&rarr; OpenCTI</span></label>
-          <input type="text" id="f_domain" class="field-input" placeholder="e.g. malware.example.com" value="coinhive.com" />
+          <input type="text" id="f_domain" class="field-input" placeholder="e.g. malware.example.com" />
         </div>
         <div class="field-block">
           <label class="field-label">MITRE Technique ID <span class="field-tag">&rarr; OpenCTI</span></label>
-          <input type="text" id="f_mitre" class="field-input" placeholder="e.g. T1059" value="T1496" />
+          <input type="text" id="f_mitre" class="field-input" placeholder="e.g. T1059" />
         </div>
         <div class="field-block">
           <label class="field-label">Signature / Action</label>
-          <input type="text" id="f_sig" class="field-input" placeholder="e.g. Blocked" value="Suspicious Browser Script Execution" />
+          <input type="text" id="f_sig" class="field-input" placeholder="e.g. Blocked" />
         </div>
         <div class="field-block field-full">
           <label class="field-label">Deployed SPL <span class="field-tag">&rarr; Rule Intent</span></label>
-          <textarea id="f_spl" class="field-input" style="height:64px;resize:vertical;">index=sysmon EventCode=1 (Image="*chrome.exe" OR Image="*firefox.exe") CommandLine="*coinhive*" | stats count by dest, user</textarea>
+          <textarea id="f_spl" class="field-input" style="height:64px;resize:vertical;" placeholder="Filled in by the import, or paste the rule's SPL"></textarea>
         </div>
       </div>
       <button class="btn btn-primary" id="processBtn">&#x26A1; Process Event &amp; Build Context</button>
@@ -275,24 +327,20 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+// Every value below comes from alerts, logs or model output -- attacker-influenced
+// text -- so it is escaped before it touches innerHTML.
+function _esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function handleSSE(ev) {
   const loop = ev.loop || 1;
   const data = ev.data || {};
   if (ev.type === 'analyst') {
     if (!data.hypotheses) return;
     _add(_analystCard(loop, data, ev.tokens));
-  } else if (ev.type === 'broker') {
-    if (!document.getElementById('bk-'+loop)) _add(_brokerShell(loop));
-    if (data && Object.keys(data).length > 0) {
-      const st = document.getElementById('bk-st-'+loop);
-      if (st) { st.textContent = 'Complete'; st.style.color='#4ade80'; st.className=''; }
-      const fd = document.getElementById('bk-fd-'+loop);
-      if (fd) {
-        fd.style.display='block';
-        const slim = Object.fromEntries(Object.entries(data).filter(([k])=>!k.startsWith('_raw')));
-        fd.querySelector('code').textContent = JSON.stringify(slim,null,2).slice(0,2000);
-      }
-    }
+  } else if (ev.type === 'handoff') {
+    _add(_handoffCard(loop, data));
   } else if (ev.type === 'broker_log') {
     if (!document.getElementById('bk-'+loop)) _add(_brokerShell(loop));
     const term = document.getElementById('bk-term-'+loop);
@@ -307,43 +355,159 @@ function handleSSE(ev) {
     span.textContent = txt + '\n';
     term.appendChild(span);
     term.scrollTop = term.scrollHeight;
+  } else if (ev.type === 'broker') {
+    if (!document.getElementById('bk-'+loop)) _add(_brokerShell(loop));
+    const st = document.getElementById('bk-st-'+loop);
+    if (st) { st.textContent = 'Done'; st.style.color='#4ade80'; st.className=''; }
+    const fd = document.getElementById('bk-fd-'+loop);
+    if (fd) { fd.style.display='block'; fd.innerHTML = _brokerSteps(data.runs || []); }
+    _add(_handshake(data.handshake));
+  } else if (ev.type === 'payload') {
+    _add(_payloadCard(loop, data));
   } else if (ev.type === 'synthesis') {
     if (!data.status) return;
     _add(_synthCard(loop, data, ev.reasoning, ev.tokens));
   } else if (ev.type === 'verdict') {
     _verdict(data);
+  } else if (ev.type === 'error' && ev.trace && ev.trace.handshake) {
+    const fd = document.getElementById('bk-fd-'+loop);
+    const st = document.getElementById('bk-st-'+loop);
+    if (st) { st.textContent = 'Failed'; st.style.color='#f87171'; st.className=''; }
+    if (fd) { fd.style.display='block'; fd.insertAdjacentHTML('beforeend', '<div class="xr-p bad">'+_esc(ev.message)+'</div>'); }
   }
 }
 
-function _add(html) { document.getElementById('loopCards').insertAdjacentHTML('beforeend', html); }
+function _add(html) {
+  const root = document.getElementById('loopCards');
+  if (!root.querySelector('.xr-lanes')) {
+    root.insertAdjacentHTML('beforeend', '<div class="xr-lanes"><div class="xr-head a">Analyst</div><div class="xr-head b">Tool Broker</div></div>');
+  }
+  root.querySelector('.xr-lanes').insertAdjacentHTML('beforeend', html);
+}
+
+function _block(lane, title, meta, body, id) {
+  return '<div class="xr-block '+lane+'"'+(id?' id="'+id+'"':'')+'><div class="xr-tag">'+(lane==='a'?'Analyst':'Tool Broker')+'</div>'+
+    '<div class="xr-title">'+title+(meta?'<span class="xr-meta">'+meta+'</span>':'')+'</div>'+body+'</div>';
+}
+
+function _cross(dir, from, to) {
+  return '<div class="xr-cross '+dir+'"><div class="from">'+from+'</div><div class="arrow" aria-hidden="true"></div><div class="to">'+to+'</div></div>';
+}
+
+function _details(label, inner) {
+  return inner ? '<details><summary>'+label+'</summary>'+inner+'</details>' : '';
+}
+
+function _tok(tokens) {
+  return tokens ? _esc(tokens.prompt_tokens||0)+' in / '+_esc(tokens.generation_tokens||0)+' out tokens' : '';
+}
+
+const _VERDICT_COLOR = {TRUE_POSITIVE:'#f87171', FALSE_POSITIVE:'#4ade80', BENIGN:'#60a5fa'};
 
 function _analystCard(loop, data, tokens) {
-  const tok = tokens ? '<span class="loop-tokens">'+( tokens.prompt_tokens||0)+'p + '+(tokens.generation_tokens||0)+'g tok</span>' : '';
-  const hyps = (data.hypotheses||[]).map(h=>{
-    const c={TRUE_POSITIVE:'#ef4444',FALSE_POSITIVE:'#10b981',BENIGN:'#3b82f6'}[h.verdict]||'#94a3b8';
-    return '<span style="color:'+c+';font-weight:700">['+h.id+' \u2014 '+h.verdict+']</span>\n  '+h.description;
-  }).join('\n\n')||'\u2014';
-  const tasks=(data.tasks||[]).map(t=>'* ['+t.task_id+'] '+(t.question||t)).join('\n')||'\u2014';
-  return '<div class="loop-card" style="border:1px solid #3b82f644;background:#3b82f60a;"><div class="loop-card-header"><span style="font-size:20px;">&#x1F9E0;</span><span class="loop-label" style="color:#3b82f6;">Loop '+loop+' \u2014 ANALYST \u2014 Planning</span>'+tok+'</div><div class="sec-title">Hypotheses</div><div class="sec-body">'+hyps+'</div><div class="sec-title">Tasks &rarr; Broker</div><div class="sec-body">'+tasks+'</div>'+(data.reasoning?'<div class="sec-title">Reasoning</div><div class="sec-body" style="color:#94a3b8;">'+data.reasoning+'</div>':'')+'</div>';
+  const hyps = (data.hypotheses||[]).map(h =>
+    '<div class="xr-p"><b style="color:'+(_VERDICT_COLOR[h.verdict]||'#cbd5e1')+'">'+_esc(h.id)+' '+_esc(h.verdict)+'</b> '+_esc(h.description)+'</div>'
+  ).join('') || '<div class="xr-p dim">No hypotheses in the plan.</div>';
+  return '<div class="xr-loop">Loop '+loop+'</div>' +
+    _block('a', 'Plans the investigation', _tok(tokens),
+      '<div class="xr-h">Hypotheses</div>'+hyps +
+      _details('Reasoning', data.reasoning ? '<div class="xr-p dim">'+_esc(data.reasoning)+'</div>' : ''));
+}
+
+function _handoffCard(loop, data) {
+  const tasks = data.tasks || [];
+  const dropped = data.dropped || [];
+  const list = tasks.map(t =>
+    '<div class="xr-p"><b>'+_esc(t.task_id)+'</b> '+_esc(t.question)+'</div>'+
+    '<div class="xr-mono">'+(t.entity||[]).map(e=>_esc(e.type)+'='+_esc(e.value)).join('  ')+'\n'+
+      _esc((t.time_window||{}).start)+' to '+_esc((t.time_window||{}).end)+'</div>'
+  ).join('');
+  const lost = dropped.map(d => '<div class="xr-p bad"><b>'+_esc(d.task_id||'Task')+'</b> not sent: '+_esc(d.why)+'</div>'+
+    (d.question ? '<div class="xr-p dim">'+_esc(d.question)+'</div>' : '')).join('');
+  return (loop > 2 ? '<div class="xr-loop">Loop '+loop+'</div>' : '') +
+    _cross('ab', '<b>'+tasks.length+' task'+(tasks.length===1?'':'s')+'</b> sent'+(dropped.length?', '+dropped.length+' not sent':''),
+                 'received as a task file') +
+    _block('b', 'Receives the tasks', '', (list || '<div class="xr-p bad">Nothing arrived: no task could be converted.</div>') + lost +
+      '<div class="xr-mono" style="margin-top:8px">'+_esc(data.task_file)+'</div>');
 }
 
 function _brokerShell(loop) {
-  return '<div id="bk-'+loop+'" class="loop-card" style="border:1px solid #f59e0b44;background:#f59e0b0a;"><div class="loop-card-header"><span style="font-size:20px;">&#x1F50D;</span><span class="loop-label" style="color:#f59e0b;">Loop '+loop+' \u2014 BROKER \u2014 Evidence Gathering</span><span id="bk-st-'+loop+'" class="loop-tokens pulse" style="color:#64748b;">Running...</span></div><div class="sec-title">Engine &amp; Sub-Agent Logs</div><div class="terminal" id="bk-term-'+loop+'"></div><div id="bk-fd-'+loop+'" style="display:none;margin-top:14px;"><div class="sec-title">Findings</div><div class="win" style="margin-bottom:0;"><pre style="color:#e2e8f0;"><code></code></pre></div></div></div>';
+  return _block('b', 'Fetches the evidence', '<span id="bk-st-'+loop+'" class="pulse">Running</span>',
+    '<details open><summary>Engine log</summary><div class="xr-log xr-mono" id="bk-term-'+loop+'"></div></details>'+
+    '<div id="bk-fd-'+loop+'" style="display:none"></div>', 'bk-'+loop);
+}
+
+function _stepLine(s) {
+  const mk = s.completed ? '<span class="mk ok">\u2713</span>' : (s.status ? '<span class="mk no">\u2717</span>' : '<span class="mk wait">\u2013</span>');
+  const got = s.confirmed_empty ? 'looked, found nothing' : (s.rows_retrieved != null ? s.rows_retrieved+' rows' : 'not run');
+  const cats = (s.categories||[]).length ? ' for '+s.categories.map(_esc).join(', ') : '';
+  return '<div class="xr-step">'+mk+'<div><b>'+_esc(s.family)+'</b>'+cats+': '+got+(s.status && !s.completed ? ' ('+_esc(s.status)+')' : '')+'</div>'+
+    '<div class="sub">'+_esc(s.objective)+(s.reason ? '<br>'+_esc(s.reason) : '')+'</div></div>';
+}
+
+function _brokerSteps(runs) {
+  return runs.map(r => {
+    if (!r.run_dir) return '<div class="xr-h">'+_esc(r.task_id)+'</div><div class="xr-p bad">The broker recorded no run for this task.</div>';
+    const queries = (r.results||[]).map(x =>
+      '<div class="xr-p">'+_esc(x.family)+': '+_esc(x.status)+', '+(x.queries||[]).length+' quer'+((x.queries||[]).length===1?'y':'ies')+
+        ((x.blocked||[]).length ? ', <span style="color:#f87171">'+x.blocked.length+' blocked</span>' : '')+
+        ((x.gaps||[]).length ? ', suggests '+x.gaps.map(_esc).join(', ') : '')+'</div>'+
+      (x.reason ? '<div class="xr-p dim">'+_esc(x.reason)+'</div>' : '')+
+      '<div class="xr-mono">'+(x.queries||[]).map(q=>_esc(q)).join('\n')+
+        ((x.blocked||[]).length ? '\n<span style="color:#f87171">'+x.blocked.map(q=>'blocked: '+_esc(q)).join('\n')+'</span>' : '')+'</div>'
+    ).join('');
+    return '<div class="xr-h">'+_esc(r.task_id)+'</div>' +
+      (r.plan_rationale ? '<div class="xr-p dim">'+_esc(r.plan_rationale)+'</div>' : '') +
+      (r.steps||[]).map(_stepLine).join('') +
+      _details('Queries run ('+(r.dispatched||[]).map(_esc).join(', ')+')', queries) +
+      '<div class="xr-mono" style="margin-top:6px">trace '+_esc(r.trace_id||'none')+'\n'+_esc(r.run_dir)+'</div>';
+  }).join('');
+}
+
+function _handshake(h) {
+  if (!h) return '';
+  const miss = [
+    (h.not_fetched||[]).length ? 'never fetched: '+h.not_fetched.map(_esc).join(', ') : '',
+    (h.not_returned||[]).length ? 'no findings came back for: '+h.not_returned.map(_esc).join(', ') : '',
+    (h.unexpected||[]).length ? 'came back but was never sent: '+h.unexpected.map(_esc).join(', ') : '',
+  ].filter(Boolean);
+  const n = k => (h[k]||[]).length;
+  return '<div class="xr-stamp '+(miss.length?'bad':'ok')+'" role="status">'+
+    (miss.length ? 'Handshake broken' : 'Handshake held')+': '+n('sent')+' sent, '+n('fetched')+' fetched, '+n('returned')+' returned'+
+    (miss.length ? '<small>'+miss.join('<br>')+'</small>' : '')+'</div>';
+}
+
+function _payloadCard(loop, data) {
+  const ps = data.payloads || [];
+  const body = ps.map(p =>
+    '<div class="xr-h">'+_esc(p.task_id)+'</div>'+(p.hypothesis ? '<div class="xr-p dim">'+_esc(p.hypothesis)+'</div>' : '')+
+    ((p.findings||[]).map(f =>
+      '<div class="xr-p" style="margin-top:6px"><b>'+_esc(f.domain)+'</b> '+_esc(f.narrative)+'</div>'+
+      ((f.observations||[]).length ? '<div class="xr-mono">'+f.observations.map(o=>'\u2022 '+_esc(o)).join('\n')+'</div>' : '')
+    ).join('') || '<div class="xr-p dim">No domain had evidence to describe.</div>')
+  ).join('') || '<div class="xr-p dim">No findings.</div>';
+  return _cross('ba', 'sub-analysts send <b>'+ps.length+' finding set'+(ps.length===1?'':'s')+'</b>', 'received') +
+    _block('a', 'Reads the findings', '', body);
 }
 
 function _synthCard(loop, data, reasoning, tokens) {
-  const tok = tokens ? '<span class="loop-tokens">'+( tokens.prompt_tokens||0)+'p + '+(tokens.generation_tokens||0)+'g tok</span>' : '';
-  const sc = data.hypothesis_scores||{};
-  const scores=Object.entries(sc).map(([id,s])=>{const f='█'.repeat(Math.round((s||0)/10));const e='░'.repeat(10-Math.round((s||0)/10));return id+': '+f+e+' '+s+'/100';}).join('\n')||'\u2014';
-  const gaps=(data.evidence_gaps||[]).map(g=>'* '+g).join('\n')||'\u2014';
-  const sc2=data.status==='VERDICT_REACHED'?'#4ade80':'#fbbf24';
-  return '<div class="loop-card" style="border:1px solid #8b5cf644;background:#8b5cf60a;"><div class="loop-card-header"><span style="font-size:20px;">&#x2696;&#xFE0F;</span><span class="loop-label" style="color:#8b5cf6;">Loop '+loop+' \u2014 SYNTHESIS \u2014 Evaluation</span>'+tok+'</div><div class="sec-title">Hypothesis Scores</div><div class="sec-body">'+scores+'</div><div class="sec-title">Status</div><div class="sec-body" style="color:'+sc2+';font-weight:700;">'+( data.status||'\u2014')+'</div><div class="sec-title">Evidence Gaps</div><div class="sec-body">'+gaps+'</div>'+(reasoning?'<div class="sec-title">Reasoning</div><div class="sec-body" style="color:#94a3b8;">'+reasoning+'</div>':'')+'</div>';
+  const scores = Object.entries(data.hypothesis_scores||{}).map(([id,s]) => {
+    const v = Math.max(0, Math.min(100, Number(s)||0));
+    return '<div class="xr-p">'+_esc(id)+'<span class="xr-bar"><i style="width:'+v+'%"></i></span>'+_esc(s)+'</div>';
+  }).join('') || '<div class="xr-p dim">No scores.</div>';
+  const gaps = (data.evidence_gaps||[]).map(g=>'<div class="xr-p">'+_esc(g)+'</div>').join('');
+  const done = data.status === 'VERDICT_REACHED';
+  return _block('a', 'Weighs the hypotheses', _tok(tokens),
+    scores +
+    '<div class="xr-p" style="margin-top:8px;font-weight:700;color:'+(done?'#4ade80':'#fbbf24')+'">'+(done?'Verdict reached':'Needs another loop')+'</div>'+
+    (gaps ? '<div class="xr-h">Still missing</div>'+gaps : '') +
+    _details('Reasoning', reasoning ? '<div class="xr-p dim">'+_esc(reasoning)+'</div>' : ''));
 }
 
 function _verdict(data) {
   const v=(data.verdict||'').toUpperCase();
   const map={TRUE_POSITIVE:{color:'#ef4444',icon:'&#x1F534; TRUE POSITIVE'},FALSE_POSITIVE:{color:'#10b981',icon:'&#x1F7E2; FALSE POSITIVE'},BENIGN:{color:'#10b981',icon:'&#x1F7E2; BENIGN'}};
-  const {color,icon}=map[v]||{color:'#f59e0b',icon:'&#x26A0;&#xFE0F; '+(v||'UNKNOWN')};
+  const {color,icon}=map[v]||{color:'#f59e0b',icon:'&#x26A0;&#xFE0F; '+_esc(v||'UNKNOWN')};
   const b=document.getElementById('verdictBanner');
   b.style.display='block'; b.style.background=color+'18'; b.style.border='2px solid '+color;
   document.getElementById('verdictIcon').style.color=color;

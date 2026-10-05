@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -30,9 +30,9 @@ Thumbs.db
 .smartops/runs/
 
 # BM25 corpus (large binary)
-bm25_corpus.json
+/bm25_corpus.json
 
 # scratch files
 scratch_*.py
-test_*.py
+/test_*.py
 

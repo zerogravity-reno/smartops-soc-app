@@ -147,10 +147,19 @@ class SiemAssessment(Assessment):
 class SiemFindings(Findings):
     """Result sets bucketed by CIM category, keyed by the query that produced them.
 
-    The bucket comes from the category the model tagged its own query with
-    (`subtask.QueryRun.category`) -- a classification of its own action, which it
-    knows without inspecting rows. The rows come from `Evidence`. So no component
-    ever retypes data it retrieved.
+    **The bucket is derived by code from the SPL** (`projection._infer_cim_category`),
+    not from the category the model tagged its own query with. The model's tag is
+    kept as a cross-check that logs disagreement. The rows come from `Evidence`.
+    So no component ever retypes data it retrieved.
+
+    That precedence was the other way around until 2026-09-02, on the reasoning
+    that classifying its own action is something a model knows without inspecting
+    rows. Measured on the first 3-hypothesis task-file run, it does not survive
+    contact: `subtask.QueryRun` is a *post-hoc recollection*, and of 66 result
+    sets whose tag was lost, only 4 came within 85% similarity of any query the
+    model reported -- it reports fewer queries than it ran and retypes the ones it
+    does report. The join key was never reliable, so the tag it carried could not
+    be either.
     """
 
     tool_family: Literal["siem"] = Field(
@@ -164,15 +173,38 @@ class SiemFindings(Findings):
     uncategorised: list[ResultSet] = Field(
         default_factory=list,
         description=(
-            "Result sets whose query the model never tagged with a category. Not "
+            "Result sets whose query code could infer no CIM category from. Not "
             "a fifth CIM category -- an honesty bucket. Rows were retrieved and "
             "paid for, so dropping them because attribution failed would be the "
-            "worse error, and a full bucket here is a signal that the model's "
-            "reported queries stopped matching the ones it actually ran."
+            "worse error, and a full bucket here is a signal that queries are "
+            "being written in shapes `_infer_cim_category` does not recognise."
+        ),
+    )
+
+    discovery: list[ResultSet] = Field(
+        default_factory=list,
+        description=(
+            "Output from a call that DESCRIBES the estate rather than querying "
+            "it -- an index listing, a sourcetype listing, a metadata lookup. "
+            "The model orienting itself, not evidence about any hypothesis, so "
+            "it is never routed to an analyst and never satisfies a fetch step. "
+            "Kept rather than dropped because it was retrieved and paid for and "
+            "belongs in the audit trail.\n\n"
+            "Separated on 2026-09-02 after measurement: 15 such calls produced "
+            "1,186 of the run's 1,695 `uncategorised` rows -- 70% -- and were "
+            "the direct source of the padding in the delivered payload, which "
+            "narrated Splunk's own `_internal` index and hosts nobody had asked "
+            "about. They can never be categorised either: they carry no search "
+            "for `_infer_cim_category` to read."
         ),
     )
 
     def total_rows(self) -> int:
+        """Rows retrieved *about the estate*. Deliberately excludes `discovery`.
+
+        An index listing's rows describe what Splunk holds, not what happened on
+        a host, so counting them here would report retrieval that did not occur.
+        """
         return sum(
             rs.row_count
             for bucket in (

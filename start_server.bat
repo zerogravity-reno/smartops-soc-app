@@ -1,15 +1,9 @@
 @echo off
+rem Secrets and endpoints come from .env (git-ignored), which webapp/main.py loads at startup.
 echo Starting SmartOps SOC Server...
-cd /d "C:\Users\ALMASRIA_4U\Downloads\smartops-soc"
+cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
-set PYTHONPATH=C:\Users\ALMASRIA_4U\Downloads\smartops-soc;C:\Users\ALMASRIA_4U\Downloads\smartops-soc\engine\src
-set FS8B_MODEL_ARN=arn:aws:bedrock:us-east-1:196936075264:imported-model/ft3j2o95okma
-set FS8B_API_KEY=ABSKQmVkcm9ja0FQSUtleS0wMWtlLWF0LTE5NjkzNjA3NTI2NDpjRHJwaC9SbWhHV0xkT3dkNTQvT2FSY0hhajkwQnRSUGY2NFRCdlZManNkRGdtOFBmWUxhZ3pNbEoyOD0=
-set AWS_REGION=us-east-1
-set VT_API_KEY=9f4e54301799a9e3c608c63395f2af064df852d707f36548c5b8ec10461bef38
-set SPLUNK_MCP_URL=https://wobbly-erased-starter.ngrok-free.dev/en-US/splunkd/__raw/services/mcp
-set SPLUNK_TOKEN=eyJraWQiOiJzcGx1bmsuc2VjcmV0IiwiYWxnIjoiSFM1MTIiLCJ2ZXIiOiJ2MiIsInR0eXAiOiJzdGF0aWMifQ.eyJpc3MiOiJ5c2FsYWggZnJvbSBsb2NhbGhvc3QubG9jYWxkb21haW4iLCJzdWIiOiJ5c2FsYWgiLCJhdWQiOiJTbWFydE9wcyAiLCJpZHAiOiJTcGx1bmsiLCJqdGkiOiJiM2MwMWJmYTA0MTY0ZGUzMjNmODRjZTZmNDhjYmQzZGRiMGQ5MjViZTA0YjA3YWE1NzliNDY3NTBiNjNjZDIxIiwiaWF0IjoxNzg5MzA3MDUzLCJleHAiOjE3OTE4OTkwNTMsIm5iciI6MTc4OTMwNzA1M30.GKN92kwZlbwGxk_MytkILRioLOB0aDX76nmeVL9eav-sf8jr8PQlku2X_6Xi0MJLI4fsqxzYIFGPFf4fFYmnnQ
-set SMARTOPS_MCP_TLS_NO_VERIFY=splunk
+set PYTHONPATH=%~dp0;%~dp0engine\src;%~dp0engine\contracts\src
 echo Server running at http://localhost:8001
 python -m uvicorn webapp.main:app --host 0.0.0.0 --port 8001 --timeout-keep-alive 600
 pause

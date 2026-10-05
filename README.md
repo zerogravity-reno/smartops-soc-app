@@ -1,211 +1,178 @@
-﻿# SmartOps SOC — Autonomous Security Operations Platform
+# SmartOps SOC
 
-> **Foundation-Sec-8B · Splunk ES · OpenCTI · ESCU**
-> AI-powered SOC pipeline that ingests Splunk notable events and autonomously builds investigation context for a reasoning LLM.
+An investigation pipeline for Splunk ES notable events. It builds the alert's context (ESCU rule, OpenCTI intel), has an Analyst model plan hypotheses and tasks, sends those tasks to a Tool Broker that fetches evidence from Splunk and VirusTotal, and loops until the Analyst reaches a verdict.
+
+**Models:** Foundation-Sec-8B (Analyst) and Claude Sonnet (Tool Broker), both on AWS Bedrock.
 
 ---
 
-## Architecture Overview
+## How it works
 
 ```
-Splunk ES (Notable Event)
+Splunk ES notable  (Import from Mission Control, via the official Splunk MCP server)
         │
         ▼
-┌─────────────────────────────────────────────────────────┐
-│                   CONTEXT PIPELINE                      │
-│                                                         │
-│  1. Seed Adapter          — Normalize raw Splunk event  │
-│  2. ESCU Adapter          — Match rule → reference SPL  │
-│  3. OpenCTI Adapter       — Query threat intel per IoC  │
-│  4. Rule Intent Interpreter — Semantic SPL alignment    │
-│  5. Context Builder       — Assemble Context Contract   │
-└─────────────────────────────────────────────────────────┘
+Context pipeline      webapp/static/app.js + webapp/main.py
+  seed → ESCU match → OpenCTI lookup → context contract
         │
         ▼
-┌─────────────────────────────────────────────────────────┐
-│               ANALYST AGENT (Foundation-Sec-8B)         │
-│                                                         │
-│  - Generates Hypotheses  (TP / FP / Benign)             │
-│  - Generates Investigation Tasks (WHAT, not HOW)        │
-│  - SPL Semantic Alignment verdict                       │
-└─────────────────────────────────────────────────────────┘
-        │
+Analyst               Foundation-Sec-8B, webapp/main.py _run_investigation
+  plan: hypotheses H1..H3 + tasks {task_id, question, entity, time_window}
+        │  run_trace.to_task_file()  →  .smartops/runs/<run_id>/tasks-L<n>.json
         ▼
-┌─────────────────────────────────────────────────────────┐
-│                  BROKER + SUBAGENTS                     │
-│  Executes tasks against live Splunk, VT, OpenCTI tools  │
-└─────────────────────────────────────────────────────────┘
+Tool Broker           python -m smartops.main --task-file … --batch-id <run_id>-L<n>
+  per task: plan_fetch → siem / vt subagents → identity / network / endpoint sub-analysts
+        │  writes .smartops/runs/<run_id>-L<n>/analyst-payload.json
+        ▼
+Analyst synthesis     scores the hypotheses → verdict, or follow-up tasks → next loop
+```
+
+Everything for one investigation is joined by the webapp's `run_id`:
+- `.smartops/runs/<run_id>/investigation.jsonl` has one line per step: `analyst_plan`, `broker` (task file, exit code, handshake, per-task run dirs), `synthesis`.
+- `.smartops/runs/<run_id>/broker-L<n>.log` has the engine's output for each loop.
+- `.smartops/runs/<run_id>-L<n>-T<k>/<stamp>/` has each task's `report.json`, `evidence.json` and `findings.json`.
+
+The UI shows the loop in two lanes, Analyst and Tool Broker, with a handshake stamp per loop (`sent → fetched → returned`).
+
+---
+
+## Project structure
+
+```
+webapp/                      FastAPI app and UI
+  main.py                    endpoints, the investigation loop, Broker subprocess
+  prompts/system_prompt.txt  Analyst prompt (plan and synthesis)
+  services/
+    llm_service.py           Foundation-Sec-8B client (Bedrock)
+    run_trace.py             task-file conversion, handshake, investigation.jsonl
+    splunk_mcp.py            official Splunk MCP client (alert import)
+  static/                    index.html, app.js (the UI)
+engine/                      Tool Broker package (smartops)
+  src/smartops/
+    main.py                  CLI: python -m smartops.main
+    broker.py                Broker agent: plan_fetch and family dispatch
+    subagents/               siem / vt investigation subagents
+    subagent_analysts/       identity / network / endpoint sub-analysts
+    guards.py                scope, time-window and tstats guards
+    budget.py                cost ceiling and model setup
+  contracts/                 shared Pydantic models and JSON schemas (task-input.v1, …)
+  tests/                     engine test suite
+tests/                       webapp tests
+mcp_servers.json             MCP server config (official Splunk MCP)
+docs/
+  analyst-bug-report.md      open Analyst and integration bugs
+  handover-2026-09-30.md     latest handover
+  examples/                  sample task files for the Broker CLI
+  corpus/bm25_corpus.json    ESCU detection corpus
+start.ps1                    load .env, uv sync, start the server
 ```
 
 ---
 
-## Project Structure
+## Setup
 
-```
-smartops-soc/
-│
-├── webapp/                        # FastAPI Web Application
-│   ├── main.py                    # API server — all endpoints
-│   ├── prompts/
-│   │   └── system_prompt.txt      # LLM system prompt for Analyst Agent
-│   ├── services/
-│   │   └── llm_service.py         # AWS Bedrock LLM client (Foundation-Sec-8B)
-│   └── static/
-│       ├── index.html             # Main UI — Context Pipeline dashboard
-│       ├── app.js                 # Frontend logic — event processing & display
-│       └── style.css              # UI styling
-│
-├── engine/                        # Core SOC Reasoning Engine
-│   └── src/smartops/
-│       ├── main.py                # CLI entry point
-│       ├── broker.py              # Broker agent — dispatches investigation tasks
-│       ├── analyst_cost.py        # Token budget tracking
-│       ├── bench.py               # Benchmarking harness
-│       ├── blind_compare.py       # Blind comparison evaluator
-│       ├── budget.py              # Cost/budget enforcement
-│       ├── domains.py             # Domain models & schemas
-│       ├── guards.py              # Safety guards & guardrails
-│       ├── projection.py          # Evidence projection & scoring
-│       ├── replay.py              # Session replay utilities
-│       ├── telemetry.py           # Telemetry & tracing
-│       ├── subagent_analysts/     # Analyst subagent implementations
-│       ├── subagents/             # General subagent framework
-│       ├── tools/                 # Native tools (VT, Splunk, etc.)
-│       └── skills/                # Skill definitions (Splunk SPL, CIM)
-│
-├── engine/contracts/              # Shared JSON Schemas & Pydantic models
-│   └── schemas/
-│       ├── hypothesis-findings.v1.schema.json
-│       └── hypothesis-findings.v2.schema.json
-│
-├── docs/
-│   └── integration.md             # Integration guide
-│
-├── .env.example                   # Environment variables template
-├── start_server.bat               # Windows quick-start script
-├── start.ps1                      # PowerShell quick-start script
-└── pyproject.toml                 # Python project metadata
-```
+**Prerequisites**
+- Windows with PowerShell, or any OS with a POSIX shell.
+- Python 3.13 (the engine requires it) and [uv](https://docs.astral.sh/uv/).
+- AWS Bedrock access to the imported Foundation-Sec-8B model and to Claude Sonnet.
+- A Splunk ES instance with the official Splunk MCP server app, plus a token for it.
+- A VirusTotal API key. OpenCTI is optional.
 
----
+**Install**
 
-## Key Concepts
-
-### Normalized Seed
-Every Splunk notable event is normalized into a unified schema:
-```json
-{
-  "event_id": "evt-...",
-  "detection": { "name": "...", "severity": "high" },
-  "entities": { "hostname": "...", "user": "..." },
-  "opencti_observables": {
-    "ip_addresses": [], "file_hashes": [], "file_names": ["powershell.exe"],
-    "mitre_techniques": ["T1027"], "analytic_stories": ["Volt Typhoon"]
-  },
-  "finding": { /* full raw Splunk event preserved here */ }
-}
-```
-
-### Context Contract
-The unified payload handed to the LLM:
-```json
-{
-  "normalized_seed": { ... },
-  "rule_intent":     { "deployed_spl": "...", "reference_spl": "...", "semantic_alignment": "ALIGNED" },
-  "escu_context":    { "mitre_techniques": ["T1027"], "analytic_story": [...], "known_false_positives": [...] },
-  "opencti_threat_intelligence": { "indicators": [...], "malware": [...] }
-}
-```
-
-### Planning Template (Investigation Tasks)
-Tasks generated by the Analyst Agent follow a strict schema:
-```json
-{
-  "task_id": "T1",
-  "question": "Was the encoded command executed under a legitimate administrative context?",
-  "entity":   { "type": "process", "value": "powershell.exe" },
-  "time_window": { "start": "...", "end": "..." }
-}
-```
-> **Rule:** `question` is a **pure investigation question** (WHAT the analyst wants to know). It never contains tool names or search methods (not HOW to find the answer).
-
----
-
-## Quick Start
-
-### Prerequisites
-- Python 3.11+
-- AWS account with Bedrock access (Foundation-Sec-8B model)
-- Splunk Enterprise Security instance
-- OpenCTI instance
-
-### Setup
-```bash
-# Clone the repo
+```powershell
 git clone https://github.com/zerogravity-reno/smartops-soc-app.git
 cd smartops-soc-app
-
-# Install dependencies
-pip install -e engine/
-pip install fastapi uvicorn httpx rank-bm25
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your credentials
+uv sync                      # installs webapp + engine + contracts + dev tools into .venv
+Copy-Item .env.example .env  # then fill in .env (see below)
 ```
 
-### Run
-```bash
-# Windows
-start_server.bat
+`.env` is git-ignored. Never put secrets in a tracked file.
 
-# Or directly
-python -m uvicorn webapp.main:app --host 0.0.0.0 --port 8001
-```
+### Environment variables (`.env`)
 
-Open **http://localhost:8001** in your browser.
-
----
-
-## Environment Variables
-
-| Variable | Description |
-|---|---|
-| `SPLUNK_TOKEN` | Splunk API bearer token |
-| `SPLUNK_WEB_URL` | Splunk web URL (or ngrok tunnel) |
-| `FS8B_MODEL_ARN` | Foundation-Sec-8B model ARN on Bedrock |
-| `FS8B_API_KEY` | Bedrock API key |
-| `AWS_REGION` | AWS region (e.g. `us-east-1`) |
-| `AWS_ACCESS_KEY_ID` | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
-| `VT_API_KEY` | VirusTotal API key |
-| `OPENCTI_URL` | OpenCTI GraphQL endpoint |
-| `OPENCTI_TOKEN` | OpenCTI API token |
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
+| Variable | Used by | What it is |
 |---|---|---|
-| `GET` | `/` | Web UI |
-| `GET` | `/api/import-from-splunk` | Pull latest notable event from Splunk ES |
-| `POST` | `/api/escu` | Match rule name against ESCU BM25 corpus |
-| `POST` | `/api/opencti` | Query OpenCTI for threat intel on observables |
-| `POST` | `/api/analyst/start` | Start Analyst Agent (async) |
-| `GET` | `/api/analyst/result/{job_id}` | Poll for Analyst Agent result |
-| `POST` | `/api/run` | Start full Broker pipeline |
-| `GET` | `/api/run/stream/{job_id}` | Stream Broker results (SSE) |
+| `FS8B_MODEL_ARN` | Analyst | ARN of the imported Foundation-Sec-8B model |
+| `FS8B_API_KEY` | Analyst and Broker | Bedrock API key (`ABSK…`). The Broker also uses it as its Bedrock bearer token. |
+| `AWS_REGION` | both | Bedrock region; must match the model ARN |
+| `AWS_BEDROCK_MODEL_ID` | Broker | Claude Sonnet inference profile, e.g. `us.anthropic.claude-sonnet-4-6-…` |
+| `SPLUNK_MCP_URL` | import and Broker | official Splunk MCP endpoint, e.g. `https://<host>:8089/services/mcp` |
+| `SPLUNK_TOKEN` | import and Broker | Splunk token for the MCP server |
+| `SMARTOPS_MCP_TLS_NO_VERIFY` | Broker | `splunk` to accept a self-signed :8089 certificate |
+| `SMARTOPS_SIEM_INDEXES` | Broker | comma list of indexes the siem subagent may search (default `botsv3`) |
+| `VT_API_KEY` | Broker | VirusTotal API key |
+| `OPENCTI_URL`, `OPENCTI_TOKEN` | context pipeline | OpenCTI GraphQL endpoint and token (optional) |
 
 ---
 
-## Branch Strategy
+## Run
 
-| Branch | Purpose |
-|---|---|
-| `main` | Stable production-ready releases |
-| `integration` | Active development — Context Pipeline integration |
+### The web app
+
+```powershell
+.\start.ps1
+```
+
+This loads `.env`, runs `uv sync` and starts the server with auto-reload on http://localhost:8001. To start it without the sync and reload:
+
+```powershell
+uv run uvicorn webapp.main:app --port 8001
+```
+
+`start_server.bat` also works, but it uses whatever `python` is on your PATH, so run it from an activated `.venv`.
+
+**In the browser:**
+1. Click **Import from Mission Control**. It loads the newest notable event from Splunk into the form. You can also fill the form by hand; the rule name is required.
+2. Click **Process Event & Build Context**. This builds the seed, runs the ESCU and OpenCTI lookups, and has the Analyst plan the investigation. The OpenCTI lookup can take a few minutes.
+3. The full investigation then starts on its own: Broker loops, synthesis, then the verdict banner.
+
+### The Tool Broker on its own
+
+```powershell
+# Free: no model calls, scripted dispatch
+uv run python -m smartops.main --task-file docs\examples\botsv3-coinhive-tasks.json --batch-id demo-L2 --scripted
+
+# Live: real Bedrock and Splunk calls
+uv run python -m smartops.main --task-file docs\examples\botsv3-coinhive-tasks.json --batch-id demo-L2
+```
+
+Run `uv run python -m smartops.main --help` for all flags (`--budget-usd`, `--families`, `--verbose`, …).
+
+### Cost
+
+A live investigation costs real money. On 2026-09-30, one Broker loop over 6 tasks cost about **$12** (run `cecd266a`). Most of that came from long Splunk results being re-sent to the model on every turn. Only `--scripted` is guaranteed free. Leaving `SMARTOPS_LLM_PROVIDER` blank does **not** stop Broker model calls.
+
+### Tests
+
+```powershell
+uv run pytest -q
+```
+
+The suite needs no network and makes no model calls.
 
 ---
 
-*Built with ❤️ by the SmartOps team — Powered by Foundation-Sec-8B on AWS Bedrock*
+## API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/` | web UI |
+| `GET` | `/debug` | debug page |
+| `GET` | `/api/import-from-splunk` | newest notable event from Splunk ES, with its rule's SPL |
+| `POST` | `/api/escu` | match a rule name against the ESCU corpus |
+| `POST` | `/api/opencti` | OpenCTI lookup for the alert's observables |
+| `POST` | `/api/analyst/start` | start the Analyst plan (async) |
+| `GET` | `/api/analyst/result/{job_id}` | poll for the plan |
+| `POST` | `/api/analyst` | Analyst plan, synchronous (older path) |
+| `POST` | `/api/synthesis` | one synthesis call (older path) |
+| `POST` | `/api/run` | start the full investigation; returns `run_id` |
+| `GET` | `/api/run/stream/{run_id}` | investigation events (SSE) |
+
+---
+
+## Status
+
+- Open bugs: [`docs/analyst-bug-report.md`](docs/analyst-bug-report.md). It has two sections: Analyst, and the integration release.
+- Latest handover: [`docs/handover-2026-09-30.md`](docs/handover-2026-09-30.md).
+- The secrets committed in the 2026-09-20 integration release are still in git history and must be rotated (bug report, C1–C2).
