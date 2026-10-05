@@ -20,7 +20,7 @@ from typing import get_args
 
 from contracts import AnalystDomain, Entity, Scope
 
-from .formatting import format_result_set, format_vt_verdicts
+from .formatting import format_result_set, format_vt_verdicts, summarise_rows
 from .model import DEFAULT_MAX_GEN_LEN
 from .prompts import build_facts_user_turn, facts_system_prompt
 from .routing import DomainSlice
@@ -238,6 +238,28 @@ copy, which is what let the two silently diverge before (`analyze.
 _PACK_TOKEN_BUDGET` and this module's own default were two literals that
 happened to both say 20,000)."""
 
+# The way back has a budget too. The Analyst Agent is the same model with the same
+# window, and the webapp re-sends every earlier round's payload on each synthesis
+# call (`webapp/main.py`, `max_loops` 3), so each round gets a third of what its
+# system prompt and plan leave. Uncapped, B1's summaries alone added 27k chars to
+# 072fd610 round 2.
+_ANALYST_PROMPT_RESERVE = 4_300
+"""Webapp system prompt + investigation plan, in tokens. Measured on 072fd610:
+the round-2 synthesis call was 8,195 prompt tokens, of which the 6.3k-char system
+prompt and the 10.4k-char plan were ~4.2k."""
+
+# ponytail: assumes 3 re-sent rounds; set to 1 if the webapp stops re-sending old rounds.
+_ANALYST_ROUNDS = 3
+
+HANDOFF_CHAR_BUDGET = int(
+    (_CONTEXT_WINDOW - _GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE - _SAFETY_MARGIN)
+    // _ANALYST_ROUNDS
+    * _CHARS_PER_TOKEN
+)
+"""Characters one round's whole payload batch may take, split across its tasks by
+the caller. `_CHARS_PER_TOKEN` (2.5) is conservative for this JSON, which ran
+~4 chars/token on 072fd610."""
+
 
 @dataclass(frozen=True)
 class Block:
@@ -247,6 +269,10 @@ class Block:
     what the blind analyst reads (see `formatting.format_result_set`) and put
     back for the Analyst Agent via `contracts.Exhibit.query`. Empty for the
     `reputation#1` block, which is a lookup rather than a search.
+
+    `summary` is the computed account of every row in the set, which is the same
+    block `text` ends with, carried on its own because it crosses to the Analyst
+    Agent while `text` does not (B1). `None` for an empty set and for `reputation#1`.
     """
 
     header_id: str
@@ -254,6 +280,7 @@ class Block:
     row_count: int
     text: str
     query: str = ""
+    summary: str | None = None
 
 
 def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Block]:
@@ -306,6 +333,7 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
                 row_count=result_set.row_count,
                 text=format_result_set(category, result_set, index=i, row_cap=row_cap),
                 query=result_set.query,
+                summary=summarise_rows(category, result_set.rows, header_id=f"{category}#{i}"),
             )
         )
     for i, result_set in enumerate(slice_.untagged_sets, start=1):
@@ -316,6 +344,7 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
                 row_count=result_set.row_count,
                 text=format_result_set("uncategorised", result_set, index=i, row_cap=row_cap),
                 query=result_set.query,
+                summary=summarise_rows("uncategorised", result_set.rows, header_id=f"uncategorised#{i}"),
             )
         )
     return out

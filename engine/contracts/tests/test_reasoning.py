@@ -130,6 +130,7 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
                     narrative="six connections to one address.",
                     observations=["six connections [connections#4]"],
                     citations=["connections#4"],
+                    summaries=["~ connections#4 — computed over all 6 rows:"],
                 )
             ],
         )
@@ -143,6 +144,21 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
         assert payload.findings[0].domain == "network"
         assert payload.findings[0].narrative == "six connections to one address."
         assert payload.findings[0].observations == ["six connections [connections#4]"]
+        # B1 (2026-10-05): the computed summaries cross too; the narrative can drop rows.
+        assert payload.findings[0].summaries == ["~ connections#4 — computed over all 6 rows:"]
+
+    def test_max_chars_drops_trailing_summaries_and_says_so(self):
+        record = self._findings()
+        record.findings[0].summaries = [f"~ connections#{i} " + "x" * 400 for i in range(10)]
+        budget = len(record.for_analyst().model_dump_json(indent=2)) // 2
+
+        payload = record.for_analyst(budget)
+        wire = payload.findings[0]
+        assert len(payload.model_dump_json(indent=2)) <= budget
+        assert wire.narrative == "six connections to one address."  # prose always crosses
+        assert wire.summaries[0].startswith("~ connections#0")  # kept in order
+        assert wire.summaries[-1].startswith(f"… {11 - len(wire.summaries)} set summaries omitted")
+        assert len(record.for_analyst().findings[0].summaries) == 10  # None sends all
 
     def test_a_domain_narrative_carries_nothing_else(self):
         """The field set is pinned deliberately.
@@ -152,7 +168,7 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
         test failing is the intended prompt to decide, not a chore to silence.
         """
         fields = set(type(self._findings().for_analyst().findings[0]).model_fields)
-        assert fields == {"domain", "narrative", "observations"}
+        assert fields == {"domain", "narrative", "observations", "summaries"}
 
     def test_the_envelope_carries_no_retrieval_summary(self):
         """What this costs, recorded where it will be found.

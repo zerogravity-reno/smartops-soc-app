@@ -98,6 +98,7 @@ from smartops.broker import (
 from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
 from smartops.domains import ALL_FAMILIES
 from smartops.subagent_analysts.analyze import gather
+from smartops.subagent_analysts.packing import HANDOFF_CHAR_BUDGET
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
 from smartops.telemetry import analysis_span, configure_telemetry
@@ -784,7 +785,10 @@ def _persist_reasoning_traces(
 
 
 def _persist_findings(
-    task_id: str, findings: HypothesisFindings, run_dir: Path | str | None = None
+    task_id: str,
+    findings: HypothesisFindings,
+    run_dir: Path | str | None = None,
+    max_chars: int | None = None,
 ) -> None:
     """Write findings.json and analyst-payload.json beside the broker's artifacts.
 
@@ -822,7 +826,7 @@ def _persist_findings(
         # without the other would leave a reader unable to tell which the Analyst
         # Agent actually received.
         (target_dir / "analyst-payload.json").write_text(
-            stamped.for_analyst().model_dump_json(indent=2), encoding="utf-8"
+            stamped.for_analyst(max_chars).model_dump_json(indent=2), encoding="utf-8"
         )
 
 
@@ -959,6 +963,7 @@ async def _analyse_one(
     outcome,
     *,
     analyst_model,
+    max_chars: int | None = None,
 ) -> HypothesisFindings:
     """The BLIND analysis path for one fetched task: three domain judgements.
 
@@ -1011,7 +1016,7 @@ async def _analyse_one(
                 run_dir=run_dir,
             ),
         )
-    _persist_findings(task.task_id, findings, run_dir=run_dir)
+    _persist_findings(task.task_id, findings, run_dir=run_dir, max_chars=max_chars)
     return findings
 
 
@@ -1025,7 +1030,9 @@ def _runs_root() -> Path:
 
 
 def _persist_payload_batch(
-    findings: list[HypothesisFindings], batch_id: str | None = None
+    findings: list[HypothesisFindings],
+    batch_id: str | None = None,
+    max_chars: int | None = None,
 ) -> Path | None:
     """Write one `analyst-payload.json` carrying every hypothesis in the file.
 
@@ -1060,7 +1067,7 @@ def _persist_payload_batch(
 
     batch = AnalystPayloadBatch(
         batch_id=batch_id or f"batch-{datetime.now(UTC):%Y%m%dT%H%M%S}",
-        payloads=[f.for_analyst() for f in findings],
+        payloads=[f.for_analyst(max_chars) for f in findings],
     )
     target = root / batch.batch_id
     target.mkdir(parents=True, exist_ok=True)
@@ -1129,7 +1136,14 @@ async def _analyse_all(
 
     results = await asyncio.gather(
         *(
-            _analyse_one(task, hypothesis, outcome, analyst_model=analyst_model)
+            _analyse_one(
+                task,
+                hypothesis,
+                outcome,
+                analyst_model=analyst_model,
+                # One round's handoff budget, split across the file's tasks.
+                max_chars=HANDOFF_CHAR_BUDGET // max(task_count, 1),
+            )
             for task, hypothesis, outcome in analysable
         ),
         return_exceptions=True,
@@ -1398,7 +1412,11 @@ async def _run(argv: list[str] | None = None) -> int:
     # legacy flag path investigates one hand-written task and has no file whose
     # grouping a batch could represent.
     if args.task_file and findings:
-        _persist_payload_batch(findings, batch_id=args.batch_id)
+        _persist_payload_batch(
+            findings,
+            batch_id=args.batch_id,
+            max_chars=HANDOFF_CHAR_BUDGET // max(len(tasks), 1),
+        )
 
     if len(tasks) > 1:
         print(f"\n{'=' * 70}")

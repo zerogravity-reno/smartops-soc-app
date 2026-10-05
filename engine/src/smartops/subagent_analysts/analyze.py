@@ -88,6 +88,7 @@ from .packing import (
     _GENERATION_RESERVE,
     _PACK_TOKEN_BUDGET,
     _SAFETY_MARGIN,
+    blocks,
     exhibits_for,
     pack_evidence,
 )
@@ -826,6 +827,14 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
         observations=list(finding.observations),
         citations=list(finding.citations),
         exhibits=exhibits,
+        # Every routed set, cited or not: a narrative that drops a set's rare rows
+        # otherwise leaves the Analyst Agent no way to recover them (B1). Cited sets
+        # first, so `for_analyst`'s size cap drops uncited ones first.
+        summaries=[
+            b.summary
+            for b in sorted(blocks(slice_), key=lambda b: b.header_id not in finding.citations)
+            if b.summary
+        ],
     )
 
 
