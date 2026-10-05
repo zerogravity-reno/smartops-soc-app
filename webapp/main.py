@@ -147,44 +147,66 @@ def _classify_observable(value: str) -> str:
     return "general"
 
 # â”€â”€ Import from Splunk ES Mission Control â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _first(ev: dict, keys: list) -> str:
+    """The first non-empty value among `keys` in a Splunk row (multivalue -> first value)."""
+    for k in keys:
+        v = ev.get(k)
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _spl_escape(value: str) -> str:
+    # The quote escape keeps an attacker-influenced name from closing an SPL string.
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _rule_of(ev: dict) -> str:
+    rule = _first(ev, ["rule_name", "search_name", "source"])
+    return rule[:-len(" - Rule")] if rule.endswith(" - Rule - Rule") else rule
+
+
 @app.get("/api/import-from-splunk")
-def import_from_splunk():
-    """Pull the latest notable event from Splunk ES Mission Control and
-    enrich it with the matching detection rule SPL from Content Management."""
+def import_from_splunk(index: int = 0, rule_name: str = None):
+    """Pull a notable event from Splunk ES Mission Control and enrich it with the
+    matching detection rule SPL from Content Management. `index=0` is the latest;
+    `rule_name` keeps only that rule's notables."""
     try:
-        # --- Step 1: Get latest notable event ---
+        # --- Step 1: Get notable events ---
+        fetch_count = max(index + 1, 10)
+        spl = "search index=notable"
+        if rule_name:
+            clean_rule = rule_name.replace(" - Rule - Rule", "").replace(" - Rule", "")
+            pattern = _spl_escape(f"*{clean_rule}*")
+            spl += f' (search_name="{pattern}" OR source="{pattern}")'
         events = splunk_mcp.run_query(
-            "search index=notable | sort -_time | head 1"
+            f"{spl} | sort -_time | head {fetch_count}"
             " | table _time rule_name urgency status src dest user src_ip rule_id search_name *",
-            earliest_time="-30d", latest_time="now", row_limit=1)
+            earliest_time="-30d", latest_time="now", row_limit=fetch_count)
         if not events:
             return {"status": "empty", "message": "No notable events found in the last 30 days."}
+        if not 0 <= index < len(events):
+            return {"status": "error", "message": f"index={index} out of range: {len(events)} events found.",
+                    "available": len(events)}
 
-        ev = events[0]
-        
-        def _get_val(keys):
-            for k in keys:
-                if k in ev:
-                    v = ev[k]
-                    if isinstance(v, list) and len(v) > 0 and v[0]:
-                        return v[0]
-                    elif isinstance(v, str) and v.strip():
-                        return v.strip()
-            return ""
+        ev = events[index]
 
-        rule_name = _get_val(["rule_name", "search_name"])
-        src        = _get_val(["src", "src_ip"])
-        dest       = _get_val(["dest", "Registry.dest"])
-        user_field = _get_val(["user", "Registry.user"])
-        urgency    = _get_val(["urgency"])
-        event_time = _get_val(["_time", "time"])
-        
+        rule_name  = _rule_of(ev)
+        src        = _first(ev, ["src", "src_ip"])
+        dest       = _first(ev, ["dest", "Registry.dest", "dest_host"])
+        user_field = _first(ev, ["user", "Registry.user", "user_name"])
+        urgency    = _first(ev, ["urgency"])
+        event_time = _first(ev, ["_time", "time"])
+
         # Try to extract additional context if present in the raw event
-        file_hash = _get_val(["file_hash", "hash", "md5", "sha256"])
-        domain    = _get_val(["domain", "url"])
-        mitre     = _get_val(["mitre_attack_id", "mitre_technique_id", "annotations.mitre_attack"])
-        sig       = _get_val(["signature", "action", "category", "registry_path"])
-        
+        file_hash = _first(ev, ["file_hash", "hash", "md5", "sha256", "process_hash"])
+        domain    = _first(ev, ["domain", "url", "domain_query"])
+        mitre     = _first(ev, ["mitre_attack_id", "mitre_technique_id", "annotations.mitre_attack"])
+        sig       = _first(ev, ["signature", "action", "category", "registry_path",
+                              "registry_key_name", "process_name", "process"])
+
         # Capture the entire raw dictionary to send as context
         raw_full = {k: v for k, v in ev.items() if k not in ["_bkt", "_cd", "_si", "_indextime", "_kv"]}
 
@@ -192,8 +214,8 @@ def import_from_splunk():
         # --- Step 2: Find matching detection rule SPL ---
         deployed_spl = ""
         if rule_name:
-            # `| rest` is read-only; the quote escape keeps a rule name from closing the filter.
-            escaped = rule_name.replace("\\", "\\\\").replace('"', '\\"')
+            # `| rest` is read-only.
+            escaped = _spl_escape(rule_name)
             rules = splunk_mcp.run_query(
                 "| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches splunk_server=local"
                 f' search="name=\\"{escaped}\\"" | head 1 | fields search',
@@ -203,6 +225,8 @@ def import_from_splunk():
 
         return {
             "status": "ok",
+            "selected_index": index,
+            "total_available": len(events),
             "event_time": event_time,
             "rule_name": rule_name,
             "urgency": urgency,
@@ -216,6 +240,38 @@ def import_from_splunk():
             "deployed_spl": deployed_spl,
             "raw_event_data": raw_full
         }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.get("/api/incident-queue")
+def get_incident_queue():
+    """The latest notable events, for the Incident Queue."""
+    try:
+        events = splunk_mcp.run_query(
+            "search index=notable | sort -_time | head 10"
+            " | table _time rule_name urgency status src dest user src_ip rule_id search_name source dest_host user_name",
+            earliest_time="-30d", latest_time="now", row_limit=10)
+        return {"status": "ok", "events": [
+            {"index": i, "time": _first(ev, ["_time", "time"]), "rule_name": _rule_of(ev),
+             "urgency": _first(ev, ["urgency"]), "src": _first(ev, ["src", "src_ip"]),
+             "dest": _first(ev, ["dest", "dest_host"]), "user": _first(ev, ["user", "user_name"])}
+            for i, ev in enumerate(events)]}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.get("/api/list-detection-rules")
+def list_detection_rules():
+    """Every enabled detection rule ("... - Rule") in Content Management."""
+    try:
+        rows = splunk_mcp.run_query(
+            "| rest /servicesNS/-/-/saved/searches splunk_server=local count=0"
+            " | search disabled=0 | fields title search", row_limit=10000)
+        skip = ("Group Similar", "Lookup Gen", "Model Gen", "Swimlane")
+        rules = [{"name": r["title"], "spl": r.get("search", "")} for r in rows
+                 if r.get("title", "").endswith("- Rule") and not any(k in r["title"] for k in skip)]
+        return {"status": "ok", "rules": rules, "total": len(rules)}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
 
@@ -264,10 +320,21 @@ def escu_endpoint(req: ESCURequest):
     
     query_tokens = clean_name.split()
     scores = bm25.get_scores(query_tokens)
-    top_idx = scores.argsort()[::-1][:3]
-    
-    results = [{"rule": names[i], "score": float(scores[i]), "data": rules_data[i]} for i in top_idx if scores[i] > 0]
-    return {"status": "success", "matches": results}
+
+    # A Windows alert must not match a Linux or macOS rule (and so on).
+    os_words = {"windows": ("windows",), "linux": ("linux",), "macos": ("macos", "mac ")}
+    alert_os = next((os for os, words in os_words.items() if any(w in clean_name for w in words)), None)
+    if alert_os:
+        others = [os for os in os_words if os != alert_os]
+        for i, name in enumerate(names):
+            if any(w in name.lower() for w in others):
+                scores[i] *= 0.1
+
+    # One best match: the runners-up only added noise to the context.
+    best = int(scores.argmax())
+    if scores[best] <= 0:
+        return {"status": "success", "matches": []}
+    return {"status": "success", "matches": [{"rule": names[best], "score": float(scores[best]), "data": rules_data[best]}]}
 
 # â”€â”€ Analyst job store (non-blocking pattern) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _analyst_jobs: dict = {}   # job_id â†’ {"status": "pending"|"done", "result": ...}
@@ -562,16 +629,35 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
 
             # Synthesis â€” build accumulated findings sections
             _emit(q, "synthesis", {}, loop=loop_num, message=f"Loop {loop_num} â€” Synthesis evaluating...")
-            sections = [f"[INVESTIGATION PLAN]\n{json.dumps(plan, indent=2)}"]
+            # The plan as context only, and the mode stated: with the whole plan the
+            # model sometimes answered with another plan instead of an evaluation.
+            plan_slim = {"hypotheses": plan.get("hypotheses", []), "tasks": tasks[:6],
+                         "semantic_alignment": plan.get("semantic_alignment", "")}
+            hyp_ids = [h.get("id", "") for h in plan_slim["hypotheses"]] or ["H1", "H2", "H3"]
+            eval_header = (
+                "YOU ARE NOW IN EVALUATION MODE.\n"
+                f"The investigation has {len(hyp_ids)} hypotheses with IDs: {', '.join(hyp_ids)}.\n"
+                "Output ONLY the EVALUATION JSON schema. Required fields:\n"
+                "  hypothesis_scores: {" + ", ".join(f'"{h}": <0-100>' for h in hyp_ids) + "}\n"
+                "  verdict: one of TRUE_POSITIVE / FALSE_POSITIVE / BENIGN / REQUIRES_INVESTIGATION\n"
+                "  verdict_reasoning: string explanation\n"
+                "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
+                "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
+                "Do NOT output planning JSON (hypotheses list, tasks list).\n"
+                "---\n"
+            )
+            sections = [eval_header + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]
             for round_label, round_findings in all_findings.items():
                 slim = {k:v for k,v in round_findings.items() if k != "_raw_intel_dump"}
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
             rN = call_llm(system_prompt, "\n\n".join(sections))
-            synth = extract_json(rN["answer"]) or {}
+            raw_synth = extract_json(rN["answer"]) or {}
+            synth = run_trace.verdict_gate(raw_synth, plan)
             _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                   tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
                   message=f"Loop {loop_num} â€” Synthesis complete: {synth.get('status','?')}")
-            run_trace.record(run_id, "synthesis", loop_num, output=synth, reasoning=rN["reasoning"],
+            run_trace.record(run_id, "synthesis", loop_num, output=synth, model_status=raw_synth.get("status"),
+                             reasoning=rN["reasoning"],
                              tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]})
 
             status  = synth.get("status", "")

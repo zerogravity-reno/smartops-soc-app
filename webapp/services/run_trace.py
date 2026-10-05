@@ -123,6 +123,38 @@ def follow_up_tasks(follow_ups: list, sent: list) -> list:
     ]
 
 
+def verdict_gate(synth: dict, plan: dict) -> dict:
+    """The synthesis output with `status` decided here, not by the model.
+
+    VERDICT_REACHED needs the top hypothesis at 85 or more, 20 clear of the
+    runner-up, and at least one cited broker finding (an `ALERT:` ref is the
+    alert itself, not evidence). Anything short of that investigates again.
+    """
+    out = dict(synth)
+    scores = {}
+    for h, s in (synth.get("hypothesis_scores") or {}).items():
+        try:
+            scores[h] = int(s)
+        except (TypeError, ValueError):
+            scores[h] = 0
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top_id, top = ranked[0] if ranked else (None, 0)
+    gap = top - (ranked[1][1] if len(ranked) > 1 else 0)
+    refs = [r for r in synth.get("evidence_refs") or [] if isinstance(r, str) and not r.startswith("ALERT:")]
+    if top >= 85 and gap >= 20 and refs:
+        out["status"] = "VERDICT_REACHED"
+        out["follow_up_tasks"] = []
+        if not out.get("verdict") or out["verdict"] == "REQUIRES_INVESTIGATION":
+            out["verdict"] = next((h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
+                                  "REQUIRES_INVESTIGATION")
+        return out
+    out["status"] = "REQUIRES_INVESTIGATION"
+    if top >= 85 and gap >= 20:
+        out["evidence_gaps"] = [*(out.get("evidence_gaps") or []),
+                                "No broker finding cited in evidence_refs: the verdict has no evidence behind it"]
+    return out
+
+
 def broker_runs(task_ids: list[str]) -> list[dict]:
     """What the Tool Broker did for each task, read from its `report.json` via `latest.txt`.
 
