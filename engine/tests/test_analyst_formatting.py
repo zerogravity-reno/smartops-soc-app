@@ -418,8 +418,16 @@ class TestComputedAggregate:
         summary = summarise_rows("processes", rows)
         host_line = next(ln for ln in summary.splitlines() if ln.strip().startswith("host:"))
         assert "50 distinct" in host_line          # the true cardinality is still reported
-        assert host_line.count("=") == 5           # but only five are named
+        assert host_line.count("=") == 5           # but only five are named (a tie has no rarest)
         assert "45 more" in host_line
+
+    def test_a_rare_value_is_named_beside_the_common_ones(self):
+        # B1: the masquerading parent was 8 of 17,882 events, below the top five.
+        rare = r"C:\Users\Administrator\Desktop\splunkd.exe"
+        rows = [{"parent_process_path": f"C:\\p{i}.exe", "count": "1000"} for i in range(6)]
+        rows.append({"parent_process_path": rare, "count": "8"})
+        parent = next(ln for ln in summarise_rows("processes", rows).splitlines() if "parent:" in ln)
+        assert f"rarest: {rare}=8" in parent
 
     def test_uncategorised_sets_summarise_their_own_keys(self):
         # No CIM schema, so the dimensions are whatever the rows carry.

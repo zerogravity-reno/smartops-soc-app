@@ -568,11 +568,26 @@ def summarise_rows(
             tally[value] = tally.get(value, 0) + weight
         if len(tally) == 1 and "-" in tally:
             continue  # the field is absent from every row; saying so per row is noise
-        top = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:_TOP_N]
+        ranked = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+        more = ""
+        if len(ranked) > _TOP_N:
+            # The rarest values too, at the same fixed cost. A top-N alone hides
+            # the outlier: on check-K1 a parent with 8 of 17,882 events sat in
+            # "… 11 more" under the real binary's 17,280, and the row cap hid
+            # its rows (B1). Counts only -- which value matters is not ours to say.
+            # Strictly rarer than the top five, or "rarest" names an arbitrary tie.
+            floor = ranked[_TOP_N - 1][1]
+            rare = [kv for kv in reversed(ranked[_TOP_N:]) if kv[0] != "-" and kv[1] < floor][:_TOP_N]
+            more = f", … {len(ranked) - _TOP_N} more"
+            if rare:
+                more += "; rarest: " + ", ".join(
+                    f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
+                    for value, count in rare
+                )
         rendered = ", ".join(
-            f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}" for value, count in top
+            f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
+            for value, count in ranked[:_TOP_N]
         )
-        more = f", … {len(tally) - _TOP_N} more" if len(tally) > _TOP_N else ""
         lines.append(f"  {name}: {len(tally)} distinct — {rendered}{more}")
 
     return "\n".join(lines)

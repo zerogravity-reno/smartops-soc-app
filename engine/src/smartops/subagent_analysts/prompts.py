@@ -258,7 +258,7 @@ trailing `… (N more rows not shown)`. Say so when you do, and give both number
 THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
 `~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
 including the ones not printed — and it gives you the event total, the distinct count and
-top values of each field, and the true earliest-to-latest time range. Take every count,
+top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
 every distinct count and every time range from it, and never by counting the printed
 lines: those are a sample. Where its time line says the rows carry no timestamp, the set
 has no time range and you must not state one.
@@ -315,7 +315,7 @@ trailing `… (N more rows not shown)`. Say so when you do, and give both number
 THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
 `~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
 including the ones not printed — and it gives you the event total, the distinct count and
-top values of each field, and the true earliest-to-latest time range. Take every count,
+top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
 every distinct count and every time range from it, and never by counting the printed
 lines: those are a sample. Where its time line says the rows carry no timestamp, the set
 has no time range and you must not state one.
@@ -373,7 +373,7 @@ trailing `… (N more rows not shown)`. Say so when you do, and give both number
 THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
 `~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
 including the ones not printed — and it gives you the event total, the distinct count and
-top values of each field, and the true earliest-to-latest time range. Take every count,
+top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
 every distinct count and every time range from it, and never by counting the printed
 lines: those are a sample. Where its time line says the rows carry no timestamp, the set
 has no time range and you must not state one.
