@@ -539,7 +539,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         plan["reasoning"] = r1["reasoning"]
         tokens1 = {"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]}
         _emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
-        run_trace.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1)
+        run_trace.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1, context=alert_context)
 
         # â”€â”€ LOOPS 2..N: Broker + Synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         all_findings = {}
@@ -648,7 +648,7 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     killer = threading.Timer(1800, _kill)
     killer.start()
     try:
-        with log_path.open("w", encoding="utf-8") as log:
+        with log_path.open("w", encoding="utf-8", buffering=1) as log:  # line-buffered: live on disk (O3)
             log.write(f"$ {' '.join(cmd)}\n\n")
             for line in proc.stdout:
                 log.write(line)
