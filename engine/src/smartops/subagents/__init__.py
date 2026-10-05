@@ -232,11 +232,12 @@ Report what your queries already returned, as your structured answer:
 - Every query you ran, in `queries_run`, so the rows you fetched can be
   categorised against them.
 - Whatever your assessment covers, from the results you have.
-- Any category you did not reach, in `gaps`.
+- Any category you did not reach, in your assessment, as not covered.
 
 A partial answer that names its own gaps is the correct outcome here. A query
 that came back empty is a result -- report it as one. Do not report a category
-as absent if you never successfully queried it; that belongs in `gaps`.
+as absent if you never successfully queried it; your assessment names it as not
+covered.
 """
 
 
