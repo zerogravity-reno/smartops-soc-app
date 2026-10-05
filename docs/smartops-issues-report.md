@@ -42,7 +42,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
 | P5 | Context | ESCU matcher scores rule names only | Medium | Open (C5) |
-| B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Open |
+| B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`); live pipeline re-run pending |
 | B2 | Broker | Narrow task windows miss the activity | Medium | Open (follows P1) |
 | B3 | Broker | Planned steps for families with no tool (`investigate_edr`) | Medium | Fixed in `58d39c3` |
 | B4 | Broker | Sub-analyst misread a `+03:00` row as outside a `Z` window | High | Fixed in `58d39c3` |
@@ -50,6 +50,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open |
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
+| B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`); webapp round compaction open |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -57,12 +58,12 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | W5 | Webapp | Demo alert pre-filled in the form | Medium | Fixed in `58d39c3` |
 | W6 | Webapp | Model and log text inserted into `innerHTML` unescaped | Medium | Fixed in `58d39c3` |
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
-| K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Open |
+| K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Open |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Open (T1, W2) |
-| O1 | Audit | Context contract not saved with the run | Medium | Open |
+| O1 | Audit | Context contract not saved with the run | Medium | Fixed (`c85eb93`) |
 | O2 | Audit | Dispatch-to-step link not recorded | Low | Open |
-| O3 | Audit | Broker log written only at the end of a loop | Low | Open |
+| O3 | Audit | Broker log written only at the end of a loop | Low | Fixed (`c85eb93`) |
 | S1 | Security | Live credentials in git history | Critical | Removed from tree; **rotation pending** (C1–C2) |
 | S2 | Security | Splunk Web scraper replaced the official MCP | High | Fixed (C3) |
 
@@ -147,7 +148,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 ## Tool Broker and sub-analysts
 
-**B1. Observations drop the parent path.** *High. Open.*
+**B1. Observations drop the parent path.** *High. Fixed (`e475a84`, 2026-10-05).*
 - **Evidence:** rows with a masquerading parent (`C:\Users\Public\splunkd.exe` / `C:\Users\Administrator\Desktop\splunkd.exe`) in each run's `evidence.json`:
   - `cecd266a`: 15 / 10
   - `072fd610`: 12 / 10
@@ -156,6 +157,16 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
   Where they were retrieved, **0** mentions reached the analyst payload. The observation read *"5 identical PowerShell commands under Administrator"*. `04a15495` never retrieved them at all and still concluded TRUE_POSITIVE (see T6).
 - **Fix:** keep `ParentImage` (path) in the process-row projection and in the observation template.
+- **Done:** parent path first in the projection (`0964e3a`); `tstats … datamodel=` sets categorised and `Processes.*` columns read (`616b27c`); rarest values in the summary (`b64c575`); siem prompt retries a 0-row sourcetype and groups by the parent path (`1cda901`). On `check-B1` the path reached the rows the endpoint sub-analyst was shown.
+- **The narrative still drops it, and prompts can't fix that on 8B.** check-B1b added a full-path rule, and check-B1c added a parent-path slot to the worked example. On B1c the sub-analyst was shown the 4 Desktop-parent rows, cited their set, and described it as "disk cleanup and system checks". Both prompt edits were reverted. The same failure applies to every domain: the minority rows (a rare logon source, a rare domain, a rare parent) are what a few-sentence narrative drops.
+- **Fix (`e475a84`):** each domain's finding carries `summaries`, the code-computed account (`formatting.summarise_rows`) of every non-empty set routed to it, cited or not. It crosses into `analyst-payload.json`, while raw rows still stay out. Live `check-B1d` passed: the endpoint summaries showed `C:\Users\Administrator\Desktop\splunkd.exe=4`, even though the narrative left it out. The size of this is capped (B9).
+- **Open:** the webapp system prompt doesn't yet explain what `summaries` is, so it arrives as unexplained JSON. The full pipeline hasn't been re-run since the fix.
+
+**B9. The handoff to the Analyst had no size limit.** *High. Fixed (`e475a84`).*
+- **Evidence:** B1's summaries took T3's payload from 2,428 to 17,011 characters, and added 27,443 across `072fd610` round 2. The Analyst has a 32,768-token window with 4,096 reserved for output, and the webapp resends every earlier round in each synthesis call (`max_loops` 3). Uncapped, round 2 would probably overflow.
+- **Fix:** `HANDOFF_CHAR_BUDGET` (`subagent_analysts/packing.py`) is worked out from the Analyst's window: window − output − 4,300 tokens for the system prompt and plan (measured on `072fd610`) − margin, ÷ 3 rounds. That's about 20.7k characters per round, split across the file's tasks. `HypothesisFindings.for_analyst(max_chars)` always keeps narratives and observations, adds summaries with cited sets first, and records how many it left out. Full summaries stay in `findings.json`.
+- **Offline, `072fd610` round 2:** the batch is 19.6k characters. T7 keeps `processes#1`, whose powershell parents are only `C:\Users\Administrator\Desktop\splunkd.exe=3, C:\Users\Public\splunkd.exe=2`. A compact format (dropping time and single-value lines) was measured and rejected: it saved only 22%, and the single-value lines carry the signal.
+- **Open (webapp):** resending only the latest round, instead of every round, would triple each round's budget. Then set `_ANALYST_ROUNDS` to 1.
 
 **B2. Narrow task windows miss the activity.** *Medium. Open (follows P1).*
 - **Evidence:** `072fd610` T1 and T4 searched `12:04:02–12:05:02Z`; the command ran at 11:55:17Z. Only the broad tasks found it.
@@ -217,9 +228,10 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 ## Cost
 
-**K1. About $5–12 per Broker loop.** *Medium. Open.*
+**K1. About $5–12 per Broker loop.** *Medium. Fixed (`0e82b4c`).*
 - **Evidence:** `cecd266a` $12.28, `072fd610` $9.07, `04a15495` $5.45 (2 loops), `a8118db9` $8.24 (3 loops). One T5 query returned 181 rows with full encoded command lines (837k characters, about 200k tokens), and the agent loop re-sends that on every turn.
 - **Fix:** cap long values (command lines) in what the model sees, and keep full rows in `evidence.json`.
+- **Done:** the fetch subagents use Strands' `ContextOffloader` (preview above about 2,500 tokens, no retrieval tool). Evidence is captured first at `SDK_FIRST` and stays full. `072fd610-L2-T3`: $1.56 before, $0.72 and $0.79 after.
 
 **K2. A blank `SMARTOPS_LLM_PROVIDER` doesn't stop Broker model calls.** *Medium. Open.* The engine still finds a model from the other AWS settings. Only `--scripted` is guaranteed free.
 
@@ -227,11 +239,11 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 ## Audit trail
 
-**O1. The context contract isn't saved with the run.** *Medium. Open.* `investigation.jsonl` records the plan, the Broker run and the synthesis, but not the contract the Analyst was given. Comparing runs meant rebuilding it.
+**O1. The context contract isn't saved with the run.** *Medium. Fixed (`c85eb93`).* `investigation.jsonl` recorded the plan, the Broker run and the synthesis, but not the contract the Analyst was given. Comparing runs meant rebuilding it. The `analyst_plan` line now carries it as `context`.
 
 **O2. The dispatch-to-step link isn't recorded.** *Low. Open.* `072fd610` T7 had 2 steps and 2 dispatches, and nothing records which dispatch served which step.
 
-**O3. The Broker log is written only at the end of a loop.** *Low. Open.* `broker-L<n>.log` stays at 0 bytes while the loop runs, so the task folders are the only live progress signal.
+**O3. The Broker log is written only at the end of a loop.** *Low. Fixed (`c85eb93`).* `broker-L<n>.log` stayed at 0 bytes while the loop ran. The child process was unbuffered, but the webapp's own file handle used block buffering. It's now line-buffered.
 
 ## Security
 
