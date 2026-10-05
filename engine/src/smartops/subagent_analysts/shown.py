@@ -160,7 +160,7 @@ that evidence SUPPORTS, REFUTES, or leaves the hypothesis INCONCLUSIVE, judging 
 from the evidence shown.
 
 EVIDENCE YOU RECEIVE — under headers like these:
-  processes#1  <timestamp> host=<> user=<> process=<name> parent=<name> cmdline=<...>
+  processes#1  <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
   reputation#1 kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
 A header may say rows=0 — the query ran and found nothing.
 

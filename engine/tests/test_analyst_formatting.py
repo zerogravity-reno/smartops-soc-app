@@ -108,6 +108,18 @@ class TestRealSplunkFieldNames:
         assert "explorer.exe" in line
         assert "parent=-" not in line
 
+    def test_the_parent_path_wins_over_the_parent_name(self):
+        # B1: a masquerading parent differs from the real binary only by path.
+        row = {
+            "dest": "ar-host",
+            "process_name": "powershell.exe",
+            "parent_process_name": "splunkd.exe",
+            "parent_process_path": "C:\\Users\\Administrator\\Desktop\\splunkd.exe",
+        }
+        path = "parent=C:\\Users\\Administrator\\Desktop\\splunkd.exe"
+        assert path in format_row("processes", row)
+        assert "C:\\Users\\Administrator\\Desktop\\splunkd.exe=1" in summarise_rows("processes", [row])
+
     def test_stats_count_is_carried_into_the_line(self):
         # `| stats count by ...` is the dominant triage SPL shape: `count`
         # appears on 1,260 of 1,887 real process rows and 138 auth rows. The

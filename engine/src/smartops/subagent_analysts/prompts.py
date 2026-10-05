@@ -357,7 +357,7 @@ placeholder into it. Never drop a set because it looks uninteresting — say wha
 contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
-  processes#1  <timestamp> host=<> user=<> process=<name> parent=<name> cmdline=<...>
+  processes#1  <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
   reputation#1 kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
 Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
 one line of a `| stats count by ...` result standing for many events, and it ends in

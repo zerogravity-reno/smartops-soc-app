@@ -159,9 +159,14 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
             "process_name", "New_Process_Name", "NewProcessName",
             "new_process_name", "process_exec", "Image",
         ),
+        # Path spellings first. A masquerading parent shares its name with the
+        # real binary (`splunkd.exe`) and differs only by its path, so name-first
+        # rendering made them look the same: where such rows were retrieved, 0
+        # mentions of the path reached the analyst payload (issue B1).
         "parent": (
-            "parent_process_name", "Creator_Process_Name", "ParentProcessName",
-            "creator_process_name", "parent_process", "ParentImage",
+            "parent_process_path", "ParentImage", "parent_process",
+            "Creator_Process_Name", "creator_process_name", "ParentProcessName",
+            "parent_process_name",
         ),
         "code": ("EventCode", "signature_id", "event_id"),
         "cmdline": (
@@ -264,7 +269,8 @@ def _format_process(row: dict[str, Any]) -> str:
         f"host={_field(row, 'processes', 'host')} "
         f"user={_field(row, 'processes', 'user')} "
         f"process={_field(row, 'processes', 'process')} "
-        f"parent={_field(row, 'processes', 'parent')} "
+        # CIM `parent_process` is the parent's command line, so cap it like cmdline.
+        f"parent={_truncate(_field(row, 'processes', 'parent'), _CMDLINE_LIMIT)} "
         f"code={_field(row, 'processes', 'code')} "
         f"cmdline={_truncate(_field(row, 'processes', 'cmdline'), _CMDLINE_LIMIT)}"
         f"{_count_suffix(row)}"
