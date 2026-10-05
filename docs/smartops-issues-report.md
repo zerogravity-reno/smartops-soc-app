@@ -55,7 +55,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); webapp round compaction open |
-| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Fixed on this branch (Broker tool) |
+| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked on this branch (enc# registry, decode on request); loop N+1 decode not yet seen live |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -150,6 +150,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 **T15. Synthesis can spend its output budget before writing the verdict JSON.** *Medium. Open.*
 - **Evidence:** the exact reproduction of the `ded5cac1` synthesis used all 4,096 output tokens (`stop_reason=length`): after scoring 60 / 50 / 45, it kept drafting follow-up tasks and never emitted the JSON. `extract_json` returned nothing, so the loop has no status, scores or follow-ups.
 - **Fix:** keep the reasoning bounded (ask for the JSON first, or a shorter reasoning section), and treat a `length` stop as a failed call that is retried or reported, not as an empty evaluation.
+- **Recurred live (`dbb0e75c` loop 2, 2026-10-05):** 4,096 of 4,096 output tokens, an empty reasoning field and only `{"status": "REQUIRES_INVESTIGATION"}`. The run ended there, with no verdict and no follow-ups.
 - **Recurred live (`e1461da6` loop 2):** 4,072 of 4,096 output tokens, and the JSON came back with empty `hypothesis_scores`. The gate turned it into REQUIRES_INVESTIGATION, so the run continued to loop 3 rather than stopping on it.
 
 **T16. Unanswered follow-ups are closed as "no gaps".** *High. Open.*
@@ -239,6 +240,16 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fix:** a Strands `@tool` on the Broker agent, `decode_encoded_commands(step_id)` (`tools/native/decoder.py`). The Broker names a step it already dispatched. Code finds that step's results through `StepOutcome.result_ids` (O2), base64-decodes every `-EncodedCommand`/`-enc`/`-e` argument as UTF-16LE, and writes the text onto the row as `decoded_command`, first, so key-capped generic rows still show it. The processes line renders it as `decoded=`. The Broker gets only `rows=N decoded=M` back, so the "counts, not content" rule holds. Lookalikes are rejected: `-ExecutionPolicy` isn't an encoded flag, and `-e Bypass` decodes to non-ASCII noise. The Broker prompt says to fetch the command lines first, then decode by step id.
 - **Offline on `e1461da6` FU1:** 11 rows annotated, each rendering `decoded=$env:username`, including tstats rows whose command-line column the row line never showed (`cmdline=-`).
 - **Ceiling:** one transform, base64 of UTF-16LE. Layered obfuscation (gzip inside base64, `-bxor`, `[char]` arrays) would need a real deobfuscator, which is the case for adding CyberChef. Whether the Broker calls the tool for a "decode" follow-up still needs a live run.
+
+- **Live `67da804d` (2026-10-05): the step-id design misses.** The encoded rows were in T1, T2, T4 and T5. The Broker called the tool only on T3, the one goal that said "encoded", and T3's rows had none. The Broker can't know which step holds an encoded command, because it never sees rows.
+- **Rework (B10b), Mohammed's design: tag in loop N, decode on request in loop N+1.**
+  - **Tag:** after each task, code records every real encoded argument in `<runs_root>/<run_id>/encoded.json` under a stable `enc#<sha1[:6]>` signature (`decoder.record`, called from `main.py`).
+  - **Show:** the sub-analyst handoff lists the signatures next to the narrative: `~ encoded command enc#784267: 2 events, parent …\Desktop\splunkd.exe=1`. The plain text isn't shown until a task asks for it.
+  - **Decode:** in a later loop, a task that names the refs (or just asks to decode) leads the Broker to call `decode_encoded_commands(refs)`. Code writes `~ enc#784267 (parent …) decodes to: $env:username` into `BrokerReport.decoded`, and `gather` puts it in the endpoint narrative under "Decoded by code, on request:". No sub-analyst call is made. The Broker still gets counts only.
+  - **Removed:** the step-id path and the `decoded=` row rendering.
+- **Offline on `67da804d`:** the four tasks give one signature, `enc#784267`, which decodes to `$env:username`.
+- **Live `dbb0e75c`:** the registry was written, and the payload carries 4 `enc#784267` lines. Synthesis then hit the 4,096-token cap with no JSON (T15), so there was no follow-up loop. The decode path in loop N+1 is still unproven live.
+- **Ceiling:** it only works if the Analyst asks for the decode. A run that stops after loop 1 never decodes.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 

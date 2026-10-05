@@ -103,6 +103,7 @@ from smartops.subagent_analysts.packing import HANDOFF_CHAR_BUDGET
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
 from smartops.telemetry import analysis_span, configure_telemetry
+from smartops.tools.native.decoder import REGISTRY_NAME, record
 from smartops.tools.registry import (
     family_is_configured,
     load_mcp_servers,
@@ -1345,6 +1346,11 @@ async def _run(argv: list[str] | None = None) -> int:
     # headroom.
     fetched: list[tuple[AnalystTask, str | None, object]] = []
     failures = 0
+    # The run's encoded-command registry (B10): `<run_id>-L<n>` batches share the
+    # `<run_id>` directory, so loop N+1 can decode what loop N recorded.
+    registry = (
+        _runs_root() / args.batch_id.rsplit("-L", 1)[0] / REGISTRY_NAME if args.batch_id else None
+    )
     with skills_ctx:
         # With a real model, domains get a real subagent; without one there is
         # nothing to drive a tool loop, so the Broker's stub stands in and reports
@@ -1370,6 +1376,7 @@ async def _run(argv: list[str] | None = None) -> int:
                     invoke=invoke,
                     run_subagent=run_subagent,
                     max_output_tokens=args.broker_output_tokens,
+                    encoded_registry=registry,
                 )
             except Exception as exc:
                 # An investigation failing must not look like the tool crashing.
@@ -1402,6 +1409,8 @@ async def _run(argv: list[str] | None = None) -> int:
                 # task so far, which inside one task's block reads as this task's
                 # own spend.
                 print(f"this task: {_task_spend(budget, task.task_id)} micro-USD")
+            if registry is not None and outcome.report is not None:
+                record(registry, outcome.report.results)
             fetched.append((task, hypothesis, outcome))
 
     analysis_failures, findings = await _analyse_all(

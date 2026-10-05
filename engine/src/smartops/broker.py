@@ -159,8 +159,9 @@ made before `plan_fetch`, or naming a step id that is not in the plan or belongs
 family, is refused and retrieves nothing.
 
 Some goals ask for a transformation, not a retrieval -- what an encoded PowerShell command
-says. Dispatch the step that fetches the command lines, then call `decode_encoded_commands`
-with that step's id.
+says. Encoded commands an earlier loop saw are recorded by reference (`enc#3f2a1b`). When the
+goal names such references or asks to decode encoded commands, call `decode_encoded_commands`
+with the references it names (an empty list for all); no dispatch is needed for that.
 
 Available specialists and when to use them are described in each tool's own description.
 Dispatch every specialist whose domain can retrieve relevant evidence for the entities and
@@ -207,6 +208,9 @@ class BrokerRequest:
     refused: dict[ToolFamily, str] = field(default_factory=dict)
     plan: FetchPlan | None = None
     step_outcomes: dict[str, StepOutcome] = field(default_factory=dict)
+    encoded_registry: Path | None = None
+    """The run's `encoded.json`, which `decode_encoded_commands` reads."""
+    decoded: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1283,6 +1287,7 @@ async def broker_task(
     turns: int = DEFAULT_BROKER_TURNS,
     run_subagent: SubagentRunner | None = None,
     invoke: BrokerInvoker | None = None,
+    encoded_registry: Path | None = None,
 ) -> BrokerOutcome:
     with investigation_span(task):
         return await _run_broker_task(
@@ -1293,6 +1298,7 @@ async def broker_task(
             turns=turns,
             run_subagent=run_subagent,
             invoke=invoke,
+            encoded_registry=encoded_registry,
         )
 
 
@@ -1305,6 +1311,7 @@ async def _run_broker_task(
     turns: int,
     run_subagent: SubagentRunner | None,
     invoke: BrokerInvoker | None,
+    encoded_registry: Path | None = None,
 ) -> BrokerOutcome:
     prompt = _prompt_for(task)
     reservation = await budget.reserve(
@@ -1326,7 +1333,7 @@ async def _run_broker_task(
             dispatched=[],
         )
 
-    request = BrokerRequest(task=task, run_subagent=run_subagent)
+    request = BrokerRequest(task=task, run_subagent=run_subagent, encoded_registry=encoded_registry)
     invoke = invoke or default_broker_invoker(
         model, max_output_tokens=max_output_tokens, turns=turns
     )
@@ -1430,6 +1437,7 @@ async def _run_broker_task(
         scope=task.scope,
         cost=cost_summary,
         queries_run=queries_run,
+        decoded=list(request.decoded),
     )
 
     run_dir = save_run_artifacts(report)
