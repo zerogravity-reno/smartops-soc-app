@@ -726,6 +726,7 @@ async def _build_agent_and_invoke(
     from strands import Agent, ModelRetryStrategy
     from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands.types.agent import Limits
+    from strands.vended_plugins.context_offloader import ContextOffloader, InMemoryStorage
 
     family = mission.tool_family
     # The bare `SubagentAnswer` base has no `assessment` field, so forcing the
@@ -749,6 +750,13 @@ async def _build_agent_and_invoke(
         trace_attributes=trace_attributes_for(mission),
         retry_strategy=ModelRetryStrategy(max_attempts=2),
         conversation_manager=SlidingWindowConversationManager(should_truncate_results=False),
+        # Each turn re-sends every earlier tool result: one 181-row result of
+        # about 837k characters was paid for on every turn of its loop (issue K1).
+        # Oversized results reach the model as a preview. Evidence is unaffected:
+        # the collector and the guards' `_learn` run at SDK_FIRST, before this
+        # rewrites the result, and the sub-analysts read rows from evidence.
+        # No retrieval tool, so the guards and the model see no new tool.
+        plugins=[ContextOffloader(storage=InMemoryStorage(), include_retrieval_tool=False)],
     )
     result = await agent.invoke_async(
         prompt, limits=Limits(turns=turns, output_tokens=max_output_tokens)

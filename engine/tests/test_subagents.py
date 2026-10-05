@@ -573,6 +573,38 @@ class TestStructuredOutputModel:
         # caching an empty prefix would be a silent no-op that still looks wired.
         assert "domain specialist" in blocks[0]["text"]
 
+    async def test_oversized_results_are_offloaded_without_a_retrieval_tool(
+        self, monkeypatch
+    ):
+        # K1: one 837k-character result was re-sent on every turn of its loop.
+        from strands.vended_plugins.context_offloader import ContextOffloader
+
+        captured = {}
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def invoke_async(self, *args, **kwargs):
+                return _Result(None)
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+
+        await subagents._build_agent_and_invoke(
+            "prompt",
+            mission=mission("siem"),
+            model=MODEL,
+            tools=[],
+            turns=4,
+            max_output_tokens=100,
+            collector=subagents._EvidenceCollector(),
+        )
+
+        [offloader] = captured["plugins"]
+        assert isinstance(offloader, ContextOffloader)
+        assert offloader._include_retrieval_tool is False
+
 
 class TestABlockedQueryReachesTheResult:
     """The guards `investigate()` registers must be the guards it reads back.
