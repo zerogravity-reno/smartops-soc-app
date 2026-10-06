@@ -213,9 +213,12 @@ def import_from_splunk(index: int = 0, rule_name: str = None):
 
         # --- Step 2: Find matching detection rule SPL ---
         deployed_spl = ""
-        if rule_name:
+        # Look up by the saved search's real name: ES doubles the suffix ("... - Rule - Rule"),
+        # and `rule_name` is the cleaned display name, which matches no saved search.
+        saved_name = _first(ev, ["search_name", "source"]) or rule_name
+        if saved_name:
             # `| rest` is read-only.
-            escaped = _spl_escape(rule_name)
+            escaped = _spl_escape(saved_name)
             rules = splunk_mcp.run_query(
                 "| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches splunk_server=local"
                 f' search="name=\\"{escaped}\\"" | head 1 | fields search',
@@ -614,7 +617,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         for loop_num in range(2, req.max_loops + 2):
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
-            findings, link = _run_broker_proc_streaming(tasks, run_id, loop_num, q)
+            findings, link = _run_broker_proc_streaming(tasks, run_id, loop_num, q, run_trace.alert_entities(alert_context))
             run_trace.record(run_id, "broker", loop_num, **link)
             if "broker_runs" in link:
                 _emit(q, "broker", {"runs": link["broker_runs"], "handshake": link["handshake"]},
@@ -683,7 +686,8 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         _run_queues.pop(run_id, None)
 
 
-def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue) -> tuple[dict, dict]:
+def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue,
+                               alert_scope: list | None = None) -> tuple[dict, dict]:
     """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
 
     The tasks go as a `task-input.v1` file (`--task-file`), and what comes back is
@@ -694,7 +698,7 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     """
     run_dir = run_trace.runs_dir() / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num)
+    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num, alert_scope)
     task_path = run_dir / f"tasks-L{loop_num}.json"
     task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")
     task_ids = [t["task_id"] for t in task_file["tasks"]]
@@ -726,6 +730,8 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             encoding="utf-8", errors="replace", env=env, cwd=str(repo))
     timed_out = threading.Event()
+    cli_errors: list[str] = []
+    prev_was_error = False
 
     def _kill():
         timed_out.set()
@@ -738,6 +744,10 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
             log.write(f"$ {' '.join(cmd)}\n\n")
             for line in proc.stdout:
                 log.write(line)
+                # The CLI's own `error:` lines and their 7-space continuations (main.py return-2 paths).
+                if line.startswith("error:") or (cli_errors and re.match(r" {7}\S", line) and prev_was_error):
+                    cli_errors.append(line.strip())
+                prev_was_error = bool(cli_errors) and cli_errors[-1] == line.strip()
                 _emit(q, "broker_log", {"line": line.rstrip()}, loop=loop_num)
         returncode = proc.wait()
     finally:
@@ -752,7 +762,8 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     if timed_out.is_set():
         return {}, {**link, "error": f"broker timed out after 30 minutes, see {log_path}"}
     if returncode != 0:
-        return {}, {**link, "error": f"broker exited {returncode}, see {log_path}"}
+        said = " ".join(cli_errors[-4:]) or "no error line printed"
+        return {}, {**link, "error": f"broker exited {returncode}: {said} (log: {log_path})"}
     if payload is None:
         return {}, {**link, "error": f"broker wrote no analyst payload (analyst model configured?), see {log_path}"}
     return payload, link

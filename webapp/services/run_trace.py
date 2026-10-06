@@ -14,15 +14,27 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 # The Analyst's entity vocabulary -> the engine's `EntityKind`. Anything absent
-# (e.g. "command") has no engine kind and is dropped, and the drop is recorded.
+# (e.g. "environment") has no engine kind and is dropped, and the drop is recorded.
 _KIND = {
-    "host": "host", "hostname": "host", "dest": "host",
-    "user": "user",
-    "ip": "ip", "src_ip": "ip", "dest_ip": "ip",
-    "domain": "domain", "url": "url",
-    "file_hash": "file_hash", "hash": "file_hash",
+    "host": "host", "hostname": "host", "dest": "host", "computer": "host", "device": "host",
+    "user": "user", "username": "user", "user_name": "user", "account": "user",
+    "ip": "ip", "src_ip": "ip", "dest_ip": "ip", "ip_address": "ip", "ipaddress": "ip", "source_ip": "ip", "destination_ip": "ip",
+    "domain": "domain", "url": "url", "uri": "url",
+    "file_hash": "file_hash", "hash": "file_hash", "sha256": "file_hash", "sha1": "file_hash", "md5": "file_hash",
     "process": "process", "process_name": "process",
+    "file": "file_name", "file_name": "file_name", "filename": "file_name", "image": "file_name",
+    "file_path": "file_name", "path": "file_name", "process_path": "file_name",
+    "command": "command_line", "command_line": "command_line", "commandline": "command_line", "cmdline": "command_line",
 }
+
+
+def alert_entities(context: dict) -> list[dict]:
+    """The alert's host, user and source IP as engine entities: the scope for a
+    task that only says "search the logs"."""
+    seed = (context or {}).get("normalized_seed") or {}
+    ent = seed.get("entities") or {}
+    picks = [("host", ent.get("hostname") or ent.get("host")), ("user", ent.get("user")), ("ip", ent.get("src_ip"))]
+    return [{"type": kind, "value": str(value).strip()} for kind, value in picks if value and str(value).strip()]
 
 
 def _instant(value) -> datetime | None:
@@ -47,12 +59,18 @@ def record(run_id: str, step: str, loop: int, **data) -> None:
         f.write(json.dumps(line, default=str) + "\n")
 
 
-def to_task_file(tasks: list, run_id: str, loop: int) -> tuple[dict, list]:
+def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None = None) -> tuple[dict, list]:
     """The Analyst's tasks as a `task-input.v1` file, plus what could not be sent.
 
     The engine's `TaskInputFile` stays the validator; this only renames what the
     two sides spell differently and drops what has no engine equivalent, so one
     bad task costs that task rather than the whole file.
+
+    A task with no searchable entity -- one that names where to look ("log",
+    "script_block_log", "scheduled_task") rather than a value to match -- is sent
+    scoped to `alert_scope`, the alert's own host/user/ip: the siem family already
+    searches the lab's indexes (SMARTOPS_SIEM_INDEXES), and the question carries
+    what to look for. Without an alert scope it is dropped, and the drop recorded.
     """
     out, dropped = [], []
     for n, task in enumerate(tasks, 1):
@@ -62,7 +80,9 @@ def to_task_file(tasks: list, run_id: str, loop: int) -> tuple[dict, list]:
         raw = task.get("entity")
         entities, unusable = [], []
         for e in raw if isinstance(raw, list) else [raw]:
-            kind = _KIND.get(str((e or {}).get("type", "")).lower()) if isinstance(e, dict) else None
+            label = str((e or {}).get("type", "")).lower() if isinstance(e, dict) else ""
+            # "scheduled_task|group_policy": the model sometimes joins several types into one.
+            kind = next((_KIND[t.strip()] for t in label.replace(",", "|").split("|") if t.strip() in _KIND), None)
             if kind and e.get("value"):
                 entities.append({"type": kind, "value": e["value"]})
             else:
@@ -71,6 +91,9 @@ def to_task_file(tasks: list, run_id: str, loop: int) -> tuple[dict, list]:
         def drop(why):
             dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "why": why, "task": task})
 
+        rescoped = not entities and bool(alert_scope)
+        if rescoped:
+            entities = [dict(e) for e in alert_scope]
         if not entities:
             drop(f"no entity the broker can search on (got: {', '.join(map(str, unusable)) or 'none'})")
             continue
@@ -84,9 +107,13 @@ def to_task_file(tasks: list, run_id: str, loop: int) -> tuple[dict, list]:
         if not (start and end and start < end):
             drop("the time window needs a timezone-aware start and end, start first")
             continue
-        if unusable:
+        if rescoped:
+            dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
+                            "why": f"{', '.join(map(str, unusable)) or 'no entity'} is not a value to match: sent scoped to the alert's "
+                                   + ", ".join(f"{e['type']}={e['value']}" for e in entities) + " across the lab's indexes"})
+        elif unusable:
             # Sent without them, and said so -- a silently narrowed task reads as the one asked.
-            dropped.append({"task_id": task.get("task_id"), "question": task.get("question"),
+            dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
                             "why": f"sent without entities the broker cannot search on: {', '.join(map(str, unusable))}"})
         task_id = f"{run_id}-L{loop}-{task.get('task_id') or f'T{n}'}"
         out.append({
@@ -177,6 +204,10 @@ def broker_runs(task_ids: list[str]) -> list[dict]:
             "run_dir": str(report_path.parent),
             "trace_id": report.get("trace_id"),
             "plan_rationale": (report.get("plan") or {}).get("rationale"),
+            # What the CLI prints beside the plan: why these families, guard repairs, spend.
+            "classification": (report.get("classification") or {}).get("rationale"),
+            "plan_repairs": report.get("plan_repairs") or [],
+            "spend_micro_usd": (report.get("cost") or {}).get("total_spend_micro_usd"),
             "steps": [
                 {
                     "step_id": s["step_id"],
@@ -195,6 +226,7 @@ def broker_runs(task_ids: list[str]) -> list[dict]:
                     "family": (r.get("task_id") or "").split(":")[1] if ":" in (r.get("task_id") or "") else "?",
                     "status": r.get("status"),
                     "reason": r.get("reason"),
+                    "error": r.get("error"),
                     "gaps": r.get("gaps", []),
                     "queries": [q.get("query") for q in r.get("queries_run", [])],
                     "blocked": r.get("blocked_queries", []),
