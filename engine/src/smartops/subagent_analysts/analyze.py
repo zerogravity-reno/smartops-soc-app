@@ -46,7 +46,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -87,6 +89,7 @@ from smartops.tools.native.decoder import encoded_in
 from .formatting import NAMES_FOOTER, NO_TIME_MARKER, _middle, name_expansions
 
 ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
+ENCODED_LINE_CAP = 8
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -834,12 +837,21 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
     # decodes to. Facts only -- what a parent path means is the Analyst's call.
     tagged = encoded_in(row for _, rs in sets for row in rs.rows)
     if tagged:
-        narrative = "\n".join([narrative, "", ENCODED_FOOTER, *(
+        # Capped (B10c: 39 lines/11.3k chars crowded every summary out on dce405e5),
+        # rarest parent first: the parent behind the fewest distinct commands. By
+        # event count instead, one-off Ansible winrshost wrappers outranked the
+        # Desktop splunkd.exe's single command and pushed it past the cap.
+        spread = Counter(p for e in tagged.values() for p in e["parents"])
+        ranked = sorted(tagged.items(), key=lambda kv: (min((spread[p] for p in kv[1]["parents"]), default=math.inf), kv[1]["events"]))
+        lines = [
             f"~ encoded command {sig}: {e['events']} events"
             + (", parent " + ", ".join(f"{_middle(p)}={n}" for p, n in sorted(e["parents"].items())) if e["parents"] else "")
             + f"; decodes to: {e['plain']}"
-            for sig, e in tagged.items()
-        )])
+            for sig, e in ranked[:ENCODED_LINE_CAP]
+        ]
+        if len(ranked) > ENCODED_LINE_CAP:
+            lines.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
+        narrative = "\n".join([narrative, "", ENCODED_FOOTER, *lines])
 
     return DomainJudgement(
         domain=finding.domain,

@@ -33,17 +33,24 @@ def _is_encoded_flag(flag: str) -> bool:
     return flag == "ec" or "encodedcommand".startswith(flag)
 
 
-def _decode(blob: str) -> str | None:
+def _decode(blob: str, lenient: bool = False) -> str | None:
     """Plain text of one `-EncodedCommand` argument, or None when it is not one.
 
     Not valid base64 of printable UTF-16LE is skipped rather than guessed at:
     `-e Bypass` is base64-shaped and decodes to noise.
 
+    `lenient` is for an inner blob that Splunk cut off with its outer one: trim to
+    whole base64 quanta and whole UTF-16 units, then the same checks.
+
     ponytail: one transform (base64 of UTF-16LE). Layered obfuscation (gzip inside
     base64, `-bxor`, `[char]` arrays) needs a real deobfuscator such as CyberChef.
     """
+    if lenient:
+        blob = blob[: len(blob) // 4 * 4]
     try:
         raw = base64.b64decode(blob + "=" * (-len(blob) % 4), validate=True)
+        if lenient:
+            raw = raw[: len(raw) // 2 * 2]
         decoded = raw.decode("utf-16-le")
     except (binascii.Error, UnicodeDecodeError):
         return None
@@ -64,6 +71,18 @@ def encoded(text: str) -> dict[str, str]:
     return out
 
 
+def _unnest(plain: str) -> str:
+    """Show an inner `-EncodedCommand` blob (often cut by Splunk) as its plain text."""
+    def sub(m: re.Match[str]) -> str:
+        flag, blob = m.groups()
+        if not _is_encoded_flag(flag) or (inner := _decode(blob, lenient=True)) is None:
+            return m.group(0)
+        cut = "" if _decode(blob) is not None else "… (truncated)"
+        return m.group(0)[: -len(blob)] + f"«{inner}{cut}»"
+
+    return _FLAG.sub(sub, plain)
+
+
 def signature(blob: str) -> str:
     """Stable across loops and tasks, so the handoff line and the registry agree."""
     return "enc#" + hashlib.sha1(blob.encode()).hexdigest()[:6]
@@ -79,7 +98,7 @@ def encoded_in(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         for blob, plain in blobs.items():
             entry = found.setdefault(
                 signature(blob),
-                {"blob": blob, "plain": _truncate(_sanitise(plain), _CMDLINE_LIMIT), "events": 0, "parents": {}},
+                {"blob": blob, "plain": _truncate(_sanitise(_unnest(plain)), _CMDLINE_LIMIT), "events": 0, "parents": {}},
             )
             weight = _row_weight(row)
             entry["events"] += weight

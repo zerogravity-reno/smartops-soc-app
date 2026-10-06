@@ -1,8 +1,10 @@
 """Encoded PowerShell: decoded by code in the handoff of the loop that sees it (B10)."""
 
+import base64
+
 from contracts import DomainFinding, ResultSet
 
-from smartops.subagent_analysts.analyze import _as_judgement
+from smartops.subagent_analysts.analyze import ENCODED_FOOTER, ENCODED_LINE_CAP, _as_judgement
 from smartops.subagent_analysts.routing import DomainSlice
 from smartops.tools.native.decoder import encoded, signature
 
@@ -29,3 +31,34 @@ def test_the_handoff_carries_reference_parents_and_plain_text_in_the_same_loop()
         f"~ encoded command {signature(BLOB)}: 4 events, parent {DESKTOP}=4; decodes to: $env:username"
         in narrative
     )
+
+
+def _enc(text: str) -> str:
+    return base64.b64encode(text.encode("utf-16-le")).decode()
+
+
+def _lines(rows: list[dict]) -> list[str]:
+    slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=len(rows), rows=rows))])
+    narrative = _as_judgement(DomainFinding(domain="endpoint", narrative="n"), slice_).narrative
+    return narrative.split(ENCODED_FOOTER + "\n")[1].splitlines()
+
+
+def test_encoded_lines_are_capped_rarest_parent_first():
+    # dce405e5's shape: the rare parent's one command has MORE events than each
+    # one-off from the busy parent, so ranking by events alone would cut it.
+    rows = [{"CommandLine": f"powershell -e {_enc(f'Get-Process -Id {i}')}", "ParentImage": r"C:\common.exe", "count": "1"}
+            for i in range(9)]
+    rows.append({"CommandLine": f"powershell -e {_enc('Get-Rare')}", "ParentImage": r"C:\rare.exe", "count": "3"})
+
+    lines = _lines(rows)
+
+    assert lines[0].startswith("~ encoded command") and "Get-Rare" in lines[0]
+    assert sum(l.startswith("~ encoded command") for l in lines) == ENCODED_LINE_CAP == 8
+    assert "2 more encoded commands not shown" in lines[-1]
+
+
+def test_nested_encoded_command_cut_by_splunk_still_decodes():
+    inner = _enc("Get-Process -Name explorer")[:30]  # odd length, as Splunk left it
+    rows = [{"CommandLine": f"powershell -e {_enc(f'powershell -EncodedCommand {inner}')}", "count": "1"}]
+
+    assert "Get-Proces" in _lines(rows)[0]
