@@ -220,15 +220,32 @@ deserve a line and dropping the rest.
 Reason step by step, then end your reply with EXACTLY this block and nothing after it:
 {_NARRATIVE_ANSWER_BLOCK}"""
 
+# B11 / live run dce405e5: the 8B analysts still called commands "suspicious", called
+# `splunkd.exe` parent paths "endpoints", and reported 10,849 events as "10,849
+# destinations", each time with a per-body "do not say what it means" sentence in place.
+# One copy, three consumers: the three bodies used to restate this sentence and drift;
+# a ban list that differs per domain is a gap in two of them. Rule 5 of `_ANSWER_RULES`
+# already covers distinct counts, so point 3 adds only what it does not: which field a
+# VALUE came from. The test that bans judgement vocabulary strips this block first,
+# because naming the banned words here is the point of it.
+_DESCRIBE_ONLY_BLOCK = """\
+DESCRIBE ONLY. Say what the rows state and stop. Never characterise it, never say what
+it means, never suggest what it could be.
+- Never write any of these words or phrases: suspicious, malicious, benign, normal,
+  abnormal, unusual, anomalous, legitimate, expected, concerning, notable, likely,
+  possibly, probably, may indicate, could be, consistent with, suggests, indicative of.
+  Write the fact without the adjective.
+- Name each value by the field it came from. A path after `parent=` is a parent process
+  path, not an endpoint, host or destination. `events=` and event totals are events,
+  never destinations, hosts or users."""
+
 _IDENTITY_FACTS_BODY = f"""\
 Your task in this investigation is to act as the identity and authentication analyst.
 You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
 to TRANSLATE it into plain English: say what happened in these rows, in order, naming
-the accounts, source addresses, hosts and times involved. Do not say what it means,
-whether it is normal or abnormal, whether it is an attack, or who was behind it — that
-call belongs to someone else, and they make it from your account of the rows. Report
-only what the evidence shows: do not speculate about intent, and draw no broader
-conclusion beyond the specific rows you can cite.
+the accounts, source addresses, hosts and times involved.
+
+{_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
 can retype. Group like rows and describe the group — counts, distinct values, time
@@ -280,11 +297,9 @@ _NETWORK_FACTS_BODY = f"""\
 Your task in this investigation is to act as the network detection and response
 analyst. You are given the NETWORK evidence retrieved for this investigation. Your job
 is to TRANSLATE it into plain English: say what happened in these rows, in order, naming
-the hosts, addresses, domains, ports and times involved. Do not say what it means,
-whether it is normal or abnormal, whether it is an attack, or who was behind it — that
-call belongs to someone else, and they make it from your account of the rows. Report
-only what the evidence shows: do not speculate about intent, and draw no broader
-conclusion beyond the specific rows you can cite.
+the hosts, addresses, domains, ports and times involved.
+
+{_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
 can retype. Group like rows and describe the group — counts, distinct values, time
@@ -339,11 +354,9 @@ _ENDPOINT_FACTS_BODY = f"""\
 Your task in this investigation is to act as the endpoint and host-forensics analyst.
 You are given the ENDPOINT evidence retrieved for this investigation. Your job is to
 TRANSLATE it into plain English: say what happened in these rows, in order, naming the
-hosts, users, processes, parent processes, command lines and times involved. Do not say
-what it means, whether it is normal or abnormal, whether it is an attack, or who was
-behind it — that call belongs to someone else, and they make it from your account of the
-rows. Report only what the evidence shows: do not speculate about intent, and draw no
-broader conclusion beyond the specific rows you can cite.
+hosts, users, processes, parent processes, command lines and times involved.
+
+{_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
 can retype. Group like rows and describe the group — counts, distinct values, time
