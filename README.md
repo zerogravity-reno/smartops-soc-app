@@ -166,9 +166,9 @@ uv run uvicorn webapp.main:app --port 8001
 `start_server.bat` also works, but it uses whatever `python` is on your PATH, so run it from an activated `.venv`.
 
 **In the browser:**
-1. Click **Import from Mission Control**. It loads the newest notable event from Splunk into the form. You can also fill the form by hand; the rule name is required.
-2. Click **Process Event & Build Context**. This builds the seed, runs the ESCU and OpenCTI lookups, and has the Analyst plan the investigation. The OpenCTI lookup can take a few minutes.
-3. The full investigation then starts on its own: Broker loops, synthesis, then the verdict banner.
+1. Pick an alert in the **Incident queue** on the left (the latest 10 notables from Splunk ES). Its fields fill the form. You can also fill the form by hand; the rule name is required.
+2. Click **Investigate**. This builds the context contract (seed, ESCU match, OpenCTI lookup) and starts one `/api/run`: Analyst plan, Broker loops, synthesis, verdict. The OpenCTI lookup can take a few minutes.
+3. Follow it live in the two lanes (Analyst | Tool Broker) and the stage bar. The context sent to the pipeline is under **Context sent to the pipeline** at the bottom.
 
 ### The Tool Broker on its own
 
