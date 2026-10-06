@@ -1,0 +1,702 @@
+{
+  "serverInfo": {
+    "name": "Splunk_MCP_Server",
+    "title": null,
+    "version": "2.0.0",
+    "websiteUrl": null,
+    "icons": null
+  },
+  "protocolVersion": "2025-11-25",
+  "instructions": null,
+  "tools": [
+    {
+      "name": "splunk_get_info",
+      "title": null,
+      "description": "Get comprehensive information about the Splunk instance. Retrieves system information including version, hardware specs, and operational status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_indexes",
+      "title": null,
+      "description": "Get a list of indexes from Splunk. Indexes are data repositories where machine data is stored and organized.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based index of the first result to return. Defaults to 0.",
+            "default": 0,
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "description": "Maximum number of results to return in this page. Omit this argument to use the server's configured default row limit. If you provide a value greater than the server's configured maximum row limit, the server uses the maximum instead.",
+            "minimum": 1
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_sourcetypes",
+      "title": null,
+      "description": "Get a list of sourcetypes that have actual indexed event data in Splunk. Returns event counts, time coverage, and configuration metadata for each sourcetype. Only sourcetypes with data in the metadata index are returned; configured but unused sourcetypes are excluded. When earliest_time/latest_time are set, event_count is a bucket-approximate upper bound rather than an exact windowed count; use tstats for an exact count within a window.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "string",
+            "description": "Splunk index to scope the sourcetype discovery to (e.g., 'main', '_internal'). Supports * and _* wildcard. If omitted, searches across all indexes (index=* and index=_*).\nValidation: Index name may only contain letters, numbers, underscores, hyphens, and * wildcard.",
+            "pattern": "^[A-Za-z0-9_*-]+$"
+          },
+          "earliest_time": {
+            "type": "string",
+            "description": "Start of the time window for the metadata search (Splunk time modifier, e.g. '-7d', '-24h', '2024-01-01T00:00:00'). If omitted, searches all available time."
+          },
+          "latest_time": {
+            "type": "string",
+            "description": "End of the time window for the metadata search (Splunk time modifier, e.g. 'now', '-1h'). If omitted, defaults to now."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based index of the first result to return. Defaults to 0.",
+            "default": 0,
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "description": "Maximum number of results to return in this page. Omit this argument to use the server's configured default row limit. If you provide a value greater than the server's configured maximum row limit, the server uses the maximum instead.",
+            "minimum": 1
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_index_info",
+      "title": null,
+      "description": "Get detailed information about a specific Splunk index. Returns comprehensive configuration and status information for the specified index.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "index_name": {
+            "type": "string",
+            "description": "Name of the index to get information about\nValidation: Index name can only contain alphanumeric characters, underscores (_), and hyphens (-)",
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          }
+        },
+        "required": [
+          "index_name"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_user_list",
+      "title": null,
+      "description": "Get a list of users from Splunk. Retrieves information about all users including authentication details, roles, and account status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of rows to return",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_user_info",
+      "title": null,
+      "description": "Retrieves detailed information about the currently authenticated user including roles and permissions. Returns comprehensive user profile data for the current session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_run_query",
+      "title": null,
+      "description": "Execute a Splunk search query and return the results. Use this to retrieve log data, perform aggregations, analyze events, and extract insights. Always set the 'app' parameter when the user specifies an app context — omitting it means app-scoped field extractions will not be applied.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Valid SPL query to execute\nValidation: SPL query must be between 1 and 10000 characters (submitted: {length})",
+            "pattern": "^[\\s\\S]{1,10000}$"
+          },
+          "earliest_time": {
+            "type": "string",
+            "description": "Start time for search (e.g., -6h, -1d)",
+            "default": "-6h"
+          },
+          "latest_time": {
+            "type": "string",
+            "description": "End time for search (e.g., now, -1h)",
+            "default": "now"
+          },
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to run the SPL query in (e.g., 'search', 'enterprise_security'). Set this when the user specifies an app — omitting it means app-scoped field extractions and lookups will not be applied.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          },
+          "workload_pool": {
+            "type": "string",
+            "description": "Splunk workload pool to run this search in.\nValidation: Workload pool name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of rows to return",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_metadata",
+      "title": null,
+      "description": "Retrieve metadata about hosts or sources across one or more indexes in the selected time window.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Metadata category to list (hosts or sources).",
+            "enum": [
+              "hosts",
+              "sources"
+            ]
+          },
+          "index": {
+            "type": "string",
+            "description": "Index name or wildcard pattern (e.g. main, app_*, *).\nValidation: Index pattern may contain letters, numbers, underscore, dash, and * wildcard",
+            "default": "*",
+            "pattern": "^[A-Za-z0-9_*-]+$"
+          },
+          "earliest_time": {
+            "type": "string",
+            "description": "Start time for search (e.g., -24h, -1d)",
+            "default": "-24h",
+            "examples": [
+              "-24h"
+            ]
+          },
+          "latest_time": {
+            "type": "string",
+            "description": "End time for search (e.g., now, -1h)",
+            "default": "now",
+            "examples": [
+              "now"
+            ]
+          },
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of rows to return",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_kv_store_collections",
+      "title": null,
+      "description": "Get KV Store collection statistics including size, count, and storage information. Retrieves comprehensive metrics about all KV Store collections in the Splunk instance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of rows to return",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_knowledge_objects",
+      "title": null,
+      "description": "Retrieve Splunk knowledge objects by type. Supports various knowledge object types including saved searches, alerts, field extractions, lookups, macros, data models, and more.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Type of knowledge object to retrieve",
+            "enum": [
+              "saved_searches",
+              "alerts",
+              "field_extractions",
+              "field_aliases",
+              "calculated_fields",
+              "lookups",
+              "automatic_lookups",
+              "lookup_transforms",
+              "macros",
+              "tags",
+              "data_models",
+              "workflow_actions",
+              "views",
+              "panels",
+              "apps",
+              "mltk_algorithms",
+              "mltk_models"
+            ]
+          },
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of rows to return",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_run_saved_search",
+      "title": null,
+      "description": "Execute a Splunk saved search by name and return its results. Saved searches are pre-defined SPL queries stored in Splunk. Use get_knowledge_objects with type='saved_searches' to discover available saved searches and their app context. If the saved search name is unique across apps, the app is resolved automatically. If the same name exists in multiple apps, the alphabetically first app is used; pass the 'app' parameter to target a specific app. If the saved search contains placeholder tokens like $token_name$, pass replacement values as key=value pairs in the args parameter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "saved_search_name": {
+            "type": "string",
+            "description": "Name of the saved search to execute\nValidation: Saved search name is required, it cannot be blank and is limited to 500 characters.",
+            "pattern": "^(?=.*\\S)[\\s\\S]{1,500}$"
+          },
+          "args": {
+            "type": "string",
+            "description": "Optional replacement arguments for saved search tokens\nValidation: args must be space-separated key=\"value\" token assignments only (e.g. host=\"web01\" sourcetype=\"syslog\"). Pipe operators, brackets, backticks, semicolons, and newlines are not allowed in values.",
+            "default": "",
+            "pattern": "^(\\s*[A-Za-z_][A-Za-z0-9_.]*\\s*=\\s*\"(\\\\\"|[^\"\\|\\[\\]`\\n\\r;])*\"(\\s+|$))*$"
+          },
+          "earliest_time": {
+            "type": "string",
+            "description": "Override the saved search's default start time (e.g., -24h, -7d, 2024-01-01T00:00:00). If omitted, uses the time range configured in the saved search."
+          },
+          "latest_time": {
+            "type": "string",
+            "description": "Override the saved search's default end time (e.g., now, -1h). If omitted, uses the time range configured in the saved search."
+          },
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to run the saved search in (e.g., 'search', 'enterprise_security'). If omitted, the app is auto-resolved; when the name exists in multiple apps the alphabetically first app is used.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          },
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of rows to return",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "saved_search_name"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_list_alerts",
+      "title": null,
+      "description": "Get a paginated list of alerts in Splunk along with their name, app, owner, severity, enabled state, and schedule (cron)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to filter alerts by (e.g., 'search', 'enterprise_security'). If omitted, retrieves alerts across all accessible apps.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Filter alerts by enabled state. If true, retrieves only enabled alerts; if false, retrieves only disabled alerts. If omitted, retrieves all alerts regardless of state."
+          },
+          "severity": {
+            "type": "integer",
+            "description": "Filter alerts by severity level (1=info, 2=low, 3=medium, 4=high, 5=critical). If omitted, retrieves alerts of all severities.",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based index of the first result to return. Defaults to 0.",
+            "default": 0,
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "description": "Maximum number of results to return in this page. Omit this argument to use the server's configured default row limit. If you provide a value greater than the server's configured maximum row limit, the server uses the maximum instead.",
+            "minimum": 1
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_alert_details",
+      "title": null,
+      "description": "Get detailed information about a specific alert in Splunk, including its configuration, schedule, trigger condition, actions, and search query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "alert_name": {
+            "type": "string",
+            "description": "Name of the alert to retrieve details for.\nValidation: Alert name is required, it cannot be blank and is limited to 500 characters.",
+            "pattern": "^(?=.*\\S)[\\s\\S]{1,500}$"
+          },
+          "app": {
+            "type": "string",
+            "description": "Splunk app that owns the alert (e.g., 'search', 'itsi'). If omitted, searches across all apps.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          }
+        },
+        "required": [
+          "alert_name"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_list_fired_alerts",
+      "title": null,
+      "description": "Get individual fired alert instances from Splunk. Each result is a single trigger event with the alert name, app, owner, severity, and trigger time. Results are ordered most-recent first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to filter fired alerts by (e.g., 'search', 'enterprise_security'). If omitted, retrieves fired alerts across all accessible apps.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          },
+          "severity": {
+            "type": "integer",
+            "description": "Filter fired alerts by severity level (1=info, 2=low, 3=medium, 4=high, 5=critical). If omitted, retrieves fired alerts of all severities.",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based index of the first result to return. Defaults to 0.",
+            "default": 0,
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "description": "Maximum number of results to return in this page. Omit this argument to use the server's configured default row limit. If you provide a value greater than the server's configured maximum row limit, the server uses the maximum instead.",
+            "minimum": 1
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_fired_alert_details",
+      "title": null,
+      "description": "Returns every recent fired instance for a named alert, each with fire time, severity, and search ID (sid). Explicitly distinguishes an alert that exists but has not fired recently from an alert name that does not exist at all.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "alert_name": {
+            "type": "string",
+            "description": "Name of the alert to retrieve fired instances for.\nValidation: Alert name is required, it cannot be blank and is limited to 500 characters.",
+            "pattern": "^(?=.*\\S)[\\s\\S]{1,500}$"
+          },
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to filter fired instances by (e.g., 'search', 'enterprise_security'). If omitted, retrieves fired instances across all accessible apps.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          },
+          "severity": {
+            "type": "integer",
+            "description": "Filter fired instances by severity level (1=info, 2=low, 3=medium, 4=high, 5=critical). If omitted, retrieves all severities.",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "description": "Maximum number of fired instances to return in this page. Omit this argument to use the server's configured default row limit. If you provide a value greater than the server's configured maximum row limit, the server uses the maximum instead.",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based index of the first result to return. Use with count for pagination. Defaults to 0.",
+            "default": 0,
+            "minimum": 0
+          }
+        },
+        "required": [
+          "alert_name"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_get_alert_throttle",
+      "title": null,
+      "description": "Returns the throttle configuration and current active state for a named alert. Distinguishes active (currently suppressed), configured-inactive (throttle configured but not currently active), and none (no throttle set). When active, surfaces window duration and time remaining so on-call engineers can tell whether alert silence is intentional (throttled) or a health signal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "alert_name": {
+            "type": "string",
+            "description": "Name of the alert to check throttle state for.\nValidation: Alert name is required, cannot be blank, and is limited to 500 characters.",
+            "pattern": "^(?=.*\\S)[\\s\\S]{1,500}$"
+          },
+          "app": {
+            "type": "string",
+            "description": "Splunk app that owns the alert (e.g., 'search', 'enterprise_security'). Optional - resolved automatically from the alert's ACL when omitted. Provide to disambiguate alerts that share a name across multiple apps.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          }
+        },
+        "required": [
+          "alert_name"
+        ]
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "splunk_list_active_throttles",
+      "title": null,
+      "description": "Returns every alert that is currently suppressing notifications, with the suppression criteria and time remaining. A single call that otherwise means checking each alert by hand during an incident. Alerts that have suppression configured but are not currently active are excluded. Returns an explicit empty result when no suppressions are active.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to restrict the scan to (e.g., 'search', 'enterprise_security'). If omitted, all accessible apps are scanned.\nValidation: App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "pattern": "^(?!\\.{1,2}$)(?!-$)[A-Za-z0-9_.-]+$"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Maximum number of active throttle instances to return in this page. Omit this argument to use the server's configured default row limit. If you provide a value greater than the server's configured maximum row limit, the server uses the maximum instead.",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Zero-based index of the first result to return. Use with count for pagination. Defaults to 0.",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": {
+        "title": null,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": null,
+        "openWorldHint": false
+      },
+      "_meta": null,
+      "execution": null
+    }
+  ]
+}
