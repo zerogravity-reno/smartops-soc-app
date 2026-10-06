@@ -24,59 +24,59 @@
     <ol id="queueList" class="queue-list" aria-busy="true"></ol>
   </aside>
 
-  <main class="work">
-
-    <section id="alertPanel" class="panel" aria-labelledby="alertTitle">
-      <div class="panel-head">
-        <h2 id="alertTitle">Alert</h2>
-        <span id="runClock" class="clock" aria-live="off"></span>
+  <section id="alertPanel" class="strip" aria-labelledby="alertTitle">
+    <div class="strip-top">
+      <h2 id="alertTitle" class="strip-rule">No alert selected</h2>
+      <div class="strip-actions">
+        <button id="alertEdit" class="btn-ghost" type="button" aria-expanded="false" aria-controls="alertForm">Edit fields</button>
+        <button id="runBtn" class="btn-primary" type="submit" form="alertForm">Investigate</button>
       </div>
-      <div id="alertSummary" class="fold-line" hidden>
-        <span id="alertSummaryText"></span>
-        <button id="alertEdit" class="btn-ghost" type="button">Edit</button>
-      </div>
-      <p id="alertNote" class="note">Pick an alert from the queue, or fill the fields by hand.</p>
-      <form id="alertForm" class="fields" novalidate>
-        <label class="field full">Detection rule
-          <input id="f_rule" name="rule_name" required />
-        </label>
-        <label class="field">Source IP <input id="f_src" /></label>
-        <label class="field">Destination host <input id="f_dest" /></label>
-        <label class="field">User <input id="f_user" /></label>
-        <label class="field">File hash <input id="f_hash" /></label>
-        <label class="field">Domain <input id="f_domain" /></label>
-        <label class="field">MITRE technique <input id="f_mitre" /></label>
-        <label class="field">Signature <input id="f_sig" /></label>
-        <label class="field full">Deployed SPL
-          <textarea id="f_spl" rows="3"></textarea>
-        </label>
-        <p id="formError" class="field-error full" role="alert"></p>
-        <div class="actions full">
-          <button id="runBtn" class="btn-primary" type="submit">Investigate</button>
-        </div>
-      </form>
-    </section>
+    </div>
+    <p id="alertNote" class="note">Pick an alert from the queue, or edit the fields by hand.</p>
+    <dl id="alertFacts" class="facts" hidden></dl>
+    <form id="alertForm" class="fields" novalidate hidden>
+      <label class="field full">Detection rule
+        <input id="f_rule" name="rule_name" required />
+      </label>
+      <label class="field">Source IP <input id="f_src" /></label>
+      <label class="field">Destination host <input id="f_dest" /></label>
+      <label class="field">User <input id="f_user" /></label>
+      <label class="field">File hash <input id="f_hash" /></label>
+      <label class="field">Domain <input id="f_domain" /></label>
+      <label class="field">MITRE technique <input id="f_mitre" /></label>
+      <label class="field full">Signature <input id="f_sig" /></label>
+      <label class="field full">Deployed SPL
+        <textarea id="f_spl" rows="3"></textarea>
+      </label>
+    </form>
+    <p id="formError" class="field-error" role="alert"></p>
+  </section>
 
-    <ol id="stages" class="stages" aria-label="Pipeline progress">
-      <li data-stage="context"><button type="button">Context</button></li>
-      <li data-stage="plan"><button type="button">Plan</button></li>
-      <li data-stage="broker"><button type="button">Broker</button></li>
-      <li data-stage="synthesis"><button type="button">Synthesis</button></li>
-      <li data-stage="verdict"><button type="button">Verdict</button></li>
+  <main class="ledger-wrap" aria-label="Investigation">
+    <ol id="stream" class="ledger">
+      <li class="stg" data-stage="context"><details><summary><span class="node" aria-hidden="true"></span><span class="stg-name">Context</span><span class="stg-sum"></span><span class="stg-time"></span></summary><div class="stg-body"></div></details></li>
+      <li class="stg" data-stage="plan"><details><summary><span class="node" aria-hidden="true"></span><span class="stg-name">Plan</span><span class="stg-sum"></span><span class="stg-time"></span></summary><div class="stg-body"></div></details></li>
+      <li class="stg" data-stage="broker"><details><summary><span class="node" aria-hidden="true"></span><span class="stg-name">Evidence</span><span class="stg-sum"></span><span class="stg-time"></span></summary><div class="stg-body"></div></details></li>
+      <li class="stg" data-stage="findings"><details><summary><span class="node" aria-hidden="true"></span><span class="stg-name">Findings</span><span class="stg-sum"></span><span class="stg-time"></span></summary><div class="stg-body"></div></details></li>
+      <li class="stg" data-stage="synthesis"><details><summary><span class="node" aria-hidden="true"></span><span class="stg-name">Synthesis</span><span class="stg-sum"></span><span class="stg-time"></span></summary><div class="stg-body"></div></details></li>
     </ol>
-
-    <section id="verdict" class="verdict" hidden aria-live="polite"></section>
-
-    <section id="stream" class="stream" aria-label="Live investigation" aria-live="polite"></section>
-
-    <details id="contextBox" class="panel raw" hidden>
-      <summary>Context sent to the pipeline</summary>
-      <h3>Context contract</h3><pre id="contractOut"></pre>
-      <h3>ESCU match</h3><pre id="escuOut"></pre>
-      <h3>OpenCTI lookup</h3><pre id="ctiOut"></pre>
-    </details>
-
   </main>
+
+  <aside class="rail" aria-label="Case summary">
+    <section id="verdict" class="verdict" aria-live="polite">
+      <div class="v-label">No run yet</div>
+      <div class="v-conf">Pick an alert and investigate it. The verdict and the case for it appear here.</div>
+    </section>
+    <section class="rail-sec" aria-labelledby="tasksTitle">
+      <h2 id="tasksTitle">Tasks</h2>
+      <ol id="taskBoard" class="tasks"><li class="dim">The plan's tasks appear here once the Analyst sends them.</li></ol>
+    </section>
+    <section class="rail-sec" aria-labelledby="runTitle">
+      <h2 id="runTitle">Run</h2>
+      <dl id="runMeta" class="meta"><dt>Status</dt><dd>Idle</dd></dl>
+    </section>
+  </aside>
+
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>

@@ -1,13 +1,15 @@
 // SmartOps SOC console: pick an alert, build its context contract, run the whole
-// pipeline with one /api/run call and render the Analyst <-> Tool Broker stream live.
+// pipeline with one /api/run call, and render it as a five-stage ledger with the
+// case (verdict, scores, tasks, run totals) pinned in the right rail.
 
 const $ = id => document.getElementById(id);
 const FIELDS = ['rule', 'src', 'dest', 'user', 'hash', 'domain', 'mitre', 'sig', 'spl'];
+const STAGES = ['context', 'plan', 'broker', 'findings', 'synthesis'];
 
 let lastImportedRaw = {};
 let lastImportedTime = null;
-let run = null;   // {es, started, lastEvent, timer, contract}
-let stats = {};   // per loop: sent, dropped, handshake, top, status -- the folded summary
+let run = null;   // {es, started, lastEvent, timer, contract, id}
+let state = {};   // per run: stage times, tasks, totals, plan -- what the rail shows
 
 async function getJSON(url, opts) {
   const res = await fetch(url, opts);
@@ -32,6 +34,14 @@ function setConn(text, cls) {
   c.className = 'conn' + (cls ? ' ' + cls : '');
 }
 
+// "Threat - sama- ESCU - Malicious PowerShell Process - Encoded Command - Rule"
+//   -> "Malicious PowerShell Process - Encoded Command"
+function shortRule(name) {
+  let s = String(name || '');
+  while (/^(Threat|sama|ESCU|Custom|Endpoint|Network|Identity|Access)\s*-\s*/i.test(s)) s = s.replace(/^[^-]*-\s*/, '');
+  return s.replace(/(\s*-\s*Rule)+\s*$/i, '') || String(name || '');
+}
+
 // ── Incident queue ─────────────────────────────────────────────────────────
 
 async function loadQueue() {
@@ -42,15 +52,15 @@ async function loadQueue() {
     const data = await getJSON('/api/incident-queue');
     if (data.status === 'error') throw new Error(data.message);
     const events = data.events || [];
-    list.innerHTML = events.length ? events.map(ev =>
-      '<li><button type="button" data-index="' + Number(ev.index) + '">' +
-        '<div class="q-rule">' + _esc(ev.rule_name || 'Unnamed rule') + '</div>' +
-        '<div class="q-meta">' + [
-          ev.urgency ? '<span class="q-urg ' + _esc(String(ev.urgency).toLowerCase()) + '">' + _esc(ev.urgency) + '</span>' : '',
-          _esc(ev.time || ''),
-        ].filter(Boolean).join(' &middot; ') + '</div>' +
-        '<div class="q-meta">' + _esc([ev.src, ev.dest, ev.user].filter(Boolean).join('  ')) + '</div>' +
-      '</button></li>').join('')
+    list.innerHTML = events.length ? events.map(ev => {
+      const t = String(ev.time || '');
+      return '<li><button type="button" data-index="' + Number(ev.index) + '" title="' + _esc(ev.rule_name + '\n' + t) + '">' +
+        '<span class="q-rule">' + _esc(shortRule(ev.rule_name) || 'Unnamed rule') + '</span>' +
+        '<span class="q-time">' + _esc(t.slice(11, 19) || t) + '</span>' +
+        '<span class="q-who">' + (ev.urgency ? '<span class="q-urg">' + _esc(ev.urgency) + '</span> ' : '') +
+          _esc([ev.dest, ev.user, ev.src].filter(Boolean).join(', ')) + '</span>' +
+      '</button></li>';
+    }).join('')
       : '<li class="q-state">No notable events in the last 30 days. You can still fill the alert fields by hand.</li>';
   } catch (e) {
     list.innerHTML = '<li class="q-state bad">Could not reach Splunk: ' + _esc(e.message) +
@@ -60,14 +70,39 @@ async function loadQueue() {
   }
 }
 
+// ── Alert strip ────────────────────────────────────────────────────────────
+
+function showForm(open) {
+  $('alertForm').hidden = !open;
+  $('alertEdit').setAttribute('aria-expanded', String(open));
+  $('alertEdit').textContent = open ? 'Hide fields' : 'Edit fields';
+}
+
+function _sha256(h) { const m = /SHA256=([0-9A-Fa-f]{64})/.exec(h || ''); return m ? m[1] : (h || ''); }
+
+function showFacts(data) {
+  const r = data.raw_event_data || {};
+  const one = v => Array.isArray(v) ? v[0] : v;
+  const facts = [
+    ['Host', data.dest], ['User', data.user], ['Source IP', data.src],
+    ['Event time (UTC)', data.event_time], ['Notable created', one(r._time)], ['Urgency', data.urgency],
+    ['Parent process', one(r.parent_process_path) || one(r.parent_process), 'm wide'],
+    ['Integrity', one(r.process_integrity_level)], ['MITRE', one(r['annotations.mitre_attack'])],
+    ['Command line', one(r.process) || data.sig, 'm wide'],
+    ['SHA256', _sha256(one(r.process_hash) || data.file_hash), 'm wide'],
+  ].filter(f => f[1]);
+  $('alertFacts').innerHTML = facts.map(([k, v, c]) =>
+    '<div class="' + (c && c.includes('wide') ? 'wide' : '') + '"><dt>' + _esc(k) + '</dt><dd' + (c && c.includes('m') ? ' class="m"' : '') + '>' + _esc(v) + '</dd></div>').join('');
+  $('alertFacts').hidden = !facts.length;
+}
+
 // ponytail: the queue and the import both take "sort -_time | head", so a notable that
 // lands between the two calls shifts the index by one. Import by rule_id/_time if that bites.
 async function importAlert(index, btn) {
   if (run) { toast('A run is in progress. Wait for it to finish.', true); return; }
   document.querySelectorAll('#queueList button').forEach(b => b.removeAttribute('aria-current'));
   btn.setAttribute('aria-current', 'true');
-  foldAlert(false);
-  $('alertNote').textContent = 'Importing alert from Splunk ES...';
+  $('alertNote').textContent = 'Importing the alert from Splunk ES...';
   try {
     const data = await getJSON('/api/import-from-splunk?index=' + index);
     if (data.status !== 'ok') throw new Error(data.message || 'No alert returned');
@@ -76,8 +111,11 @@ async function importAlert(index, btn) {
     FIELDS.forEach(k => { $('f_' + k).value = map[k] || ''; });
     lastImportedRaw = data.raw_event_data || {};
     lastImportedTime = data.event_time || null;
-    $('alertNote').textContent = 'Imported the alert' + (data.event_time ? ' from ' + data.event_time : '') +
-      (data.urgency ? ' (urgency ' + data.urgency + ')' : '') + '. Review the fields, then Investigate.';
+    $('alertTitle').textContent = shortRule(data.rule_name);
+    $('alertTitle').title = data.rule_name || '';
+    $('alertNote').textContent = data.deployed_spl ? 'Imported, with the deployed SPL. Investigate when ready.'
+      : 'Imported, but no deployed SPL was found for this rule. Paste it under Edit fields for the SPL comparison.';
+    showFacts(data);
     $('formError').textContent = '';
   } catch (e) {
     $('alertNote').textContent = 'Import failed: ' + e.message;
@@ -230,11 +268,38 @@ async function buildContract(f, raw) {
 
 // ── Run ────────────────────────────────────────────────────────────────────
 
-function setStage(name, state) {
-  const items = [...$('stages').children];
-  const at = items.findIndex(li => li.dataset.stage === name);
-  items.forEach((li, i) => {
-    li.className = i < at ? 'done' : i === at ? (state || 'active') : '';
+const _li = name => $('stream').querySelector('.stg[data-stage="' + name + '"]');
+const _secs = ms => { const s = Math.round(ms / 1000); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's'; };
+
+// One stage active at a time; earlier ones done. A finished stage folds to its line once;
+// after that it stays however the reader left it.
+function setStage(name, st) {
+  const at = STAGES.indexOf(name);
+  const now = Date.now();
+  STAGES.forEach((s, i) => {
+    const li = _li(s), t = state.t[s] = state.t[s] || {};
+    const was = li.className.replace('stg', '').trim();
+    const cls = i < at ? 'done' : i === at ? (st || 'active') : (was === 'done' || was === 'active' ? 'done' : '');
+    if (i === at && !t.start) t.start = now;
+    if (cls !== 'active' && t.start && !t.end) t.end = now;
+    if (cls === 'active') t.end = null;
+    li.className = 'stg' + (cls ? ' ' + cls : '');
+    const d = li.querySelector('details');
+    if (cls === 'active' || cls === 'failed') d.open = true;
+    else if (was === 'active') d.open = false;
+    li.querySelector('.stg-time').textContent = t.start ? _secs((t.end || now) - t.start) : '';
+  });
+}
+function setSum(name, text) { _li(name).querySelector('.stg-sum').textContent = text; }
+
+function resetLedger() {
+  STAGES.forEach(s => {
+    const li = _li(s);
+    li.className = 'stg';
+    li.querySelector('details').open = false;
+    li.querySelector('.stg-body').innerHTML = '';
+    li.querySelector('.stg-sum').textContent = '';
+    li.querySelector('.stg-time').textContent = '';
   });
 }
 
@@ -242,18 +307,21 @@ function endRun(text, cls) {
   if (!run) return;
   run.es && run.es.close();
   clearInterval(run.timer);
-  $('runClock').textContent = 'Finished after ' + Math.round((Date.now() - run.started) / 1000) + 's';
+  state.ended = Date.now();
+  state.status = cls === 'bad' ? text.replace(/^Run \S+ /, '').replace(/^./, c => c.toUpperCase()) : (state.status === 'Running' ? 'Complete' : state.status);
   run = null;
+  renderMeta();
   setConn(text, cls);
   $('runBtn').disabled = false;
   $('runBtn').textContent = 'Investigate';
-  document.querySelectorAll('#queueList button').forEach(b => { b.disabled = false; });
+  document.querySelectorAll('#queueList button').forEach(b => { b.disabled = false; b.classList.remove('running'); });
 }
 
 function tick() {
   if (!run) return;
-  const s = n => Math.round((Date.now() - n) / 1000) + 's';
-  $('runClock').textContent = 'Running ' + s(run.started) + ', last event ' + s(run.lastEvent) + ' ago';
+  const cur = STAGES.find(s => _li(s).classList.contains('active'));
+  if (cur && state.t[cur] && state.t[cur].start) _li(cur).querySelector('.stg-time').textContent = _secs(Date.now() - state.t[cur].start);
+  renderMeta();
 }
 
 async function investigate(ev) {
@@ -263,38 +331,39 @@ async function investigate(ev) {
   const f = { rule_name: v('rule'), src_ip: v('src'), dest: v('dest'), user: v('user'), hash: v('hash'),
               domain: v('domain'), mitre: v('mitre'), signature: v('sig'), deployed_spl: v('spl') };
   if (!f.rule_name) {
-    $('formError').textContent = 'Pick an alert from the queue or enter the detection rule name.';
+    $('formError').textContent = 'Pick an alert from the queue, or open Edit fields and enter the detection rule name.';
+    showForm(true);
     $('f_rule').focus();
     return;
   }
   $('formError').textContent = '';
+  if (!$('alertFacts').innerHTML) { $('alertTitle').textContent = shortRule(f.rule_name); }
 
   run = { started: Date.now(), lastEvent: Date.now(), timer: setInterval(tick, 1000) };
-  stats = {};
-  foldAlert(true, [f.rule_name, f.dest, f.user].filter(Boolean).join('  /  '));
+  state = { started: Date.now(), t: {}, tasks: [], plan: null, spend: 0, tokIn: 0, tokOut: 0, loops: 0, status: 'Building context' };
+  showForm(false);
   $('runBtn').disabled = true;
   $('runBtn').textContent = 'Running...';
-  document.querySelectorAll('#queueList button').forEach(b => { b.disabled = true; });
-  $('stream').innerHTML = '';
-  $('verdict').hidden = true;
-  $('contextBox').hidden = true;
+  document.querySelectorAll('#queueList button').forEach(b => { b.disabled = true; if (b.getAttribute('aria-current') === 'true') b.classList.add('running'); });
+  resetLedger();
+  railReset();
   setStage('context');
+  setSum('context', 'Matching ESCU and asking OpenCTI');
   setConn('Building context', 'live');
   tick();
 
   try {
     const { contract, escuData, ctiData } = await buildContract(f, lastImportedRaw);
     run.contract = contract;
-    $('contractOut').textContent = JSON.stringify(contract, null, 2);
-    $('escuOut').textContent = JSON.stringify(escuData, null, 2);
-    $('ctiOut').textContent = JSON.stringify(ctiData, null, 2);
-    $('contextBox').hidden = false;
+    _add(_contextCard(contract, escuData, ctiData), 'context');
 
     const { run_id } = await postJSON('/api/run', { context_contract: contract });
     if (!run_id) throw new Error('The server did not return a run id.');
-    run.id = run_id;
+    run.id = state.id = run_id;
     setStage('plan');
+    setSum('plan', 'Analyst is planning. A cold model can take a few minutes.');
     setConn('Run ' + run_id + ' connecting', 'warn');
+    state.status = 'Running';
 
     const es = new EventSource('/api/run/stream/' + encodeURIComponent(run_id));
     run.es = es;
@@ -312,23 +381,20 @@ async function investigate(ev) {
     es.onerror = () => {
       if (!run) return;
       if (es.readyState === EventSource.CLOSED) {
-        _stampError('Lost the live stream for run ' + run_id + '. The server may have restarted; the run cannot be resumed.');
-        setStage(currentStage(), 'failed');
+        _fail('Lost the live stream for run ' + run_id + '. The server may have restarted; the run cannot be resumed.');
         endRun('Stream lost', 'bad');
       } else {
         setConn('Run ' + run_id + ' reconnecting', 'warn');
       }
     };
   } catch (e) {
-    _stampError(e.message);
-    setStage(currentStage(), 'failed');
+    _fail(e.message);
     endRun('Failed before the run started', 'bad');
   }
 }
 
 function currentStage() {
-  const li = $('stages').querySelector('.active, .failed');
-  return li ? li.dataset.stage : 'context';
+  return STAGES.find(s => /active|failed/.test(_li(s).className)) || 'context';
 }
 
 // ── Stream rendering ───────────────────────────────────────────────────────
@@ -337,31 +403,48 @@ function currentStage() {
 function _esc(v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+const _short = id => String(id || '').replace(/^.*-(L\d+-)?(?=T\d+$)/, '');
 
 function handleSSE(ev) {
   const loop = ev.loop || 1;
   const data = ev.data || {};
   if (ev.type === 'analyst') {
     setStage('plan');
-    if (!Object.keys(data).length) { _add('<div class="xr-loop">Loop 1</div>' + _waiting('a', 'Plans the investigation', 'Analyst is planning. A cold model can take a few minutes.', 'wait-plan'), 'plan'); return; }
-    _drop('wait-plan');
+    if (!Object.keys(data).length) return;
+    _addTokens(ev.tokens);
+    state.plan = data;
+    const tasks = data.tasks || [];
+    if (!tasks.length && data.status === 'VERDICT_REACHED') {
+      _add(_analystCard(data, ev.tokens), 'plan');
+      setSum('plan', 'Verdict reached while planning, no evidence fetched');
+      return;
+    }
     // A plan without tasks reaches the broker as nothing: say so here, where it went wrong.
-    if (!(data.tasks || []).length) {
+    if (!tasks.length) {
       setStage('plan', 'failed');
-      _add(_block('a', 'Plans the investigation', _tok(ev.tokens),
+      setSum('plan', 'No usable plan: nothing to send to the Tool Broker');
+      _add(_card('a', 'Plans the investigation', _tok(ev.tokens),
         '<div class="xr-p bad">The Analyst answered without a usable plan (no tasks' + (data.hypotheses ? '' : ', no hypotheses, no JSON') + '), so there is nothing to send to the Tool Broker.</div>' +
         _details('What the model said', data.reasoning ? '<div class="xr-p dim">' + _esc(data.reasoning) + '</div>' : '', true)), 'plan');
       return;
     }
     _add(_analystCard(data, ev.tokens), 'plan');
+    const al = data.semantic_alignment ? (data.semantic_alignment === 'ALIGNED' ? ', deployed SPL aligned' : ', deployed SPL not aligned') : '';
+    setSum('plan', (data.hypotheses || []).length + ' hypotheses, ' + tasks.length + ' tasks' + al);
+    renderScores({});
   } else if (ev.type === 'handoff') {
-    if ((data.tasks || []).length) setStage('broker');
-    if (loop > 2) _foldLoop(loop - 1);
-    stats[loop] = { sent: (data.tasks || []).length, dropped: (data.dropped || []).filter(d => !d.sent).length };
+    setStage('broker');
+    state.loops = loop;
+    const tasks = data.tasks || [];
+    const lost = (data.dropped || []).filter(d => !d.sent).length;
+    state.tasks = tasks.map(t => ({ id: t.task_id, q: t.question, steps: null, rows: null, spend: 0, rejected: 0, dom: {} }));
+    renderTasks();
+    if (loop > 2) _add('<div class="loop-h">Loop ' + (loop - 1) + '</div>', 'broker');
     _add(_handoffCard(loop, data), 'broker');
+    setSum('broker', tasks.length + ' task' + (tasks.length === 1 ? '' : 's') + ' sent' + (lost ? ', ' + lost + ' not sent' : '') + ', fetching');
   } else if (ev.type === 'broker_log') {
     setStage('broker');
-    if (!$('bk-' + loop)) _add(_brokerShell(loop));
+    if (!$('bk-' + loop)) _add(_brokerShell(loop), 'broker');
     const term = $('bk-term-' + loop);
     if (!term) return;
     const txt = data.line || '';
@@ -375,84 +458,87 @@ function handleSSE(ev) {
     const last = $('bk-last-' + loop);
     if (last && txt.trim()) last.textContent = txt.trim().slice(0, 90);
   } else if (ev.type === 'broker') {
-    if (!$('bk-' + loop)) _add(_brokerShell(loop));
+    if (!$('bk-' + loop)) _add(_brokerShell(loop), 'broker');
     const st = $('bk-st-' + loop);
     if (st) st.textContent = 'Done';
     const fd = $('bk-fd-' + loop);
-    if (fd) { fd.hidden = false; fd.innerHTML = _brokerSteps(data.runs || []); }
-    _add(_handshake(data.handshake));
-    const h = data.handshake;
-    if (h) (stats[loop] = stats[loop] || {}).handshake =
-      (h.not_fetched || []).length + (h.not_returned || []).length + (h.unexpected || []).length ? 'handshake broken' : 'handshake held';
+    const runs = data.runs || [];
+    if (fd) { fd.hidden = false; fd.innerHTML = _brokerSteps(runs); }
+    _add(_handshake(data.handshake), 'broker');
+    let done = 0, all = 0, spend = 0;
+    runs.forEach(r => {
+      const steps = r.steps || [];
+      done += steps.filter(s => s.completed).length; all += steps.length; spend += r.spend_micro_usd || 0;
+      const t = state.tasks.find(x => x.id === r.task_id);
+      if (t) Object.assign(t, { steps: steps.filter(s => s.completed).length + '/' + steps.length,
+        rows: steps.reduce((n, s) => n + (s.rows_retrieved || 0), 0), spend: r.spend_micro_usd || 0,
+        rejected: steps.filter(s => s.status === 'rejected').length, noRun: !r.run_dir });
+    });
+    state.spend += spend;
+    const h = data.handshake || {};
+    const broken = (h.not_fetched || []).length + (h.not_returned || []).length + (h.unexpected || []).length;
+    setSum('broker', (h.returned || []).length + ' of ' + (h.sent || []).length + ' tasks returned, ' + done + '/' + all + ' steps complete, $' + (spend / 1e6).toFixed(2) +
+      (broken ? ', handshake broken' : ''));
+    if (broken) setStage('broker', 'failed');
+    renderTasks(); renderMeta();
   } else if (ev.type === 'payload') {
-    _add(_payloadCard(data));
+    setStage('findings');
+    if (loop > 2) _add('<div class="loop-h">Loop ' + (loop - 1) + '</div>', 'findings');
+    _add(_payloadCard(data), 'findings');
+    let described = 0, failed = 0;
+    (data.payloads || []).forEach(p => {
+      const t = state.tasks.find(x => x.id === p.task_id);
+      (p.findings || []).forEach(f => {
+        const s = _domState(f);
+        if (s === 'ok') described++; else if (s === 'bad') failed++;
+        if (t) t.dom[f.domain] = s;
+      });
+    });
+    setSum('findings', (data.payloads || []).length + ' finding sets, ' + described + ' domain descriptions' + (failed ? ', ' + failed + ' failed to parse' : ''));
+    renderTasks();
   } else if (ev.type === 'synthesis') {
     setStage('synthesis');
-    if (!data.status) { _add(_waiting('a', 'Weighs the hypotheses', 'Analyst is weighing the findings.', 'wait-syn-' + loop), 'synthesis'); return; }
-    _drop('wait-syn-' + loop);
+    if (!data.status) { setSum('synthesis', 'Analyst is weighing the findings'); return; }
+    _addTokens(ev.tokens);
+    if (loop > 2) _add('<div class="loop-h">Loop ' + (loop - 1) + '</div>', 'synthesis');
     _add(_synthCard(data, ev.reasoning, ev.tokens), 'synthesis');
     const top = Object.entries(data.hypothesis_scores || {}).sort((a, b) => b[1] - a[1])[0];
-    Object.assign(stats[loop] = stats[loop] || {}, {
-      top: top ? top[0] + ' ' + top[1] : '', status: data.status === 'VERDICT_REACHED' ? 'verdict reached' : 'needs another loop' });
+    setSum('synthesis', (top ? top[0] + ' scores ' + top[1] + ', ' : '') + (data.status === 'VERDICT_REACHED' ? 'verdict reached' : 'needs another loop'));
+    renderScores(data.hypothesis_scores || {});
   } else if (ev.type === 'verdict') {
-    setStage('verdict', data.status === 'VERDICT_REACHED' ? 'done' : 'undecided');
+    const decided = data.status === 'VERDICT_REACHED';
+    if (_li('synthesis').className.includes('active')) setStage('synthesis', decided ? 'done' : 'undecided');
+    else STAGES.forEach(s => { const li = _li(s); if (li.className === 'stg active') setStage(s, 'done'); });
+    // The run's last word stays open, so the decision fills the ledger rather than blank space.
+    const last = [...STAGES].reverse().find(s => _li(s).querySelector('.stg-body').children.length);
+    if (last) _li(last).querySelector('details').open = true;
     _verdict(data, ev.message);
   } else if (ev.type === 'error') {
     const st = $('bk-st-' + loop);
     if (st) st.textContent = 'Failed';
-    setStage(currentStage(), 'failed');
-    _stampError(ev.message || 'The pipeline stopped with an error.');
+    _fail(ev.message || 'The pipeline stopped with an error.');
   }
 }
 
-// Each loop renders into its own lanes; a finished loop folds into one summary line.
-function _lanes() {
-  let l = $('stream').querySelector(':scope > .xr-lanes');
-  if (!l) {
-    $('stream').insertAdjacentHTML('beforeend', '<div class="xr-lanes"><div class="xr-head a">Analyst</div><div class="xr-head b">Tool Broker</div></div>');
-    l = $('stream').querySelector(':scope > .xr-lanes');
-  }
-  return l;
-}
-// `stage` marks the first card of that stage in this loop, for the stage bar to jump to.
-function _add(html, stage) {
-  const l = _lanes();
-  const first = l.children.length;
-  l.insertAdjacentHTML('beforeend', html);
-  if (stage && !l.querySelector('[data-anchor="' + stage + '"]') && l.children[first]) l.children[first].dataset.anchor = stage;
-}
-function _foldLoop(loop) {
-  const l = $('stream').querySelector(':scope > .xr-lanes');
-  if (!l) return;
-  const s = stats[loop] || {};
-  const d = document.createElement('details');
-  d.className = 'loop-fold';
-  d.innerHTML = '<summary>' + _esc('Loop ' + loop + ': ' + [
-    s.sent != null ? s.sent + ' sent' + (s.dropped ? ', ' + s.dropped + ' not sent' : '') : '',
-    s.handshake || '',
-    s.top ? 'top ' + s.top : '',
-    s.status || '',
-  ].filter(Boolean).join(', ')) + '</summary>';
-  l.replaceWith(d);
-  d.appendChild(l);
-}
-function _jump(stage) {
-  const el = stage === 'verdict' ? $('verdict') : stage === 'context' ? $('contextBox')
-    : [...document.querySelectorAll('[data-anchor="' + stage + '"]')].pop();
-  if (!el || el.hidden) return;
-  for (let p = el.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
-  el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
-}
-function _drop(id) { const el = $(id); if (el) el.remove(); }
-function _stampError(msg) {
+function _add(html, stage) { _li(stage).querySelector('.stg-body').insertAdjacentHTML('beforeend', html); }
+function _addTokens(t) { if (t) { state.tokIn += t.prompt_tokens || 0; state.tokOut += t.generation_tokens || 0; } }
+function _fail(msg) {
+  state.failed = true;
+  renderTasks();
+  const stage = currentStage();
+  setStage(stage, 'failed');
+  setSum(stage, msg);
   const why = _explain(msg);
-  _add('<div class="xr-stamp bad" role="alert">' + _esc(msg) + (why ? '<small>' + why + '</small>' : '') + '</div>');
+  _add('<div class="xr-stamp bad" role="alert">' + _esc(msg) + (why ? '<small>' + why + '</small>' : '') + '</div>', stage);
+  const b = $('verdict');
+  b.style.setProperty('--v', 'var(--bad)');
+  b.innerHTML = '<div class="v-label">Run failed</div><div class="v-conf">' + _esc(msg) + '</div>';
 }
 
 // What an error means and where to look. First match wins; order is specific to general.
 const _ERRORS = [
-  [/no task could be converted/i, 'The Analyst handed the Tool Broker nothing it can search: no plan came back, or every task was dropped (an entity type the broker does not know, or a time window whose start is not before its end). The Plan and "Receives the tasks" cards above say which.'],
-  [/broker timed out/i, 'The Tool Broker ran for more than 30 minutes and was stopped. Usually a slow Splunk search or a model stuck retrying. The engine log above shows where it was.'],
+  [/no task could be converted/i, 'The Analyst handed the Tool Broker nothing it can search: no plan came back, or every task was dropped (an entity type the broker does not know, or a time window whose start is not before its end). The Plan and Evidence stages say which.'],
+  [/broker timed out/i, 'The Tool Broker ran for more than 30 minutes and was stopped. Usually a slow Splunk search or a model stuck retrying. The engine log in the Evidence stage shows where it was.'],
   [/broker exited 2\b/i, 'The Tool Broker refused to start, so nothing was fetched: a configuration problem (MCP config, a task file it rejected, or model credentials). The quoted error line names it; fix .env and run again.'],
   [/broker exited/i, 'The Tool Broker crashed part-way through. The quoted lines and the end of the engine log show the exception.'],
   [/no analyst payload/i, 'The Tool Broker fetched evidence but the sub-analysts wrote no findings. Check SMARTOPS_ANALYST_MODEL_ARN and SMARTOPS_ANALYST_API_KEY in .env, and the end of the engine log.'],
@@ -469,18 +555,41 @@ function _explain(msg) {
   return (hit ? hit[1] : 'An unexpected error. The server console has the traceback.') + runDir;
 }
 
-function _block(lane, title, meta, body, id) {
-  return '<div class="xr-block ' + lane + '"' + (id ? ' id="' + id + '"' : '') + '><div class="xr-tag">' + (lane === 'a' ? 'Analyst' : 'Tool Broker') + '</div>' +
-    '<div class="xr-title">' + title + (meta ? '<span class="xr-meta">' + meta + '</span>' : '') + '</div>' + body + '</div>';
-}
-function _waiting(lane, title, text, id) { return _block(lane, title, '', '<div class="xr-waiting">' + text + '</div>', id); }
-function _cross(dir, from, to) {
-  return '<div class="xr-cross ' + dir + '"><div class="from">' + from + '</div><div class="arrow" aria-hidden="true"></div><div class="to">' + to + '</div></div>';
+function _card(lane, title, meta, body, id) {
+  return '<div class="card ' + lane + '"' + (id ? ' id="' + id + '"' : '') + '><div class="card-title"><span class="actor">' + (lane === 'a' ? 'Analyst' : 'Tool Broker') + '</span>' +
+    title + (meta ? '<span class="card-meta">' + meta + '</span>' : '') + '</div>' + body + '</div>';
 }
 function _details(label, inner, open) { return inner ? '<details' + (open ? ' open' : '') + '><summary>' + label + '</summary>' + inner + '</details>' : ''; }
 function _tok(t) { return t ? _esc(t.prompt_tokens || 0) + ' in / ' + _esc(t.generation_tokens || 0) + ' out' : ''; }
+const _list = (xs) => (xs || []).filter(Boolean).map(x => '<span class="chip">' + _esc(x) + '</span>').join('');
 
 const _VERDICT = { TRUE_POSITIVE: 'var(--bad)', FALSE_POSITIVE: 'var(--ok)', BENIGN: 'var(--ok)' };
+
+function _contextCard(c, escu, cti) {
+  const ec = c.escu_context || {};
+  const matches = (escu.matches || []).map(m => '<div class="xr-p">' + _esc(m.rule) + ' <span class="dim">score ' + Number(m.score).toFixed(1) + '</span></div>').join('');
+  const res = cti.results || {};
+  const keys = Object.keys(res);
+  const failed = keys.filter(k => JSON.stringify(res[k]).includes('"error"'));
+  const seed = c.normalized_seed || {};
+  const fps = (ec.known_false_positives || []).filter(Boolean);
+  setSum('context', ((escu.matches || [])[0] ? 'ESCU: ' + escu.matches[0].rule : 'No ESCU match') + ', OpenCTI ' +
+    (keys.length ? (keys.length - failed.length) + ' of ' + keys.length + ' lookups answered' : 'not asked') +
+    (seed.event_time ? ', event at ' + seed.event_time.slice(11, 19) + ' UTC' : ''));
+  return _card('a', 'Builds the alert context', '',
+    '<div class="xr-h">ESCU matches</div>' + (matches || '<div class="xr-p dim">No ESCU rule matched this name.</div>') +
+    (ec.description ? '<div class="xr-p dim">' + _esc(ec.description) + '</div>' : '') +
+    ((ec.mitre_techniques || []).length ? '<div class="xr-h">MITRE</div><div class="chips">' + _list(ec.mitre_techniques) + '</div>' : '') +
+    ((ec.analytic_story || []).length ? '<div class="xr-h">Analytic stories</div><div class="chips">' + _list(ec.analytic_story) + '</div>' : '') +
+    ((ec.data_sources || []).length ? '<div class="xr-h">Data sources</div><div class="chips">' + _list(ec.data_sources) + '</div>' : '') +
+    (fps.length ? '<div class="xr-h">Known false positives (ESCU)</div>' + fps.map(f => '<div class="xr-p">' + _esc(f) + '</div>').join('') : '') +
+    '<div class="xr-h">OpenCTI</div><div class="xr-p ' + (failed.length ? 'bad' : '') + '">' +
+      (keys.length ? (failed.length ? failed.length + ' of ' + keys.length + ' lookups failed (OpenCTI unreachable or timing out)' : keys.length + ' lookups answered') : 'No observables to look up') + '</div>' +
+    '<details class="raw"><summary>Raw context sent to the pipeline</summary>' +
+      '<div class="xr-h">Context contract</div><pre id="contractOut">' + _esc(JSON.stringify(c, null, 2)) + '</pre>' +
+      '<div class="xr-h">ESCU match</div><pre id="escuOut">' + _esc(JSON.stringify(escu, null, 2)) + '</pre>' +
+      '<div class="xr-h">OpenCTI lookup</div><pre id="ctiOut">' + _esc(JSON.stringify(cti, null, 2)) + '</pre></details>');
+}
 
 function _alignment(plan) {
   if (!plan.semantic_alignment) return '';
@@ -495,11 +604,12 @@ function _alignment(plan) {
 
 function _analystCard(data, tokens) {
   const hyps = (data.hypotheses || []).map(h =>
-    '<div class="xr-p"><b style="color:' + (_VERDICT[h.verdict] || 'inherit') + '">' + _esc(h.id) + ' ' + _esc(h.verdict) + '</b> ' + _esc(h.description) + '</div>'
+    '<div class="xr-p"><b style="color:' + (_VERDICT[h.verdict] || 'inherit') + '">' + _esc(h.id) + ' ' + _esc(String(h.verdict || '').replace(/_/g, ' ').toLowerCase()) + '</b> ' + _esc(h.description) + '</div>'
   ).join('') || '<div class="xr-p dim">No hypotheses in the plan.</div>';
-  return _block('a', 'Plans the investigation', _tok(tokens),
+  return _card('a', 'Plans the investigation', _tok(tokens),
+    (data.model_reasoning ? '<div class="xr-p dim">' + _esc(data.model_reasoning) + '</div>' : '') +
     '<div class="xr-h">Hypotheses</div>' + hyps + _alignment(data) +
-    _details('Reasoning', data.reasoning ? '<div class="xr-p dim">' + _esc(data.reasoning) + '</div>' : ''));
+    _details('Full reasoning', data.reasoning ? '<div class="xr-p dim">' + _esc(data.reasoning) + '</div>' : ''));
 }
 
 function _handoffCard(loop, data) {
@@ -508,22 +618,20 @@ function _handoffCard(loop, data) {
   const notes = (data.dropped || []).filter(d => d.sent);
   const dropped = (data.dropped || []).filter(d => !d.sent);
   const list = tasks.map(t =>
-    '<div class="xr-p"><b>' + _esc(t.task_id) + '</b> ' + _esc(t.question) + '</div>' +
-    '<div class="xr-mono">' + (t.entity || []).map(e => _esc(e.type) + '=' + _esc(e.value)).join('  ') + '\n' +
+    '<div class="xr-p" style="margin-top:6px"><b>' + _esc(_short(t.task_id)) + '</b> ' + _esc(t.question) + '</div>' +
+    '<div class="xr-mono">' + (t.entity || []).map(e => _esc(e.type) + '=' + _esc(e.value)).join('  ') + '   ' +
       _esc((t.time_window || {}).start) + ' to ' + _esc((t.time_window || {}).end) + '</div>'
   ).join('');
-  const changed = notes.map(d => '<div class="xr-p dim"><b>' + _esc(d.task_id || 'Task') + '</b> sent changed: ' + _esc(d.why) + '</div>').join('');
-  const lost = dropped.map(d => '<div class="xr-p bad"><b>' + _esc(d.task_id || 'Task') + '</b> not sent: ' + _esc(d.why) + '</div>' +
+  const changed = notes.map(d => '<div class="xr-p dim"><b>' + _esc(_short(d.task_id) || 'Task') + '</b> sent changed: ' + _esc(d.why) + '</div>').join('');
+  const lost = dropped.map(d => '<div class="xr-p bad"><b>' + _esc(_short(d.task_id) || 'Task') + '</b> not sent: ' + _esc(d.why) + '</div>' +
     (d.question ? '<div class="xr-p dim">' + _esc(d.question) + '</div>' : '')).join('');
-  return (loop > 2 ? '<div class="xr-loop">Loop ' + loop + '</div>' : '') +
-    _cross('ab', '<b>' + tasks.length + ' task' + (tasks.length === 1 ? '' : 's') + '</b> sent' + (dropped.length ? ', ' + dropped.length + ' not sent' : ''),
-                 'received as a task file') +
-    _block('b', 'Receives the tasks', '', (list || '<div class="xr-p bad">Nothing arrived: no task could be converted.</div>') + changed + lost +
-      '<div class="xr-mono" style="margin-top:8px">' + _esc(data.task_file) + '</div>');
+  return _card('b', 'Receives ' + tasks.length + ' task' + (tasks.length === 1 ? '' : 's'), dropped.length ? dropped.length + ' not sent' : '',
+    (list || '<div class="xr-p bad">Nothing arrived: no task could be converted.</div>') + changed + lost +
+    '<div class="xr-mono" style="margin-top:8px">' + _esc(data.task_file) + '</div>');
 }
 
 function _brokerShell(loop) {
-  return _block('b', 'Fetches the evidence', '<span id="bk-st-' + loop + '">Running</span>',
+  return _card('b', 'Fetches the evidence', '<span id="bk-st-' + loop + '">Running</span>',
     '<details><summary>Engine log<span class="log-last" id="bk-last-' + loop + '"></span></summary><div class="xr-log xr-mono" id="bk-term-' + loop + '"></div></details>' +
     '<div id="bk-fd-' + loop + '" hidden></div>', 'bk-' + loop);
 }
@@ -538,7 +646,7 @@ function _stepLine(s) {
 
 function _brokerSteps(runs) {
   return runs.map(r => {
-    if (!r.run_dir) return '<div class="xr-h">' + _esc(r.task_id) + '</div><div class="xr-p bad">The broker recorded no run for this task.</div>';
+    if (!r.run_dir) return '<details class="task" id="task-' + _esc(r.task_id) + '"><summary><b>' + _esc(_short(r.task_id)) + '</b> <span class="xr-p bad">no run recorded</span></summary></details>';
     const queries = (r.results || []).map(x =>
       '<div class="xr-p">' + _esc(x.family) + ': ' + _esc(x.status) + ', ' + (x.queries || []).length + ' quer' + ((x.queries || []).length === 1 ? 'y' : 'ies') +
         ((x.blocked || []).length ? ', <span class="xr-p bad">' + x.blocked.length + ' blocked</span>' : '') +
@@ -550,14 +658,14 @@ function _brokerSteps(runs) {
     ).join('');
     const steps = r.steps || [];
     const done = steps.filter(s => s.completed).length;
-    return '<details class="task"><summary><b>' + _esc(r.task_id) + '</b> ' + done + '/' + steps.length + ' step' + (steps.length === 1 ? '' : 's') + ' complete' +
+    return '<details class="task" id="task-' + _esc(r.task_id) + '"><summary><b>' + _esc(_short(r.task_id)) + '</b> ' + done + '/' + steps.length + ' step' + (steps.length === 1 ? '' : 's') + ' complete' +
+        (r.spend_micro_usd != null ? ', $' + (r.spend_micro_usd / 1e6).toFixed(2) : '') +
         ((r.results || []).some(x => x.error || x.status === 'error') ? ', <span class="xr-p bad">errors</span>' : '') + '</summary>' +
       (r.plan_rationale ? '<div class="xr-p dim">' + _esc(r.plan_rationale) + '</div>' : '') +
       (r.plan_repairs && r.plan_repairs.length ? '<div class="xr-p dim">Guards repaired the plan: ' + r.plan_repairs.map(x => _esc(typeof x === 'string' ? x : JSON.stringify(x))).join('; ') + '</div>' : '') +
-      (r.steps || []).map(_stepLine).join('') +
+      steps.map(_stepLine).join('') +
       _details('Why these tools', r.classification ? '<div class="xr-p dim">' + _esc(r.classification) + '</div>' : '') +
       _details('Queries run (' + (r.dispatched || []).map(_esc).join(', ') + ')', queries) +
-      (r.spend_micro_usd != null ? '<div class="xr-mono">spend $' + (r.spend_micro_usd / 1e6).toFixed(2) + '</div>' : '') +
       '<div class="xr-mono" style="margin-top:6px">trace ' + _esc(r.trace_id || 'none') + '\n' + _esc(r.run_dir) + '</div></details>';
   }).join('');
 }
@@ -575,40 +683,114 @@ function _handshake(h) {
     (miss.length ? '<small>' + miss.join('<br>') + '</small>' : '') + '</div>';
 }
 
+// A finding's narrative is the model's prose, then code-written blocks that open with a
+// known header and list `~` lines. The prose is shown whole; the code lines stand apart.
+const _CODE_HEADERS = /\n\s*\n(?=(Names in this narrative|Encoded commands in these rows)[^\n]*:)/;
+function _domState(f) {
+  const narr = String(f.narrative || '');
+  if (/produced no parseable/i.test(narr)) return 'bad';
+  return narr.trim() ? 'ok' : 'none';
+}
+function _finding(f) {
+  const narr = String(f.narrative || '').trim();
+  const obs = f.observations || [], sums = f.summaries || [];
+  const st = _domState(f);
+  if (st === 'none') return '<div class="dom none"><b>' + _esc(f.domain) + '</b><span class="xr-p dim">nothing to describe</span></div>';
+  const parts = narr.split(_CODE_HEADERS);
+  const prose = parts[0].trim();
+  const code = narr.slice(prose.length).trim();
+  return '<div class="dom"><b>' + _esc(f.domain) + '</b><div>' +
+    '<div class="xr-p' + (st === 'bad' ? ' bad' : '') + '">' + _esc(prose) + '</div>' +
+    (code ? '<div class="code-lines" title="Computed by code from the rows, not written by the model">' + _esc(code) + '</div>' : '') +
+    _details('Observations (' + obs.length + ') and row summaries (' + sums.length + ')',
+      (obs.length ? '<div class="xr-mono">' + obs.map(o => '• ' + _esc(o)).join('\n') + '</div>' : '') +
+      (sums.length ? '<div class="code-lines">' + sums.map(_esc).join('\n\n') + '</div>' : '')) +
+    '</div></div>';
+}
 function _payloadCard(data) {
   const ps = data.payloads || [];
-  const body = ps.map(p =>
-    '<div class="xr-h">' + _esc(p.task_id) + '</div>' + (p.hypothesis ? '<div class="xr-p dim">' + _esc(p.hypothesis) + '</div>' : '') +
-    ((p.findings || []).map(f => {
-      const narr = String(f.narrative || '').trim();
-      const obs = f.observations || [];
-      if (!narr) return '<div class="xr-p dim" style="margin-top:6px"><b>' + _esc(f.domain) + '</b> nothing to describe</div>';
-      const first = narr.split(/(?<=[.!?])\s+/)[0];
-      const rest = narr.slice(first.length).trim();
-      return '<div class="xr-p" style="margin-top:6px"><b>' + _esc(f.domain) + '</b> ' + _esc(first) + '</div>' +
-        _details('More (' + obs.length + ' observation' + (obs.length === 1 ? '' : 's') + ')',
-          (rest ? '<div class="xr-p dim">' + _esc(rest) + '</div>' : '') +
-          (obs.length ? '<div class="xr-mono">' + obs.map(o => '• ' + _esc(o)).join('\n') + '</div>' : ''));
-    }).join('') || '<div class="xr-p dim">No domain had evidence to describe.</div>')
-  ).join('') || '<div class="xr-p dim">No findings.</div>';
-  return _cross('ba', 'sub-analysts send <b>' + ps.length + ' finding set' + (ps.length === 1 ? '' : 's') + '</b>', 'received') +
-    _block('a', 'Reads the findings', '', body);
+  const body = ps.map(p => {
+    const doms = (p.findings || []);
+    const mark = doms.map(f => { const s = _domState(f); return _esc(f.domain) + (s === 'ok' ? ' ✓' : s === 'bad' ? ' ✗' : ' –'); }).join('  ');
+    return '<details class="task" id="fd-' + _esc(p.task_id) + '"><summary><b>' + _esc(_short(p.task_id)) + '</b> ' + _esc(p.hypothesis || '') +
+      ' <span class="dim">' + mark + '</span></summary>' +
+      (doms.map(_finding).join('') || '<div class="xr-p dim">No domain had evidence to describe.</div>') + '</details>';
+  }).join('') || '<div class="xr-p dim">No findings.</div>';
+  return _card('b', 'Sub-analysts describe the evidence', ps.length + ' finding set' + (ps.length === 1 ? '' : 's'), body);
 }
 
 function _synthCard(data, reasoning, tokens) {
-  const scores = Object.entries(data.hypothesis_scores || {}).map(([id, s]) => {
-    const v = Math.max(0, Math.min(100, Number(s) || 0));
-    return '<div class="xr-score"><span>' + _esc(id) + '</span><i style="width:' + v + '%"></i><span>' + _esc(s) + '</span></div>';
-  }).join('') || '<div class="xr-p dim">No scores.</div>';
   const gaps = (data.evidence_gaps || []).map(g => '<div class="xr-p">' + _esc(g) + '</div>').join('');
+  const fups = (data.follow_up_tasks || []).map(t => '<div class="xr-p">' + _esc(t.question || JSON.stringify(t)) + '</div>').join('');
   const done = data.status === 'VERDICT_REACHED';
-  return _block('a', 'Weighs the hypotheses', _tok(tokens),
-    scores +
-    '<div class="xr-p ' + (done ? 'ok' : '') + '" style="margin-top:8px;font-weight:650">' + (done ? 'Verdict reached' : 'Needs another loop') + '</div>' +
+  const scores = Object.entries(data.hypothesis_scores || {}).map(([k, v]) => _esc(k) + ' ' + _esc(v)).join(', ');
+  return _card('a', 'Weighs the hypotheses', _tok(tokens),
+    '<div class="xr-p ' + (done ? 'ok' : '') + '" style="font-weight:650">' + (done ? 'Verdict reached' : 'Needs another loop') + (scores ? ' <span class="dim">(' + scores + ')</span>' : '') + '</div>' +
     (data.verdict_reasoning ? '<div class="xr-h">Why</div><div class="xr-p">' + _esc(data.verdict_reasoning) + '</div>' : '') +
-    ((data.evidence_refs || []).length ? '<div class="xr-mono">evidence cited: ' + data.evidence_refs.map(_esc).join(', ') + '</div>' : '') +
+    ((data.evidence_refs || []).length ? '<div class="xr-h">Evidence cited</div><div class="chips">' + _list(data.evidence_refs) + '</div>' : '') +
     (gaps ? '<div class="xr-h">Still missing</div>' + gaps : '') +
-    _details('Reasoning', reasoning ? '<div class="xr-p dim">' + _esc(reasoning) + '</div>' : ''));
+    (fups ? '<div class="xr-h">Follow-up tasks asked for</div>' + fups : '') +
+    _details('Full reasoning', reasoning ? '<div class="xr-p dim">' + _esc(reasoning) + '</div>' : ''));
+}
+
+// ── Rail ───────────────────────────────────────────────────────────────────
+
+function railReset() {
+  const b = $('verdict');
+  b.style.removeProperty('--v');
+  b.classList.remove('landed');
+  b.innerHTML = '<div class="v-label">Investigating</div><div class="v-conf">The verdict lands here when synthesis finishes.</div><div id="scores"></div>';
+  state.tasks = [];
+  renderTasks();
+  renderMeta();
+}
+
+function renderScores(scores) {
+  const el = $('scores');
+  if (!el) return;
+  const hyps = (state.plan && state.plan.hypotheses) || [];
+  const ids = hyps.length ? hyps.map(h => h.id) : Object.keys(scores);
+  const top = Math.max(...ids.map(id => Number(scores[id]) || 0));
+  el.innerHTML = ids.length ? '<div class="v-h">Hypotheses</div>' + ids.map(id => {
+    const h = hyps.find(x => x.id === id) || {};
+    const has = scores[id] != null, v = Math.max(0, Math.min(100, Number(scores[id]) || 0));
+    return '<div class="score' + (has && v === top ? ' top' : '') + '" title="' + _esc((h.verdict || '') + ': ' + (h.description || '')) + '">' +
+      '<b>' + _esc(id) + '</b><span class="bar"><i style="width:' + v + '%;--c:' + (_VERDICT[h.verdict] || 'var(--warn)') + '"></i></span>' +
+      '<span class="n">' + (has ? _esc(scores[id]) : '–') + '</span></div>';
+  }).join('') : '';
+}
+
+function renderTasks() {
+  const el = $('taskBoard');
+  if (!state.tasks || !state.tasks.length) {
+    el.innerHTML = '<li class="dim">The plan\'s tasks appear here once the Analyst sends them.</li>';
+    return;
+  }
+  el.innerHTML = state.tasks.map(t => {
+    const bad = t.noRun || Object.values(t.dom).includes('bad');
+    const st = t.steps == null ? (state.failed ? '<span class="tst bad">stopped</span>' : '<span class="tst">fetching</span>')
+      : '<span class="tst ' + (bad ? 'bad' : t.rejected ? 'warn' : 'ok') + '">' + _esc(t.steps) + ' steps, ' + t.rows + ' rows</span>';
+    const dom = Object.entries(t.dom).map(([d, s]) => d + (s === 'ok' ? ' ✓' : s === 'bad' ? ' ✗' : ' –')).join('  ');
+    return '<li><button type="button" data-task="' + _esc(t.id) + '" title="' + _esc(t.q) + '"><span class="tid">' + _esc(_short(t.id)) + '</span>' +
+      '<span class="tq">' + _esc(t.q) + '</span>' + st +
+      (dom || t.rejected ? '<span class="tdom">' + _esc(dom) + (t.rejected ? (dom ? ', ' : '') + t.rejected + ' step rejected' : '') + '</span>' : '') +
+      '</button></li>';
+  }).join('');
+}
+
+function renderMeta() {
+  const now = state.ended || Date.now();
+  const rows = [
+    ['Status', state.status || 'Idle'],
+    state.id ? ['Run', state.id] : null,
+    state.started ? ['Elapsed', _secs(now - state.started)] : null,
+    run ? ['Last event', _secs(Date.now() - run.lastEvent) + ' ago'] : null,
+    state.spend ? ['Broker spend', '$' + (state.spend / 1e6).toFixed(2)] : null,
+    state.tokIn ? ['Analyst tokens', state.tokIn + ' in, ' + state.tokOut + ' out'] : null,
+    state.loops ? ['Broker rounds', String(state.loops - 1)] : null,
+    state.id ? ['Files', '.smartops/runs/' + state.id + '/'] : null,
+  ].filter(Boolean);
+  $('runMeta').innerHTML = rows.map(([k, v]) => '<dt>' + _esc(k) + '</dt><dd>' + _esc(v) + '</dd>').join('');
 }
 
 function _verdict(data, why) {
@@ -618,29 +800,39 @@ function _verdict(data, why) {
   const v = String(data.verdict || 'UNKNOWN').toUpperCase();
   const conf = data.verdict_confidence ?? data.confidence;
   const b = $('verdict');
+  const scores = data.hypothesis_scores || {};
   b.style.setProperty('--v', decided ? (_VERDICT[v] || 'var(--warn)') : 'var(--warn)');
-  b.innerHTML = '<div class="v-label">' + (decided ? _esc(v.replace(/_/g, ' ')) : 'No verdict') + '</div>' +
-    '<div class="v-conf">' + (decided ? '' : 'Leaning ' + _esc(v.replace(/_/g, ' ')) + ', but the evidence gate did not pass. Stopped: ' + _esc(why || 'unknown') + '. ') +
+  const li = (h, xs) => (xs || []).length ? '<div class="v-h">' + h + '</div><ul class="v-list">' + xs.map(x => '<li>' + _esc(x) + '</li>').join('') + '</ul>' : '';
+  b.innerHTML = '<div class="v-label">' + (decided ? _esc(v.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase())) : 'No verdict') + '</div>' +
+    '<div class="v-conf">' + (decided ? '' : 'Leaning ' + _esc(v.replace(/_/g, ' ').toLowerCase()) + ', but the evidence gate did not pass. Stopped: ' + _esc(why || 'unknown') + '. ') +
       (conf != null ? 'Confidence ' + _esc(conf) + '%' : '') + '</div>' +
-    '<div class="v-sum">' + _esc(data.verdict_reasoning || data.reasoning || data.executive_summary || 'The model gave no reasoning for this verdict.') + '</div>';
-  b.hidden = false;
-  b.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
-}
-
-function foldAlert(fold, text) {
-  $('alertPanel').classList.toggle('folded', fold);
-  $('alertSummary').hidden = !fold;
-  if (text != null) $('alertSummaryText').textContent = text;
+    '<div id="scores"></div>' +
+    '<div class="v-h">Why</div><div class="v-sum">' + _esc(data.verdict_reasoning || data.reasoning || data.executive_summary || 'The model gave no reasoning for this verdict.') + '</div>' +
+    li('Evidence cited', data.evidence_refs) + li('Still missing', data.evidence_gaps);
+  renderScores(scores);
+  b.classList.remove('landed'); void b.offsetWidth; b.classList.add('landed');
+  state.status = decided ? 'Verdict reached' : 'Stopped without a verdict';
+  renderMeta();
 }
 
 // ── Wire up ────────────────────────────────────────────────────────────────
 
 $('alertForm').addEventListener('submit', investigate);
 $('queueRefresh').addEventListener('click', loadQueue);
-$('alertEdit').addEventListener('click', () => { foldAlert(false); $('f_rule').focus(); });
-$('stages').addEventListener('click', e => { const li = e.target.closest('li[data-stage]'); if (li) _jump(li.dataset.stage); });
+$('alertEdit').addEventListener('click', () => { const open = $('alertForm').hidden; showForm(open); if (open) $('f_rule').focus(); });
 $('queueList').addEventListener('click', e => {
   const btn = e.target.closest('button[data-index]');
   if (btn) importAlert(Number(btn.dataset.index), btn);
+});
+// A task in the rail opens its findings (or, before they arrive, its evidence run).
+$('taskBoard').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-task]');
+  if (!btn) return;
+  const id = btn.dataset.task;
+  const el = document.getElementById('fd-' + id) || document.getElementById('task-' + id);
+  if (!el) return;
+  for (let p = el; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
+  el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  el.querySelector('summary').focus({ preventScroll: true });
 });
 loadQueue();
