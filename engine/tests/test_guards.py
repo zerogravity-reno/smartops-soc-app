@@ -389,6 +389,16 @@ class TestScopeGuard:
 
         assert self._check(spl).cancel_tool is False
 
+    def test_a_paths_file_name_counts_as_the_path(self):
+        """The Analyst scopes `%TEMP%\\svcupdate.dat`; the search names `svcupdate.dat`."""
+        from types import SimpleNamespace
+
+        from smartops.guards import _match_terms
+
+        terms = _match_terms([SimpleNamespace(value="%TEMP%\\svcupdate.dat"), SimpleNamespace(value="C:/Users/x/OneDrive.exe")])
+
+        assert {"svcupdate.dat", "svcupdate", "onedrive.exe", "onedrive"} <= terms
+
     def test_a_non_search_is_not_the_scopes_business(self):
         """A tool that lists indexes takes no SPL and must not be required to
         name a host. Same exemption `IndexScopeGuard` makes."""

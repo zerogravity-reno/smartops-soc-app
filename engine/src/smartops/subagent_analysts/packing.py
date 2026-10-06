@@ -148,6 +148,8 @@ _SCAFFOLD_SAMPLE_VALUES: dict[str, str] = {
     "domain": "malicious-c2-infrastructure.example.com",
     "url": "https://malicious-c2-infrastructure.example.com/api/v2/beacon/checkin?token=deadbeef",
     "process": "powershell.exe",
+    "file_name": "OneDriveStandaloneUpdater.exe",
+    "command_line": "powershell.exe -NoProfile -EncodedCommand JABlAG4AdgA6AHUAcwBlAHIAbgBhAG0AZQA=",
 }
 
 _SCAFFOLD_LONGEST_KIND, _SCAFFOLD_LONGEST_VALUE = max(

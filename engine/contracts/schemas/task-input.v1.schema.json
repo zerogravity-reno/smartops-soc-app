@@ -11,7 +11,9 @@
             "file_hash",
             "domain",
             "url",
-            "process"
+            "process",
+            "file_name",
+            "command_line"
           ],
           "title": "Type",
           "type": "string"

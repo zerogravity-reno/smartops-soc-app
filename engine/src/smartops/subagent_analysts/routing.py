@@ -56,8 +56,8 @@ _VT_KIND_DOMAIN: dict[str, AnalystDomain] = {
 }
 
 # Entity kind -> the domain(s) an untagged result set is offered to when its scope
-# includes that kind. `user` owns identity; `host`, `process`, `file_hash` own endpoint;
-# `ip`, `domain`, `url` own network.
+# includes that kind. `user` owns identity; `host`, `process`, `file_hash`, `file_name`,
+# `command_line` own endpoint; `ip`, `domain`, `url` own network.
 _ENTITY_KIND_DOMAINS: dict[str, tuple[AnalystDomain, ...]] = {
     "user": ("identity",),
     "host": ("endpoint",),
@@ -66,6 +66,8 @@ _ENTITY_KIND_DOMAINS: dict[str, tuple[AnalystDomain, ...]] = {
     "url": ("network",),
     "file_hash": ("endpoint",),
     "process": ("endpoint",),
+    "file_name": ("endpoint",),
+    "command_line": ("endpoint",),
 }
 
 
