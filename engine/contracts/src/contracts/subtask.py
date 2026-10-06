@@ -36,7 +36,7 @@ from contracts.findings import (
 
 ToolFamily = Literal["edr", "ndr", "vt", "siem"]
 
-EntityKind = Literal["host", "user", "ip", "file_hash", "domain", "url", "process"]
+EntityKind = Literal["host", "user", "ip", "file_hash", "domain", "url", "process", "file_name", "command_line"]
 """What kind of observable an entity is.
 
 Typed rather than a bare string because a `ToolFamily`'s *dispatchability* is a
@@ -47,6 +47,11 @@ family -> required-kinds mapping (this module deliberately holds shape only).
 
 Proposed by the Broker as its consumer, pending review against Yousef's
 Context Contract Template. `process` and `url` are the least settled members.
+
+`file_name` (an image or file name, e.g. `OneDrive.exe`) and `command_line` (a
+command line or an encoded-command string) were added on 2026-10-06: the
+Analyst asked about both and Splunk holds both, but with no kind for them the
+webapp handoff dropped those tasks. Neither is a VirusTotal observable.
 """
 
 
@@ -728,6 +733,10 @@ class StepOutcome(BaseModel):
     step: FetchStep
     completed: bool = False
     dispatches: int = 0
+    result_ids: list[str] = Field(default_factory=list)
+    """The `SubtaskResult.task_id` of each dispatch that served this step, in
+    order -- the join from a step to `BrokerReport.results` (O2). `dispatches`
+    alone said how many, not which."""
     rows_retrieved: int = 0
     confirmed_empty: bool = False
     status: SubtaskStatus | None = None

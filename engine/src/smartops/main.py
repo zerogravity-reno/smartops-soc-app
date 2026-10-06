@@ -86,6 +86,7 @@ from contracts import (
     TaskInputFile,
     ToolFamily,
     mission_family,
+    pack_for_analyst,
 )
 from smartops.broker import (
     DEFAULT_RUNS_DIR,
@@ -1067,7 +1068,7 @@ def _persist_payload_batch(
 
     batch = AnalystPayloadBatch(
         batch_id=batch_id or f"batch-{datetime.now(UTC):%Y%m%dT%H%M%S}",
-        payloads=[f.for_analyst(max_chars) for f in findings],
+        payloads=pack_for_analyst(findings, max_chars),
     )
     target = root / batch.batch_id
     target.mkdir(parents=True, exist_ok=True)
@@ -1415,7 +1416,8 @@ async def _run(argv: list[str] | None = None) -> int:
         _persist_payload_batch(
             findings,
             batch_id=args.batch_id,
-            max_chars=HANDOFF_CHAR_BUDGET // max(len(tasks), 1),
+            # The batch is one message: one budget, water-filled across its tasks.
+            max_chars=HANDOFF_CHAR_BUDGET,
         )
 
     if len(tasks) > 1:

@@ -91,18 +91,61 @@ Copy-Item .env.example .env  # then fill in .env (see below)
 
 ### Environment variables (`.env`)
 
-| Variable | Used by | What it is |
-|---|---|---|
-| `FS8B_MODEL_ARN` | Analyst | ARN of the imported Foundation-Sec-8B model |
-| `FS8B_API_KEY` | Analyst and Broker | Bedrock API key (`ABSK…`). The Broker also uses it as its Bedrock bearer token. |
-| `AWS_REGION` | both | Bedrock region; must match the model ARN |
-| `AWS_BEDROCK_MODEL_ID` | Broker | Claude Sonnet inference profile, e.g. `us.anthropic.claude-sonnet-4-6-…` |
-| `SPLUNK_MCP_URL` | import and Broker | official Splunk MCP endpoint, e.g. `https://<host>:8089/services/mcp` |
-| `SPLUNK_TOKEN` | import and Broker | Splunk token for the MCP server |
-| `SMARTOPS_MCP_TLS_NO_VERIFY` | Broker | `splunk` to accept a self-signed :8089 certificate |
-| `SMARTOPS_SIEM_INDEXES` | Broker | comma list of indexes the siem subagent may search (default `botsv3`) |
-| `VT_API_KEY` | Broker | VirusTotal API key |
-| `OPENCTI_URL`, `OPENCTI_TOKEN` | context pipeline | OpenCTI GraphQL endpoint and token (optional) |
+The env file is `.env` in the repo root (copy [`.env.example`](.env.example), which holds placeholders only).
+- The web app loads `<repo root>/.env` when `webapp/main.py` starts, and passes its environment on to the Broker subprocess.
+- The Broker CLI (`python -m smartops.main`) searches upward from the working directory for a `.env`. `--verbose` prints which file it loaded.
+- A variable already set in your shell wins over the file (`override=False`).
+- `start.ps1` also loads `.env` before starting the server.
+
+| Variable | Used by | Required | Default | What it is |
+|---|---|---|---|---|
+| `FS8B_MODEL_ARN` | Analyst | yes | none | ARN of the imported Foundation-Sec-8B model, e.g. `arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>`. The Analyst takes its region from this ARN. |
+| `FS8B_API_KEY` | Analyst and Broker | yes | none | Bedrock API key, e.g. `ABSK...`. The Broker also uses it as its Bedrock bearer token. |
+| `AWS_REGION` | both | yes for Broker on Bedrock | `us-east-1` for the Analyst; the Broker also accepts `AWS_DEFAULT_REGION` and refuses to start with neither | Bedrock region; keep it the same as the model ARN's |
+| `AWS_BEDROCK_MODEL_ID` | Broker | yes, to use a model | none | Claude Sonnet inference profile, e.g. `us.anthropic.claude-sonnet-4-6`. Find yours with `aws bedrock list-inference-profiles --region <region>`. |
+| `SMARTOPS_LLM_PROVIDER` | Broker | no | blank | `bedrock`, `deepseek` or `none`. `none` turns the Broker model off even if credentials are set. Blank means detect: Bedrock if `AWS_BEDROCK_MODEL_ID` is set, else DeepSeek if `DEEPSEEK_API_KEY` is set, else no model (scripted dispatch). Any other value is an error. |
+| `SMARTOPS_MODEL_ID` | Broker | no | none | Model id override for any provider; wins over `AWS_BEDROCK_MODEL_ID`. |
+| `SMARTOPS_PRICING_KEY` | Broker | no | inferred from the model id | Pricing entry for the budget. Set only if the model family can't be read from its id. |
+| `DEEPSEEK_API_KEY` | Broker | no | none | Selects DeepSeek when no Bedrock model id is set. `.env.example` notes that selecting DeepSeek currently fails at startup (no pricing entry yet). |
+| `AWS_PROFILE` | Broker | no | none | Standard AWS profile. The Broker drops it when explicit credentials make it irrelevant; see `_drop_irrelevant_profile` area in `engine/src/smartops/main.py`. |
+| `SPLUNK_MCP_URL` | import and Broker | yes | none | Official Splunk MCP endpoint, e.g. `https://<host>:8089/services/mcp` |
+| `SPLUNK_TOKEN` | import and Broker | yes | none | Splunk token for the MCP server |
+| `SMARTOPS_MCP_TLS_NO_VERIFY` | import and Broker | no | blank (verify TLS) | `splunk` to accept a self-signed :8089 certificate |
+| `SMARTOPS_MCP_CONFIG` | Broker | no | `mcp_servers.json` in the working directory | Path to a different MCP server config (same as `--mcp-config`) |
+| `SMARTOPS_SIEM_INDEXES` | Broker | no | `botsv3` | Comma list of indexes the siem subagent may search, e.g. `windows_lab,main`. `notable` and `risk` (ES detection records) are always rejected, even if listed |
+| `VT_API_KEY` | Broker | no | none | VirusTotal API key. Without it the vt family reports the missing key. |
+| `OPENCTI_URL` | context pipeline | no | `http://localhost:8080/graphql` | OpenCTI GraphQL endpoint, e.g. `http://<opencti-host>:8080/graphql` |
+| `OPENCTI_TOKEN` | context pipeline | no | blank | OpenCTI token |
+| `SMARTOPS_RUNS_DIR` | webapp and Broker | no | `.smartops/runs` | Where run folders are written (relative to the repo root for the webapp) |
+| `SMARTOPS_ANALYST_MODEL_ARN` | Broker sub-analysts | no | none | Imported Foundation-Sec model used by the identity, network and endpoint sub-analysts. Empty skips that step. |
+| `SMARTOPS_ANALYST_API_KEY` | Broker sub-analysts | no | falls back to the standard AWS credential chain | `ABSK...` bearer token, or `ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]` |
+| `SMARTOPS_ANALYST_TEMPERATURE`, `SMARTOPS_ANALYST_TOP_P` | Broker sub-analysts | no | `0.3`, `0.95` | Generation settings (defaults per `.env.example`) |
+| `SMARTOPS_ANALYST_MAX_GEN_LEN` | Broker sub-analysts | no | `3072` | Max generated tokens; values above the default are clamped |
+| `SMARTOPS_SKILLS_ENABLED` | Broker | no | off | `true` enables the reference skill pack for siem (same as `--skills`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Broker | no | none (no export) | OTLP collector for traces. Spans can carry SOC data, so read `.env.example` before enabling. |
+
+Not fully explained here: `SMARTOPS_ANALYST_CMU_COUNT` and `SMARTOPS_ANALYST_CMU_PRICE` (read in `engine/src/smartops/analyst_cost.py`; they set the cost model for the imported Analyst model, default count `0`).
+
+Copy-paste template (placeholders only; fill in your own values):
+
+```
+FS8B_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
+FS8B_API_KEY=<your-bedrock-api-key>
+AWS_REGION=us-east-1
+AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
+SMARTOPS_LLM_PROVIDER=bedrock
+SPLUNK_MCP_URL=https://<splunk-host>:8089/services/mcp
+SPLUNK_TOKEN=<your-splunk-token>
+SMARTOPS_MCP_TLS_NO_VERIFY=splunk
+SMARTOPS_SIEM_INDEXES=botsv3
+VT_API_KEY=<your-vt-key>
+OPENCTI_URL=http://<opencti-host>:8080/graphql
+OPENCTI_TOKEN=<your-opencti-token>
+# optional
+# SMARTOPS_RUNS_DIR=.smartops/runs
+# SMARTOPS_ANALYST_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
+# SMARTOPS_ANALYST_API_KEY=<your-bedrock-api-key>
+```
 
 ---
 
@@ -123,9 +166,9 @@ uv run uvicorn webapp.main:app --port 8001
 `start_server.bat` also works, but it uses whatever `python` is on your PATH, so run it from an activated `.venv`.
 
 **In the browser:**
-1. Click **Import from Mission Control**. It loads the newest notable event from Splunk into the form. You can also fill the form by hand; the rule name is required.
-2. Click **Process Event & Build Context**. This builds the seed, runs the ESCU and OpenCTI lookups, and has the Analyst plan the investigation. The OpenCTI lookup can take a few minutes.
-3. The full investigation then starts on its own: Broker loops, synthesis, then the verdict banner.
+1. Pick an alert in the **Incident queue** on the left (the latest 10 notables from Splunk ES). Its fields fill the form. You can also fill the form by hand; the rule name is required.
+2. Click **Investigate**. This builds the context contract (seed, ESCU match, OpenCTI lookup) and starts one `/api/run`: Analyst plan, Broker loops, synthesis, verdict. The OpenCTI lookup can take a few minutes.
+3. Follow it live in the two lanes (Analyst | Tool Broker) and the stage bar. The context sent to the pipeline is under **Context sent to the pipeline** at the bottom.
 
 ### The Tool Broker on its own
 
@@ -150,6 +193,20 @@ uv run pytest -q
 ```
 
 The suite needs no network and makes no model calls.
+
+**Live end-to-end run** (real calls, costs money): starts the server on :8001, drives the UI with Playwright through one notable (`tests/test-integration/scripts/notable.json`), and stops the server.
+
+```bash
+RUNS=1 bash tests/test-integration/scripts/repeats.sh
+```
+
+The UI log and screenshots land in `tests/test-integration/scripts/rep1*`, and the run itself in `.smartops/runs/<run_id>*`.
+
+### Common problems
+
+- **HTTP 429 from Foundation-Sec-8B at the start:** the imported model is cold-starting. The client retries every 30 s, so wait.
+- **TLS errors against Splunk :8089:** set `SMARTOPS_MCP_TLS_NO_VERIFY=splunk` for a self-signed certificate.
+- **A live run stalls or the browser dies:** check free memory first; the Playwright driver plus the server need about 1 GB.
 
 ---
 

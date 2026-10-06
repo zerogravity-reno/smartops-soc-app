@@ -17,6 +17,7 @@ from smartops.subagent_analysts.packing import (
 )
 from smartops.subagent_analysts.prompts import (
     _ANSWER_RULES,
+    _DESCRIBE_ONLY_BLOCK,
     _NARRATIVE_ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
@@ -124,7 +125,9 @@ class TestFactsSystemPrompt:
         deliberately stripped of, whichever word it is.
         """
         for domain in ("identity", "network", "endpoint"):
-            lowered = facts_system_prompt(domain).lower()
+            # The shared describe-only block names the banned verdict words in
+            # order to prohibit them; it is the one place they may appear.
+            lowered = facts_system_prompt(domain).replace(_DESCRIBE_ONLY_BLOCK, "").lower()
 
             for word, why in self._FORBIDDEN_VOCABULARY.items():
                 assert word not in lowered, (
@@ -146,10 +149,10 @@ class TestFactsSystemPrompt:
             flat = _flat(facts_system_prompt(domain))
 
             assert "a narrative" not in flat.lower()
-            # The two prohibitions that stay: they are what keeps this tier out
-            # of the Analyst Agent's job.
-            assert "do not speculate about intent" in flat
-            assert "draw no broader conclusion" in flat
+            # The prohibitions that stay, now one shared block (B11): they are
+            # what keeps this tier out of the Analyst Agent's job.
+            assert _DESCRIBE_ONLY_BLOCK in facts_system_prompt(domain)
+            assert "never suggest what it could be" in flat
 
     def test_each_domain_explains_that_rows_can_outnumber_printed_lines(self):
         """`formatting.format_result_set` prints `rows=<TRUE TOTAL>` in the

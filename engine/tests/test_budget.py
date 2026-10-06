@@ -322,6 +322,12 @@ class TestProviderLadder:
 
         assert available_provider() is Provider.DEEPSEEK
 
+    def test_none_turns_the_model_off_despite_credentials(self, monkeypatch):
+        monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, self.BEDROCK_ID)
+        monkeypatch.setenv(PROVIDER_ENV_VAR, "none")
+
+        assert available_provider() is None
+
     def test_an_unknown_provider_name_names_the_valid_ones(self, monkeypatch):
         monkeypatch.setenv(PROVIDER_ENV_VAR, "gpt-9")
 

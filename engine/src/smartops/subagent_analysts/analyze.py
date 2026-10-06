@@ -46,7 +46,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -82,7 +84,12 @@ from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel
-from .formatting import NO_TIME_MARKER
+from smartops.tools.native.decoder import encoded_in
+
+from .formatting import NAMES_FOOTER, NO_TIME_MARKER, _middle, name_expansions
+
+ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
+ENCODED_LINE_CAP = 8
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -821,9 +828,34 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
             ", ".join(e.citation for e in exhibits),
         )
 
+    # Code-written, after the model's prose and marked `~`: the narrative is what
+    # the Analyst reads, and a name in it can stand for several files (B1c).
+    sets = [*slice_.siem_sets, *(("uncategorised", rs) for rs in slice_.untagged_sets)]
+    names = name_expansions(finding.narrative, sets)
+    narrative = "\n".join([finding.narrative, "", NAMES_FOOTER, *names]) if names else finding.narrative
+    # Code-written too (B10): each encoded command these rows hold, with what it
+    # decodes to. Facts only -- what a parent path means is the Analyst's call.
+    tagged = encoded_in(row for _, rs in sets for row in rs.rows)
+    if tagged:
+        # Capped (B10c: 39 lines/11.3k chars crowded every summary out on dce405e5),
+        # rarest parent first: the parent behind the fewest distinct commands. By
+        # event count instead, one-off Ansible winrshost wrappers outranked the
+        # Desktop splunkd.exe's single command and pushed it past the cap.
+        spread = Counter(p for e in tagged.values() for p in e["parents"])
+        ranked = sorted(tagged.items(), key=lambda kv: (min((spread[p] for p in kv[1]["parents"]), default=math.inf), kv[1]["events"]))
+        lines = [
+            f"~ encoded command {sig}: {e['events']} events"
+            + (", parent " + ", ".join(f"{_middle(p)}={n}" for p, n in sorted(e["parents"].items())) if e["parents"] else "")
+            + f"; decodes to: {e['plain']}"
+            for sig, e in ranked[:ENCODED_LINE_CAP]
+        ]
+        if len(ranked) > ENCODED_LINE_CAP:
+            lines.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
+        narrative = "\n".join([narrative, "", ENCODED_FOOTER, *lines])
+
     return DomainJudgement(
         domain=finding.domain,
-        narrative=finding.narrative,
+        narrative=narrative,
         observations=list(finding.observations),
         citations=list(finding.citations),
         exhibits=exhibits,
@@ -908,7 +940,8 @@ async def gather(
         # strictly: a finding paired with the wrong slice would attach another
         # domain's rows to this domain's judgement.
         findings=[
-            _as_judgement(f, s) for f, s in zip(findings, slices, strict=True)
+            _as_judgement(f, s)
+            for f, s in zip(findings, slices, strict=True)
         ],
         retrieval=_retrieval_summary(report, scope, slices),
     )

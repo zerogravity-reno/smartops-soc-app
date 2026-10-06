@@ -82,6 +82,7 @@ EVALUATION MODE — Required JSON schema:
     "H2": <integer 1-100>,
     "H3": <integer 1-100>
   },
+  "evidence_refs": ["<task_id>:<domain> of each broker finding the verdict rests on>"],
   "evidence_gaps": ["<gap 1>", "<gap 2>"],
   "follow_up_tasks": [
     {"task_id": "FU1", "question": "<atomic follow-up question to close the evidence gap>"}

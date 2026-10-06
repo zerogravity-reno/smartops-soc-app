@@ -326,6 +326,10 @@ def available_provider() -> Provider | None:
     is configured, and the caller falls back to a scripted invoker.
     """
     override = os.environ.get(PROVIDER_ENV_VAR, "").strip().lower()
+    # `none` turns the Broker's model off even with credentials in the file (K2).
+    # Blank stays "detect": a blank line in a copied .env must not change behaviour.
+    if override == "none":
+        return None
     if override:
         try:
             return Provider(override)

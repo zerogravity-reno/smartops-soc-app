@@ -906,7 +906,7 @@ class TestTheAnswerSurvivesTheTurnCap:
         # `Limits` is a TypedDict (`strands/types/agent.py:17`), not an object.
         assert calls[1]["limits"]["turns"] == 1
 
-    async def test_the_first_loops_stop_reason_is_what_gets_reported(self, monkeypatch):
+    async def test_the_first_loops_stop_reason_is_what_gets_reported(self, monkeypatch, caplog):
         # The recovery call has its own `turns=1` cap, so it reports
         # `limit_turns` almost every time it fails. Letting that overwrite the
         # first call's reason destroys the only signal distinguishing "ran out of
@@ -938,6 +938,8 @@ class TestTheAnswerSurvivesTheTurnCap:
         )
 
         assert result.stop_reason == "limit_output_tokens"
+        # ...while the recovery's own outcome is still on record (B5).
+        assert "recovery call stop_reason=limit_turns answered=False" in caplog.text
 
     async def test_the_recovery_call_is_bounded_in_output_tokens(self, monkeypatch):
         # It was handed a second full `max_output_tokens`, none of which the

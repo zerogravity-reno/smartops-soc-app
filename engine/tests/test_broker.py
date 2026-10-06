@@ -2428,6 +2428,8 @@ class TestAFailedSubagentIsNotANegativeFinding:
 
         assert outcome.rows_retrieved == 21
         assert outcome.confirmed_empty is False
+        # O2: the step names the result that served it, and a re-dispatch adds to it.
+        assert evaluate_step(step, result, prior=outcome).result_ids == ["t1:siem:tu-1", "t1:siem:tu-1"]
 
     def test_a_subagent_that_ran_queries_and_got_nothing_is_still_confirmed_empty(self):
         # The behaviour that must survive the fix: a genuine empty result, where
