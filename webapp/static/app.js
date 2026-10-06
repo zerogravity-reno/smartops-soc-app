@@ -637,7 +637,7 @@ function _brokerShell(loop) {
 }
 
 function _stepLine(s) {
-  const mk = s.completed ? '<span class="mk ok">✓</span>' : (s.status ? '<span class="mk no">✗</span>' : '<span class="mk wait">-</span>');
+  const mk = s.completed ? '<span class="mk ok">done</span>' : (s.status ? '<span class="mk no">' + (s.status === 'rejected' ? 'rejected' : 'failed') + '</span>' : '<span class="mk wait">skipped</span>');
   const got = s.confirmed_empty ? 'looked, found nothing' : (s.rows_retrieved != null ? s.rows_retrieved + ' rows' : 'not run');
   const cats = (s.categories || []).length ? ' for ' + s.categories.map(_esc).join(', ') : '';
   return '<div class="xr-step">' + mk + '<div><b>' + _esc(s.family) + '</b>' + cats + ': ' + got + (s.status && !s.completed ? ' (' + _esc(s.status) + ')' : '') + '</div>' +
@@ -691,6 +691,13 @@ function _domState(f) {
   if (/produced no parseable/i.test(narr)) return 'bad';
   return narr.trim() ? 'ok' : 'none';
 }
+// "described identity, network; failed endpoint": which sub-analysts had something to say.
+function _domLine(pairs) {
+  const by = { ok: [], bad: [], none: [] };
+  pairs.forEach(([d, s]) => (by[s] || by.none).push(_esc(d)));
+  return [by.ok.length ? 'described ' + by.ok.join(', ') : '',
+          by.bad.length ? '<span class="bad">failed ' + by.bad.join(', ') + '</span>' : ''].filter(Boolean).join('; ') || 'nothing to describe';
+}
 function _finding(f) {
   const narr = String(f.narrative || '').trim();
   const obs = f.observations || [], sums = f.summaries || [];
@@ -703,7 +710,7 @@ function _finding(f) {
     '<div class="xr-p' + (st === 'bad' ? ' bad' : '') + '">' + _esc(prose) + '</div>' +
     (code ? '<div class="code-lines" title="Computed by code from the rows, not written by the model">' + _esc(code) + '</div>' : '') +
     _details('Observations (' + obs.length + ') and row summaries (' + sums.length + ')',
-      (obs.length ? '<div class="xr-mono">' + obs.map(o => '• ' + _esc(o)).join('\n') + '</div>' : '') +
+      (obs.length ? '<div class="xr-mono">' + obs.map(_esc).join('\n') + '</div>' : '') +
       (sums.length ? '<div class="code-lines">' + sums.map(_esc).join('\n\n') + '</div>' : '')) +
     '</div></div>';
 }
@@ -711,9 +718,9 @@ function _payloadCard(data) {
   const ps = data.payloads || [];
   const body = ps.map(p => {
     const doms = (p.findings || []);
-    const mark = doms.map(f => { const s = _domState(f); return _esc(f.domain) + (s === 'ok' ? ' ✓' : s === 'bad' ? ' ✗' : ' –'); }).join('  ');
+    const mark = _domLine(doms.map(f => [f.domain, _domState(f)]));
     return '<details class="task" id="fd-' + _esc(p.task_id) + '"><summary><b>' + _esc(_short(p.task_id)) + '</b> ' + _esc(p.hypothesis || '') +
-      ' <span class="dim">' + mark + '</span></summary>' +
+      ' <span class="dim dom-line">' + mark + '</span></summary>' +
       (doms.map(_finding).join('') || '<div class="xr-p dim">No domain had evidence to describe.</div>') + '</details>';
   }).join('') || '<div class="xr-p dim">No findings.</div>';
   return _card('b', 'Sub-analysts describe the evidence', ps.length + ' finding set' + (ps.length === 1 ? '' : 's'), body);
@@ -756,7 +763,7 @@ function renderScores(scores) {
     const has = scores[id] != null, v = Math.max(0, Math.min(100, Number(scores[id]) || 0));
     return '<div class="score' + (has && v === top ? ' top' : '') + '" title="' + _esc((h.verdict || '') + ': ' + (h.description || '')) + '">' +
       '<b>' + _esc(id) + '</b><span class="bar"><i style="width:' + v + '%;--c:' + (_VERDICT[h.verdict] || 'var(--warn)') + '"></i></span>' +
-      '<span class="n">' + (has ? _esc(scores[id]) : '–') + '</span></div>';
+      '<span class="n">' + (has ? _esc(scores[id]) : '') + '</span></div>';
   }).join('') : '';
 }
 
@@ -770,10 +777,10 @@ function renderTasks() {
     const bad = t.noRun || Object.values(t.dom).includes('bad');
     const st = t.steps == null ? (state.failed ? '<span class="tst bad">stopped</span>' : '<span class="tst">fetching</span>')
       : '<span class="tst ' + (bad ? 'bad' : t.rejected ? 'warn' : 'ok') + '">' + _esc(t.steps) + ' steps, ' + t.rows + ' rows</span>';
-    const dom = Object.entries(t.dom).map(([d, s]) => d + (s === 'ok' ? ' ✓' : s === 'bad' ? ' ✗' : ' –')).join('  ');
+    const dom = Object.keys(t.dom).length ? _domLine(Object.entries(t.dom)) : '';
     return '<li><button type="button" data-task="' + _esc(t.id) + '" title="' + _esc(t.q) + '"><span class="tid">' + _esc(_short(t.id)) + '</span>' +
       '<span class="tq">' + _esc(t.q) + '</span>' + st +
-      (dom || t.rejected ? '<span class="tdom">' + _esc(dom) + (t.rejected ? (dom ? ', ' : '') + t.rejected + ' step rejected' : '') + '</span>' : '') +
+      (dom || t.rejected ? '<span class="tdom">' + dom + (t.rejected ? (dom ? '; ' : '') + t.rejected + ' step rejected' : '') + '</span>' : '') +
       '</button></li>';
   }).join('');
 }
