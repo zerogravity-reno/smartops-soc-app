@@ -1,6 +1,6 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-05. **Code:** branch `post-analyst-update-integration`, cut from `main` at `8b07441` (PR #2 merged), plus the hand port of the teammate's analyst branch (`330d1bc`) and the B1c, K2 and O2 fixes.
+**As of:** 2026-10-06. **Code:** branch `post-analyst-update-integration`, cut from `main` at `8b07441` (PR #2 merged), plus the hand port of the teammate's analyst branch (`330d1bc`) and the B1c, K2 and O2 fixes.
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail and security. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
@@ -16,6 +16,8 @@ All runs investigated the same Splunk ES notable: *Threat - Custom - Windows Pow
 | `04a15495` | 2026-10-01 | TRUE POSITIVE 90%, 2 loops | First evaluation leaned benign (30/90/90) |
 | `a8118db9` | 2026-10-01 | TRUE POSITIVE 95%, 3 loops | First evaluation leaned benign (40/80/90) |
 | `6fc4f590` | 2026-10-01 | no verdict | Stopped mid-Broker because the test machine ran out of memory; not a product fault |
+| `9322c93a` | 2026-10-06 | TRUE POSITIVE 98%, 1 loop | B10b baseline: 32 encoded commands tagged, none decoded; verdict leaned on unread "obfuscated PowerShell". Trace `docs/trace-9322c93a.html` |
+| `dce405e5` | 2026-10-06 | REQUIRES_INVESTIGATION 65%, 1 loop | B10c: decoded text in the handoff and read by synthesis; run ended with gaps but no follow-ups (T17). Trace `docs/trace-dce405e5.html` |
 
 Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-integration/trace-072fd610.html`.
 
@@ -41,6 +43,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | T14 | Triage | Synthesis reads tasks that never ran and cites them as findings | High | Open |
 | T15 | Triage | Synthesis can spend its output budget before writing the verdict JSON | Medium | Open |
 | T16 | Triage | Unanswered follow-ups closed as "no gaps" | High | Open |
+| T17 | Triage | REQUIRES_INVESTIGATION with gaps but no follow-up tasks ends the run | High | Open |
 | P1 | Context | `event_time` is detection time, not activity time | High | Partly fixed (C6) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
@@ -55,7 +58,8 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); webapp round compaction open |
-| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked on this branch (enc# registry, decode on request); loop N+1 decode not yet seen live |
+| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked (B10c: decoded in the loop that sees it; verified live `dce405e5`); decoded block crowds out summaries (open) |
+| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Open |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -86,6 +90,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Impact:** a verdict can come down to which loop the run stops on. 2 of 3 true-positive runs passed through a confident benign state on the way.
 - **Fix:** define a neutral baseline for "no evidence". Score only from cited observations, and require new evidence before a score can move.
 - **Also (replay of `ded5cac1`, 2026-10-05):** the live synthesis message, rebuilt byte for byte (same prompt, same 8,751 prompt tokens) at temperature 0, matched the live reasoning for 721 characters and then diverged. The live call reached FALSE_POSITIVE 92; the reproduction scored 60 / 50 / 45 and wrote no verdict (T15). Temperature 0 doesn't make the model deterministic on Bedrock, so a single run can't attribute a verdict change to a code change. Trace: `docs/trace-ded5cac1-replay.html`.
+- **Also (2026-10-05/06, same notable, three consecutive live runs):** `67da804d` BENIGN 95, `9322c93a` TRUE_POSITIVE 98, `dce405e5` REQUIRES_INVESTIGATION 65. Each was reached in one loop with high stated confidence.
 
 **T3. The plan's framing decides the outcome when evidence is thin.** *High. Open.*
 - **Evidence:** given identical context, the same model framed the alert oppositely.
@@ -123,13 +128,14 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 **T9. Hypothesis scores aren't mutually consistent.** *Medium. Open.*
 - **Evidence:** `04a15495` loop 2 scored FALSE_POSITIVE 90 *and* BENIGN 90 at the same time, for mutually exclusive outcomes.
+- **Recurred (`dce405e5`):** H1 70 / H2 50 / H3 80, with the reasoning calling T1's commands "clearly malicious" and BENIGN never argued for. BENIGN scored highest, yet the status was REQUIRES_INVESTIGATION, and none of the three numbers appears in the reasoning.
 - **Fix:** define what a score means (a probability, or independent support) and enforce it.
 
 **T10. Status and verdict vocabulary are mixed.** *Medium. Open (A8).*
 - **Evidence:** `a8118db9` loop 2 emitted `status: REQUIRES_INVESTIGATION` with `verdict: BENIGN, confidence 90`. SOC3's reasoning debates whether `UNCERTAIN` and `REQUIRES_INVESTIGATION` are verdicts or statuses.
 
 **T11. Task entity kinds the Broker can't search.** *Medium. Open (A6).*
-- **Evidence:** `072fd610` dropped T5 (`service`) and T8 (`command`); `a8118db9` dropped T5.
+- **Evidence:** `072fd610` dropped T5 (`service`) and T8 (`command`); `a8118db9` dropped T5. `dce405e5` dropped T5 (`network_connection`, value `null`: "did any network connections occur within 30 seconds").
 - **Fix:** list only the allowed kinds in the planning prompt, and validate in code before the handoff. Today the check exists only at conversion time (`run_trace`).
 
 **T12. Wrong reference rule, and contradictory alignment judgements.** *Medium. Open (A7, C5).*
@@ -137,6 +143,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 
 **T13. The Analyst ignores the parent path even when the narrative spells it out.** *High. Open.*
 - **Evidence:** in the `ded5cac1` replay (`docs/trace-ded5cac1-replay.html`), synthesis B's narratives carried the computed name lines from `b50273c` (`"splunkd.exe" in these rows is 2 files: C:\Users\Administrator\Desktop\splunkd.exe=26, C:\Program Files\SplunkUniversalForwarder\bin\splunkd.exe=20`; T4: `1 file: …Desktop\splunkd.exe=180`). Its reasoning never mentions `Desktop`. It names splunkd only through the hypotheses' wording. Synthesis A, without the lines, didn't either. Earlier, the summaries carried the same path (B1, `ded5cac1` live) and were ignored too.
+- **Recurred (`9322c93a`, `dce405e5`):** both payloads carried the Desktop and Public parents in name lines and `enc#` lines (`dce405e5` T4: `enc#784267: 28 events, parent C:\Users\Administrator\Desktop\splunkd.exe=3, C:\Users\Public\splunkd.exe=11, …; decodes to: $env:username`). `9322c93a` reasoned "splunkd.exe (which is a forwarder) spawned PowerShell"; `dce405e5` reasoned that being launched by splunkd.exe "is a common pattern for Splunk". Neither names a path.
 - **Cause:** not established. The delivery side is done (B1), so this is how the 8B Analyst reads its input. The plan frames splunkd by name: H2 and H3 name `splunkd.exe` as the legitimate source, and T2 asks whether it is *documented* to run these commands (T3, T4).
 - **Fix (Analyst side):** to be decided. Candidates: have the plan name the entity by full value, a code-side check that compares a parent's path against the expected location for its name, or a synthesis step that must state each process's path before scoring. A prompt-only change should be measured with a replay first: it failed twice on the 8B sub-analysts (B1b, B1c).
 
@@ -145,6 +152,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
   - The live FALSE_POSITIVE 92 rested on *"T2 … splunkd.exe is documented to run such commands (as seen in the narrative)"*: T3's line about the real forwarder, read as the answer to T2's question.
   - Replay A cited `T1:powershell.exe` and `T2:splunkd.exe` in `evidence_refs`, and the verdict gate accepted them (T1).
 - **Recurred live (`e1461da6`):** 3 of 5 planned tasks were dropped again. T2 and T5 had zero-length windows, and T4 had entity kind `command` (T11).
+- **Recurred (`dce405e5`):** T5 was dropped at handoff (T11); the reasoning opens with "We have five broker findings" when four ran.
 - **Fix:** `plan_slim` should carry only the tasks that were sent, or mark the dropped ones with their reason. The gate should accept only `evidence_refs` that match a `<task>:<domain>` in the payload. The planning prompt should also stop emitting zero-length windows (see T11 for the same "dropped at handoff" path).
 
 **T15. Synthesis can spend its output budget before writing the verdict JSON.** *Medium. Open.*
@@ -156,6 +164,11 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 **T16. Unanswered follow-ups are closed as "no gaps".** *High. Open.*
 - **Evidence:** on `e1461da6`, loop 2 listed "Decoded PowerShell command functionality" as a gap and sent FU1 (decode) and FU2 (is `192.168.40.211` a legitimate update server). Neither was answered: nothing was decoded (B10), and the loop 3 reasoning itself says Round 3 "does not provide direct evidence" about `.211`. Loop 3 still returned `evidence_gaps: []` at TRUE_POSITIVE 98, and leaned on "encoded PowerShell". The command was `$env:username`.
 - **Fix (Analyst side):** for each follow-up sent, synthesis must say whether it was answered, citing a finding. An unanswered follow-up stays in `evidence_gaps`, and the gate refuses VERDICT_REACHED, or caps confidence, while one is open.
+
+**T17. REQUIRES_INVESTIGATION with gaps but no follow-up tasks ends the run.** *High. Open.*
+- **Evidence:** `dce405e5` loop 2 returned REQUIRES_INVESTIGATION 65 with three `evidence_gaps` (what triggered the splunkd.exe processes, the parent-child relationships in T1, the `192.168.40.211` URI) and no `follow_up_tasks` key. Its reasoning says "we must include evidence_gaps and follow_up_tasks … So we will add these", then the JSON omits them. `webapp/main.py` found no actionable follow-ups and ended the run after 1 of 3 loops ("No actionable follow-up tasks"), with the gaps unexamined.
+- **Likely contributor:** the evaluation header (`webapp/main.py`, "Required fields:") lists `hypothesis_scores`, `verdict`, `verdict_reasoning`, `evidence_refs` and `status`, but not `evidence_gaps` or `follow_up_tasks`. Those appear only in `system_prompt.txt`'s schema.
+- **Fix (webapp/Analyst side):** list both fields as required when the status is REQUIRES_INVESTIGATION. When gaps arrive without follow-ups, either turn each gap into a follow-up question in code or treat it as a failed evaluation and retry, not as the end of the investigation.
 
 ## Context pipeline
 
@@ -204,6 +217,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Batch water-fill (B9a, this branch):** on `ded5cac1` the round's budget was split evenly per task (6,915 each), then evenly per domain. T3 left 2.3k unused while T5, whose narratives and observations alone took 6,520, sent none of its 31 summaries. `contracts.pack_for_analyst` now packs the whole batch from one budget: the narratives always cross, and the rest is filled smallest need first, with what each domain leaves (including crumbs) passed on. `for_analyst` is its one-task case. Re-packed offline from the stored findings: batch 20,569 of 20,745 characters, and every domain with summaries sends some. T3 sends 2 + 3, T4 4 + 2 + 1, and T5 3 + 3 + 1, up from 0. The per-run `analyst-payload.json` keeps its per-task share.
 - **Live `e1461da6`:** the round 3 batch was 20,587 of 20,745 characters, and all 9 domains across FU1–FU3 sent at least one summary. Before, a long-narrative task sent none.
 - **Open (webapp):** resending only the latest round, instead of every round, would triple each round's budget. Then set `_ANALYST_ROUNDS` to 1.
+- **Overrun (`dce405e5`):** the batch payload was 23,532 characters against the 20,745 budget. Narratives always cross, and one endpoint narrative carried 11.3k characters of code-written `enc#` lines (B10c), so the budget can't hold when narratives alone exceed it.
 
 **B2. Narrow task windows miss the activity.** *Medium. Open (follows P1).*
 - **Evidence:** `072fd610` T1 and T4 searched `12:04:02–12:05:02Z`; the command ran at 11:55:17Z. Only the broad tasks found it.
@@ -250,6 +264,20 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Offline on `67da804d`:** the four tasks give one signature, `enc#784267`, which decodes to `$env:username`.
 - **Live `dbb0e75c`:** the registry was written, and the payload carries 4 `enc#784267` lines. Synthesis then hit the 4,096-token cap with no JSON (T15), so there was no follow-up loop. The decode path in loop N+1 is still unproven live.
 - **Ceiling:** it only works if the Analyst asks for the decode. A run that stops after loop 1 never decodes.
+- **Live `9322c93a` (2026-10-06):** that ceiling was hit. Loop 1 tagged 32 commands and the Analyst returned TRUE_POSITIVE 98 with no follow-up, citing "obfuscated PowerShell" it never read; `decode_encoded_commands` was never called. The reasoning never named the `Desktop\splunkd.exe` and `Public\splunkd.exe` parents. The earlier run `67da804d`, on the same notable, said BENIGN 95.
+- **Rework (B10c):** code now decodes in the loop that sees the rows. Each handoff line carries the plain text, e.g. `~ encoded command enc#784267: 87 events, parent …\Desktop\splunkd.exe=…; decodes to: $env:username`. It states facts only; what a parent path means is the Analyst's call. The on-request path is removed: the tool, `encoded.json`, `BrokerReport.decoded` and the Broker prompt paragraph. Offline on `9322c93a`'s rows: 32 signatures, about 5.5k characters of decoded text.
+- **Live `dce405e5` (2026-10-06):** 39 decoded lines reached the payload, all in T4's endpoint narrative, including `enc#784267 … decodes to: $env:username`. Synthesis quoted decoded content ("installing Atomic Red Team, modifying inputs.conf"), text that appears only in the decoded lines, so it reads them. It didn't cite `$env:username` or its Desktop/Public parents (T13).
+- **Open: the decoded block crowds out the summaries.** The T4 endpoint narrative was 12,957 characters, 11,313 of them `enc#` lines, mostly Ansible WinRM wrappers and forwarder config edits. Narratives always cross (B9a), so every domain in the batch was cut to 1 summary (4–8 omitted each), and the payload overran its budget (B9). Candidates: move the `enc#` lines into the droppable summaries tier, or cap the block (e.g. rarest parent first, N lines, "… M more in findings.json").
+- **Not handled:** 6 commands decode to a second `-EncodedCommand` (the Ansible exec wrapper under `cmd.exe`). Splunk cut their command lines at about 2k characters, so the inner command is incomplete.
+
+**B11. Sub-analyst narratives judge and misread fields.** *Medium. Open.*
+- **Evidence (`dce405e5`):**
+  - **Judging:** T1 endpoint: two PowerShell processes "contained suspicious commands involving $uri = 'http://192.168.40.211/update/'". "Suspicious" is the Analyst's call; the sub-analyst's job is to translate.
+  - **Field misread:** T2 network: "splunkd.exe processes connecting to two endpoints (C:\Users\Administrator\Desktop\splunkd.exe and C:\Users\Public\splunkd.exe)". Those are the processes' image paths, not connection endpoints.
+  - **Count misread:** T4 identity: "Over 10849 events, the Administrator successfully logged into 10849 destinations". The event count is reported as a count of distinct destinations.
+  - **Detections read as telemetry:** T1's "two PowerShell processes on host localhost.localdomain at 12:04:02 and 12:04:55 UTC" came from the siem subagent's `index=notable powershell.exe` and `index=risk powershell.exe` searches, not from endpoint events. The 12:04:02 row is this alert's own notable (`host` is the ES server, the time is when the search fired), and the 12:04:55 one is another ES detection (`$uri = 'http://192.168.40.211/update/win-agent-2.4.1.bin'`). The rows were left uncategorised, and the narrative presented them as process executions on a second host. The alert was counted as evidence about itself.
+- **Impact:** synthesis repeated T1's "suspicious" as "clearly malicious" (T7's pattern, one layer down), and its "T1 shows malicious PowerShell commands" rests on ES detection records, not on telemetry.
+- **Fix:** to be decided. Prompt rules have failed on the 8B sub-analysts before (B1b, B1c), so a code-side check is the likelier lever: flag verdict words in a narrative, and compare the numbers a narrative states against the set's computed summary.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 

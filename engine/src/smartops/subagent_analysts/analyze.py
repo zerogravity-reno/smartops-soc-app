@@ -47,7 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,8 +86,7 @@ from smartops.tools.native.decoder import encoded_in
 
 from .formatting import NAMES_FOOTER, NO_TIME_MARKER, _middle, name_expansions
 
-ENCODED_FOOTER = "Encoded commands in these rows; a task can ask to decode one by its enc# reference:"
-DECODED_FOOTER = "Decoded by code, on request:"
+ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -778,9 +777,7 @@ def _finalize_finding(
     return grounded.model_copy(update={"observations": survivors})
 
 
-def _as_judgement(
-    finding: DomainFinding, slice_: DomainSlice, decoded: Sequence[str] = ()
-) -> DomainJudgement:
+def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:
     """Project one finding onto the wire, attaching the evidence it cited.
 
     The projection is where `reasoning_trace` and the token counts stop: they are
@@ -833,17 +830,16 @@ def _as_judgement(
     sets = [*slice_.siem_sets, *(("uncategorised", rs) for rs in slice_.untagged_sets)]
     names = name_expansions(finding.narrative, sets)
     narrative = "\n".join([finding.narrative, "", NAMES_FOOTER, *names]) if names else finding.narrative
-    # Code-written too (B10): the encoded commands these rows hold, by the reference
-    # a later task names to have the Broker decode one, then what earlier refs said.
+    # Code-written too (B10): each encoded command these rows hold, with what it
+    # decodes to. Facts only -- what a parent path means is the Analyst's call.
     tagged = encoded_in(row for _, rs in sets for row in rs.rows)
     if tagged:
         narrative = "\n".join([narrative, "", ENCODED_FOOTER, *(
             f"~ encoded command {sig}: {e['events']} events"
             + (", parent " + ", ".join(f"{_middle(p)}={n}" for p, n in sorted(e["parents"].items())) if e["parents"] else "")
+            + f"; decodes to: {e['plain']}"
             for sig, e in tagged.items()
         )])
-    if decoded:
-        narrative = "\n".join([narrative, "", DECODED_FOOTER, *decoded]).strip()
 
     return DomainJudgement(
         domain=finding.domain,
@@ -932,8 +928,7 @@ async def gather(
         # strictly: a finding paired with the wrong slice would attach another
         # domain's rows to this domain's judgement.
         findings=[
-            # Decoded commands go to endpoint, the domain that reads process rows.
-            _as_judgement(f, s, report.decoded if s.domain == "endpoint" else ())
+            _as_judgement(f, s)
             for f, s in zip(findings, slices, strict=True)
         ],
         retrieval=_retrieval_summary(report, scope, slices),

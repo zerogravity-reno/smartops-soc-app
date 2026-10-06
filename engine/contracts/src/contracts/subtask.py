@@ -809,13 +809,5 @@ class BrokerReport(BaseModel):
     scope: Scope | None = None
     cost: CostSummary
     queries_run: list[QueryRun] = Field(default_factory=list)
-    decoded: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Code-written lines, one per encoded command the Broker was asked to "
-            "decode by `enc#` reference (B10). `gather` puts them in the endpoint "
-            "narrative; empty when nothing was asked."
-        ),
-    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
