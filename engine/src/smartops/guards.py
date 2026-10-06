@@ -42,6 +42,13 @@ _LOOKS_LIKE_SEARCH = re.compile(
 # other pattern here: this one is evaluated once per string per tool call.
 _CIM_PREDICATES = re.compile(r"\b(sourcetype|datamodel|tag|eventtype)\s*=", re.IGNORECASE)
 
+# B11 (dce405e5): Splunk ES detection records (notables, risk events), not
+# telemetry. Searched as evidence, the sub-analyst narrated them as process
+# executions on the ES server. Rejected even when a deployment allowlists them.
+_ES_SUMMARY_INDEXES = frozenset({"notable", "risk"})
+# The notable's sourcetype; rule 2 would otherwise let it through with no index.
+_ES_SUMMARY_SOURCETYPE = re.compile(r"\bsourcetype\s*=\s*\"?stash\"?(?![\w.:-])", re.IGNORECASE)
+
 
 def escape_untrusted(text: str) -> str:
     """Make attacker-influenced prose unable to carry markup into a prompt.
@@ -159,6 +166,15 @@ class IndexScopeGuard:
 
         allowed = ", ".join(f"index={name}" for name in self._allowlist)
         targeted = [_unquote(m.group(1)) for m in _INDEX_TERM.finditer(value)]
+
+        summary = [n for n in targeted if n.lower() in _ES_SUMMARY_INDEXES]
+        if summary or _ES_SUMMARY_SOURCETYPE.search(value):
+            shown = f"index={summary[0].lower()}" if summary else "sourcetype=stash"
+            return (
+                f"Rejected: {shown} holds Splunk ES detection records, not telemetry. "
+                f"The alert is already your input; search the raw index the detection "
+                f"read (e.g. process creation events) instead."
+            )
 
         # If an explicit index predicate was provided, check it.
         if targeted:

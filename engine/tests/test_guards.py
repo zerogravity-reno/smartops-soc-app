@@ -61,6 +61,33 @@ def _run(tool_input, name="splunk_run_query"):
     return event
 
 
+class TestEsSummaryIndexes:
+    """B11: notable/risk hold ES detection records, rejected even if allowlisted."""
+
+    ES_ALLOW = ("windows_lab", "notable", "risk")
+
+    def _blocked(self, spl):
+        event = _BeforeEvent("splunk_run_query", {"query": spl})
+        IndexScopeGuard("siem", self.ES_ALLOW)._check(event)
+        return event.cancel_tool
+
+    @pytest.mark.parametrize(
+        "spl",
+        [
+            "index=notable powershell.exe | table _time",
+            "search index=risk powershell.exe | table _time",
+            'index="NOTABLE" powershell.exe',
+            "sourcetype=stash powershell.exe",
+            'sourcetype = "stash" powershell.exe',
+        ],
+    )
+    def test_rejected_despite_allowlist(self, spl):
+        assert "detection records" in self._blocked(spl)
+
+    def test_raw_index_still_passes(self):
+        assert self._blocked("index=windows_lab EventCode=1") is False
+
+
 class TestEscapeUntrusted:
     """Replaces two literal `replace("</tag>", ...)` calls that each missed the
     same three cases: a different case, internal whitespace, and an attacker

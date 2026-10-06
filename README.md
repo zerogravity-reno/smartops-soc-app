@@ -112,7 +112,7 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 | `SPLUNK_TOKEN` | import and Broker | yes | none | Splunk token for the MCP server |
 | `SMARTOPS_MCP_TLS_NO_VERIFY` | import and Broker | no | blank (verify TLS) | `splunk` to accept a self-signed :8089 certificate |
 | `SMARTOPS_MCP_CONFIG` | Broker | no | `mcp_servers.json` in the working directory | Path to a different MCP server config (same as `--mcp-config`) |
-| `SMARTOPS_SIEM_INDEXES` | Broker | no | `botsv3` | Comma list of indexes the siem subagent may search, e.g. `windows_lab,main,notable` |
+| `SMARTOPS_SIEM_INDEXES` | Broker | no | `botsv3` | Comma list of indexes the siem subagent may search, e.g. `windows_lab,main`. `notable` and `risk` (ES detection records) are always rejected, even if listed |
 | `VT_API_KEY` | Broker | no | none | VirusTotal API key. Without it the vt family reports the missing key. |
 | `OPENCTI_URL` | context pipeline | no | `http://localhost:8080/graphql` | OpenCTI GraphQL endpoint, e.g. `http://<opencti-host>:8080/graphql` |
 | `OPENCTI_TOKEN` | context pipeline | no | blank | OpenCTI token |
