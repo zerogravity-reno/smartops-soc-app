@@ -141,3 +141,12 @@ def test_the_handshake_names_what_went_missing():
     h = run_trace.handshake(["a", "b"], runs, payload)
     assert (h["not_fetched"], h["not_returned"], h["unexpected"]) == (["b"], ["b"], ["z"])
     assert run_trace.handshake(["a"], runs[:1], None)["not_returned"] == ["a"]
+
+
+def test_notable_event_time_is_the_event_not_the_search():
+    # Run 600721d3: ES ran the search at 13:04:17Z; the process ran at 11:50:44Z.
+    ev = {"_time": "2026-10-06T16:04:17.000+03:00", "firstTime": "2026-10-06T14:50:44"}
+    assert run_trace.notable_event_time(ev) == "2026-10-06T11:50:44+00:00"
+    assert run_trace.notable_event_time({"_time": ev["_time"], "firstTime": "1791287444"}) == "2026-10-06T11:50:44+00:00"
+    assert run_trace.notable_event_time({"_time": ev["_time"]}) == "2026-10-06T13:04:17+00:00"
+    assert run_trace.notable_event_time({"_time": ev["_time"], "firstTime": "garbage"}) == "2026-10-06T13:04:17+00:00"

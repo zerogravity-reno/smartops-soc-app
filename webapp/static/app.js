@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const FIELDS = ['rule', 'src', 'dest', 'user', 'hash', 'domain', 'mitre', 'sig', 'spl'];
 
 let lastImportedRaw = {};
+let lastImportedTime = null;
 let run = null;   // {es, started, lastEvent, timer, contract}
 let stats = {};   // per loop: sent, dropped, handshake, top, status -- the folded summary
 
@@ -74,6 +75,7 @@ async function importAlert(index, btn) {
                   domain: data.domain, mitre: data.mitre, sig: data.sig, spl: data.deployed_spl };
     FIELDS.forEach(k => { $('f_' + k).value = map[k] || ''; });
     lastImportedRaw = data.raw_event_data || {};
+    lastImportedTime = data.event_time || null;
     $('alertNote').textContent = 'Imported the alert' + (data.event_time ? ' from ' + data.event_time : '') +
       (data.urgency ? ' (urgency ' + data.urgency + ')' : '') + '. Review the fields, then Investigate.';
     $('formError').textContent = '';
@@ -124,8 +126,9 @@ async function buildContract(f, raw) {
   const normalized_seed = {
     event_id: "evt-" + Math.floor(Math.random() * 1000000),
     // The alert's own time, in UTC. It was the browser's "now", which sent
-    // run cecd266a searching 3 hours after a +03:00 alert. null = unknown.
-    event_time: (() => { const d = new Date([].concat(raw._time)[0] || NaN); return isNaN(d) ? null : d.toISOString(); })(),
+    // run cecd266a searching 3 hours after a +03:00 alert; then the notable's _time,
+    // which sent run 600721d3 74 minutes late. The import resolves it from firstTime.
+    event_time: (() => { const d = new Date(lastImportedTime || [].concat(raw._time)[0] || NaN); return isNaN(d) ? null : d.toISOString(); })(),
     ingest_time: new Date().toISOString(),
     detection: { detection_id: null, name: rule_name || null, severity: "high", security_domain: null, category: null, type: null, source: null },
     source_context: { siem: "Splunk ES", index: "win_sysmon", sourcetype: "XmlWinEventLog", source: null, host: null },
@@ -137,8 +140,10 @@ async function buildContract(f, raw) {
     },
     authentication: { action: null, status: null, authentication_method: null, logon_type: null, failure_reason: null, session_id: null, source_user: null, target_user: null },
     process: {
-      process_name: signature || null, process_path: null, process_id: null, process_guid: null, command_line: null,
-      parent_process_name: null, parent_process_path: null, parent_process_id: null, parent_command_line: null,
+      process_name: raw.process_name || signature || null, process_path: raw.process_path || null, process_id: raw.process_id || null,
+      process_guid: raw.process_guid || null, command_line: raw.process || null,
+      parent_process_name: raw.parent_process_name || null, parent_process_path: raw.parent_process_path || null,
+      parent_process_id: raw.parent_process_id || null, parent_command_line: null,
       child_process_name: null, child_process_id: null
     },
     file: { file_name: null, file_path: null, file_extension: null, file_size: null, md5: null, sha1: null, sha256: hash || null, file_action: null, file_owner: null, file_signature: null },

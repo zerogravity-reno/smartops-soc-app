@@ -46,6 +46,26 @@ def _instant(value) -> datetime | None:
     return parsed if parsed.tzinfo else None
 
 
+def notable_event_time(ev: dict) -> str:
+    """When the alert's event happened, in UTC. A notable's `_time` is when ES ran the
+    search, often an hour after the event. ESCU's `firstTime` is the event, written
+    without an offset in the search head's zone, the same zone `_time` is rendered in."""
+    def one(key):
+        v = ev.get(key)
+        return (v[0] if isinstance(v, list) and v else v) or ""
+
+    t, first = _instant(one("_time")), str(one("firstTime")).strip()
+    try:
+        if first.replace(".", "", 1).isdigit():
+            return datetime.fromtimestamp(float(first), UTC).isoformat()
+        if first and t:
+            # ponytail: assumes firstTime shares _time's offset; true while ES and the saved search use one zone
+            return datetime.fromisoformat(first).replace(tzinfo=t.tzinfo).astimezone(UTC).isoformat()
+    except ValueError:
+        pass
+    return t.astimezone(UTC).isoformat() if t else str(one("_time"))
+
+
 def runs_dir() -> Path:
     # Same resolution the engine uses, anchored at the repo because the engine runs there.
     return REPO / (os.environ.get("SMARTOPS_RUNS_DIR", "").strip() or ".smartops/runs")
