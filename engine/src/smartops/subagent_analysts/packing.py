@@ -250,11 +250,18 @@ _ANALYST_PROMPT_RESERVE = 4_300
 the round-2 synthesis call was 8,195 prompt tokens, of which the 6.3k-char system
 prompt and the 10.4k-char plan were ~4.2k."""
 
-# ponytail: assumes 3 re-sent rounds; set to 1 if the webapp stops re-sending old rounds.
+# ponytail: assumes 3 re-sent rounds, but the webapp's `max_loops` is 15 and it re-sends
+# every round, so past ~3 full rounds the synthesis prompt can outgrow the window.
+# Fix in the webapp (send only the last rounds); set to 1 if it stops re-sending old rounds.
 _ANALYST_ROUNDS = 3
 
+_ANALYST_GENERATION_RESERVE = 8_192
+"""The Analyst's own `max_gen_len` (`webapp/services/llm_service.DEFAULT_MAX_GEN_LEN`),
+not the sub-analysts' `_GENERATION_RESERVE`: at 4,096 its synthesis thinking ran
+out before the JSON on 78cd60ec (T15). `tests/test_verdict_gate.py` holds the two equal."""
+
 HANDOFF_CHAR_BUDGET = int(
-    (_CONTEXT_WINDOW - _GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE - _SAFETY_MARGIN)
+    (_CONTEXT_WINDOW - _ANALYST_GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE - _SAFETY_MARGIN)
     // _ANALYST_ROUNDS
     * _CHARS_PER_TOKEN
 )

@@ -302,6 +302,14 @@ class TestRegistration:
         monkeypatch.setenv(subagents.SIEM_INDEXES_ENV_VAR, "")
         assert subagents._guard_for("siem")._allowlist == DOMAINS["siem"].index_allowlist
 
+    def test_the_siem_prompt_names_the_allowlist(self, monkeypatch):
+        # F9: an agent not told the indexes probed them one by one.
+        monkeypatch.setenv(subagents.SIEM_INDEXES_ENV_VAR, "windows_lab, notable")
+        prompt = subagents._system_prompt_for("siem", turns=4)
+        assert "may search: windows_lab, notable" in prompt
+        assert "(index=windows_lab OR index=notable)" in prompt
+        assert "may search" not in subagents._system_prompt_for("vt", turns=4)
+
     def test_the_collector_is_still_registered_alongside(self):
         assert any(isinstance(h, subagents._EvidenceCollector) for h in self._hooks("siem"))
 

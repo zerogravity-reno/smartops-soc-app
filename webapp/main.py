@@ -526,7 +526,7 @@ class RunRequest(BaseModel):
     host: str = "BSTOLL-L"
     domain: str = "coinhive.com"
     event_time: str = "2018-08-20T12:00:00Z"
-    max_loops: int = 3
+    max_loops: int = 15  # the handoff budget only fits 3 re-sent rounds: see packing._ANALYST_ROUNDS
     context_contract: dict = None
 
 @app.get("/debug")
@@ -609,6 +609,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             q.put({"type": "done", "message": "Investigation complete"})
             return
         all_findings = {}
+        all_runs = []  # every round's broker runs, for the verdict gate's step check
         for loop_num in range(2, req.max_loops + 2):
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
@@ -623,6 +624,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 q.put({"type": "error", "message": f"Loop {loop_num} broker failed: {link['error']}", "trace": link})
                 return
             all_findings[f"Round {loop_num}"] = findings
+            all_runs += link.get("broker_runs", [])
             _emit(q, "payload", findings, loop=loop_num, message=f"Loop {loop_num}: sub-analyst findings returned to the Analyst")
 
             # Synthesis â€” build accumulated findings sections
@@ -650,7 +652,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
             rN = call_llm(system_prompt, "\n\n".join(sections))
             raw_synth = extract_json(rN["answer"]) or {}
-            synth = run_trace.verdict_gate(raw_synth, plan)
+            synth = run_trace.verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
             _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                   tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
                   message=f"Loop {loop_num} â€” Synthesis complete: {synth.get('status','?')}")
@@ -667,7 +669,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             if loop_num == req.max_loops + 1:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"}, message="Max loops reached")
                 break
-            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"])
+            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"], synth.get("evidence_gaps"))
             if not tasks:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"},
                       message="No actionable follow-up tasks")

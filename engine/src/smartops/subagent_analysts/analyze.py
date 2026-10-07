@@ -331,9 +331,24 @@ def _invoke_with_one_reask(
         # Bill both calls: the failed first attempt was still generated and paid for.
         prompt_tokens += retry.prompt_tokens
         generation_tokens += retry.generation_tokens
-        return _Attempt(parse_whole(retry), prompt_tokens, generation_tokens)
-    except parse_error:
-        logger.warning("domain=%s | re-ask still produced no parseable %s", domain, noun)
+        try:
+            return _Attempt(parse_whole(retry), prompt_tokens, generation_tokens)
+        except parse_error:
+            if retry.stop_reason != "length":
+                raise
+            # Cut off twice (N2, 78cd60ec T1 endpoint): keep what was finished and
+            # drop the line the limit cut through, rather than lose the domain.
+            head, _, tail = retry.generation.rstrip().rpartition("\n")
+            salvaged = parse(head, domain=domain)
+            logger.warning(
+                "domain=%s | re-ask also hit the token limit; kept the finished %s "
+                "and dropped its cut-off last line (%d chars): %r",
+                domain, noun, len(tail), tail[:300],
+            )
+            return _Attempt(salvaged, prompt_tokens, generation_tokens)
+    except parse_error as exc:
+        # The reason, not just the fact: b3aa0dd2 lost endpoint twice and the log could not say why.
+        logger.warning("domain=%s | re-ask still produced no parseable %s: %s", domain, noun, exc)
         # The FIRST reply's trace, not the retry's: it is the one that shows what
         # the analyst was thinking when it read the evidence.
         reasoning, _ = split_reasoning(response.generation)

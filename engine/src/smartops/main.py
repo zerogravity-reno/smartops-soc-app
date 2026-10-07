@@ -1180,6 +1180,10 @@ async def _run(argv: list[str] | None = None) -> int:
         level=logging.INFO if args.verbose else logging.ERROR,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    if not args.verbose:
+        # The analyst gates log every sentence, figure and domain they drop as a
+        # warning; at ERROR the run's log never showed what the Analyst lost (N3).
+        logging.getLogger("smartops.subagent_analysts").setLevel(logging.WARNING)
     # After logging is configured, so its warning is visible, and after the .env
     # load, so credentials from the file count as explicit.
     _neutralise_aws_profile()

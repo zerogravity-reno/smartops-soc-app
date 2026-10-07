@@ -269,6 +269,20 @@ class TestGatherFinding:
         assert "token limit" in model.prompts[1]
         assert finding.citations == ["auth_events#1"]
 
+    def test_a_reask_also_cut_off_keeps_the_finished_lines(self):
+        # 78cd60ec T1 endpoint: both replies hit the limit and the domain was lost.
+        good = _finding_gen("one logon.", "x", "auth_events#1")
+        runaway = good + "\n- and then , , , , , , [auth_ev"
+        model = _SequenceModel([(runaway, "length"), (runaway, "length")])
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert model.calls == 2
+        assert finding.narrative == "one logon."
+        assert not any(", , ," in o for o in finding.observations)
+
     def test_a_reply_with_no_narrative_triggers_the_reask(self):
         """The narrative is the product, so its absence is a parse failure.
 

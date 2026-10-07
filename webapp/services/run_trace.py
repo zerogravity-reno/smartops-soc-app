@@ -166,16 +166,20 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
     return {"schema_version": 1, "tasks": out}, dropped
 
 
-def follow_up_tasks(follow_ups: list, sent: list) -> list:
+def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None) -> list:
     """Synthesis follow-ups as tasks for the next broker round.
 
     Follow-ups carry only a question, so they inherit every entity and the whole
-    window of the tasks just sent.
+    window of the tasks just sent. With no follow-ups, each evidence gap becomes
+    one (T17): a gap left unasked ended the run with the gap unexamined.
     """
     # ponytail: union of entities + widest window; per-follow-up scoping needs the
     # synthesis prompt to emit entity/time_window, which is the main Analyst's side.
     if not sent:
         return []
+    if not any(isinstance(f, dict) and f.get("question") for f in follow_ups or []):
+        follow_ups = [{"task_id": f"G{n}", "question": g}
+                      for n, g in enumerate((g for g in gaps or [] if isinstance(g, str) and g.strip()), 1)]
     entities = list({(e["type"], e["value"]): e for t in sent for e in t["entity"]}.values())
     starts = [t["time_window"]["start"] for t in sent]
     ends = [t["time_window"]["end"] for t in sent]
@@ -188,12 +192,41 @@ def follow_up_tasks(follow_ups: list, sent: list) -> list:
     ]
 
 
-def verdict_gate(synth: dict, plan: dict) -> dict:
+def _ref_problem(ref: str, payloads: list, runs: list) -> tuple[str | None, str | None]:
+    """(the cited task's question, why `ref` is no broker finding), or (None, None) when it is one.
+
+    A ref is `<task>:<domain>` or `<task>:<block id>`, the task as the run's full
+    id or its short `T1` tail. It holds when that task ran, the domain has
+    observations or the block is cited in its findings, and none of the task's
+    steps was rejected or left incomplete.
+    """
+    task, _, what = ref.partition(":")
+    hits = [p for p in payloads if task and (p.get("task_id") == task or str(p.get("task_id", "")).endswith("-" + task))]
+    if not hits:
+        return None, f"{ref}: no task {task!r} ran"
+    question = hits[0].get("hypothesis")
+    findings = [f for p in hits for f in p.get("findings", [])]
+    cited = any(f.get("domain") == what and f.get("observations") for f in findings) or (
+        "#" in what and any(f"[{what}]" in " ".join([f.get("narrative", ""), *f.get("observations", [])]) for f in findings))
+    if not cited:
+        return question, f"{ref}: {what!r} is neither a domain with observations nor a block cited in {task}'s findings"
+    ids = {p.get("task_id") for p in hits}
+    for run in runs:
+        if run.get("task_id") in ids:
+            for st in run.get("steps", []):
+                if not st.get("completed") or st.get("status") == "rejected":
+                    return question, f"{ref}: step {st.get('step_id')} is {st.get('status') or 'incomplete'}"
+    return None, None
+
+
+def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
     """The synthesis output with `status` decided here, not by the model.
 
     VERDICT_REACHED needs the top hypothesis at 85 or more, 20 clear of the
-    runner-up, and at least one cited broker finding (an `ALERT:` ref is the
-    alert itself, not evidence). Anything short of that investigates again.
+    runner-up, and cited broker findings that all hold (`_ref_problem`, against
+    every round's `payloads` and broker `runs`; an `ALERT:` ref is the alert
+    itself, not evidence). Anything short of that investigates again, and a
+    blocked verdict's failed refs become gaps: the cited task's question again.
     """
     out = dict(synth)
     scores = {}
@@ -206,7 +239,8 @@ def verdict_gate(synth: dict, plan: dict) -> dict:
     top_id, top = ranked[0] if ranked else (None, 0)
     gap = top - (ranked[1][1] if len(ranked) > 1 else 0)
     refs = [r for r in synth.get("evidence_refs") or [] if isinstance(r, str) and not r.startswith("ALERT:")]
-    if top >= 85 and gap >= 20 and refs:
+    bad = [p for p in (_ref_problem(r, payloads or [], runs or []) for r in refs) if p[1]]
+    if top >= 85 and gap >= 20 and refs and not bad:
         out["status"] = "VERDICT_REACHED"
         out["follow_up_tasks"] = []
         if not out.get("verdict") or out["verdict"] == "REQUIRES_INVESTIGATION":
@@ -215,8 +249,13 @@ def verdict_gate(synth: dict, plan: dict) -> dict:
         return out
     out["status"] = "REQUIRES_INVESTIGATION"
     if top >= 85 and gap >= 20:
-        out["evidence_gaps"] = [*(out.get("evidence_gaps") or []),
-                                "No broker finding cited in evidence_refs: the verdict has no evidence behind it"]
+        gaps = list(out.get("evidence_gaps") or [])
+        if not refs:
+            gaps.append("No broker finding cited in evidence_refs: the verdict has no evidence behind it")
+        gaps += [q for q in dict.fromkeys(q for q, _ in bad) if q and q not in gaps]
+        out["evidence_gaps"] = gaps
+        if bad:
+            out["refused_refs"] = [why for _, why in bad]
     return out
 
 

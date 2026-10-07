@@ -423,6 +423,16 @@ def _system_prompt_for(family: str, *, turns: int, time_scoped: bool | None = No
     if time_scoped is None:
         time_scoped = DOMAINS[family].time_scoped
     spec_text = _FAMILY_SPECIALIZATIONS.get(family, "")
+    guard = _guard_for(family) if family == "siem" else None
+    if guard is not None:
+        # F9: not told which indexes exist, c7dbf51d T1 probed six of them one by one
+        # ($0.45 of the task's $0.61). One `tstats` over all of them finds the host's.
+        indexes = " OR ".join(f"index={i}" for i in guard._allowlist)
+        spec_text += (
+            f"- The indexes you may search: {', '.join(guard._allowlist)}. Find which hold the task's "
+            f"host with ONE query first (`| tstats count where ({indexes}) host=<host> by index, sourcetype`), "
+            "then search only those. Do not probe indexes one at a time.\n"
+        )
     specialization = f"\n{spec_text}\n" if spec_text else "\n"
     prompt = _SYSTEM_PROMPT.format(
         family=family,
