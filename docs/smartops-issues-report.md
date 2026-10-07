@@ -73,7 +73,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | W5 | Webapp | Demo alert pre-filled in the form | Medium | Fixed in `58d39c3` |
 | W6 | Webapp | Model and log text inserted into `innerHTML` unescaped | Medium | Fixed in `58d39c3` |
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
-| W8 | Webapp | `max_loops` 15, but every round is re-sent and the handoff budget fits 3 | High | Open |
+| W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Open |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -339,10 +339,11 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fix:** resolved by W1 (one plan, one prompt).
 
 **W8. `max_loops` is 15, but the synthesis prompt only has room for 3 rounds.** *High. Open.*
-- **Why 15:** `b3aa0dd2` reached max loops at 3, with T1's parent-process question still unanswered; 3 was too few for the loop to finish.
+- **Why 15:** headroom, not a target. `b3aa0dd2` hit max loops at 3 with T1's parent-process question still unanswered, so 3 was too few for the loop to finish.
+- **Strands' compaction doesn't cover it.** `SummarizingConversationManager` manages a Strands `Agent`'s own message history. The main Analyst calls Bedrock directly (`call_llm`, httpx), and each synthesis is one message rebuilt from every round, so nothing compacts the rounds.
 - **Problem:** `webapp/main.py` re-sends every earlier round's payload on each synthesis call. The Broker's per-round budget (`HANDOFF_CHAR_BUDGET`, 16,480 characters) is sized so that 3 rounds plus the plan plus 8,192 output tokens fit the 32,768-token window (`packing._ANALYST_ROUNDS = 3`). `b3aa0dd2`'s synthesis prompts grew 7,406 → 12,009 → 13,934 tokens over three rounds. At that rate the prompt passes ~24k, where the output no longer fits, in about round 6, and Bedrock rejects or truncates the call.
 - **Cost:** about $2.50 of Broker spend per full round on `b3aa0dd2`, so a 15-loop run can approach $35.
-- **Fix (webapp, the Analyst's input):** send synthesis only the last 2–3 rounds in full, with earlier rounds reduced to their verdict-relevant lines, or stop the loop when the next prompt would not fit. Lowering `_ANALYST_ROUNDS` to 15 instead would leave each round ~3k characters, which is too small to carry findings.
+- **Fix (webapp, the Analyst's input; to be decided):** (a) keep the last 2 rounds in full and replace older ones with a short record built in code: each task's question, the findings cited, and what was answered. (b) Make the Analyst a Strands `Agent` with `SummarizingConversationManager`. (c) Stop when the next prompt would not fit. Lowering `_ANALYST_ROUNDS` to 15 instead would leave each round ~3k characters, which is too small to carry findings.
 
 ## Cost
 
