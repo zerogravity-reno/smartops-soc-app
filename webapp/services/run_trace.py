@@ -192,6 +192,25 @@ def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None) -> l
     ]
 
 
+def compact_round(payload: dict, evaluation: dict) -> dict:
+    """An older round as synthesis re-reads it: what was asked, which domains
+    answered, and what the evaluation after it concluded. Narratives and
+    summaries are left out; the record is built here, not by a model (W8).
+    """
+    # ponytail: 0.9-1.8 kB a round on b3aa0dd2, so 13 compacted rounds (~20 kB) roughly fill
+    # the third share `packing._ANALYST_ROUNDS` leaves; cap per task if a run nears 15 rounds.
+    return {
+        "tasks": [
+            {"task_id": p.get("task_id"), "question": p.get("hypothesis"),
+             "domains_with_observations": [f["domain"] for f in p.get("findings", []) if f.get("observations")]}
+            for p in payload.get("payloads", [])
+        ],
+        "evaluation": {k: evaluation[k] for k in
+                       ("hypothesis_scores", "verdict", "evidence_refs", "refused_refs", "evidence_gaps")
+                       if evaluation.get(k)},
+    }
+
+
 def _ref_problem(ref: str, payloads: list, runs: list) -> tuple[str | None, str | None]:
     """(the cited task's question, why `ref` is no broker finding), or (None, None) when it is one.
 

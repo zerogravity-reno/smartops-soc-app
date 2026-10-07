@@ -250,9 +250,8 @@ _ANALYST_PROMPT_RESERVE = 4_300
 the round-2 synthesis call was 8,195 prompt tokens, of which the 6.3k-char system
 prompt and the 10.4k-char plan were ~4.2k."""
 
-# ponytail: assumes 3 re-sent rounds, but the webapp's `max_loops` is 15 and it re-sends
-# every round, so past ~3 full rounds the synthesis prompt can outgrow the window.
-# Fix in the webapp (send only the last rounds); set to 1 if it stops re-sending old rounds.
+# Synthesis reads the last 2 rounds in full (`webapp/main.py` FULL_ROUNDS) and older
+# ones as `run_trace.compact_round` records; the third share is room for those (W8).
 _ANALYST_ROUNDS = 3
 
 _ANALYST_GENERATION_RESERVE = 8_192

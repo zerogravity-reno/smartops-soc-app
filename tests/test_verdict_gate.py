@@ -69,3 +69,13 @@ def test_handoff_budget_leaves_the_analyst_its_generation():
     from smartops.subagent_analysts import packing
     from webapp.services import llm_service
     assert packing._ANALYST_GENERATION_RESERVE == llm_service.DEFAULT_MAX_GEN_LEN
+
+
+def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():
+    from webapp.services.run_trace import compact_round
+    rec = compact_round({"payloads": PAYLOADS}, {"hypothesis_scores": {"H1": 60}, "evidence_refs": ["T3:endpoint"],
+                                                 "evidence_gaps": [], "verdict_reasoning": "long prose"})
+    assert rec["tasks"][1] == {"task_id": "r-L2-T3", "question": "Who logged on?",
+                               "domains_with_observations": ["endpoint"]}
+    assert rec["evaluation"] == {"hypothesis_scores": {"H1": 60}, "evidence_refs": ["T3:endpoint"]}
+    assert "narrative" not in str(rec)

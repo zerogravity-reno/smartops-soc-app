@@ -521,12 +521,14 @@ def synthesis_endpoint(req: SynthesisRequest):
 # â”€â”€ Run queue for SSE debug streaming â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _run_queues: dict[str, Queue] = {}
 
+FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS sizes them
+
 class RunRequest(BaseModel):
     alert_name: str = "Potential Cryptomining Activity Detected"
     host: str = "BSTOLL-L"
     domain: str = "coinhive.com"
     event_time: str = "2018-08-20T12:00:00Z"
-    max_loops: int = 15  # the handoff budget only fits 3 re-sent rounds: see packing._ANALYST_ROUNDS
+    max_loops: int = 15  # headroom to finish; older rounds are compacted (FULL_ROUNDS)
     context_contract: dict = None
 
 @app.get("/debug")
@@ -610,6 +612,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             return
         all_findings = {}
         all_runs = []  # every round's broker runs, for the verdict gate's step check
+        evaluations = {}  # round label -> the gated synthesis that read it
         for loop_num in range(2, req.max_loops + 2):
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
@@ -647,12 +650,18 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 "---\n"
             )
             sections = [eval_header + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]
-            for round_label, round_findings in all_findings.items():
-                slim = {k:v for k,v in round_findings.items() if k != "_raw_intel_dump"}
+            # The last FULL_ROUNDS in full; older ones as a short record (W8): re-sending
+            # every round outgrew the 32k window by round ~6. The gate still checks all rounds.
+            labels = list(all_findings)
+            for round_label in labels[:-FULL_ROUNDS]:
+                record = run_trace.compact_round(all_findings[round_label], evaluations.get(round_label, {}))
+                sections.append(f"[EARLIER ROUND - {round_label}, summarised]\n{json.dumps(record, indent=2)}")
+            for round_label in labels[-FULL_ROUNDS:]:
+                slim = {k:v for k,v in all_findings[round_label].items() if k != "_raw_intel_dump"}
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
             rN = call_llm(system_prompt, "\n\n".join(sections))
             raw_synth = extract_json(rN["answer"]) or {}
-            synth = run_trace.verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
+            synth = evaluations[f"Round {loop_num}"] = run_trace.verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
             _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                   tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
                   message=f"Loop {loop_num} â€” Synthesis complete: {synth.get('status','?')}")
