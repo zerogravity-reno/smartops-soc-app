@@ -27,7 +27,7 @@ from smartops.broker import (
     missing_step_id_refusal,
     plan_fetch,
 )
-from smartops.budget import Budget
+from smartops.budget import Budget, Usage
 from smartops.tools import registry
 from smartops.domains import DOMAINS, spec_for
 
@@ -651,6 +651,33 @@ class TestBudget:
         assert entry.usage.cache_read_input_tokens == 500
         assert entry.usage.cache_creation_input_tokens == 300
         assert budget.spend_by_role() == {"broker": entry.cost_micro_usd}
+
+    async def test_each_report_carries_its_own_spend_not_the_batchs(self):
+        # A batch shares one Budget. Run 148b0e69's reports each carried the
+        # running total, so the console summed $7.65 for a $2.87 run (W1).
+        budget = Budget.from_usd(1.0)
+        usage = {"inputTokens": 1000, "outputTokens": 200}
+
+        async def charging_subagent(mission):
+            # Subagents settle under their own mission id (`t1:siem:…`), not the
+            # task id; c7dbf51d's reports read only the bare key and lost them.
+            reservation = await budget.reserve(
+                role="siem", model=MODEL.pricing_key, max_output_tokens=500, task_id=f"{mission.task_id}:siem:x"
+            )
+            await budget.settle(reservation, Usage(input_tokens=2000, output_tokens=300))
+            return ok_result(mission)
+
+        outcomes = [
+            await broker_task(
+                make_task(task_id=t, hypothesis_id=t), budget, model=MODEL,
+                run_subagent=charging_subagent, invoke=fake_invoker(["siem"], usage=usage),
+            )
+            for t in ("t1", "t2")
+        ]
+        spends = [o.report.cost.total_spend_micro_usd for o in outcomes]
+        assert spends == [budget.spend_for_task("t1"), budget.spend_for_task("t2")]
+        assert spends[0] > budget.spend_by_task()["t1"]  # the subagent's share is in it
+        assert sum(spends) == sum(budget.spend_by_role().values())
 
     async def test_exception_during_invocation_releases_the_reservation(self):
         budget = Budget.from_usd(1.0)

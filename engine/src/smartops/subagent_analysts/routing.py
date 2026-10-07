@@ -22,6 +22,7 @@ Those listings are kept in `findings.json` for the audit either way.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -45,6 +46,9 @@ _CATEGORY_DOMAIN: dict[CimCategory, AnalystDomain] = {
     "dns_resolutions": "network",
     "connections": "network",
     "processes": "endpoint",
+    "file_events": "endpoint",
+    "registry_events": "endpoint",
+    "script_blocks": "endpoint",
 }
 
 # VirusTotal indicator kind -> the analysis domain reputation for it belongs to.
@@ -68,6 +72,7 @@ _ENTITY_KIND_DOMAINS: dict[str, tuple[AnalystDomain, ...]] = {
     "process": ("endpoint",),
     "file_name": ("endpoint",),
     "command_line": ("endpoint",),
+    "process_id": ("endpoint",),
 }
 
 
@@ -159,16 +164,34 @@ def route(report: BrokerReport, scope: Scope) -> RoutedEvidence:
         "endpoint": DomainSlice(domain="endpoint"),
     }
     untagged_targets = _untagged_target_domains(scope)
+    # Retries return the same rows under another query (`summariesonly=t`/`=f`,
+    # one index vs a list of them): c7dbf51d's T3 carried its 59 file rows three
+    # times. Each copy is a new set to cite and count, so only the first routes.
+    # Empty sets all look alike and each says something different, so they stay.
+    seen: set[tuple[str, str]] = set()
+
+    def first(category: str, result_set: ResultSet) -> bool:
+        if not result_set.rows:
+            return True
+        key = (category, json.dumps(result_set.rows, sort_keys=True, default=str))
+        if key in seen:
+            logger.info("task_id=%s | same rows as an earlier %s set, not routed again: %r",
+                        report.task_id, category, result_set.query[:200])
+            return False
+        seen.add(key)
+        return True
 
     for result in report.results:
         findings = result.findings
         if isinstance(findings, SiemFindings):
             for category, domain in _CATEGORY_DOMAIN.items():
                 for result_set in getattr(findings, category):
-                    slices[domain].siem_sets.append((category, result_set))
+                    if first(category, result_set):
+                        slices[domain].siem_sets.append((category, result_set))
             for result_set in findings.uncategorised:
-                for domain in untagged_targets:
-                    slices[domain].untagged_sets.append(result_set)
+                if first("uncategorised", result_set):
+                    for domain in untagged_targets:
+                        slices[domain].untagged_sets.append(result_set)
         elif isinstance(findings, VtFindings):
             for verdict in findings.verdicts:
                 domain = _VT_KIND_DOMAIN.get(verdict.kind)

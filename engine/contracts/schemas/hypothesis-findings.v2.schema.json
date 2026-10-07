@@ -185,7 +185,10 @@
               "dns_resolutions",
               "connections",
               "processes",
-              "auth_events"
+              "auth_events",
+              "file_events",
+              "registry_events",
+              "script_blocks"
             ],
             "type": "string"
           },
@@ -221,7 +224,10 @@
               "dns_resolutions",
               "connections",
               "processes",
-              "auth_events"
+              "auth_events",
+              "file_events",
+              "registry_events",
+              "script_blocks"
             ],
             "type": "string"
           },

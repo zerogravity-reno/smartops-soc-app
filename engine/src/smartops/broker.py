@@ -145,7 +145,8 @@ HOW TO DECOMPOSE:
   for everything cannot be judged: it is complete the moment anything comes back.
 - For every `siem` step, set `completion.categories` to the CIM categories that step is
   responsible for -- `dns_resolutions` (Network Resolution), `connections` (Network
-  Traffic), `processes` (Endpoint Processes), `auth_events` (Authentication). Split the
+  Traffic), `processes` (Endpoint Processes), `auth_events` (Authentication), `file_events`
+  (file writes), `registry_events` (registry changes), `script_blocks` (PowerShell 4104). Split the
   siem work so each step owns the categories it is actually asking for, and give each its
   own step_id. A step is then judged on the data it asked for and nothing else.
 - Only name categories the goal genuinely needs. A step naming a category nobody retrieves
@@ -1402,11 +1403,12 @@ async def _run_broker_task(
 
     step_outcomes = list(request.step_outcomes.values())
     queries_run = [q for res in request.collected for q in res.queries_run]
-    spend = budget.spend_by_role()
-    total_spend = sum(spend.values()) if spend else 0
     cost_summary = CostSummary(
-        spend_by_role=spend,
-        total_spend_micro_usd=total_spend,
+        spend_by_role=budget.spend_by_role(),
+        # This task's own spend. A batch shares one Budget, so summing the ledger
+        # gave each report the batch's running total, and the console's rail,
+        # which adds reports up, showed $7.65 for a $2.87 run (148b0e69, W1).
+        total_spend_micro_usd=budget.spend_for_task(task.task_id),
         budget_remaining_micro_usd=budget.remaining,
     )
 

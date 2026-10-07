@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import html
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -86,6 +87,35 @@ def _unnest(plain: str) -> str:
 def signature(blob: str) -> str:
     """Stable across loops and tasks, so the handoff line and the registry agree."""
     return "enc#" + hashlib.sha1(blob.encode()).hexdigest()[:6]
+
+
+# Script interpreters and LOLBins: the images whose arguments are the action.
+# ponytail: a fixed list, not LOLBAS; widen it when a run shows a missed binary.
+_INTERPRETERS = frozenset(
+    "powershell pwsh cmd wscript cscript mshta rundll32 regsvr32 certutil bitsadmin curl wget wmic msiexec".split()
+)
+
+
+# A `| table _raw` row: Sysmon's XML, where the command line is one `<Data>` element.
+_RAW_CMDLINE = re.compile(r"<Data Name='CommandLine'>(.*?)</Data>", re.S)
+
+
+def commands_in(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """Plain interpreter/LOLBin command lines in `rows`: command -> events, rarest first.
+
+    On 148b0e69 four tasks held `Invoke-WebRequest … -OutFile $env:TEMP\\svcupdate.dat`
+    and no narrative named it. Lines with an encoded blob are left to `encoded_in`;
+    a bare image path carries no arguments and says nothing."""
+    found: dict[str, int] = {}
+    for row in rows:
+        cmd = _field(row, "processes", "cmdline").strip()
+        if cmd == "-" and (m := _RAW_CMDLINE.search(str(row.get("_raw", "")))):
+            cmd = _sanitise(html.unescape(m.group(1))).strip()
+        image, _, args = cmd[1:].partition('"') if cmd.startswith('"') else cmd.partition(" ")
+        if re.split(r"[\\/]", image)[-1].lower().removesuffix(".exe") not in _INTERPRETERS or not args.strip() or encoded(cmd):
+            continue
+        found[cmd] = found.get(cmd, 0) + _row_weight(row)
+    return dict(sorted(found.items(), key=lambda kv: kv[1]))
 
 
 def encoded_in(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:

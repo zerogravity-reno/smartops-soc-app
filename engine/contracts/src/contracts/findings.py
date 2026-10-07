@@ -14,11 +14,14 @@ evidence — which `contracts.subtask.Evidence` already forbids.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
-CimCategory = Literal["dns_resolutions", "connections", "processes", "auth_events"]
+CimCategory = Literal[
+    "dns_resolutions", "connections", "processes", "auth_events",
+    "file_events", "registry_events", "script_blocks",
+]
 """Splunk CIM data-model names, adopted rather than invented.
 
 | category           | CIM data model       |
@@ -27,6 +30,12 @@ CimCategory = Literal["dns_resolutions", "connections", "processes", "auth_event
 | `connections`      | Network Traffic      |
 | `processes`        | Endpoint -> Processes|
 | `auth_events`      | Authentication       |
+| `file_events`      | Endpoint -> Filesystem |
+| `registry_events`  | Endpoint -> Registry |
+| `script_blocks`    | (none: PowerShell 4104) |
+
+`script_blocks` has no CIM model; it is here because the rows hold what a
+PowerShell command actually ran, and on 148b0e69 they reached no analyst.
 
 This inherits a vocabulary analysts already use, a predictable extension path
 (Web, Malware, Filesystem, Registry, Intrusion Detection), and a shape that still
@@ -169,6 +178,9 @@ class SiemFindings(Findings):
     connections: list[ResultSet] = Field(default_factory=list)
     processes: list[ResultSet] = Field(default_factory=list)
     auth_events: list[ResultSet] = Field(default_factory=list)
+    file_events: list[ResultSet] = Field(default_factory=list)
+    registry_events: list[ResultSet] = Field(default_factory=list)
+    script_blocks: list[ResultSet] = Field(default_factory=list)
 
     uncategorised: list[ResultSet] = Field(
         default_factory=list,
@@ -207,14 +219,8 @@ class SiemFindings(Findings):
         """
         return sum(
             rs.row_count
-            for bucket in (
-                self.dns_resolutions,
-                self.connections,
-                self.processes,
-                self.auth_events,
-                self.uncategorised,
-            )
-            for rs in bucket
+            for bucket in (*get_args(CimCategory), "uncategorised")
+            for rs in getattr(self, bucket)
         )
 
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, get_args
 
 from contracts.findings import VtFindings, VtVerdict
 from contracts.subtask import evidence_id as _evidence_id
@@ -31,12 +31,7 @@ from contracts import CimCategory, Findings, QueryRun, ResultSet, SiemFindings
 
 logger = logging.getLogger(__name__)
 
-_CIM_BUCKETS: tuple[CimCategory, ...] = (
-    "dns_resolutions",
-    "connections",
-    "processes",
-    "auth_events",
-)
+_CIM_BUCKETS: tuple[CimCategory, ...] = get_args(CimCategory)
 
 # Matches `Verdict.summary()` (virustotal.py:106-110). `\b` rather than `^`: a
 # single lookup can report several indicators on separate lines, and `^` without
@@ -140,6 +135,8 @@ _DATAMODEL_CATEGORIES: dict[str, CimCategory] = {
     "network_resolution.dns": "dns_resolutions",
     "authentication": "auth_events",
     "authentication.authentication": "auth_events",
+    "endpoint.filesystem": "file_events",
+    "endpoint.registry": "registry_events",
 }
 
 
@@ -156,6 +153,16 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
     datamodel = _DATAMODEL.search(q)
     if datamodel and datamodel.group(1) in _DATAMODEL_CATEGORIES:
         return _DATAMODEL_CATEGORIES[datamodel.group(1)]
+
+    # 0b. Before processes: a Sysmon file or registry query often also names
+    # `parentimage`/`image`, and 4104 rows are not process starts. On 148b0e69
+    # these rows went `uncategorised` and synthesis said "no file writes".
+    if any(_has_eventcode(q, c) for c in (11, 23, 26)) or "targetfilename" in q:
+        return "file_events"
+    if any(_has_eventcode(q, c) for c in (12, 13, 14)) or "targetobject" in q:
+        return "registry_events"
+    if _has_eventcode(q, 4104) or "scriptblocktext" in q:
+        return "script_blocks"
 
     # 1. DNS Resolution (Network Resolution)
     if (

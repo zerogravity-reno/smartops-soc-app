@@ -99,8 +99,8 @@ SECURITY CONSTRAINTS
 
 _NARRATIVE_ANSWER_BLOCK = """\
 NARRATIVE: <plain English: what these rows show, in order, naming the hosts,
-accounts, addresses and times. Group like rows and give counts. What happened,
-not what it means.>
+accounts, addresses and processes. Group like rows. No numbers and no times: code
+attaches those. What happened, not what it means.>
 OBSERVATIONS:
 - <one distinct thing the rows state> [header_id]
 - <one line per distinct thing; repeat as many times as you have>
@@ -182,15 +182,13 @@ CRITICAL CITATION RULES:
   host, address, account, time or count to it. A statement whose only ids are `rows=0`
   sets has no evidence and does not belong in your reply.
 
-TIME RANGES: rows are NOT always printed in time order — some sets print newest first.
-Read the timestamps and write every range earliest to latest. Never take a set's first
-and last printed lines as a period's start and end; a range ending before it begins is
-always wrong.
-
-COUNTS: when a header carries `events=M`, its rows are GROUPS and M is the true number of
-events — quote M, and never add the `count=` values up yourself. `rows=N` is how many
-groups there are, not how many events. Where no total is given, count only what is
-printed and say so.
+NUMBERS AND TIMES ARE NEVER CALCULATED BY YOU. Code has already counted every set and
+found its time range; those figures reach the reader without you. So:
+- NARRATIVE carries no numbers and no times at all. Say what happened and who and what
+  was involved; leave how many and when to the code.
+- An OBSERVATION may carry a number or a time only by copying it exactly as printed in a
+  header (`rows=`, `events=`) or a computed summary. Never count lines, add `count=`
+  values, subtract, split a total, or work out a range from the printed rows.
 
 HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per evidence set, in the order
 the sets are printed — two to five sentences for a set with rows, one sentence for a set
@@ -243,19 +241,17 @@ _IDENTITY_FACTS_BODY = f"""\
 Your task in this investigation is to act as the identity and authentication analyst.
 You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
 to TRANSLATE it into plain English: say what happened in these rows, in order, naming
-the accounts, source addresses, hosts and times involved.
+the accounts, source addresses and hosts involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
-numbers, which are placeholders and are not in your evidence — is: "Account <account>
-appears in <count> events from <count> source addresses between <earliest> and <latest>,
-<count> of them successes against <host> and <count> failures against <other host>". That accounts for every
-row without picking a winner. When the set's summary says its rows carry no timestamp,
-drop the time clause and end with `(these rows carry no time)` instead — never write a
-placeholder into it. Never drop a set because it looks uninteresting — say what it
+can retype. Group like rows and describe the group — the values involved and the shape
+of any repetition. The SHAPE to copy — never the names or the
+values, which are placeholders and are not in your evidence — is: "Account <account>
+logged on from <source address> to <host>, with successes against <host> and failures
+against <other host>". That accounts for every
+row without picking a winner. Never drop a set because it looks uninteresting — say what it
 contains.
 
 EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
@@ -286,8 +282,8 @@ GROUNDING RULES (do not hallucinate)
   that appear in the evidence — never invent one.
 - Do NOT infer process, file, or network activity; you cannot see it here.
 - A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "142 successful logons for 9 accounts, no failures, all
-  from 10.0.0.0/8") rather than leaving it out.
+  contains and cite it (e.g. "successful logons only, no failures, all from
+  10.0.0.0/8") rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
@@ -297,19 +293,17 @@ _NETWORK_FACTS_BODY = f"""\
 Your task in this investigation is to act as the network detection and response
 analyst. You are given the NETWORK evidence retrieved for this investigation. Your job
 is to TRANSLATE it into plain English: say what happened in these rows, in order, naming
-the hosts, addresses, domains, ports and times involved.
+the hosts, addresses, domains and ports involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
-numbers, which are placeholders and are not in your evidence — is: "Host <host> opened
-<count> connections to <count> distinct destinations between <earliest> and <latest>;
-<count> of them went to <address> at roughly <interval> intervals". That accounts for every
-row without picking a winner. When the set's summary says its rows carry no timestamp,
-drop the time clause and end with `(these rows carry no time)` instead — never write a
-placeholder into it. Never drop a set because it looks uninteresting — say what it
+can retype. Group like rows and describe the group — the values involved and the shape
+of any repetition. The SHAPE to copy — never the names or the
+values, which are placeholders and are not in your evidence — is: "Host <host> opened
+connections to several destinations; the repeated ones went to <address> on port
+<port>". That accounts for every
+row without picking a winner. Never drop a set because it looks uninteresting — say what it
 contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
@@ -343,7 +337,7 @@ GROUNDING RULES (do not hallucinate)
   pair it with a dns or connection row before describing it as activity.
 - Do NOT infer host process, file, or authentication activity; you cannot see it here.
 - A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "38 dns queries, every one resolving an internal name")
+  contains and cite it (e.g. "dns queries, every one resolving an internal name")
   rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
@@ -354,19 +348,17 @@ _ENDPOINT_FACTS_BODY = f"""\
 Your task in this investigation is to act as the endpoint and host-forensics analyst.
 You are given the ENDPOINT evidence retrieved for this investigation. Your job is to
 TRANSLATE it into plain English: say what happened in these rows, in order, naming the
-hosts, users, processes, parent processes, command lines and times involved.
+hosts, users, processes, parent processes and command lines involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
-numbers, which are placeholders and are not in your evidence — is: "Host <host> ran
-<count> processes under user <account> between <earliest> and <latest>, <count> of them
-distinct images; <count> repeated one command line at roughly <interval> intervals". That accounts for every
-row without picking a winner. When the set's summary says its rows carry no timestamp,
-drop the time clause and end with `(these rows carry no time)` instead — never write a
-placeholder into it. Never drop a set because it looks uninteresting — say what it
+can retype. Group like rows and describe the group — the values involved and the shape
+of any repetition. The SHAPE to copy — never the names or the
+values, which are placeholders and are not in your evidence — is: "Host <host> ran
+processes under user <account>, started by <parent>; one command line, <command>,
+repeated". That accounts for every
+row without picking a winner. Never drop a set because it looks uninteresting — say what it
 contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
@@ -397,7 +389,7 @@ GROUNDING RULES (do not hallucinate)
   Only cite ids that appear in the evidence — never invent one.
 - Do NOT infer network volume or authentication history; you cannot see it here.
 - A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "31 process starts, all of them the same scheduled backup
+  contains and cite it (e.g. "process starts, all of them the same scheduled backup
   job under SYSTEM") rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
@@ -431,6 +423,6 @@ def build_facts_user_turn(scope: Scope, evidence_text: str) -> str:
         fenced("scope", _render_scope(scope))
         + "\n\n"
         + fenced("evidence", evidence_text)
-        + "\n\nDescribe what the evidence above shows, in order, grouping like rows and "
-        "giving counts. Give your reasoning, then the required block."
+        + "\n\nDescribe what the evidence above shows, in order, grouping like rows. "
+        "Give your reasoning, then the required block."
     )

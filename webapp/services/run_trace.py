@@ -8,6 +8,7 @@ Analyst output -- one `investigation.jsonl` per run.
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,19 +22,26 @@ _KIND = {
     "ip": "ip", "src_ip": "ip", "dest_ip": "ip", "ip_address": "ip", "ipaddress": "ip", "source_ip": "ip", "destination_ip": "ip",
     "domain": "domain", "url": "url", "uri": "url",
     "file_hash": "file_hash", "hash": "file_hash", "sha256": "file_hash", "sha1": "file_hash", "md5": "file_hash",
-    "process": "process", "process_name": "process",
+    "process": "process", "process_name": "process", "process_id": "process_id", "pid": "process_id",
     "file": "file_name", "file_name": "file_name", "filename": "file_name", "image": "file_name",
     "file_path": "file_name", "path": "file_name", "process_path": "file_name",
     "command": "command_line", "command_line": "command_line", "commandline": "command_line", "cmdline": "command_line",
 }
 
 
+def _sha256(value) -> str | None:
+    """The SHA256 out of Sysmon's `MD5=…,SHA256=…,IMPHASH=…`, or a bare one."""
+    m = re.search(r"\b([0-9A-Fa-f]{64})\b", str(value or ""))
+    return m.group(1) if m else None
+
+
 def alert_entities(context: dict) -> list[dict]:
-    """The alert's host, user and source IP as engine entities: the scope for a
-    task that only says "search the logs"."""
+    """The alert's host, user, source IP and file hash as engine entities: the
+    scope for a task that only says "search the logs"."""
     seed = (context or {}).get("normalized_seed") or {}
     ent = seed.get("entities") or {}
-    picks = [("host", ent.get("hostname") or ent.get("host")), ("user", ent.get("user")), ("ip", ent.get("src_ip"))]
+    picks = [("host", ent.get("hostname") or ent.get("host")), ("user", ent.get("user")), ("ip", ent.get("src_ip")),
+             ("file_hash", _sha256((seed.get("file") or {}).get("sha256")))]
     return [{"type": kind, "value": str(value).strip()} for kind, value in picks if value and str(value).strip()]
 
 
@@ -104,6 +112,9 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
             # "scheduled_task|group_policy": the model sometimes joins several types into one.
             kind = next((_KIND[t.strip()] for t in label.replace(",", "|").split("|") if t.strip() in _KIND), None)
             if kind and e.get("value"):
+                # A PID sent as a process name (148b0e69's T3 sent `process=2900`).
+                if kind == "process" and str(e["value"]).strip().isdigit():
+                    kind = "process_id"
                 entities.append({"type": kind, "value": e["value"]})
             else:
                 unusable.append(e.get("type") if isinstance(e, dict) else e)
@@ -114,6 +125,13 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
         rescoped = not entities and bool(alert_scope)
         if rescoped:
             entities = [dict(e) for e in alert_scope]
+        elif alert_scope:
+            # Every task carries the alert's host and hash. Without the host the
+            # siem agent wrote `index=*` searches and was blocked (T3: 26 times);
+            # without the hash the Broker could not choose VT (T2). The Broker
+            # decides whether to use them.
+            have = {e["type"] for e in entities}
+            entities += [dict(e) for e in alert_scope if e["type"] in ("host", "file_hash") and e["type"] not in have]
         if not entities:
             drop(f"no entity the broker can search on (got: {', '.join(map(str, unusable)) or 'none'})")
             continue

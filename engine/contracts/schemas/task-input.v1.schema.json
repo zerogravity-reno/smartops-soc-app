@@ -13,7 +13,8 @@
             "url",
             "process",
             "file_name",
-            "command_line"
+            "command_line",
+            "process_id"
           ],
           "title": "Type",
           "type": "string"

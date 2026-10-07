@@ -123,6 +123,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "  * Authentication: `| tstats summariesonly=t count from datamodel=Authentication by Authentication.user, Authentication.src, Authentication.action`\n"
         "- CIM field names (prefix each with its dataset, e.g. `Processes.dest`):\n"
         "  * Processes: dest, user, process, process_name, process_path, parent_process, parent_process_name, parent_process_path, process_id, parent_process_id\n"
+        "- A `process_id` entity is a PID: Sysmon writes it as decimal `ProcessId`, Windows 4688 as hex `New_Process_ID` (2900 is 0xB54). Search both, scoped to the task's host.\n"
         "  * Authentication: dest, src, user, action, app\n"
         "  * All_Traffic (Network_Traffic): src, dest, dest_port, transport\n"
         "  * DNS (Network_Resolution): src, query, answer\n"
@@ -132,14 +133,14 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- Sourcetype names differ between deployments. If a raw sourcetype search returns 0 rows, list the sourcetypes that actually hold this host's events (`| tstats count where index=<allowed index> host=<host> by sourcetype`) and retry with the real name before concluding the data is absent.\n"
         "- When grouping process events, always include the parent's path (`Processes.parent_process_path`, or `ParentImage` on raw Sysmon) beside its name: two binaries can share a name and differ only by path.\n"
         "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
-        "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events).\n"
+        "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events, Endpoint Filesystem or Sysmon 11/23/26 -> file_events, Endpoint Registry or Sysmon 12/13/14 -> registry_events, PowerShell 4104 -> script_blocks).\n"
         "- Use SPL stats, top, and timechart to summarize events rather than returning raw event lists.\n"
         "- Filter early using sourcetype or eventtype predicates before searching free-text fields.\n"
         "- STOPPING CONDITIONS:\n"
         "  1. POSITIVE STOP: Once you have obtained non-empty events answering the requested objective, STOP iterating. Do not run redundant cosmetic column or syntax variations. Submit your answer immediately.\n"
         "  2. NEGATIVE STOP: If 3 distinct queries across candidate sourcetypes return 0 events, conclude data is absent in SIEM. Note the gap in gaps/assessment and finish.\n"
         "  3. TURN RESERVE: When 4 turns remain before your turn ceiling, stop all new queries and spend remaining turns submitting your structured answer.\n"
-        "- In `queries_run`, you MUST include every query that returned evidence and explicitly set its `category` to one of: 'dns_resolutions', 'connections', 'processes', 'auth_events'.\n"
+        "- In `queries_run`, you MUST include every query that returned evidence and explicitly set its `category` to one of: 'dns_resolutions', 'connections', 'processes', 'auth_events', 'file_events', 'registry_events', 'script_blocks'.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"
@@ -205,7 +206,7 @@ HOW TO WORK:
   it showed the subject to be clean, absent, or benign.
 {family_specialization}
 WHEN YOU ARE DONE, report:
-- queries_run: every query you ran, each tagged with its exact CIM category ('dns_resolutions', 'connections', 'processes', 'auth_events'). Do NOT restate the rows -- they are captured for you.
+- queries_run: every query you ran, each tagged with its exact CIM category ('dns_resolutions', 'connections', 'processes', 'auth_events', 'file_events', 'registry_events', 'script_blocks'). Do NOT restate the rows -- they are captured for you.
 - assessment: which categories you covered and which you did not. An empty
   result is a covered category, not a missing one.
 - status: ok if you retrieved something relevant, no_data if the domain

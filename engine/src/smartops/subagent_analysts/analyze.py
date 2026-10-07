@@ -83,13 +83,16 @@ from smartops.broker import family_is_configured
 from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
-from .model import AnalystModel
-from smartops.tools.native.decoder import encoded_in
+from .model import AnalystModel, AnalystResponse
+from smartops.tools.native.decoder import commands_in, encoded_in
 
-from .formatting import NAMES_FOOTER, NO_TIME_MARKER, _middle, name_expansions
+from .formatting import NAMES_FOOTER, NO_TIME_MARKER, _middle, _truncate, name_expansions
 
 ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
 ENCODED_LINE_CAP = 8
+COMMANDS_FOOTER = "Interpreter and LOLBin command lines in these rows, rarest first:"
+COMMAND_LINE_CAP = 8
+COMMAND_CHAR_CAP = 400
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -292,8 +295,19 @@ def _invoke_with_one_reask(
             _GENERATION_RESERVE,
         )
 
+    def parse_whole(reply: AnalystResponse) -> Any:
+        # A reply cut off at `max_gen_len` parses as if whole: c7dbf51d's T1 ran
+        # one observation into ", , , , had no matching events" until the limit and
+        # shipped 2.7k characters of it. Cut off means re-ask, never parse.
+        if reply.stop_reason == "length":
+            raise parse_error(
+                "your reply hit the token limit and was cut off. Keep it short: "
+                "list a set of empty results once, and do not repeat citations"
+            )
+        return parse(reply.generation, domain=domain)
+
     try:
-        return _Attempt(parse(response.generation, domain=domain), prompt_tokens, generation_tokens)
+        return _Attempt(parse_whole(response), prompt_tokens, generation_tokens)
     except parse_error as exc:
         logger.info(
             "domain=%s | first reply had no parseable %s (%s), re-asking once",
@@ -317,7 +331,7 @@ def _invoke_with_one_reask(
         # Bill both calls: the failed first attempt was still generated and paid for.
         prompt_tokens += retry.prompt_tokens
         generation_tokens += retry.generation_tokens
-        return _Attempt(parse(retry.generation, domain=domain), prompt_tokens, generation_tokens)
+        return _Attempt(parse_whole(retry), prompt_tokens, generation_tokens)
     except parse_error:
         logger.warning("domain=%s | re-ask still produced no parseable %s", domain, noun)
         # The FIRST reply's trace, not the retry's: it is the one that shows what
@@ -770,14 +784,51 @@ def _finalize_finding(
     # Second gate, and a different question. `_apply_grounding` asks whether the
     # cited id exists; this asks whether the rows behind it say what the
     # observation claims they say. Run after, so it only ever sees observations
-    # whose citations already resolve. Narrative is untouched for the same reason
-    # `_apply_grounding` keeps it: it is the record of what the model claimed.
+    # whose citations already resolve.
     survivors = _drop_unsupported_figures(
-        list(grounded.observations), slice_, grounded.domain
+        # Identical lines once: 148b0e69's T1 carried one observation eight times.
+        list(dict.fromkeys(grounded.observations)), slice_, grounded.domain
     )
-    if len(survivors) == len(grounded.observations):
+    # The narrative keeps every sentence but those asserting a figure or time the
+    # code-computed summaries do not print; the rest is the record of what the
+    # model claimed, and each dropped sentence is logged whole.
+    narrative = _drop_unsupported_sentences(grounded.narrative, slice_, grounded.domain)
+    if len(survivors) == len(grounded.observations) and narrative == grounded.narrative:
         return grounded
-    return grounded.model_copy(update={"observations": survivors})
+    return grounded.model_copy(update={"observations": survivors, "narrative": narrative})
+
+
+def _drop_unsupported_sentences(narrative: str, slice_: DomainSlice, domain: str) -> str:
+    """The narrative less each sentence stating a figure or a clock time that
+    appears nowhere in the evidence the analyst read.
+
+    The prompt asks for no figures; c7dbf51d's narratives carried them anyway,
+    and T5's contradicted itself ("four times", then "11 under SYSTEM" where no
+    block prints 11). The same rule as `_drop_unsupported_figures`, over every
+    block rather than the cited ones, since narrative sentences cite nothing.
+    Summaries alone were tried and dropped true sentences naming event codes.
+
+    ponytail: spelled-out counts ("twice", "four times") pass, and so does a
+    figure that happens to occur elsewhere in the rows; a word-number list if
+    the first keeps turning up.
+    """
+    shown = " ".join(b.text for b in blocks(slice_))
+    shown_figures = _figures(shown)
+    parts = re.split(r"(?<=[.!?])(\s+)", narrative)
+    kept: list[str] = []
+    for sentence, gap in zip(parts[::2], [*parts[1::2], ""]):
+        bare = _CITATION_DIGITS_RE.sub(" ", sentence)
+        unsupported = sorted(_figures(sentence) - shown_figures) + [
+            t for t in _TIME_CLAIM_RE.findall(bare) if t not in shown
+        ]
+        if unsupported:
+            logger.warning(
+                "domain=%s | dropped a narrative sentence asserting %s, which no "
+                "computed summary prints: %s", domain, ", ".join(unsupported), sentence,
+            )
+            continue
+        kept.append(sentence + gap)
+    return narrative if len(kept) * 2 >= len(parts) + 1 else "".join(kept).rstrip()
 
 
 def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:
@@ -852,6 +903,16 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
         if len(ranked) > ENCODED_LINE_CAP:
             lines.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
         narrative = "\n".join([narrative, "", ENCODED_FOOTER, *lines])
+    # And the plain ones: interpreter/LOLBin command lines, rarest first, capped.
+    # The download on 148b0e69 sat in four tasks' rows and reached no narrative.
+    # A footer, because narratives always cross: as the first summary it was cut
+    # with every other one when c7dbf51d's narratives alone filled the budget.
+    commands = list(commands_in(row for _, rs in sets for row in rs.rows).items())
+    if commands:
+        lines = [f"~ {n} events: {_truncate(cmd, COMMAND_CHAR_CAP)}" for cmd, n in commands[:COMMAND_LINE_CAP]]
+        if len(commands) > COMMAND_LINE_CAP:
+            lines.append(f"~ … {len(commands) - COMMAND_LINE_CAP} more command lines not shown (rows in report.json)")
+        narrative = "\n".join([narrative, "", COMMANDS_FOOTER, *lines])
 
     return DomainJudgement(
         domain=finding.domain,

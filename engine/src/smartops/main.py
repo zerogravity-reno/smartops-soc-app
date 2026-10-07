@@ -938,26 +938,6 @@ def _force_utf8_output() -> None:
                 logging.getLogger(__name__).debug("could not reconfigure %r", stream)
 
 
-def _task_spend(budget: Budget, task_id: str) -> int:
-    """Micro-USD settled against one task's missions.
-
-    `Budget.spend_by_task()` keys on the *mission* id (`<task_id>:<family>`, as
-    minted in `smartops.broker`) rather than the task id, so this sums the
-    entries belonging to one task.
-
-    Needed only because a task file shares one `Budget` across several
-    investigations: `_print_outcome`'s ledger totals are then a running sum
-    across every task so far, which inside one task's block reads as that task's
-    own spend. With a single task the two are the same number.
-    """
-    prefix = f"{task_id}:"
-    return sum(
-        spend
-        for mission_id, spend in budget.spend_by_task().items()
-        if mission_id == task_id or mission_id.startswith(prefix)
-    )
-
-
 async def _analyse_one(
     task: AnalystTask,
     hypothesis: str,
@@ -1401,7 +1381,7 @@ async def _run(argv: list[str] | None = None) -> int:
                 # `_print_outcome`'s ledger lines are a running total across every
                 # task so far, which inside one task's block reads as this task's
                 # own spend.
-                print(f"this task: {_task_spend(budget, task.task_id)} micro-USD")
+                print(f"this task: {budget.spend_for_task(task.task_id)} micro-USD")
             fetched.append((task, hypothesis, outcome))
 
     analysis_failures, findings = await _analyse_all(

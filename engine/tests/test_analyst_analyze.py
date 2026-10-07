@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from smartops.subagent_analysts.analyze import (
     _drop_unsupported_figures,
+    _drop_unsupported_sentences,
     _finalize_finding,
     gather,
     gather_finding,
@@ -82,7 +83,9 @@ class _SequenceModel:
         self.calls += 1
         self.prompts.append(user)
         gen = self._queue.pop(0)
-        return AnalystResponse(generation=gen, prompt_tokens=10, generation_tokens=5, stop_reason="stop")
+        # A `(generation, stop_reason)` pair queues a reply that ended some other way.
+        gen, stop = gen if isinstance(gen, tuple) else (gen, "stop")
+        return AnalystResponse(generation=gen, prompt_tokens=10, generation_tokens=5, stop_reason=stop)
 
 
 class _RaisingModel:
@@ -251,6 +254,20 @@ class TestGatherFinding:
         finding = gather_finding(model, _scope(), slice_)
         assert finding.citations == ["auth_events#1"]
         assert model.calls == 2
+
+    def test_a_reply_cut_off_at_the_token_limit_is_reasked_not_parsed(self):
+        # c7dbf51d T1: a parseable reply whose last observation looped until
+        # `max_gen_len` shipped as if whole.
+        good = _finding_gen("one logon.", "x", "auth_events#1")
+        model = _SequenceModel([(good, "length"), good])
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+        finding = gather_finding(model, _scope(), slice_)
+        assert model.calls == 2
+        assert "token limit" in model.prompts[1]
+        assert finding.citations == ["auth_events#1"]
 
     def test_a_reply_with_no_narrative_triggers_the_reask(self):
         """The narrative is the product, so its absence is a parse failure.
@@ -555,7 +572,7 @@ def _report_with_all_three_domains() -> BrokerReport:
 
 _THREE_DOMAIN_GENS = {
     "identity": _finding_gen(
-        "bostoll logged on once from 10.0.1.50 at 09:14.",
+        "bostoll logged on once from 10.0.1.50.",
         "one logon for bostoll",
         "auth_events#1",
     ),
@@ -601,7 +618,7 @@ class TestGather:
         assert findings.task_id == "t1"
         assert findings.hypothesis_id == "h-42"
         assert {f.domain: f.narrative for f in findings.findings} == {
-            "identity": "bostoll logged on once from 10.0.1.50 at 09:14.",
+            "identity": "bostoll logged on once from 10.0.1.50.",
             "network": "One DNS query resolved x.com.",
             "endpoint": "cmd.exe ran on BSTOLL-L.",
         }
@@ -1468,3 +1485,19 @@ class TestTheReaskNamesWhatBroke:
         # The rules and the block are still there, before the reason.
         assert "these rows carry no time" in second
         assert "CITATIONS:" in second
+
+
+def test_narrative_sentences_with_figures_no_summary_prints_are_dropped():
+    # c7dbf51d T5: "18 events under AR-F6EDDB5B-DF6$, 11 under SYSTEM" over rows
+    # whose summaries print neither; the path's version digits are not figures.
+    rows = [{"Processes.process_path": r"C:\Edge\154.0.4258.62\setup.exe", "count": "3"}]
+    slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=1, rows=rows))])
+    narrative = (
+        r"Host ran C:\Edge\154.0.4258.62\setup.exe. "
+        "It accounted for 18 events under SYSTEM and 11 under Mariam.\n\nNothing else ran."
+    )
+
+    kept = _drop_unsupported_sentences(narrative, slice_, "endpoint")
+
+    assert kept == r"Host ran C:\Edge\154.0.4258.62\setup.exe. Nothing else ran."
+    assert _drop_unsupported_sentences("Host ran setup.exe.", slice_, "endpoint") == "Host ran setup.exe."

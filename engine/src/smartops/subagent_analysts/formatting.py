@@ -149,6 +149,32 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "uri": ("uri_path", "uri", "url", "site"),
         "action": ("action", "status", "http_method"),
     },
+    # 148b0e69: Sysmon 11 rows and 4104 script blocks went `uncategorised`, and
+    # synthesis said "no file writes". Sysmon spelling first, then CIM.
+    "file_events": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "process": ("Image", "process_path", "process_name", "process"),
+        "file": ("TargetFilename", "file_path", "file_name"),
+        "action": ("action", "EventType"),
+        "code": ("EventCode", "signature_id", "event_id"),
+    },
+    "registry_events": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "process": ("Image", "process_path", "process_name", "process"),
+        "key": ("TargetObject", "registry_path", "registry_key_name"),
+        "value": ("Details", "registry_value_data"),
+        "action": ("EventType", "action"),
+        "code": ("EventCode", "signature_id", "event_id"),
+    },
+    "script_blocks": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "path": ("Path", "ScriptName"),
+        "script": ("ScriptBlockText", "Message"),
+        "code": ("EventCode", "signature_id", "event_id"),
+    },
     "processes": {
         "time": ("time", "_time", "timestamp"),
         "host": ("dest", "host", "Computer", "ComputerName"),
@@ -282,6 +308,16 @@ def _format_process(row: dict[str, Any]) -> str:
     )
 
 
+def _format_fields(category: str) -> Any:
+    """`time` then `name=value` for each of `category`'s fields; wide values cut."""
+    def fmt(row: dict[str, Any]) -> str:
+        names = [n for n in _FIELDS[category] if n != "time"]
+        return f"{_field(row, category, 'time')} " + " ".join(
+            f"{n}={_truncate(_field(row, category, n), _CMDLINE_LIMIT)}" for n in names
+        ) + _count_suffix(row)
+    return fmt
+
+
 def _format_generic(row: dict[str, Any]) -> str:
     """Fallback for uncategorised rows: a compact key=value of the first few keys.
 
@@ -303,6 +339,9 @@ _FORMATTERS: dict[CimCategory, Any] = {
     "dns_resolutions": _format_dns_resolution,
     "connections": _format_connection,
     "processes": _format_process,
+    "file_events": _format_fields("file_events"),
+    "registry_events": _format_fields("registry_events"),
+    "script_blocks": _format_fields("script_blocks"),
 }
 
 
@@ -412,6 +451,9 @@ _SUMMARY_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "dns_resolutions": ("src", "query", "answer", "rtype", "rcode"),
     "connections": ("src", "dest", "dest_port", "proto", "action"),
     "processes": ("host", "user", "process", "parent"),
+    "file_events": ("host", "process", "file", "code"),
+    "registry_events": ("host", "process", "key", "code"),
+    "script_blocks": ("host", "path", "code"),
 }
 
 _TOP_N = 5

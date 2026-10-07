@@ -150,3 +150,20 @@ def test_notable_event_time_is_the_event_not_the_search():
     assert run_trace.notable_event_time({"_time": ev["_time"], "firstTime": "1791287444"}) == "2026-10-06T11:50:44+00:00"
     assert run_trace.notable_event_time({"_time": ev["_time"]}) == "2026-10-06T13:04:17+00:00"
     assert run_trace.notable_event_time({"_time": ev["_time"], "firstTime": "garbage"}) == "2026-10-06T13:04:17+00:00"
+
+
+def test_every_task_carries_the_alerts_host_and_hash_and_a_pid_is_a_process_id():
+    # 148b0e69: T3 sent `process=2900` and searched `index=*`; T2 could not choose VT.
+    sha = "1C84C8632C5269F24876ED9F49FA810B49F77E1E92E8918FC164C34B020F9A94"
+    context = {"normalized_seed": {"entities": {"hostname": "ar-f6eddb5b-df6", "user": "Mariam"},
+                                   "file": {"sha256": f"MD5=2E0CCB27064856E3D55017FA2D33A7B9,SHA256={sha},IMPHASH=BF7A"}}}
+    scope = run_trace.alert_entities(context)
+    tasks = [{"task_id": "T3", "question": "what did PID 2900 do?", "time_window": WINDOW,
+              "entity": {"type": "process", "value": "2900"}}]
+    task_file, _ = run_trace.to_task_file(tasks, "r", 2, scope)
+    assert task_file["tasks"][0]["entity"] == [
+        {"type": "process_id", "value": "2900"},
+        {"type": "host", "value": "ar-f6eddb5b-df6"},
+        {"type": "file_hash", "value": sha},
+    ]
+    TaskInputFile.model_validate(task_file)

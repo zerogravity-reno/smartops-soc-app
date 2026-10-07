@@ -36,7 +36,9 @@ from contracts.findings import (
 
 ToolFamily = Literal["edr", "ndr", "vt", "siem"]
 
-EntityKind = Literal["host", "user", "ip", "file_hash", "domain", "url", "process", "file_name", "command_line"]
+EntityKind = Literal[
+    "host", "user", "ip", "file_hash", "domain", "url", "process", "file_name", "command_line", "process_id",
+]
 """What kind of observable an entity is.
 
 Typed rather than a bare string because a `ToolFamily`'s *dispatchability* is a

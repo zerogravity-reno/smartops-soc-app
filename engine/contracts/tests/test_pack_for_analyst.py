@@ -27,3 +27,22 @@ def test_a_long_narrative_task_still_gets_summaries_and_the_batch_fits():
 def test_no_budget_sends_everything():
     big = _task("t2", "y" * 3000, [f"~ s#{i}" for i in range(5)])
     assert pack_for_analyst([big])[0].findings[0].summaries == big.findings[0].summaries
+
+
+def test_observations_give_way_when_narratives_fill_the_budget():
+    # c7dbf51d: narratives plus observations were 25.9k of 20.7k, so every summary went.
+    def task(task_id, n_obs):
+        return HypothesisFindings(
+            task_id=task_id, run_id="r", hypothesis_id=task_id, hypothesis="h",
+            findings=[DomainJudgement(domain="endpoint", narrative="n" * 500,
+                                      observations=[f"obs {i} " + "o" * 200 for i in range(n_obs)])],
+        )
+    budget = 3000
+
+    payloads = pack_for_analyst([task("t1", 2), task("t2", 20)], budget)
+
+    assert [p.findings[0].narrative for p in payloads] == ["n" * 500] * 2  # narratives always cross
+    assert len(payloads[0].findings[0].observations) == 2  # the smaller domain is left alone
+    kept = payloads[1].findings[0].observations
+    assert kept[0].startswith("obs 0 ") and kept[-1].startswith("… ")  # tail cut, and counted
+    assert len(AnalystPayloadBatch(batch_id="b", payloads=payloads).model_dump_json(indent=2)) <= budget + 200

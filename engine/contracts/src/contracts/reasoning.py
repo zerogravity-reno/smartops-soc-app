@@ -14,6 +14,7 @@ Shape only. Routing, prompt construction, model invocation, and parsing live in
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
@@ -21,6 +22,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from contracts.findings import CimCategory
 from contracts.subtask import ToolFamily
+
+logger = logging.getLogger(__name__)
 
 AnalystDomain = Literal["identity", "network", "endpoint"]
 """The three analysis domains, distinct from the fetch-side `ToolFamily`.
@@ -631,27 +634,6 @@ class HypothesisFindings(BaseModel):
         window (B1). See `pack_for_analyst`, which this is the one-task case of.
         """
         return pack_for_analyst([self], max_chars)[0]
-        if max_chars is None:
-            share = None
-        else:
-            spare = max_chars - len(payload.model_dump_json(indent=2))
-            # -90 keeps room for the omission note itself.
-            share = max(spare, 0) // len(with_summaries) - 90
-        for narrative, f in zip(payload.findings, self.findings, strict=True):
-            used = 0
-            for summary in f.summaries:
-                # +8: the indent, quotes and comma each list item costs on the wire.
-                cost = len(json.dumps(summary)) + 8
-                if share is not None and used + cost > share:
-                    break
-                narrative.summaries.append(summary)
-                used += cost
-            omitted = len(f.summaries) - len(narrative.summaries)
-            if omitted:
-                narrative.summaries.append(
-                    f"… {omitted} set summaries omitted for size (full in findings.json)"
-                )
-        return payload
 
     # No token totals here, deliberately. Two such methods stood on this model
     # and both summed `self.verdicts` -- a field of `HypothesisAssessment`, not of
@@ -794,6 +776,28 @@ def pack_for_analyst(
     ]
     def cost(summary: str) -> int:
         return len(json.dumps(summary)) + 8  # the indent, quotes and comma it costs on the wire
+
+    # Narratives alone can fill the budget: c7dbf51d's came to 25.9k of 20.7k, and
+    # every summary was cut. Observations give way then, from the tail of the
+    # domain holding the most, so the narratives (and their code footers) cross.
+    if max_chars is not None:
+        # Plus the omission note each summary-holding domain may add below.
+        notes = 90 * sum(1 for h in findings for f in h.findings if f.summaries)
+        over = sum(len(p.model_dump_json(indent=2)) for p in payloads) + notes - max_chars
+        trimmed: dict[int, list] = {}
+        while over > 0:
+            heavy = [n for p in payloads for n in p.findings if n.observations]
+            if not heavy:
+                logger.warning("analyst payload: narratives alone exceed the %d-character budget by %d", max_chars, over)
+                break
+            biggest = max(heavy, key=lambda n: sum(cost(o) for o in n.observations))
+            if id(biggest) not in trimmed:
+                trimmed[id(biggest)] = [biggest, 0]
+                over += 90  # its omission note
+            over -= cost(biggest.observations.pop())
+            trimmed[id(biggest)][1] += 1
+        for narrative, n in trimmed.values():
+            narrative.observations.append(f"… {n} observations omitted for size (full in findings.json)")
     units = [
         (narrative, f)
         for payload, h in zip(payloads, findings, strict=True)

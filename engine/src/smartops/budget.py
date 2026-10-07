@@ -654,3 +654,15 @@ class Budget:
                 continue
             totals[entry.task_id] = totals.get(entry.task_id, 0) + entry.cost_micro_usd
         return totals
+
+    def spend_for_task(self, task_id: str) -> int:
+        """Micro-USD settled against one task: its own entry and every mission
+        minted under it (`<task_id>:<family>:…`, see `smartops.broker`). A batch
+        shares one Budget, so this is the only per-task figure; c7dbf51d's
+        reports read the bare key and dropped every subagent's spend."""
+        prefix = f"{task_id}:"
+        return sum(
+            spend
+            for key, spend in self.spend_by_task().items()
+            if key == task_id or key.startswith(prefix)
+        )
