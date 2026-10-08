@@ -1,5 +1,6 @@
 """The webapp's side of the Analyst <-> Tool Broker join (`webapp/services/run_trace.py`)."""
 
+from datetime import UTC, datetime
 import json
 
 from contracts import TaskInputFile
@@ -167,3 +168,65 @@ def test_every_task_carries_the_alerts_host_and_hash_and_a_pid_is_a_process_id()
         {"type": "file_hash", "value": sha},
     ]
     TaskInputFile.model_validate(task_file)
+
+
+def test_the_alerts_process_guid_rides_with_a_pid():
+    # 5aae1a35: PID 220 was setup.exe and six forwarder processes in one day.
+    guid = "{66ac357b-3e84-6ac5-5dff-030000000e00}"
+    context = {"normalized_seed": {"entities": {"hostname": "ar-f6eddb5b-df6"},
+                                   "process": {"process_name": "setup.exe", "process_guid": guid}}}
+    scope = run_trace.alert_entities(context)
+    assert {"type": "process_guid", "value": guid} in scope
+
+    tasks = [{"task_id": "T1", "question": "parent of PID 220?", "time_window": WINDOW,
+              "entity": {"type": "process_id", "value": "220"}}]
+    task_file, _ = run_trace.to_task_file(tasks, "r", 2, scope)
+    assert {"type": "process_guid", "value": guid} in task_file["tasks"][0]["entity"]
+    TaskInputFile.model_validate(task_file)
+
+
+def _window_task(start, end):
+    return [{"task_id": "T1", "question": "q", "entity": {"type": "host", "value": "h"},
+             "time_window": {"start": start, "end": end}}]
+
+
+def test_a_window_is_widened_to_the_event_and_never_runs_past_now():
+    event = "2026-10-06T18:41:51.000Z"
+    file, notes = run_trace.to_task_file(_window_task("2026-10-06T18:41:51Z", "2026-10-06T18:42:51Z"), "r", 2, event_time=event)
+    assert file["tasks"][0]["time_window"] == {"start": "2026-10-06T17:41:51Z", "end": "2026-10-06T19:41:51Z"}
+    assert "event +/- 1h" in notes[0]["why"] and notes[0]["sent"]
+
+    # A wider lookback the Analyst chose keeps its start.
+    file, _ = run_trace.to_task_file(_window_task("2026-10-04T18:41:51Z", "2026-10-06T18:41:51Z"), "r", 2, event_time=event)
+    assert file["tasks"][0]["time_window"] == {"start": "2026-10-04T18:41:51Z", "end": "2026-10-06T19:41:51Z"}
+
+    file, _ = run_trace.to_task_file(_window_task("2026-10-06T17:00:00Z", "2999-01-01T00:00:00Z"), "r", 2, event_time=event)
+    assert run_trace._instant(file["tasks"][0]["time_window"]["end"]) <= datetime.now(UTC)
+
+    # No event time: passed through as before.
+    file, notes = run_trace.to_task_file(_window_task("2026-10-06T18:41:51Z", "2026-10-06T18:42:51Z"), "r", 2)
+    assert file["tasks"][0]["time_window"]["start"] == "2026-10-06T18:41:51Z" and not notes
+
+
+def test_notables_fold_by_rule_and_host_in_first_seen_order():
+    rows = [
+        {"index": 0, "time": "t0", "rule_name": "A", "dest": "h1", "urgency": "low", "user": "u1", "src": ""},
+        {"index": 1, "time": "t1", "rule_name": "B", "dest": "h1", "urgency": "medium", "user": "", "src": ""},
+        {"index": 2, "time": "t2", "rule_name": "A", "dest": "h1", "urgency": "high", "user": "u2", "src": ""},
+        {"index": 3, "time": "t3", "rule_name": "A", "dest": "h2", "urgency": "low", "user": "", "src": ""},
+        {"index": 4, "time": "t4", "rule_name": "A", "dest": "h1", "urgency": "medium", "user": "u1", "src": ""},
+    ]
+    groups = run_trace.group_notables(rows)
+
+    assert [(g["rule_name"], g["dest"], g["count"]) for g in groups] == [("A", "h1", 3), ("B", "h1", 1), ("A", "h2", 1)]
+    a = groups[0]
+    assert a["urgency"] == "high" and a["time"] == "t0" and a["users"] == ["u1", "u2"]
+    assert [e["index"] for e in a["events"]] == [0, 2, 4]
+
+
+def test_the_queue_and_the_import_read_one_row_per_event():
+    # ESCU rules raised each event 12 times; the queue's index must match the import's.
+    base = run_trace.notables_spl()
+    assert base.index("| dedup search_name dest firstTime") < base.index("| sort -_time")
+    ruled = run_trace.notables_spl("*x*")
+    assert ruled.index('search_name="*x*"') < ruled.index("| dedup")

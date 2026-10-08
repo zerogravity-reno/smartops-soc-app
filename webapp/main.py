@@ -91,12 +91,17 @@ OPENCTI_HEADERS = {
     "Content-Type":  "application/json",
 }
 
+# Seconds per OpenCTI request. A server that accepts and never answers made each
+# observable wait out a 10s read, one after another, before the run could start.
+OPENCTI_TIMEOUT = float(os.environ.get("OPENCTI_TIMEOUT", "5"))
+
+
 def _gql(query: str, variables: dict = {}):
     """Execute a GraphQL query against OpenCTI."""
     try:
         resp = _http_requests.post(
             OPENCTI_URL, headers=OPENCTI_HEADERS,
-            json={"query": query, "variables": variables}, timeout=10)
+            json={"query": query, "variables": variables}, timeout=OPENCTI_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
@@ -176,13 +181,12 @@ def import_from_splunk(index: int = 0, rule_name: str = None):
     try:
         # --- Step 1: Get notable events ---
         fetch_count = max(index + 1, 10)
-        spl = "search index=notable"
+        pattern = None
         if rule_name:
             clean_rule = rule_name.replace(" - Rule - Rule", "").replace(" - Rule", "")
             pattern = _spl_escape(f"*{clean_rule}*")
-            spl += f' (search_name="{pattern}" OR source="{pattern}")'
         events = splunk_mcp.run_query(
-            f"{spl} | sort -_time | head {fetch_count}"
+            f"{run_trace.notables_spl(pattern)} | head {fetch_count}"
             " | table _time rule_name urgency status src dest user src_ip rule_id search_name *",
             earliest_time="-30d", latest_time="now", row_limit=fetch_count)
         if not events:
@@ -249,17 +253,18 @@ def import_from_splunk(index: int = 0, rule_name: str = None):
 
 @app.get("/api/incident-queue")
 def get_incident_queue():
-    """The latest notable events, for the Incident Queue."""
+    """The latest alert events for the Incident Queue, one per event (see
+    `run_trace.notables_spl`), grouped by rule and host."""
     try:
         events = splunk_mcp.run_query(
-            "search index=notable | sort -_time | head 10"
+            run_trace.notables_spl() + " | head 50"
             " | table _time rule_name urgency status src dest user src_ip rule_id search_name source dest_host user_name",
-            earliest_time="-30d", latest_time="now", row_limit=10)
-        return {"status": "ok", "events": [
+            earliest_time="-30d", latest_time="now", row_limit=50)
+        return {"status": "ok", "groups": run_trace.group_notables([
             {"index": i, "time": _first(ev, ["_time", "time"]), "rule_name": _rule_of(ev),
              "urgency": _first(ev, ["urgency"]), "src": _first(ev, ["src", "src_ip"]),
              "dest": _first(ev, ["dest", "dest_host"]), "user": _first(ev, ["user", "user_name"])}
-            for i, ev in enumerate(events)]}
+            for i, ev in enumerate(events)])}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
 
@@ -306,6 +311,11 @@ def import_from_splunk_by_rule(rule_name: str):
 @app.post("/api/opencti")
 
 def opencti_endpoint(req: OpenCTIRequest):
+    # One probe first: unreachable OpenCTI costs one timeout, not one per observable.
+    probe = _gql("{ about { version } }")
+    if "error" in probe:
+        return {"status": "unavailable", "source": f"OpenCTI ({OPENCTI_URL})", "message": probe["error"],
+                "total_observables": len(req.observables), "results": {}}
     results = {}
     for obs in req.observables:
         t = _classify_observable(obs)
@@ -318,6 +328,8 @@ def opencti_endpoint(req: OpenCTIRequest):
                  "observable_result": _search_stix_observable(obs),
                  "malware_result":    _search_malware(obs)}
         results[obs] = r
+        if "error" in r or "error" in r.get("observable_result", {}):
+            break  # it went down mid-request: the rest would each wait out a timeout
     return {"status": "success", "source": f"OpenCTI Live API ({OPENCTI_URL})",
             "total_observables": len(req.observables), "results": results}
 
@@ -616,7 +628,9 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         for loop_num in range(2, req.max_loops + 2):
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
-            findings, link = _run_broker_proc_streaming(tasks, run_id, loop_num, q, run_trace.alert_entities(alert_context))
+            findings, link = _run_broker_proc_streaming(
+                tasks, run_id, loop_num, q, run_trace.alert_entities(alert_context),
+                (alert_context.get("normalized_seed") or {}).get("event_time"))
             run_trace.record(run_id, "broker", loop_num, **link)
             if "broker_runs" in link:
                 _emit(q, "broker", {"runs": link["broker_runs"], "handshake": link["handshake"]},
@@ -693,7 +707,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
 
 
 def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue,
-                               alert_scope: list | None = None) -> tuple[dict, dict]:
+                               alert_scope: list | None = None, event_time: str | None = None) -> tuple[dict, dict]:
     """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
 
     The tasks go as a `task-input.v1` file (`--task-file`), and what comes back is
@@ -704,7 +718,7 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     """
     run_dir = run_trace.runs_dir() / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num, alert_scope)
+    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num, alert_scope, event_time)
     task_path = run_dir / f"tasks-L{loop_num}.json"
     task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")
     task_ids = [t["task_id"] for t in task_file["tasks"]]

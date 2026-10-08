@@ -9,7 +9,7 @@ Analyst output -- one `investigation.jsonl` per run.
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -23,6 +23,7 @@ _KIND = {
     "domain": "domain", "url": "url", "uri": "url",
     "file_hash": "file_hash", "hash": "file_hash", "sha256": "file_hash", "sha1": "file_hash", "md5": "file_hash",
     "process": "process", "process_name": "process", "process_id": "process_id", "pid": "process_id",
+    "process_guid": "process_guid", "processguid": "process_guid", "guid": "process_guid",
     "file": "file_name", "file_name": "file_name", "filename": "file_name", "image": "file_name",
     "file_path": "file_name", "path": "file_name", "process_path": "file_name",
     "command": "command_line", "command_line": "command_line", "commandline": "command_line", "cmdline": "command_line",
@@ -36,12 +37,14 @@ def _sha256(value) -> str | None:
 
 
 def alert_entities(context: dict) -> list[dict]:
-    """The alert's host, user, source IP and file hash as engine entities: the
-    scope for a task that only says "search the logs"."""
+    """The alert's host, user, source IP, file hash and Sysmon process GUID as
+    engine entities: the scope for a task that only says "search the logs"."""
     seed = (context or {}).get("normalized_seed") or {}
     ent = seed.get("entities") or {}
+    guid = next((d.get("process_guid") for d in (seed.get("process"), seed.get("finding"))
+                 if isinstance(d, dict) and d.get("process_guid")), None)
     picks = [("host", ent.get("hostname") or ent.get("host")), ("user", ent.get("user")), ("ip", ent.get("src_ip")),
-             ("file_hash", _sha256((seed.get("file") or {}).get("sha256")))]
+             ("file_hash", _sha256((seed.get("file") or {}).get("sha256"))), ("process_guid", guid)]
     return [{"type": kind, "value": str(value).strip()} for kind, value in picks if value and str(value).strip()]
 
 
@@ -74,6 +77,38 @@ def notable_event_time(ev: dict) -> str:
     return t.astimezone(UTC).isoformat() if t else str(one("_time"))
 
 
+def notables_spl(rule_pattern: str | None = None) -> str:
+    """The one base search the queue and the import share, newest first, one row
+    per event. ESCU rules run every 5 minutes over a 60-minute span with no
+    throttle, so each event was raised 12 times (2026-10-08). The queue and
+    `?index=` must read the same list, or an index names a different row.
+    `rule_pattern` is already SPL-escaped by the caller."""
+    rule = f' (search_name="{rule_pattern}" OR source="{rule_pattern}")' if rule_pattern else ""
+    return f"search index=notable{rule} | dedup search_name dest firstTime keepempty=true | sort -_time"
+
+
+_URGENCY = ("informational", "low", "medium", "high", "critical")
+
+
+def group_notables(rows: list[dict]) -> list[dict]:
+    """Queue rows, newest first, folded by rule and host: repeats of one rule on one
+    host filled the queue. Groups keep first-seen order, so each sits where its
+    newest instance would; every row keeps its `index` for the import."""
+    rank = lambda u: _URGENCY.index(u) if u in _URGENCY else -1
+    groups: dict[tuple, dict] = {}
+    for row in rows:
+        g = groups.setdefault((row.get("rule_name"), row.get("dest")), {
+            "rule_name": row.get("rule_name"), "dest": row.get("dest"), "time": row.get("time"),
+            "urgency": "", "users": [], "srcs": [], "events": []})
+        g["events"].append(row)
+        if rank(str(row.get("urgency", "")).lower()) > rank(g["urgency"]):
+            g["urgency"] = str(row["urgency"]).lower()
+        for key, field in (("users", "user"), ("srcs", "src")):
+            if row.get(field) and row[field] not in g[key]:
+                g[key].append(row[field])
+    return [{**g, "count": len(g["events"])} for g in groups.values()]
+
+
 def runs_dir() -> Path:
     # Same resolution the engine uses, anchored at the repo because the engine runs there.
     return REPO / (os.environ.get("SMARTOPS_RUNS_DIR", "").strip() or ".smartops/runs")
@@ -87,7 +122,11 @@ def record(run_id: str, step: str, loop: int, **data) -> None:
         f.write(json.dumps(line, default=str) + "\n")
 
 
-def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None = None) -> tuple[dict, list]:
+_EVENT_MARGIN = timedelta(hours=1)
+
+
+def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None = None,
+                 event_time: str | None = None) -> tuple[dict, list]:
     """The Analyst's tasks as a `task-input.v1` file, plus what could not be sent.
 
     The engine's `TaskInputFile` stays the validator; this only renames what the
@@ -99,7 +138,13 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
     scoped to `alert_scope`, the alert's own host/user/ip: the siem family already
     searches the lab's indexes (SMARTOPS_SIEM_INDEXES), and the question carries
     what to look for. Without an alert scope it is dropped, and the drop recorded.
+
+    Each window is widened to cover `event_time` +/- 1h, the floor the planning
+    prompt asks for, and capped at now. On 5aae1a35 T1 got 18:41:51-18:42:51, a
+    minute starting at the event, so the parent process created before it was
+    out of reach for the third run running. A wider window the Analyst chose stays.
     """
+    event = _instant(event_time)
     out, dropped = [], []
     for n, task in enumerate(tasks, 1):
         if not isinstance(task, dict):
@@ -126,12 +171,14 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
         if rescoped:
             entities = [dict(e) for e in alert_scope]
         elif alert_scope:
-            # Every task carries the alert's host and hash. Without the host the
-            # siem agent wrote `index=*` searches and was blocked (T3: 26 times);
-            # without the hash the Broker could not choose VT (T2). The Broker
-            # decides whether to use them.
+            # Every task carries the alert's host, hash and process GUID. Without
+            # the host the siem agent wrote `index=*` searches and was blocked (T3:
+            # 26 times); without the hash the Broker could not choose VT (T2); a
+            # PID alone matched six other processes on 5aae1a35, the GUID one.
+            # The Broker decides whether to use them.
             have = {e["type"] for e in entities}
-            entities += [dict(e) for e in alert_scope if e["type"] in ("host", "file_hash") and e["type"] not in have]
+            entities += [dict(e) for e in alert_scope
+                         if e["type"] in ("host", "file_hash", "process_guid") and e["type"] not in have]
         if not entities:
             drop(f"no entity the broker can search on (got: {', '.join(map(str, unusable)) or 'none'})")
             continue
@@ -145,6 +192,14 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
         if not (start and end and start < end):
             drop("the time window needs a timezone-aware start and end, start first")
             continue
+        window = {"start": window["start"], "end": window["end"]}
+        if event:
+            floor = (min(start, event - _EVENT_MARGIN), min(max(end, event + _EVENT_MARGIN), datetime.now(UTC)))
+            if floor != (start, end):
+                window = {k: v.strftime("%Y-%m-%dT%H:%M:%SZ") for k, v in zip(("start", "end"), floor)}
+                dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
+                                "why": f"window {task['time_window']['start']}..{task['time_window']['end']} sent as "
+                                       f"{window['start']}..{window['end']}: event +/- 1h, never past now"})
         if rescoped:
             dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
                             "why": f"{', '.join(map(str, unusable)) or 'no entity'} is not a value to match: sent scoped to the alert's "
@@ -161,7 +216,7 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
             "hypothesis_id": task_id,
             "question": task["question"],
             "entity": entities,
-            "time_window": task["time_window"],
+            "time_window": window,
         })
     return {"schema_version": 1, "tasks": out}, dropped
 
