@@ -19,6 +19,7 @@ from smartops.broker import (
     MissingStepIdGuard,
     ModelChoice,
     _digest,
+    _stub_subagent,
     _estimated_input_tokens,
     broker_task,
     evaluate_step,
@@ -60,7 +61,8 @@ MODEL = ModelChoice(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", pri
 def make_scope(**overrides):
     now = datetime(2026, 8, 11, tzinfo=UTC)
     defaults = dict(
-        entities=[Entity(kind="host", value="host-1")],
+        # A hash too: `plan_fetch` refuses a vt step on a scope with no indicator.
+        entities=[Entity(kind="host", value="host-1"), Entity(kind="file_hash", value="a" * 64)],
         time_window=(now - timedelta(hours=1), now),
     )
     return Scope(**{**defaults, **overrides})
@@ -315,13 +317,17 @@ class TestStubSubagent:
         # vt needs a hash/ip/domain/url; a user-only scope cannot be asked. This
         # is a precondition, not a judgement, so it must be reported distinctly
         # from "the server isn't connected".
-        task = make_task(scope=make_scope(entities=[Entity(kind="user", value="someuser")]))
-
-        outcome = await broker_task(
-            task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"])
+        # Called directly: `plan_fetch` now refuses such a step before dispatch.
+        result = await _stub_subagent(
+            SubagentMission(
+                task_id="t1:vt:1",
+                hypothesis_id="h1",
+                tool_family="vt",
+                goal="g",
+                scope=make_scope(entities=[Entity(kind="user", value="someuser")]),
+            )
         )
 
-        result = outcome.results[0]
         assert result.status == SubtaskStatus.REJECTED
         assert "no vt observable in scope" in result.reason
         # REJECTED must never set `error` -- `_StatusErrorContract` raises if it does.
@@ -752,7 +758,9 @@ class TestDefaultInvoker:
 
         with patch("strands.Agent", return_value=fake_agent) as agent_cls:
             invoker = default_broker_invoker(MODEL, max_output_tokens=500, turns=6)
-            await invoker("prompt", BrokerRequest(task=make_task()))
+            # An ip as well, so ndr's required kinds are in scope too.
+            scope = make_scope(entities=[*make_scope().entities, Entity(kind="ip", value="10.0.0.1")])
+            await invoker("prompt", BrokerRequest(task=make_task(scope=scope)))
 
         kwargs = agent_cls.call_args.kwargs
         assert kwargs["model"] is sentinel
@@ -2416,6 +2424,33 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
 
         assert "plan_fetch" in names
 
+    def test_a_family_the_scope_cannot_serve_is_not_offered(self, monkeypatch):
+        # F6: vt on a host+user scope was planned, dispatched, then rejected.
+        monkeypatch.setattr(registry, "server_count", lambda family: 1)
+        scope = make_scope(entities=[Entity(kind="host", value="h"), Entity(kind="user", value="u")])
+
+        names = {t.tool_spec["name"] for t in broker_module.available_broker_tools(scope)}
+
+        assert "investigate_vt" not in names
+        assert "investigate_siem" in names
+
+    async def test_a_step_the_scope_cannot_serve_is_refused_at_plan_time(self):
+        from contracts import FetchStep
+
+        scope = make_scope(entities=[Entity(kind="host", value="h"), Entity(kind="user", value="u")])
+        request = BrokerRequest(task=make_task(scope=scope))
+        context = FakeToolContext(tool_use={"toolUseId": "tu"}, invocation_state={"smartops": request})
+
+        res = await plan_fetch(
+            steps=[FetchStep(step_id="siem-1", family="siem", objective="x"),
+                   FetchStep(step_id="vt-1", family="vt", objective="x")],
+            rationale="r",
+            tool_context=context,
+        )
+
+        assert res.startswith("status=refused") and "file_hash" in res
+        assert request.plan is None
+
 
 class TestAFailedSubagentIsNotANegativeFinding:
     """`confirmed_empty` means "we looked and the data is not there".
@@ -2667,7 +2702,7 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
         assert outcome.rows_retrieved == 30
         assert outcome.completed is True
 
-    def test_naming_no_category_counts_every_bucket_as_before(self):
+    def test_naming_no_category_counts_every_bucket_but_uncategorised(self):
         # The default. Every existing plan and every vt step relies on it.
         step = FetchStep(step_id="siem-1", family="siem", objective="Anything")
         result = self._result(
@@ -2680,7 +2715,8 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
 
         outcome = evaluate_step(step, result)
 
-        assert outcome.rows_retrieved == 62
+        # `uncategorised` is the one bucket that never counts (F7).
+        assert outcome.rows_retrieved == 61
         assert outcome.completed is True
 
     def test_a_category_scoped_step_accumulates_across_redispatch(self):

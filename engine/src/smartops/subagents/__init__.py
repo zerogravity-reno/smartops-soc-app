@@ -45,7 +45,7 @@ from contracts import (
 )
 from smartops.broker import BUDGET_REFUSAL_ERROR, SubagentRunner, enrich_mission
 from smartops.budget import Budget, ModelChoice, Usage
-from smartops.domains import ALL_FAMILIES, DOMAINS
+from smartops.domains import ALL_FAMILIES, DOMAINS, scope_gap
 from smartops.guards import (
     IndexScopeGuard,
     ScopeGuard,
@@ -123,7 +123,8 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "  * Authentication: `| tstats summariesonly=t count from datamodel=Authentication by Authentication.user, Authentication.src, Authentication.action`\n"
         "- CIM field names (prefix each with its dataset, e.g. `Processes.dest`):\n"
         "  * Processes: dest, user, process, process_name, process_path, parent_process, parent_process_name, parent_process_path, process_id, parent_process_id\n"
-        "- A `process_id` entity is a PID: Sysmon writes it as decimal `ProcessId`, Windows 4688 as hex `New_Process_ID` (2900 is 0xB54). Search both, scoped to the task's host.\n"
+        "- A `process_id` entity is a PID: Sysmon writes it as decimal `ProcessId`, Windows 4688 as hex `New_Process_ID` (2900 is 0xB54). Search both, scoped to the task's host. PIDs are reused on a host: return `_time` with every PID match and keep same-PID processes at different times apart. When a `process_guid` is in scope, prefer it. Never replace an empty PID search with an unfiltered process listing.\n"
+        "- A `process_guid` entity names one process instance: match it on Sysmon `ProcessGuid` (its own events) and `ParentProcessGuid` (its children). The EID 1 row whose `ProcessGuid` matches gives its `ParentImage` and `ParentProcessGuid`. In CIM data models it is `Processes.process_guid` / `Registry.process_guid`.\n"
         "  * Authentication: dest, src, user, action, app\n"
         "  * All_Traffic (Network_Traffic): src, dest, dest_port, transport\n"
         "  * DNS (Network_Resolution): src, query, answer\n"
@@ -621,18 +622,22 @@ async def investigate(
         # correct. A security check that quietly does not run is worse than one
         # that fails.
         queries_run = [QueryRun(query=call.query) for call in collector.calls if call.query]
+        reason = (
+            f"{family} subagent produced no structured answer "
+            f"(stop_reason={stop_reason}); {len(evidence)} raw result(s) were "
+            "collected and retained"
+        )
+        # ERROR even with evidence: a lost answer is a failure, not "nothing
+        # there". As NO_DATA it read as a negative finding while carrying rows
+        # (F7: 74 fallback-scan rows on c7dbf51d T1). The rows are still kept.
         return SubtaskResult(
             task_id=mission.task_id,
-            status=SubtaskStatus.NO_DATA if evidence else SubtaskStatus.ERROR,
-            reason=(
-                f"{family} subagent produced no structured answer "
-                f"(stop_reason={stop_reason}); {len(evidence)} raw result(s) were "
-                "collected and retained"
-            ),
+            status=SubtaskStatus.ERROR,
+            reason=reason,
             # No answer means no category tags, so every result set lands in
             # `uncategorised` -- the rows were still retrieved and paid for.
             findings=project(family, collector.calls, queries_run, mission.task_id),
-            error=None if evidence else "subagent returned no structured output and no evidence",
+            error=reason if evidence else "subagent returned no structured output and no evidence",
             queries_run=queries_run,
             blocked_queries=[q for g in guards for q in g.blocked],
             citation_ids=[e.id for e in evidence],
@@ -883,19 +888,14 @@ def domain_runner(
 
     async def run(mission: SubagentMission) -> SubtaskResult:
         family = mission.tool_family
-        required = DOMAINS[family].required_kinds
-        in_scope = mission.scope.kinds()
-
         # Precondition, not judgement: VirusTotal cannot be queried without a
         # hash, address, domain, or URL regardless of what any model decides.
-        if required is not None and not (required & in_scope):
+        gap = scope_gap(family, mission.scope)
+        if gap:
             return SubtaskResult(
                 task_id=mission.task_id,
                 status=SubtaskStatus.REJECTED,
-                reason=(
-                    f"no {family} observable in scope: needs one of "
-                    f"{sorted(required)}, scope has {sorted(in_scope)}"
-                ),
+                reason=gap,
             )
 
         # NOTE: the enricher is deliberately NOT consulted here.

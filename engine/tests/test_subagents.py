@@ -721,6 +721,33 @@ class TestNoStructuredAnswerStillReportsItsQueries:
         assert len(result.findings.uncategorised) == 2
         assert len(result.findings.discovery) == 1
 
+    async def test_a_lost_answer_is_an_error_and_completes_no_step(self, monkeypatch):
+        # F7: cut off at `limit_turns`, T1 read `no_data` while carrying 74 rows,
+        # and its step read `complete`.
+        from contracts import CompletionRule, FetchStep
+
+        from smartops.broker import evaluate_step
+
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            self._invoke_recording(
+                [subagents._ToolCall("splunk_search", "index=botsv3 sourcetype=x", {"results": [{"a": 1}]})]
+            ),
+        )
+
+        result = await investigate(
+            mission("siem"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"]
+        )
+
+        assert result.status is SubtaskStatus.ERROR
+        assert result.evidence and result.error
+        step = FetchStep(step_id="siem-1", family="siem", objective="x",
+                         completion=CompletionRule(requires="rows_or_confirmed_empty"))
+        outcome = evaluate_step(step, result)
+        assert outcome.completed is False
+        assert outcome.confirmed_empty is False
+
     async def test_a_scope_check_that_skips_empty_queries_now_sees_this_path(
         self, monkeypatch
     ):

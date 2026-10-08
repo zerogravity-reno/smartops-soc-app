@@ -485,6 +485,16 @@ class TestScopeGuard:
         guard._check(event)
         assert isinstance(event.cancel_tool, str)
 
+    @pytest.mark.parametrize("guid", ["{66ac357b-3e84-6ac5-5dff-030000000e00}", "66ac357b-3e84-6ac5-5dff-030000000e00"])
+    def test_a_process_guid_anchors_a_search_with_or_without_braces(self, guid):
+        scope = Scope(
+            entities=[Entity(kind="process_guid", value="{66ac357b-3e84-6ac5-5dff-030000000e00}")],
+            time_window=SCOPE.time_window,
+        )
+        event = _BeforeEvent("splunk_run_query", {"query": f'index=botsv3 EventCode=1 ProcessGuid="{guid}"'})
+        ScopeGuard("siem", scope)._check(event)
+        assert event.cancel_tool is None or event.cancel_tool is False
+
 
 class TestCancelledCallsAreNotEvidence:
     """The guard and the evidence collector were built for different reasons; that

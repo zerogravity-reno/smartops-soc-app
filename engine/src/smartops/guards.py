@@ -231,7 +231,8 @@ def _match_terms(entities: Any) -> set[str]:
         # A path's file name too: `%TEMP%\svcupdate.dat` is searched as `svcupdate.dat`,
         # which carries no substring of the full path or of its first dotted label.
         base = re.split(r"[\\/]", value)[-1]
-        for term in (value, value.partition(".")[0], base, base.partition(".")[0]):
+        # And a GUID without its braces: `{66ac357b-…}` is often searched bare.
+        for term in (value, value.partition(".")[0], base, base.partition(".")[0], value.strip("{}")):
             if len(term) >= _MIN_TERM:
                 terms.add(term)
     return terms

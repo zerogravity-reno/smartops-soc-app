@@ -38,6 +38,7 @@ ToolFamily = Literal["edr", "ndr", "vt", "siem"]
 
 EntityKind = Literal[
     "host", "user", "ip", "file_hash", "domain", "url", "process", "file_name", "command_line", "process_id",
+    "process_guid",
 ]
 """What kind of observable an entity is.
 
@@ -54,6 +55,10 @@ Context Contract Template. `process` and `url` are the least settled members.
 command line or an encoded-command string) were added on 2026-10-06: the
 Analyst asked about both and Splunk holds both, but with no kind for them the
 webapp handoff dropped those tasks. Neither is a VirusTotal observable.
+
+`process_guid` (Sysmon's `ProcessGuid`) was added on 2026-10-08, pending the
+same review: a PID is reused on a host (PID 220 was setup.exe and six Splunk
+forwarder processes in one day on 5aae1a35), and the GUID names one instance.
 """
 
 

@@ -93,6 +93,8 @@ ENCODED_LINE_CAP = 8
 COMMANDS_FOOTER = "Interpreter and LOLBin command lines in these rows, rarest first:"
 COMMAND_LINE_CAP = 8
 COMMAND_CHAR_CAP = 400
+NO_ROWS_FOOTER = "Searches that returned no rows:"
+NO_ROWS_LINE_CAP = 8
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -632,7 +634,9 @@ _TIME_CLAIM_RE = re.compile(r"\d{1,2}:\d{2}")
 def _figures(text: str) -> set[str]:
     """Multi-digit figures an observation asserts, less its citations and times."""
     stripped = _TIME_TOKEN_RE.sub(" ", _CITATION_DIGITS_RE.sub(" ", text))
-    return set(_FIGURE_RE.findall(stripped.replace(",", "")))
+    # Only thousands separators: stripping every comma fused "4720,4722,4724" into
+    # one figure no row holds, and dropped three true observations (25965109).
+    return set(_FIGURE_RE.findall(re.sub(r"(?<=\d),(?=\d{3}\b)", "", stripped)))
 
 
 def _drop_unsupported_figures(
@@ -893,6 +897,12 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
             len(finding.observations),
             ", ".join(e.citation for e in exhibits),
         )
+    # Beside real rows, empty exhibits are noise: T1 on c7dbf51d cited 26 zero-row
+    # sets and each crossed to the Analyst (F8). The no-rows footer below names
+    # them instead. Kept whole when every exhibit is empty -- that IS the negative
+    # evidence. `citations` is untouched, so the verdict gate sees the same ids.
+    if any(e.row_count for e in exhibits):
+        exhibits = [e for e in exhibits if e.row_count]
 
     # Code-written, after the model's prose and marked `~`: the narrative is what
     # the Analyst reads, and a name in it can stand for several files (B1c).
@@ -928,6 +938,15 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
         if len(commands) > COMMAND_LINE_CAP:
             lines.append(f"~ … {len(commands) - COMMAND_LINE_CAP} more command lines not shown (rows in report.json)")
         narrative = "\n".join([narrative, "", COMMANDS_FOOTER, *lines])
+    # Every search that came back empty, cited or not, by its query. On 5aae1a35
+    # T1's search for PID 220's creation was empty and uncited, so the Analyst
+    # never read that its own question went unanswered.
+    empty = [rs.query for _, rs in sets if rs.row_count == 0 and rs.query]
+    if empty:
+        lines = [f"~ {_truncate(q, COMMAND_CHAR_CAP)}" for q in empty[:NO_ROWS_LINE_CAP]]
+        if len(empty) > NO_ROWS_LINE_CAP:
+            lines.append(f"~ … {len(empty) - NO_ROWS_LINE_CAP} more empty searches not shown (all in report.json)")
+        narrative = "\n".join([narrative, "", NO_ROWS_FOOTER, *lines])
 
     return DomainJudgement(
         domain=finding.domain,

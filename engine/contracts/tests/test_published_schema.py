@@ -229,14 +229,14 @@ class TestTheTaskInputSchemaTellsTheProducerWhatItNeeds:
         }
 
     def test_the_entity_kinds_are_published_as_a_closed_enum(self):
-        """The producer can see all ten and validate against them locally,
+        """The producer can see all eleven and validate against them locally,
         rather than discovering an unsupported kind when the Broker refuses the
         file."""
         entity = self._schema()["$defs"]["TaskEntity"]["properties"]
 
         assert entity["type"]["enum"] == [
             "host", "user", "ip", "file_hash", "domain", "url", "process",
-            "file_name", "command_line", "process_id",
+            "file_name", "command_line", "process_id", "process_guid",
         ]
 
     def test_entity_is_published_as_one_object_or_a_list(self):

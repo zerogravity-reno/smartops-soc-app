@@ -14,7 +14,8 @@
             "process",
             "file_name",
             "command_line",
-            "process_id"
+            "process_id",
+            "process_guid"
           ],
           "title": "Type",
           "type": "string"
