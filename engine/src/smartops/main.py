@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -90,6 +91,7 @@ from contracts import (
 )
 from smartops.broker import (
     DEFAULT_RUNS_DIR,
+    OUT_DIR_ENV_VAR,
     RUNS_DIR_ENV_VAR,
     TOOL_BY_FAMILY,
     BrokerRequest,
@@ -102,7 +104,7 @@ from smartops.subagent_analysts.analyze import gather
 from smartops.subagent_analysts.packing import HANDOFF_CHAR_BUDGET
 from smartops.subagent_analysts.model import analyst_model_from_env
 from smartops.subagents import domain_runner
-from smartops.telemetry import analysis_span, configure_telemetry
+from smartops.telemetry import analysis_span, configure_telemetry, round_span
 from smartops.tools.registry import (
     family_is_configured,
     load_mcp_servers,
@@ -749,7 +751,7 @@ def _persist_reasoning_traces(
     file on the run directory is what makes it auditable without making it
     shippable -- `.smartops/` is gitignored, so it never reaches a remote either.
 
-    `DomainJudgement` therefore has no field for it and `findings.json` correctly
+    `DomainRecord` therefore has no field for it and `findings.json` correctly
     lacks it. This is the other half of that decision: without this writer the
     trace was simply discarded, while `DomainFinding.reasoning_trace` still
     described itself as "persisted for audit". It had been, by an older artifact
@@ -970,6 +972,7 @@ async def _analyse_one(
     formed by an analyst that was shown the hypothesis is the anchoring this path
     exists to remove.
     """
+    _current_task.set(task.task_id)  # this coroutine's own context: one per task under gather
     run_dir = getattr(outcome, "run_dir", None)
     run_id = Path(run_dir).name if run_dir else None
     # The analyze tier's root span. A second root beside the fetch tier's
@@ -988,7 +991,7 @@ async def _analyse_one(
             analyst_model,
             run_id=run_id,
             hypothesis=hypothesis,
-            # The only hook that can reach `reasoning_trace`: `_as_judgement`
+            # The only hook that can reach `reasoning_trace`: `_as_record`
             # drops it before `gather` returns.
             trace_sink=lambda domain_findings: _persist_reasoning_traces(
                 task.task_id,
@@ -1039,7 +1042,7 @@ def _persist_payload_batch(
     the thing that fails a completed run.
     """
     root = _runs_root()
-    if not root.is_dir():
+    if not root.is_dir() and not os.environ.get(OUT_DIR_ENV_VAR, "").strip():
         # Every task's own run dir is created by the broker under this root, so a
         # missing root means nothing was persisted at all and there is no place
         # this belongs. Silent for the same reason `_resolve_run_dir` is.
@@ -1050,7 +1053,9 @@ def _persist_payload_batch(
         batch_id=batch_id or f"batch-{datetime.now(UTC):%Y%m%dT%H%M%S}",
         payloads=pack_for_analyst(findings, max_chars),
     )
-    target = root / batch.batch_id
+    # Beside the tasks in the round's own folder when the webapp names one (O5).
+    out = os.environ.get(OUT_DIR_ENV_VAR, "").strip()
+    target = Path(out) if out else root / batch.batch_id
     target.mkdir(parents=True, exist_ok=True)
     path = target / "analyst-payload.json"
     path.write_text(batch.model_dump_json(indent=2), encoding="utf-8")
@@ -1169,6 +1174,18 @@ async def _analyse_all(
     return failures, findings
 
 
+# The task a log line belongs to (O6): 874ab334 lost endpoint three times and the
+# log could not say in which task. A contextvar, so `asyncio.to_thread` in
+# `gather` carries it into every sub-analyst call.
+_current_task: contextvars.ContextVar[str] = contextvars.ContextVar("smartops_task", default="")
+
+
+def _name_the_task(record: logging.LogRecord) -> bool:
+    task = _current_task.get()
+    record.task = f"task={task} | " if task else ""
+    return True
+
+
 async def _run(argv: list[str] | None = None) -> int:
     _force_utf8_output()
     args = _build_parser().parse_args(argv)
@@ -1178,17 +1195,25 @@ async def _run(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.ERROR,
-        format="%(levelname)s %(name)s: %(message)s",
+        format="%(levelname)s %(name)s: %(task)s%(message)s",
     )
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_name_the_task)
     if not args.verbose:
         # The analyst gates log every sentence, figure and domain they drop as a
         # warning; at ERROR the run's log never showed what the Analyst lost (N3).
+        # `contracts` too: its packer's over-budget warning was invisible (O6).
         logging.getLogger("smartops.subagent_analysts").setLevel(logging.WARNING)
+        logging.getLogger("contracts").setLevel(logging.WARNING)
     # After logging is configured, so its warning is visible, and after the .env
     # load, so credentials from the file count as explicit.
     _neutralise_aws_profile()
     configure_telemetry(console=args.console_traces)
+    with round_span(args.batch_id):
+        return await _run_round(args, env_file)
 
+
+async def _run_round(args: argparse.Namespace, env_file) -> int:
     # Build MCP clients once, before any dispatch. A missing config or an unset
     # ${VAR} credential leaves a family with no server rather than failing --
     # which is how this runs with no credentials at all.
@@ -1346,6 +1371,7 @@ async def _run(argv: list[str] | None = None) -> int:
                 print(f"fetching {position}/{len(tasks)}: {task.task_id} / {task.hypothesis_id}")
                 print("=" * 70)
 
+            _current_task.set(task.task_id)
             try:
                 outcome = await broker_task(
                     task,

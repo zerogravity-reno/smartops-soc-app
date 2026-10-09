@@ -45,7 +45,7 @@ def test_follow_ups_inherit_the_entities_and_the_widest_window():
     assert task["time_window"] == {"start": "2026-09-01T00:00:00Z", "end": WINDOW["end"]}
 
 
-def test_record_appends_and_links_resolve_through_latest(tmp_path, monkeypatch):
+def test_record_appends_and_reports_resolve_in_the_round_folder(tmp_path, monkeypatch):
     monkeypatch.setenv("SMARTOPS_RUNS_DIR", str(tmp_path))
     run_trace.record("run1", "analyst_plan", 1, plan={"tasks": []})
     run_trace.record("run1", "synthesis", 2, output={})
@@ -67,19 +67,18 @@ def test_record_appends_and_links_resolve_through_latest(tmp_path, monkeypatch):
         "results": [{"task_id": "run1-L2-T1:siem:tu1", "status": "ok", "reason": None, "error": None, "gaps": ["edr"],
                      "queries_run": [{"query": "index=windows_lab x"}], "blocked_queries": ["index=* y"]}],
     }
-    for stamp, trace in (("old", "a" * 32), ("new", "b" * 32)):
-        (tmp_path / "run1-L2-T1" / stamp).mkdir(parents=True)
-        (tmp_path / "run1-L2-T1" / stamp / "report.json").write_text(json.dumps({**report, "trace_id": trace}))
-    (tmp_path / "run1-L2-T1" / "latest.txt").write_text("new")
+    # One run folder (O5): run1/L2/T1/report.json, found by the task id it names.
+    (tmp_path / "T1").mkdir()
+    (tmp_path / "T1" / "report.json").write_text(json.dumps({**report, "task_id": "run1-L2-T1", "trace_id": "b" * 32}))
 
-    [run] = run_trace.broker_runs(["run1-L2-T1"])
-    assert run["trace_id"] == "b" * 32 and run["run_dir"].endswith("new")
+    [run] = run_trace.broker_runs(["run1-L2-T1"], tmp_path)
+    assert run["trace_id"] == "b" * 32 and run["run_dir"].endswith("T1")
     assert [(s["step_id"], s["completed"], s["rows_retrieved"]) for s in run["steps"]] == [("s1", True, 12), ("s2", None, None)]
     assert (run["classification"], run["plan_repairs"], run["spend_micro_usd"]) == (
         "only SIEM telemetry was needed", ["dropped an unconfigured family"], 487647)
     assert run["results"] == [{"family": "siem", "status": "ok", "reason": None, "error": None, "gaps": ["edr"],
                                "queries": ["index=windows_lab x"], "blocked": ["index=* y"]}]
-    assert run_trace.broker_runs(["missing"]) == [{"task_id": "missing", "run_dir": None}]
+    assert run_trace.broker_runs(["missing"], tmp_path) == [{"task_id": "missing", "run_dir": None}]
 
 
 def test_file_and_command_entities_reach_the_broker_but_a_data_source_does_not():
@@ -166,6 +165,18 @@ def test_every_task_carries_the_alerts_host_and_hash_and_a_pid_is_a_process_id()
         {"type": "process_id", "value": "2900"},
         {"type": "host", "value": "ar-f6eddb5b-df6"},
         {"type": "file_hash", "value": sha},
+    ]
+    TaskInputFile.model_validate(task_file)
+
+
+def test_a_name_with_its_pid_is_sent_as_two_entities():
+    # 874ab334: `powershell.exe (PID 12345)` went to the Broker as one process name.
+    tasks = [{"task_id": "T1", "question": "what ran?", "time_window": WINDOW,
+              "entity": {"type": "process", "value": "powershell.exe (PID 12345)"}}]
+    task_file, _ = run_trace.to_task_file(tasks, "r", 2)
+    assert task_file["tasks"][0]["entity"] == [
+        {"type": "process", "value": "powershell.exe"},
+        {"type": "process_id", "value": "12345"},
     ]
     TaskInputFile.model_validate(task_file)
 

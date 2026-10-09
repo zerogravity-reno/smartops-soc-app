@@ -77,8 +77,8 @@
       "title": "DomainGap",
       "type": "object"
     },
-    "DomainJudgement": {
-      "description": "One domain's judgement as it crosses to the Analyst Agent.\n\nThe wire projection of a `DomainFinding`. Same judgement, minus what is ours\nrather than the consumer's, plus the evidence needed to check it.\n\nDropped from `DomainFinding`: `reasoning_trace`, `prompt_tokens`,\n`generation_tokens`. The token counts are our telemetry. The trace is stronger\nthan that -- it is documented \"persisted for audit, never re-fed\", and putting\na model's private chain-of-thought into a contract handed to another model is\nexactly re-feeding it. A projection rather than a `model_dump(exclude=...)` so\nthe published schema does not advertise fields the consumer must know to\nignore.\n\nAdded: `exhibits`. See `Exhibit`.\n\n**The name predates the shape.** It was named while this tier judged, and it\nwas deliberately NOT renamed when the judging was removed on 2026-08-31: a\nrename would churn the contracts export, `analyze`, `main`, the published\nschema and every test that names the type, for no behavioural gain. Read it\nas \"one domain's contribution\", and read the fields for what it now is.\nThere is no verdict in it -- no `disposition`, no `confidence`, no stance.\nSee `Disposition` for where the deciding happens instead.",
+    "DomainRecord": {
+      "description": "One domain's judgement as it crosses to the Analyst Agent.\n\nThe wire projection of a `DomainFinding`. Same judgement, minus what is ours\nrather than the consumer's, plus the evidence needed to check it.\n\nDropped from `DomainFinding`: `reasoning_trace`, `prompt_tokens`,\n`generation_tokens`. The token counts are our telemetry. The trace is stronger\nthan that -- it is documented \"persisted for audit, never re-fed\", and putting\na model's private chain-of-thought into a contract handed to another model is\nexactly re-feeding it. A projection rather than a `model_dump(exclude=...)` so\nthe published schema does not advertise fields the consumer must know to\nignore.\n\nAdded: `exhibits`. See `Exhibit`.\n\nRenamed from `DomainJudgement` on 2026-10-09: this tier stopped judging on\n2026-08-31, and the name kept saying it did. Only the type name changed; the\nfield data is the same, so older `findings.json` files load unchanged.\nThere is no verdict in it -- no `disposition`, no `confidence`, no stance.\nSee `Disposition` for where the deciding happens instead.",
       "properties": {
         "citations": {
           "items": {
@@ -102,6 +102,14 @@
             "$ref": "#/$defs/Exhibit"
           },
           "title": "Exhibits",
+          "type": "array"
+        },
+        "facts": {
+          "description": "Lines computed in code over every routed row, never written by a model: the full paths behind each name the narrative uses, decoded encoded commands, interpreter and LOLBin command lines, and searches that returned no rows. Each block opens with its own header line.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
           "type": "array"
         },
         "narrative": {
@@ -129,7 +137,7 @@
       "required": [
         "domain"
       ],
-      "title": "DomainJudgement",
+      "title": "DomainRecord",
       "type": "object"
     },
     "Exhibit": {
@@ -306,7 +314,7 @@
     "findings": {
       "description": "One per analysis domain, including domains that saw no evidence.",
       "items": {
-        "$ref": "#/$defs/DomainJudgement"
+        "$ref": "#/$defs/DomainRecord"
       },
       "title": "Findings",
       "type": "array"

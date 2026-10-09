@@ -643,7 +643,6 @@ _PATH_FIELDS: dict[str, tuple[str, ...]] = {"processes": ("process", "parent")}
 """The path-valued `_FIELDS` per category. `uncategorised` has no schema, so
 every value of its rows that is a `_PATH` counts."""
 
-NAMES_FOOTER = "Names in this narrative, computed over every row:"
 
 
 def _middle(path: str, limit: int = _SUMMARY_VALUE_LIMIT) -> str:

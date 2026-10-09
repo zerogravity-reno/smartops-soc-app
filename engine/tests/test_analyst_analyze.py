@@ -855,8 +855,8 @@ class TestEmptyCitedBlocksAreSurfacedNotPunished:
         # ...but NOT punished: an empty set is legitimate negative evidence, so
         # the prose and the observation both survive intact; code names the
         # empty search after it.
-        assert identity.narrative.startswith("The query for bostoll's logons returned no rows.\n")
-        assert "Searches that returned no rows:" in identity.narrative
+        assert identity.narrative == "The query for bostoll's logons returned no rows."
+        assert "Searches that returned no rows:" in identity.facts
         assert identity.observations == ["bostoll logged on [auth_events#1]"]
 
     async def test_a_finding_with_no_observations_does_not_warn(self, caplog):

@@ -1,12 +1,12 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-07. **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
+**As of:** 2026-10-09. **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail and security. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
 ## Evidence base
 
-All runs investigated the same Splunk ES notable: *Threat - Custom - Windows PowerShell Process Discovery*, host `ar-f6eddb5b-df6`, user `Administrator`, `_time 2026-09-27T15:04:02+03:00`. Run `cecd266a` is the exception: it investigated *Malicious PowerShell Process - Encoded Command* on the same host.
+Runs up to `b3aa0dd2` investigated the same Splunk ES notable: *Threat - Custom - Windows PowerShell Process Discovery*, host `ar-f6eddb5b-df6`, user `Administrator`, `_time 2026-09-27T15:04:02+03:00`. Run `cecd266a` is the exception: it investigated *Malicious PowerShell Process - Encoded Command* on the same host. The 2026-10-08 runs investigated newer notables on the same host (rule named per row).
 
 | Run | Date | Outcome | Notes |
 |---|---|---|---|
@@ -22,8 +22,14 @@ All runs investigated the same Splunk ES notable: *Threat - Custom - Windows Pow
 | `78cd60ec` | 2026-10-07 | no verdict, 1 loop | Replay of `c7dbf51d`'s context. Synthesis was cut off at 4,096 output tokens while still thinking; the extracted JSON had no follow-ups, so the run ended (T15). Flaws: `docs/run-78cd60ec-flaws.md` |
 | `71ef7d21` | 2026-10-07 | no verdict | First run after the loop fixes, replaying `c7dbf51d`'s context. Stopped during the first Broker fetch because the test machine ran out of memory (~1 GB of 16 GB free); not a product fault. To be re-run |
 | `b3aa0dd2` | 2026-10-08 | REQUIRES_INVESTIGATION 60%, 3 loops (max) | Re-run of `71ef7d21` after the loop fixes. Loop 2 FP-leaning 60/90/80, gap under 20, so the model's own follow-ups went on. Loop 3 claimed FALSE_POSITIVE 88 on one invented ref; the gate refused it, and T1's question went back as `G1`. Loop 4 ended 20/80/80 at max loops. Broker $2.31 + $2.58 + $0.17 = $5.06 |
+| `25965109` | 2026-10-08 | Failed | Stopped by a Ctrl+C on the server console (exit `0xC000013A`), shown in the UI as an ordinary failure. Endpoint cut off on T4 and T7 (B15); VT looked up one hash 7 times (B16) |
+| `874ab334` | 2026-10-08 | no verdict, 2 rounds | *Custom - Windows PowerShell Ingress Tool Transfer*, user `Mariam`, event 2026-10-06T11:51:16Z. Round-3 synthesis spent all 8,192 output tokens on a 19,152-token prompt (T15). Payloads 23.8k/31.8k against 16.5k, 0 observations sent (B14). Traced end to end below (874ab334 deep-dive) |
+| `9410e664` | 2026-10-08 | BENIGN 90, 1 round | *ESCU Encoded Command*. H3 90 / H2 70, refs held |
+| `397542de` | 2026-10-08 | no verdict, 1 round | *ESCU Encoded Command*. Synthesis JSON did not parse (1,107 tokens, empty reasoning); the raw answer is not recorded (T15, T17) |
+| `99e26b1e` | 2026-10-08 | no verdict, 1 round | *ESCU Encoded Command*. BENIGN 70 (needs 85); the reasoning itself says "Status: VERDICT_REACHED"; no follow-ups (T17) |
+| `5dc65b8c` | 2026-10-08 | no verdict, 1 round | *Custom Process Discovery*. FP 95 vs BENIGN 88, lead 7 (needs 20); refs `T1:T1`, `T2:T2` (T1, T9, T17) |
 
-Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-integration/trace-072fd610.html`.
+Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investigation (O5). The `072fd610` trace is at `tests/test-integration/trace-072fd610.html`.
 
 **Severity:** **Critical** means it produces a wrong verdict, or a security exposure. **High** means it can produce a wrong verdict, or makes a verdict untrustworthy. **Medium** means cost, wasted work, or misleading output. **Low** means cosmetic or minor.
 
@@ -47,7 +53,9 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | T14 | Triage | Synthesis reads tasks that never ran and cites them as findings | High | Open |
 | T15 | Triage | Synthesis can spend its output budget before writing the verdict JSON | High | Open (Analyst); output limit raised to 8,192 |
 | T16 | Triage | Unanswered follow-ups closed as "no gaps" | High | Open |
-| T17 | Triage | REQUIRES_INVESTIGATION with gaps but no follow-up tasks ends the run | High | Worked around in code (gaps become follow-ups); prompt open (Analyst) |
+| T17 | Triage | REQUIRES_INVESTIGATION with gaps but no follow-up tasks ends the run | High | Worked around in code (gaps become follow-ups); recurred in 4 of 5 runs on 2026-10-08 when scores are close or low, or the JSON is unparsed; prompt and gate open |
+| T18 | Triage | Task windows reach weeks back; follow-ups inherit the widest, so old activity is narrated beside the alert | High | Open (Analyst planning + loop follow-ups) |
+| T19 | Triage | Synthesis misses a cross-reference between the alert and other rows it was given | High | Open (Analyst) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Partly fixed (C6) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
@@ -61,11 +69,16 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open |
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
-| B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); webapp round compaction open |
+| B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
 | B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked (B10c: decoded in the loop that sees it; verified live `dce405e5`); decoded block crowds out summaries (open) |
 | B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Open |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
+| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Partly fixed on `smartops-loop-fix` (`facts` field, trimmed by priority); budget size open |
+| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Diagnostics added; fix pending the first logged failure |
+| B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel tasks deferred |
+| B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
+| B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -81,6 +94,8 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 | O2 | Audit | Dispatch-to-step link not recorded | Low | Fixed on this branch |
 | O3 | Audit | Broker log written only at the end of a loop | Low | Fixed (`c85eb93`) |
 | O4 | Audit | Sub-analyst gate drops never reached the run's Broker log | Low | Fixed on `smartops-loop-fix` |
+| O5 | Audit | One investigation is 9 traces in 12 folders | Medium | Fixed on `smartops-loop-fix` (one folder, one trace id); Analyst calls have no spans |
+| O6 | Audit | Warnings don't name the task; the packer's overflow warning isn't logged | Low | Fixed on `smartops-loop-fix` |
 | S1 | Security | Live credentials in git history | Critical | Removed from tree; **rotation pending**; new leak in `33ccf52` (C1–C2) |
 | S2 | Security | Splunk Web scraper replaced the official MCP | High | Fixed (C3) |
 
@@ -96,6 +111,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fixed (`smartops-loop-fix`):** `run_trace._ref_problem` checks every ref against every round's payload and Broker steps. A ref holds when its task ran (full id or `T1` tail), the part after `:` is a domain with observations or a block id cited in that task's findings, and none of the task's steps was rejected or left incomplete. One bad ref blocks the verdict. The reasons go into `refused_refs`, and the cited task's question goes into `evidence_gaps`, which T17's fallback turns into the next round's follow-ups. Replayed offline on `c7dbf51d`: REQUIRES_INVESTIGATION, and two follow-ups for round 3.
 - **Verified live (`b3aa0dd2`, 2026-10-08):** loop 3 returned FALSE_POSITIVE with H2 88 / H1 35 and one ref, `b3aa0dd2-L2-T1:FU1`, which joins a round-2 task to a round-3 follow-up and names no finding. The gate refused it, so the run went on to loop 4 instead of stopping on it.
 - **Still open (Analyst side): the model doesn't write refs in the asked format.** The evaluation header asks for `<task_id>:<domain>`, but `b3aa0dd2` loop 4 wrote `G1:process_id:220`, `T2:entity:host:ar-f6eddb5b-df6` and `FU2:user:NT AUTHORITY\SYSTEM`: entities, not findings. The gate only catches this when the scores are confident; the prompt has to fix the format.
+- **Recurred (2026-10-08):** `874ab334` round 2 wrote `T3:process`, `T5:user` and `T6:process`; `5dc65b8c` wrote `T1:T1` and `T2:T2`. Both were below the score bars, so the gate never checked the refs.
 
 **T2. Scores are unstable on the same input.** *High. Open (A2).*
 - **Evidence:** `04a15495` loop 2 scored 30 / 90 / 90, then loop 3 scored 90 / 60 / 30. `a8118db9` went 40 / 80 / 90, then 75 / 65 / 68, then 95 / 65 / 30. SOC3 drifted 0/0/0 → 30/70/50 → 30/60/70 → 40/80/75 across loops that had *no new evidence*.
@@ -142,6 +158,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Evidence:** `04a15495` loop 2 scored FALSE_POSITIVE 90 *and* BENIGN 90 at the same time, for mutually exclusive outcomes.
 - **Recurred (`dce405e5`):** H1 70 / H2 50 / H3 80, with the reasoning calling T1's commands "clearly malicious" and BENIGN never argued for. BENIGN scored highest, yet the status was REQUIRES_INVESTIGATION, and none of the three numbers appears in the reasoning.
 - **Fix:** define what a score means (a probability, or independent support) and enforce it.
+- **Recurred (`5dc65b8c`, 2026-10-08):** FALSE_POSITIVE 95 and BENIGN 88, two "legitimate" hypotheses the model could not separate. The plan's hypotheses overlap, which is the Analyst's planning side.
 
 **T10. Status and verdict vocabulary are mixed.** *Medium. Open (A8).*
 - **Evidence:** `a8118db9` loop 2 emitted `status: REQUIRES_INVESTIGATION` with `verdict: BENIGN, confidence 90`. SOC3's reasoning debates whether `UNCERTAIN` and `REQUIRES_INVESTIGATION` are verdicts or statuses.
@@ -176,6 +193,7 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Changed (`smartops-loop-fix`):** `llm_service.DEFAULT_MAX_GEN_LEN` is 8,192, which leaves room in the model's 32k window. The Broker's handoff budget is now derived from the Analyst's own generation reserve (`packing._ANALYST_GENERATION_RESERVE`, held equal by a test), so each round's payload batch is 16,480 characters, down from 20,745; three re-sent rounds plus the plan still fit. This only buys headroom.
 - **Live at 8,192 (`b3aa0dd2`):** the three synthesis calls used 1,162, 1,314 and 2,008 output tokens, with prompts of 7,406, 12,009 and 13,934 tokens. No cut-off. Neither the 4,096 cut-off nor this run proves the thinking is bounded; the headroom is what changed.
 - **Still open (Analyst side):** a `length` stop is still parsed as if whole. `call_llm` and `extract_json` should treat it as a failed evaluation to retry or report, and the synthesis prompt should bound the thinking.
+- **Recurred live at 8,192 (`874ab334` round 3, 2026-10-08): ended the run.** 8,192 of 8,192 output tokens on a 19,152-token prompt: rounds 2 and 3 in full (W8 keeps 2), about 55k characters. The answer was cut, `{}` was parsed, and with no gaps the run stopped. `397542de` returned JSON that did not parse after 1,107 tokens with empty reasoning; the raw answer is not recorded, so its cause can't be seen.
 
 **T16. Unanswered follow-ups are closed as "no gaps".** *High. Open.*
 - **Evidence:** on `e1461da6`, loop 2 listed "Decoded PowerShell command functionality" as a gap and sent FU1 (decode) and FU2 (is `192.168.40.211` a legitimate update server). Neither was answered: nothing was decoded (B10), and the loop 3 reasoning itself says Round 3 "does not provide direct evidence" about `.211`. Loop 3 still returned `evidence_gaps: []` at TRUE_POSITIVE 98, and leaned on "encoded PowerShell". The command was `$env:username`.
@@ -187,6 +205,20 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fix (webapp/Analyst side):** list both fields as required when the status is REQUIRES_INVESTIGATION. When gaps arrive without follow-ups, either turn each gap into a follow-up question in code or treat it as a failed evaluation and retry, not as the end of the investigation.
 - **Worked around (`smartops-loop-fix`):** `run_trace.follow_up_tasks` turns each `evidence_gap` into a follow-up (`G1`, `G2`, …) when synthesis sent none. It covers the gate's own refusals too (T1). The evaluation header still doesn't ask for the two fields; that stays with the Analyst owner.
 - **Verified live (`b3aa0dd2`):** the gate's refusal in loop 3 left `follow_up_tasks: []` and one gap; `G1` (T1's parent-process question) became loop 4's task.
+- **Recurred in 4 of 5 runs (2026-10-08), each ending with up to 15 loops left.** Three feeds: the evaluation header still doesn't ask for `evidence_gaps` or `follow_up_tasks`; `verdict_gate` adds a gap only when the score bars are met and a ref fails, so close scores (`5dc65b8c`, lead 7) and low ones (`99e26b1e`, BENIGN 70) add none; and an unparsed synthesis (`874ab334` round 3, `397542de`) becomes `{}`. Fix candidates (webapp/Analyst side, not started): ask for both fields when status is REQUIRES_INVESTIGATION; when scores are close, a gate gap naming the two leading hypotheses; re-run an unparsed synthesis once; record the raw answer and `stop_reason` in `investigation.jsonl`.
+
+**T18. Task windows reach weeks back, and follow-ups inherit the widest.** *High. Open (Analyst planning and loop follow-ups).*
+- **Evidence (`874ab334`):** the alert's event is 2026-10-06T11:51:16Z. The plan gave T6 "the last 30 days" (from 09-06), T5 a week, T2 and T4 five days, T1 24 hours. `to_task_file` only widens a window, so they went as planned. G1–G3 in round 3 each got T6's 30 days, because follow-ups take the widest window of the round (B6).
+- **The Broker kept to the windows.** `guards.py` sets every Splunk call's `earliest_time`/`latest_time` to the task window, and the row times match: G1's rows run 09-07 → 10-06.
+- **Impact:** rows from Sep 7–21 were narrated beside the Oct 6 alert ("Between September 21 and October 6, scripts consistently downloaded files from http://192.168.40.211"), with nothing marking them as two weeks before the alert. That's T6's pattern, now built into the windows.
+- **Analyst bug, same run:** T3's planned window was 2026-10-05T11:45–12:15Z, a day early. The widening happened to cover the event.
+- **Fix (owner to decide):** a planning rule for when a baseline window is warranted; follow-ups scoped to the task they follow up (B6); or a code line in each set's facts giving how many rows fall within the alert's ±1h.
+
+**T19. Synthesis misses a cross-reference between the alert and other rows it was given.** *High. Open (Analyst).*
+- **Evidence (`874ab334`):** the alert's own row is PowerShell under `Mariam`, parent `C:\Users\Mariam\AppData\Local\Microsoft\OneDrive\OneDrive.exe`, fetching `http://192.168.40.211/update/win-agent-2.4.1.bin` to `%TEMP%\svcupdate.dat`. The same server shows up in T6's rows on 2026-09-20/21: PowerShell under `Administrator`, parent `C:\Users\Public\splunkd.exe`, fetching `/api/v1/t1105-demo-artifact` to `caldera-demo-t1105.txt`.
+- **Both reached the Analyst.** The round-2 payload names the Caldera artifact 3 times, in T6's command-line footer near the end of a 23.8k-character payload. Round 3's payload names it twice.
+- **The round-2 reasoning uses neither.** It mentions Caldera, T1105 and the Public `splunkd.exe` parent 0 times. It describes a "Round 3" that hadn't run yet. It weighs "the internal IP's clean VirusTotal score (92)" against H1 (B18), and reads OneDrive.exe as "whitelisted", which is H2's own wording (T7). Round 3, which held more of it, was cut off before any JSON (T15).
+- **Broker share:** the payload went over budget with the facts last (B14), and the VirusTotal line for a private address (B18). Linking the two activities is synthesis's job.
 
 ## Context pipeline
 
@@ -308,6 +340,26 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 - **Fix:** the siem system prompt now names the allowlist (`SMARTOPS_SIEM_INDEXES`, or the domain default) and asks for one `tstats … by index, sourcetype` over all of them before searching only the indexes that hold the host.
 - **Live (`b3aa0dd2`):** T1's siem spend fell from $0.61 (`c7dbf51d`) to $0.32 on the same question; loop 2's five tasks cost $0.31–$0.73 each.
 
+**B14. Code footers inside the narratives pushed every observation out.** *High. Partly fixed on `smartops-loop-fix`.*
+- **Evidence (`874ab334`):** L2 sent 0 of 42 observations and 0 of 62 set summaries; L3 sent 0 of 37 and 0 of 113. Narratives always cross (B9a), and they were 18,968 (L2) and 28,391 (L3) characters, of which the code footers were 62% and 73%. The largest was the no-rows footer (F8): 26 lines in L2, 47 in L3. The batch still shipped over budget (23.8k and 31.8k against 16.5k), and the packer's warning never reached `broker-L*.log` (O6).
+- **Fix:** the footers move to their own field, `facts`, on `DomainRecord` (renamed from `DomainJudgement`, which no longer judges) and `DomainNarrative`. `narrative` is the model's prose again. Over budget, `pack_for_analyst` drops empty-search lines first, then command lines, then summaries, then observations; names and decoded lines are kept, and each drop leaves an "omitted for size" line. The no-rows block is a count plus at most 3 searches, those naming the task's own entities first. Decoded text is cut at 400 characters, like command lines.
+- **Still open: the budget itself.** Re-packed offline from 874ab334's stored findings, L2 is 17.3k and L3 20.1k against 16,480, still with 0 observations. The model's prose is 7.2k/7.6k, the JSON structure of 18 domain objects about 5k, and L3's kept decoded lines 5.2k. `HANDOFF_CHAR_BUDGET` assumes 2.5 characters per token; round 3's synthesis ran about 3.2. Options (to decide): re-measure the ratio, send the payload without indentation, or accept that observations give way at 6 tasks per round.
+
+**B15. The endpoint sub-analyst is cut off on both calls, and the answer is lost.** *Medium. Diagnostics added.*
+- **Evidence:** both calls hit `max_gen_len` (3,072 each, 6,144 billed) in `874ab334` L2-T2, T4 and T5, and in `25965109` T4 and T7. Not only large slices: 874ab334 T4's prompt was 3.8k tokens a call. The domain was lost with "no NARRATIVE block" (twice) and "no OBSERVATIONS or CITATIONS block" (once); the payload carried the placeholder sentence.
+- **Cause:** not established. The thinking closed (1.5k characters were kept), so about 2,400 tokens of answer had no NARRATIVE block, and nothing recorded the answer.
+- **Done:** when the re-ask fails, both replies' `stop_reason`, token count and the first and last 300 characters of the answer are logged. The prompt or `max_gen_len` changes wait for that evidence.
+
+**B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Cache fixed; parallel tasks deferred.*
+- **Evidence:** `25965109` looked up one hash 7 times in one round. Round 2 of `874ab334` took 10.5 minutes, 1–4 minutes per task, one after another.
+- **Fix:** `virustotal._lookup` caches answers per process (one round); errors aren't cached, so a rate limit is retried. Running tasks in parallel stays deferred (`main.py` phase A, Splunk quotas) until a live run measures the headroom.
+
+**B17. A PID sent inside the process name.** *Low. Fixed on `smartops-loop-fix`.* `process=powershell.exe (PID 12345)` crossed as one value; `to_task_file` now sends `process=powershell.exe` and `process_id=12345`. `12345` also looks like an Analyst placeholder.
+
+**B18. VirusTotal was queried for a private IP, and the result read as clean.** *High. Fixed on `smartops-loop-fix`.*
+- **Evidence (`874ab334` T2):** the Broker looked up `192.168.40.211`, an RFC 1918 address. The network narrative said "a reputation check … resulting in a score of 92 with no detected threats", and synthesis weighed "the internal IP's clean VirusTotal score (92)" against the malicious hypothesis. VirusTotal holds no meaningful reputation for a private address.
+- **Fix:** a non-global IP is never sent: `queryable_entities` leaves it out, and a model-called lookup returns "private address, not looked up" without a request.
+
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
 ## Webapp integration
@@ -367,6 +419,13 @@ Runs live in `.smartops/runs/<run_id>/`. The `072fd610` trace is at `tests/test-
 **O3. The Broker log is written only at the end of a loop.** *Low. Fixed (`c85eb93`).* `broker-L<n>.log` stayed at 0 bytes while the loop ran. The child process was unbuffered, but the webapp's own file handle used block buffering. It's now line-buffered.
 
 **O4. Sub-analyst gate drops never reached the run's Broker log.** *Low. Fixed on `smartops-loop-fix`.* The gates log every sentence, figure and domain they drop as a warning, but the CLI configured logging at ERROR without `--verbose`. So `broker-L<n>.log` never showed what the Analyst lost. The `smartops.subagent_analysts` loggers now log at WARNING. Verified on `b3aa0dd2`: packing row caps, the re-ask failures and the N2 salvage all appear in `broker-L<n>.log`.
+
+**O5. One investigation was 9 traces in 12 folders.** *Medium. Fixed on `smartops-loop-fix`.*
+- **Evidence (`874ab334`):** each Broker task opened its own root span, so round 2 was 6 traces and round 3 three; the Analyst's plan and synthesis calls had none. The files sat in 12 sibling folders under the runs root (`874ab334/`, `874ab334-L2/`, `874ab334-L2-T1/<stamp>/`, …), joined only through `investigation.jsonl`.
+- **Fix:** one folder: `runs/<run_id>/investigation.jsonl`, and per round `L<n>/tasks.json`, `broker.log`, `analyst-payload.json` and `T<k>/` with `report.json`, `evidence.json`, `findings.json` and `traces.json`. The webapp sets `SMARTOPS_OUT_DIR` for each round, and the standalone CLI keeps its `<task_id>/<stamp>/` layout. One trace: the webapp derives a trace id from the run id, writes it on every `investigation.jsonl` line, and passes a W3C `TRACEPARENT` to each round. The engine's `smartops.round` span opens under it, with every task's spans inside. Older runs aren't migrated.
+- **Not covered:** the Analyst's own model calls have no spans (the webapp has no exporter); the `trace_id` on their `investigation.jsonl` lines joins them.
+
+**O6. Warnings didn't name the task, and the packer's overflow wasn't logged.** *Low. Fixed on `smartops-loop-fix`.* `874ab334` lost endpoint 3 times and the log couldn't say in which task. Every log line now carries `task=<task_id>` (a contextvar set per task, carried into the sub-analyst threads), and the `contracts` logger is at WARNING beside `smartops.subagent_analysts`.
 
 ## Security
 

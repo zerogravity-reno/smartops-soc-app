@@ -1196,6 +1196,10 @@ def default_broker_invoker(
 
 RUNS_DIR_ENV_VAR = "SMARTOPS_RUNS_DIR"
 DEFAULT_RUNS_DIR = ".smartops/runs"
+OUT_DIR_ENV_VAR = "SMARTOPS_OUT_DIR"
+"""One round's own folder, set by the webapp: each task is written straight into
+`<out>/<short id>/` and the batch payload beside them, so one investigation is one
+folder tree, not 12 siblings under the runs root (O5)."""
 
 
 def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None) -> Path:
@@ -1217,6 +1221,18 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
     happened to start in, which is how a test suite came to leave 179 artifact
     directories in the repository.
     """
+    out = os.environ.get(OUT_DIR_ENV_VAR, "").strip()
+    if out and base_dir is None:
+        # `874ab334-L2-T1` -> `T1`: the round folder already names the run and loop.
+        # The full id on a clash, never an overwrite.
+        run_dir = Path(out) / report.task_id.rsplit("-", 1)[-1]
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            run_dir = Path(out) / report.task_id
+            run_dir.mkdir(parents=True, exist_ok=False)
+        _write_run_files(report, run_dir)
+        return run_dir
     if base_dir is None:
         base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
     case_dir = Path(base_dir) / report.task_id
@@ -1234,14 +1250,7 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
             run_dir = case_dir / f"{stamp}-{suffix}"
             suffix += 1
     stamp = run_dir.name
-
-    report_file = run_dir / "report.json"
-    report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-
-    all_evidence = [ev for res in report.results for ev in res.evidence]
-    evidence_file = run_dir / "evidence.json"
-    evidence_data = [ev.model_dump(mode="json") for ev in all_evidence]
-    evidence_file.write_text(json.dumps(evidence_data, indent=2, default=str), encoding="utf-8")
+    _write_run_files(report, run_dir)
 
     # A plain file rather than a symlink: this runs on Windows, where creating a
     # symlink needs either developer mode or elevation, and failing to record a
@@ -1249,6 +1258,13 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
     (run_dir.parent / "latest.txt").write_text(stamp, encoding="utf-8")
 
     return run_dir
+
+
+def _write_run_files(report: BrokerReport, run_dir: Path) -> None:
+    (run_dir / "report.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    all_evidence = [ev for res in report.results for ev in res.evidence]
+    evidence_data = [ev.model_dump(mode="json") for ev in all_evidence]
+    (run_dir / "evidence.json").write_text(json.dumps(evidence_data, indent=2, default=str), encoding="utf-8")
 
 
 def load_run_artifacts(run_dir: Path | str) -> BrokerReport:

@@ -6,6 +6,7 @@ runs it produced (with their trace ids), the payload that went back, and every
 Analyst output -- one `investigation.jsonl` per run.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -114,10 +115,21 @@ def runs_dir() -> Path:
     return REPO / (os.environ.get("SMARTOPS_RUNS_DIR", "").strip() or ".smartops/runs")
 
 
+def trace_id(run_id: str) -> str:
+    """The run's one W3C trace id (O5), derived so every caller agrees without state.
+    874ab334 was 9 traces: one per Broker task, none for the Analyst's calls."""
+    return hashlib.sha256(run_id.encode()).hexdigest()[:32]
+
+
+def traceparent(run_id: str, loop: int) -> str:
+    """The parent a Broker round's spans hang from: one per round, all in the run's trace."""
+    return f"00-{trace_id(run_id)}-{hashlib.sha256(f'{run_id}-L{loop}'.encode()).hexdigest()[:16]}-01"
+
+
 def record(run_id: str, step: str, loop: int, **data) -> None:
     target = runs_dir() / run_id
     target.mkdir(parents=True, exist_ok=True)
-    line = {"at": datetime.now(UTC).isoformat(), "step": step, "loop": loop, **data}
+    line = {"at": datetime.now(UTC).isoformat(), "step": step, "loop": loop, "trace_id": trace_id(run_id), **data}
     with (target / "investigation.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(line, default=str) + "\n")
 
@@ -160,6 +172,12 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
                 # A PID sent as a process name (148b0e69's T3 sent `process=2900`).
                 if kind == "process" and str(e["value"]).strip().isdigit():
                     kind = "process_id"
+                # `powershell.exe (PID 12345)` (874ab334) is two values: a name and a PID.
+                pid = re.fullmatch(r"(.+?)\s*\(PID\s*(\d+)\)", str(e["value"]).strip(), re.I) if kind == "process" else None
+                if pid:
+                    entities.append({"type": "process", "value": pid[1]})
+                    entities.append({"type": "process_id", "value": pid[2]})
+                    continue
                 entities.append({"type": kind, "value": e["value"]})
             else:
                 unusable.append(e.get("type") if isinstance(e, dict) else e)
@@ -333,19 +351,19 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     return out
 
 
-def broker_runs(task_ids: list[str]) -> list[dict]:
-    """What the Tool Broker did for each task, read from its `report.json` via `latest.txt`.
+def broker_runs(task_ids: list[str], round_dir: Path) -> list[dict]:
+    """What the Tool Broker did for each task, read from its `report.json` in the
+    run's own `L<n>/` folder (O5), found by the `task_id` the report names.
 
     The fetch plan with each step's outcome, and every dispatch with the queries it
     ran and any the guards blocked -- the Broker's side of the loop, in the shape
     the UI renders. `run_dir` is None for a task the broker never recorded.
     """
+    by_task = {json.loads(p.read_text(encoding="utf-8")).get("task_id"): p for p in round_dir.glob("*/report.json")}
     runs = []
     for task_id in task_ids:
-        case = runs_dir() / task_id
-        pointer = case / "latest.txt"
-        report_path = case / pointer.read_text(encoding="utf-8").strip() / "report.json" if pointer.is_file() else None
-        if report_path is None or not report_path.is_file():
+        report_path = by_task.get(task_id)
+        if report_path is None:
             runs.append({"task_id": task_id, "run_dir": None})
             continue
         report = json.loads(report_path.read_text(encoding="utf-8"))

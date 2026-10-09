@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import logging
 import os
 from dataclasses import dataclass
@@ -102,6 +103,8 @@ class Verdict:
         return self.malicious > 0 or self.suspicious > 0
 
     def summary(self) -> str:
+        if self.raw.get("private"):
+            return f"{self.entity.kind}={self.entity.value}: {self.raw['detail']}"
         if not self.found:
             return f"{self.entity.kind}={self.entity.value}: unknown to VirusTotal"
         engines = self.malicious + self.suspicious + self.harmless + self.undetected
@@ -149,6 +152,35 @@ async def _lookup(entity: Entity, *, timeout: float = _DEFAULT_TIMEOUT) -> Verdi
     path = _PATH_BY_KIND.get(entity.kind)
     if path is None:
         raise VirusTotalError(f"VirusTotal cannot be queried for a {entity.kind!r} observable")
+    key = (entity.kind, entity.value)
+    if key in _CACHE:
+        return _CACHE[key]
+    verdict = await _fetch(entity, path, timeout)
+    _CACHE[key] = verdict  # errors raise above, so only answers are cached
+    return verdict
+
+
+# One round's tasks looked up the same hash 7 times (25965109). Per process, so per
+# round; errors are never cached, so a rate limit is retried on the next ask.
+_CACHE: dict[tuple[str, str], Verdict] = {}
+
+
+def _is_private(entity: Entity) -> bool:
+    """A private address has no reputation: 874ab334 looked up 192.168.40.211 and
+    its harmless count reached synthesis as "no detected threats" against H1."""
+    if entity.kind != "ip":
+        return False
+    try:
+        return not ipaddress.ip_address(entity.value).is_global
+    except ValueError:
+        return False
+
+
+async def _fetch(entity: Entity, path: str, timeout: float) -> Verdict:
+    if _is_private(entity):
+        return Verdict(entity=entity, malicious=0, suspicious=0, harmless=0, undetected=0,
+                       reputation=None, found=False,
+                       raw={"private": True, "detail": "private address, not looked up: VirusTotal holds no reputation for it"})
 
     url = f"{API_ROOT}/{path}/{_identifier(entity)}"
     headers = {_AUTH_HEADER: _api_key(), "accept": "application/json"}
@@ -207,7 +239,7 @@ def queryable_entities(scope: Scope) -> list[Entity]:
     that matters here: a scope can hold a queryable IP *and* an unqueryable
     user, and only the IP should be sent.
     """
-    return [entity for entity in scope.entities if entity.kind in _PATH_BY_KIND]
+    return [e for e in scope.entities if e.kind in _PATH_BY_KIND and not _is_private(e)]
 
 
 @dataclass(frozen=True)

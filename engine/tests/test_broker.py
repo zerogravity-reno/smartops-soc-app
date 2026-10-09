@@ -339,7 +339,7 @@ class TestStubSubagent:
         # far as the lookup and reports the credential as the blocker, which is
         # the honest state and a different thing to go fix.
         monkeypatch.delenv("VT_API_KEY", raising=False)
-        task = make_task(scope=make_scope(entities=[Entity(kind="ip", value="10.2.4.9")]))
+        task = make_task(scope=make_scope(entities=[Entity(kind="ip", value="8.8.4.4")]))
 
         outcome = await broker_task(
             task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"])
@@ -2899,3 +2899,17 @@ class TestPlanFetchRefusesUnservedFamilies:
 
         assert "Fetch plan recorded" in res
         assert request.plan is not None
+
+
+class TestOneFolderPerRound:
+    async def test_a_task_lands_in_the_round_folder_under_its_short_id(self, tmp_path, monkeypatch):
+        # 874ab334 was 12 sibling folders under the runs root (O5).
+        monkeypatch.setenv("SMARTOPS_OUT_DIR", str(tmp_path / "874ab334" / "L2"))
+        task = make_task(task_id="874ab334-L2-T1", scope=make_scope(entities=[Entity(kind="ip", value="8.8.4.4")]))
+
+        first = await broker_task(task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"]))
+        again = await broker_task(task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"]))
+
+        assert first.run_dir == tmp_path / "874ab334" / "L2" / "T1"
+        assert (first.run_dir / "report.json").is_file() and (first.run_dir / "evidence.json").is_file()
+        assert again.run_dir.name == "874ab334-L2-T1"  # a clash takes the full id, never overwrites

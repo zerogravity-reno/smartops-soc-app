@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from contracts import (
     AnalystVerdict,
-    DomainJudgement,
+    DomainRecord,
     HypothesisAssessment,
     HypothesisFindings,
     InvestigationContext,
@@ -125,7 +125,7 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
             hypothesis_id="h1",
             hypothesis="something was compromised",
             findings=[
-                DomainJudgement(
+                DomainRecord(
                     domain="network",
                     narrative="six connections to one address.",
                     observations=["six connections [connections#4]"],
@@ -163,12 +163,13 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
     def test_a_domain_narrative_carries_nothing_else(self):
         """The field set is pinned deliberately.
 
-        A field added to `DomainJudgement` should NOT start crossing the boundary
+        A field added to `DomainRecord` should NOT start crossing the boundary
         because someone edited the projection in sympathy with the model. This
         test failing is the intended prompt to decide, not a chore to silence.
         """
         fields = set(type(self._findings().for_analyst().findings[0]).model_fields)
-        assert fields == {"domain", "narrative", "observations", "summaries"}
+        # `facts` decided 2026-10-09 (B14): the code footers, out of the narrative.
+        assert fields == {"domain", "narrative", "observations", "summaries", "facts"}
 
     def test_the_envelope_carries_no_retrieval_summary(self):
         """What this costs, recorded where it will be found.

@@ -335,3 +335,22 @@ class TestContextSurvivesTheThreadFanOut:
         for domain in ("identity", "network"):
             child = emitted[f"smartops.analyst.{domain}"]
             assert child.parent.span_id == root_id, f"{domain} span became its own root"
+
+
+class TestOneTracePerInvestigation:
+    def test_a_rounds_spans_join_the_webapps_trace(self, spans, monkeypatch):
+        # 874ab334 was 9 traces: every task its own root (O5).
+        from smartops.telemetry import analysis_span, round_span
+
+        trace_id = "ab" * 16
+        monkeypatch.setenv("TRACEPARENT", f"00-{trace_id}-{'cd' * 8}-01")
+        with round_span("874ab334-L2"):
+            with analysis_span("874ab334-L2-T1", "874ab334-L2-T1"):
+                pass
+            with analysis_span("874ab334-L2-T2", "874ab334-L2-T2"):
+                pass
+
+        finished = spans.get_finished_spans()
+        assert {format(s.context.trace_id, "032x") for s in finished} == {trace_id}
+        round_ = next(s for s in finished if s.name == "smartops.round")
+        assert all(s.parent.span_id == round_.context.span_id for s in finished if s.name == "smartops.analysis")

@@ -4,7 +4,8 @@ import base64
 
 from contracts import DomainFinding, ResultSet
 
-from smartops.subagent_analysts.analyze import COMMANDS_FOOTER, ENCODED_FOOTER, ENCODED_LINE_CAP, _as_judgement
+from contracts.reasoning import COMMANDS_FOOTER, ENCODED_FOOTER
+from smartops.subagent_analysts.analyze import ENCODED_LINE_CAP, _as_record
 from smartops.subagent_analysts.routing import DomainSlice
 from smartops.tools.native.decoder import commands_in, encoded, signature
 
@@ -25,7 +26,7 @@ def test_the_handoff_carries_reference_parents_and_plain_text_in_the_same_loop()
     slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=1, rows=[ROW]))])
     finding = DomainFinding(domain="endpoint", narrative="PowerShell ran an encoded command.")
 
-    narrative = _as_judgement(finding, slice_).narrative
+    narrative = "\n".join(_as_record(finding, slice_).facts)
 
     assert (
         f"~ encoded command {signature(BLOB)}: 4 events, parent {DESKTOP}=4; decodes to: $env:username"
@@ -39,7 +40,7 @@ def _enc(text: str) -> str:
 
 def _lines(rows: list[dict]) -> list[str]:
     slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=len(rows), rows=rows))])
-    narrative = _as_judgement(DomainFinding(domain="endpoint", narrative="n"), slice_).narrative
+    narrative = "\n".join(_as_record(DomainFinding(domain="endpoint", narrative="n"), slice_).facts)
     return narrative.split(ENCODED_FOOTER + "\n")[1].splitlines()
 
 
@@ -76,7 +77,7 @@ def test_plain_interpreter_command_lines_reach_the_narrative():
     ]
     slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=4, rows=rows))])
 
-    first = _as_judgement(DomainFinding(domain="endpoint", narrative="n"), slice_).narrative
+    first = "\n".join(_as_record(DomainFinding(domain="endpoint", narrative="n"), slice_).facts)
     block = first.split(COMMANDS_FOOTER + "\n")[1].splitlines()
 
     assert block == [f"~ 1 events: {download}"]

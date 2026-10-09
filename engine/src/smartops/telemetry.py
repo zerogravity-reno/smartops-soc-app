@@ -41,7 +41,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from opentelemetry import trace
+from opentelemetry import propagate, trace
 from opentelemetry.trace import Status, StatusCode
 from strands.telemetry import StrandsTelemetry
 
@@ -80,6 +80,28 @@ def configure_telemetry(*, console: bool = False) -> None:
         if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
             telemetry.setup_otlp_exporter()
         _configured = True
+
+
+TRACEPARENT_ENV_VAR = "TRACEPARENT"
+
+
+@contextmanager
+def round_span(batch_id: str | None) -> Iterator[trace.Span]:
+    """One CLI invocation -- a Broker round -- as one span, under the webapp's trace.
+
+    The webapp passes a W3C `traceparent` in `TRACEPARENT`, one trace per
+    investigation. Every `investigation_span` and `analysis_span` of the round
+    opens inside this one, so the whole investigation is one trace. On 874ab334
+    it was 9: each task was its own root (O5). Without the variable this is a
+    plain root, which still joins a round's tasks.
+    """
+    carrier = {"traceparent": os.environ.get(TRACEPARENT_ENV_VAR, "").strip()}
+    parent = propagate.extract(carrier) if carrier["traceparent"] else None
+    attributes = {"batch_id": batch_id} if batch_id else {}
+    with trace.get_tracer(TRACER_NAME).start_as_current_span(
+        "smartops.round", context=parent, attributes=attributes
+    ) as span:
+        yield span
 
 
 @contextmanager
@@ -146,7 +168,8 @@ def analysis_span(
 ) -> Iterator[trace.Span]:
     """Root span for the analyze tier.
 
-    A SECOND root rather than a child of `investigation_span`, because that span
+    Both this and `investigation_span` open under `round_span`, so a round is one
+    trace (O5). This is a sibling of `investigation_span`, not its child, because that span
     opens inside `broker_task()` and has closed by the time `main` calls
     `gather()`. Nesting would mean either hoisting the fetch span up into `main`
     -- which puts a tracing concern in the CLI and leaves `broker_task` untraced

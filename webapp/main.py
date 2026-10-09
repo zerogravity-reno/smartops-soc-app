@@ -716,10 +716,12 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     everything for this round lives; it has an `error` key when there is nothing
     to judge.
     """
-    run_dir = run_trace.runs_dir() / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # One folder per investigation (O5): runs/<run_id>/L<n>/ holds the round's task
+    # file, Broker log, payload and one folder per task.
+    round_dir = run_trace.runs_dir() / run_id / f"L{loop_num}"
+    round_dir.mkdir(parents=True, exist_ok=True)
     task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num, alert_scope, event_time)
-    task_path = run_dir / f"tasks-L{loop_num}.json"
+    task_path = round_dir / "tasks.json"
     task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")
     task_ids = [t["task_id"] for t in task_file["tasks"]]
     link = {"task_file": str(task_path), "task_ids": task_ids, "tasks": task_file["tasks"], "dropped": dropped}
@@ -731,7 +733,7 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
 
     repo = Path(__file__).parent.parent
     batch_id = f"{run_id}-L{loop_num}"
-    log_path = run_dir / f"broker-L{loop_num}.log"
+    log_path = round_dir / "broker.log"
     env = {
         **os.environ,
         # contracts lives beside the engine, not inside engine/src.
@@ -739,6 +741,9 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
         "PYTHONIOENCODING": "utf-8",
         # Piped stdout is block-buffered; without this the "live" log arrives at exit.
         "PYTHONUNBUFFERED": "1",
+        "SMARTOPS_OUT_DIR": str(round_dir),
+        # Every span of this round joins the run's one trace (O5).
+        "TRACEPARENT": run_trace.traceparent(run_id, loop_num),
     }
     cmd = [sys.executable, "-m", "smartops.main",
            "--task-file", str(task_path),
@@ -774,8 +779,8 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
         killer.cancel()
     link.update(exit_code=returncode, log=str(log_path))
 
-    link["broker_runs"] = run_trace.broker_runs(task_ids)
-    payload_path = run_trace.runs_dir() / batch_id / "analyst-payload.json"
+    link["broker_runs"] = run_trace.broker_runs(task_ids, round_dir)
+    payload_path = round_dir / "analyst-payload.json"
     link["payload"] = str(payload_path)
     payload = json.loads(payload_path.read_text(encoding="utf-8")) if payload_path.is_file() else None
     link["handshake"] = run_trace.handshake(task_ids, link["broker_runs"], payload)
