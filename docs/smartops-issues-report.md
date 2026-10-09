@@ -1,6 +1,6 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-09. **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
+**As of:** 2026-10-09 (through run `c90ca5f9`). **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail and security. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
@@ -28,6 +28,7 @@ Runs up to `b3aa0dd2` investigated the same Splunk ES notable: *Threat - Custom 
 | `397542de` | 2026-10-08 | no verdict, 1 round | *ESCU Encoded Command*. Synthesis JSON did not parse (1,107 tokens, empty reasoning); the raw answer is not recorded (T15, T17) |
 | `99e26b1e` | 2026-10-08 | no verdict, 1 round | *ESCU Encoded Command*. BENIGN 70 (needs 85); the reasoning itself says "Status: VERDICT_REACHED"; no follow-ups (T17) |
 | `5dc65b8c` | 2026-10-08 | no verdict, 1 round | *Custom Process Discovery*. FP 95 vs BENIGN 88, lead 7 (needs 20); refs `T1:T1`, `T2:T2` (T1, T9, T17) |
+| `c90ca5f9` | 2026-10-09 | no verdict, 2 rounds | First run on `78a2fdc`, replaying `874ab334`'s alert. 3 of 5 tasks dropped at handoff for zero-length windows (B19). Round 2 FALSE_POSITIVE 80 with status REQUIRES_INVESTIGATION (60/80/75); round 3 spent 8,192 tokens thinking on an 11.7k prompt and wrote nothing (T15). Broker $1.01 + $1.56. Observations crossed (11, 14), B18/O5/O6 held |
 
 Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investigation (O5). The `072fd610` trace is at `tests/test-integration/trace-072fd610.html`.
 
@@ -57,7 +58,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T18 | Triage | Task windows reach weeks back; follow-ups inherit the widest, so old activity is narrated beside the alert | High | Open (Analyst planning + loop follow-ups) |
 | T19 | Triage | Synthesis misses a cross-reference between the alert and other rows it was given | High | Open (Analyst) |
 | T20 | Triage | Tasks aren't linked to hypotheses, but the contract's names say they are | Medium | Open (owner decision) |
-| P1 | Context | `event_time` is detection time, not activity time | High | Partly fixed (C6) |
+| T21 | Triage | A parent is judged by its name, not by what it ran | High | Open (Analyst) |
+| T22 | Triage | Synthesis describes rounds and tasks that never ran | Medium | Open (Analyst) |
+| P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
@@ -80,6 +83,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel tasks deferred |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
+| B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Open, planned |
+| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | Open, planned |
+| B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Open, planned |
+| B22 | Handoff | The parent process's hash never reaches the scope, so VT can't check the parent | Medium | Open, planned |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -154,6 +161,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 **T8. Reasoning from absence.** *Medium. Open.*
 - **Evidence:** `072fd610`: *"lack of benign indicators… confirm the malicious nature"*. The prompt itself says absence of evidence isn't evidence of absence.
+- **Recurred (`c90ca5f9` round 2):** the file-event searches for `svcupdate.dat` returned no rows (the lab most likely doesn't log `%TEMP%` file creation), and synthesis wrote "the file itself was *not found* in endpoint logs … This directly contradicts H1's claim of a malicious binary transfer".
 
 **T9. Hypothesis scores aren't mutually consistent.** *Medium. Open.*
 - **Evidence:** `04a15495` loop 2 scored FALSE_POSITIVE 90 *and* BENIGN 90 at the same time, for mutually exclusive outcomes.
@@ -163,6 +171,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 **T10. Status and verdict vocabulary are mixed.** *Medium. Open (A8).*
 - **Evidence:** `a8118db9` loop 2 emitted `status: REQUIRES_INVESTIGATION` with `verdict: BENIGN, confidence 90`. SOC3's reasoning debates whether `UNCERTAIN` and `REQUIRES_INVESTIGATION` are verdicts or statuses.
+- **Recurred (`c90ca5f9` round 2):** `verdict: FALSE_POSITIVE 80` with `status: REQUIRES_INVESTIGATION`. The leading hypothesis was H2, a legitimate update, which is BENIGN, not FALSE_POSITIVE.
 
 **T11. Task entity kinds the Broker can't search.** *Medium. Open (A6).*
 - **Evidence:** `072fd610` dropped T5 (`service`) and T8 (`command`); `a8118db9` dropped T5. `dce405e5` dropped T5 (`network_connection`, value `null`: "did any network connections occur within 30 seconds").
@@ -183,6 +192,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - Replay A cited `T1:powershell.exe` and `T2:splunkd.exe` in `evidence_refs`, and the verdict gate accepted them (T1).
 - **Recurred live (`e1461da6`):** 3 of 5 planned tasks were dropped again. T2 and T5 had zero-length windows, and T4 had entity kind `command` (T11).
 - **Recurred (`dce405e5`):** T5 was dropped at handoff (T11); the reasoning opens with "We have five broker findings" when four ran.
+- **Recurred (`c90ca5f9` round 2):** T1–T3 were dropped (B19), and synthesis still cited "Round 2 (T1): The full path of `svcupdate.dat` is unknown".
 - **Fix:** `plan_slim` should carry only the tasks that were sent, or mark the dropped ones with their reason. The gate should accept only `evidence_refs` that match a `<task>:<domain>` in the payload. The planning prompt should also stop emitting zero-length windows (see T11 for the same "dropped at handoff" path).
 
 **T15. Synthesis can spend its output budget before writing the verdict JSON.** *Medium. Open.*
@@ -195,6 +205,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Live at 8,192 (`b3aa0dd2`):** the three synthesis calls used 1,162, 1,314 and 2,008 output tokens, with prompts of 7,406, 12,009 and 13,934 tokens. No cut-off. Neither the 4,096 cut-off nor this run proves the thinking is bounded; the headroom is what changed.
 - **Still open (Analyst side):** a `length` stop is still parsed as if whole. `call_llm` and `extract_json` should treat it as a failed evaluation to retry or report, and the synthesis prompt should bound the thinking.
 - **Recurred live at 8,192 (`874ab334` round 3, 2026-10-08): ended the run.** 8,192 of 8,192 output tokens on a 19,152-token prompt: rounds 2 and 3 in full (W8 keeps 2), about 55k characters. The answer was cut, `{}` was parsed, and with no gaps the run stopped. `397542de` returned JSON that did not parse after 1,107 tokens with empty reasoning; the raw answer is not recorded, so its cause can't be seen.
+- **Recurred (`c90ca5f9` round 3, 2026-10-09): not input size.** 8,192 of 8,192 output tokens on an 11,723-token prompt, with empty reasoning: the thinking never closed and no answer was written. `874ab334` blamed a 19k prompt; this one was 11.7k, so the thinking itself runs away. The run ended after 2 of 15 rounds (T17).
 
 **T16. Unanswered follow-ups are closed as "no gaps".** *High. Open.*
 - **Evidence:** on `e1461da6`, loop 2 listed "Decoded PowerShell command functionality" as a gap and sent FU1 (decode) and FU2 (is `192.168.40.211` a legitimate update server). Neither was answered: nothing was decoded (B10), and the loop 3 reasoning itself says Round 3 "does not provide direct evidence" about `.211`. Loop 3 still returned `evidence_gaps: []` at TRUE_POSITIVE 98, and leaned on "encoded PowerShell". The command was `$env:username`.
@@ -227,11 +238,40 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Impact:** the names imply a link the prompt forbids, and the model takes them at their word. `874ab334` round 2 reasoned "Note that each task_id corresponds to a hypothesis in the plan". Nothing checks that every hypothesis got evidence, because nothing records which task tests which hypothesis.
 - **Options (to decide):** (a) keep tasks separate from hypotheses, and rename the payload's `hypothesis`/`hypothesis_id` to the task's question and id, which is a contract change for Yousef; or (b) link them: each planned task names the hypotheses it tests, carried as a real `hypothesis_id`, so the gate can check coverage. That's a planning-prompt change on the Analyst side. Where the "do NOT map" rule came from is still to be confirmed.
 
+**T21. A parent is judged by its name, not by what it ran.** *High. Open (Analyst).*
+- **Evidence (`c90ca5f9`):** every OneDrive row has the one path `C:\Users\Mariam\AppData\Local\Microsoft\OneDrive\OneDrive.exe` (1,086 rows as the process, 40 as a parent). That's OneDrive's normal per-user install location, so a path check would not flag it. What it ran would: four kinds of PowerShell, all `-ExecutionPolicy Bypass`, sent to the Analyst in `facts`:
+
+  | Events | Command |
+  |---|---|
+  | 26 | `Invoke-WebRequest` of `http://192.168.40.211/update/win-agent-2.4.1.bin` to `%TEMP%\svcupdate.dat` (the alert) |
+  | 18 | `-EncodedCommand JABlAG4AdgA6AHUA…` (decodes to `$env:username`) |
+  | 18 | `$count = (Get-Process).Count` |
+  | 18 | `$targets = @('10.0.10.1','192.168.40.211',…)`, a sweep over a list of addresses |
+- **Synthesis** scored H2, "OneDrive.exe initiated a scheduled background update", highest (80) and wrote that "the user's routine OneDrive usage" keeps H3 plausible. It never weighed what OneDrive.exe spawned. Same pattern as T4 (by name, not path), one level up: by name, not behaviour.
+- **Fix (Analyst side):** for each parent, synthesis states what it spawned before scoring. A code fact can carry the child command lines per parent (B10/F8 already compute them), and the parent's own hash can go to VirusTotal (B22).
+
+**T22. Synthesis describes rounds and tasks that never ran.** *Medium. Open (Analyst).*
+- **Evidence:** `874ab334` round 2 and `c90ca5f9` round 2 both reasoned over a "Round 3" that hadn't run yet, attributing findings to it. `c90ca5f9` also cited T1, which was dropped at handoff (T14). The payload labels rounds as `[BROKER FINDINGS - Round 2]`; the plan lists every task, run or not.
+- **Fix candidates:** `plan_slim` lists only the tasks that were sent (T14), and the header says which round this is and how many have run.
+
 ## Context pipeline
 
 **P1. `event_time` is the detection time, not the activity time.** *High. Partly fixed (C6).*
 - **Evidence:** the notable's `_time` is 15:04:02+03:00, which is when the search fired. Its `firstTime` is `2026-09-27T14:55:17` local, so 11:55:17Z, 9 minutes earlier. Before `58d39c3`, `event_time` was the browser's clock (`cecd266a`, SOC3).
 - **Status:** now the notable's `_time` in UTC. It should come from `firstTime` or `orig_time`. `firstTime` has no offset, so take the offset from `_time`.
+- **Fixed since (10-06, `run_trace.notable_event_time`):** `normalized_seed.event_time` is ESCU's `firstTime` with `_time`'s offset applied, in UTC.
+- **Which times reach the Analyst (`c90ca5f9`, 2026-10-09).** The whole context contract goes to planning, so the Analyst sees every one of these:
+
+  | Field | Value | What it is |
+  |---|---|---|
+  | `normalized_seed.event_time` | 2026-10-06T11:51:16Z | The activity: `firstTime` + `_time`'s offset. **The planning prompt anchors every window on this**, and `to_task_file` widens to it ±1h |
+  | `finding.firstTime` / `lastTime` | 2026-10-06T14:51:16 | The same instant, local, **no offset**: read as UTC it is 3 h late |
+  | `finding._time` | 2026-10-06T14:59:55+03:00 | The notable: when ES wrote it, 8.5 min after the event |
+  | `finding.info_search_time`, `orig_time`, `time` | 11:59:54Z / 11:59:55Z (epoch) | The same notable time, as epochs |
+  | `finding.info_min_time` … `info_max_time` | 11:49:00Z … 11:55:00Z (epoch) | The correlation search's own window, which contains the event |
+  | `normalized_seed.ingest_time` | 2026-10-09T10:59:05Z | When the alert was imported into SmartOps |
+- **What reaches the Broker:** only the task windows. The Broker never sees the alert's times, and `TimeWindowPin` sets every Splunk call to the task window.
+- **Risk:** five different instants in one context, two of them without a zone (`firstTime`) or as bare epochs. `c90ca5f9` planned on the right one (T4/T5 end at 11:51:16Z); `874ab334` placed T3 a day early (2026-10-05). Candidate: send planning only `event_time` and the notable time, labelled, and keep the rest in the raw `finding`.
 
 **P2. The seed drops the command line and the parent path.** *High. Open.*
 - **Evidence:** `normalized_seed.process.process_name` is filled from the form's *Signature / Action* field (`webapp/static/app.js:127`), not from the alert. `command_line` and `parent_process_path` are always `null`, and `entities` holds only `hostname` and `user`. The notable's `process` (the full command line with `-ExecutionPolicy Bypass`) and `parent_process` reach the Analyst only inside the raw `finding` dump.
@@ -366,6 +406,22 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **B18. VirusTotal was queried for a private IP, and the result read as clean.** *High. Fixed on `smartops-loop-fix`.*
 - **Evidence (`874ab334` T2):** the Broker looked up `192.168.40.211`, an RFC 1918 address. The network narrative said "a reputation check … resulting in a score of 92 with no detected threats", and synthesis weighed "the internal IP's clean VirusTotal score (92)" against the malicious hypothesis. VirusTotal holds no meaningful reputation for a private address.
 - **Fix:** a non-global IP is never sent: `queryable_entities` leaves it out, and a model-called lookup returns "private address, not looked up" without a request.
+
+**B19. Lookup tasks with a zero-length or no window are dropped.** *High. Open, planned.*
+- **Evidence (`c90ca5f9`):** T1 (full path of `svcupdate.dat`), T2 (is `192.168.40.211` part of the organisation's infrastructure) and T3 (hash of `svcupdate.dat`) each had start = end = `2026-10-06T11:51:16Z`, the event instant. They're lookups, not questions about a period; the schema makes the Analyst write a window anyway. `run_trace.to_task_file` checks `start < end` before it widens every window to event ±1h, so all three were dropped: the three that would have answered the run's own questions.
+- **Fix (planned):** widen first, check after: a missing or zero-length window becomes the alert's own window (event ±1h). A task is dropped only if its window is unusable even then. T2 isn't a search at all (B21).
+
+**B20. Follow-ups repeat the round's searches, and questions no source can answer are fetched anyway.** *Medium. Open, planned.*
+- **Evidence (`c90ca5f9` round 3):** FU1 ("file reputation for svcupdate.dat using VirusTotal") had no hash in scope (T3, which would have found it, was dropped), so the Broker ran SIEM searches instead. FU2 ("is svcupdate.dat in trusted software repositories or patch management systems") names a source nothing connects to. Both re-ran round 2's file-event and process searches (Sysmon 11/23/26 and 1 on the same file and process): $1.56 for no new evidence. Neither came back saying it couldn't be answered. With B6, every follow-up also carries the union of the round's entities and its widest window.
+- **Fix (planned):** the Broker's plan states when a question needs a source or an observable it doesn't have, and the step returns that as the answer instead of substituting searches. Scoping follow-ups to the task they follow (B6) cuts the repeats.
+
+**B21. A private address isn't stated as one.** *Medium. Open, planned.*
+- **Evidence (`c90ca5f9` round 2):** synthesis called `192.168.40.211` "external". It's RFC 1918. Since B18 VirusTotal no longer reports on it, and nothing else says what it is.
+- **Fix (planned):** a code fact for each IP entity and each address in the rows' destinations: "192.168.40.211: private (RFC 1918) address". Computed, not judged.
+
+**B22. The parent process's hash never reaches the scope.** *Medium. Open, planned.*
+- **Evidence (`c90ca5f9`):** 6 rows carry OneDrive.exe's own SHA256 (`DCC9F3B8D19239C39E0152B4ECC35036A17B5D5A81E9CC9AB989795EF19C2254`). `alert_entities` adds the alert's `file_hash`, which here is powershell.exe's image hash. No task named the parent's hash, so VirusTotal was never asked whether this OneDrive.exe is Microsoft's.
+- **Fix (planned):** the hashes of the alert row's process and its parent both go into the alert scope, so the Broker can choose VirusTotal for either.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
