@@ -10,9 +10,9 @@
 
 | | Hours |
 |---|---|
-| All sessions on this repo, 09-29 → 10-09 (45-min cutoff, UI worker session excluded) | 34.5 |
-| Of which Broker and sub-analyst work | **≈ 23.4** |
-| Lower bound for the Broker work (15-min cutoff) | ≈ 17 |
+| All sessions on this repo, 09-29 → 10-09 (45-min cutoff, UI worker session excluded) | 37.1 |
+| Of which Broker and sub-analyst work | **≈ 25.7** |
+| Lower bound for the Broker work (15-min cutoff) | ≈ 18 |
 
 The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
 
@@ -45,6 +45,10 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | B15 | Endpoint cut-off diagnostics | 0.1 | 10-09 | `78a2fdc` | — | — |
 | B16, B17, B18 | VT cache; PID split; VT skips private IPs | 0.2 | 10-09 | `78a2fdc` | — (baseline blocked by a Bedrock 403) | — |
 | O5, O6 | One run folder and trace; task named in logs | 0.3 | 10-09 | `78a2fdc` | — | — |
+| c90ca5f9 trace | Round-by-round review; task-drop bug; findings B19–B22, T21, T22, P1 | 1.0 | 10-09 pm | `89ff6d0` | `c90ca5f9` | — |
+| B19, B21, B22 | Task windows widen before the window check; private-address facts; file-hash facts | 0.4 | 10-09 eve | `276f789` | — (baseline replay pending) | B22's premise was wrong (no hashes in the context); reworked as hashes from the rows |
+| B23 | One UTC standard: `utc_row` for every row time, siem asks for stored times, run-time check | 0.7 | 10-09 pm, 10-09 eve | `276f789` | — (baseline replay pending) | — |
+| Prompt review | Every live Broker-side prompt read as rendered; findings P-1…P-10 | 0.2 | 10-09 eve | (handover) | — | — |
 
 ## By session
 
@@ -66,11 +70,13 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | `bc34ddbf` | 10-07 12:30 → 22:22 | 2.0 / 0.7 | ~90% | 1.8 | 10-07 | `c7dbf51d` fixes, `cced224` |
 | `ce0d0e85` | 10-07 22:22 → 10-08 08:57 | 1.5 / 1.1 | ~40% | 0.6 | 10-08 | multi-round loop and W8 (not Broker); B12, B13, O4 |
 | `ecb4bbce` | 10-08 08:57 → 10-09 10:45 | 3.1 / 2.2 | ~65% | 2.0 | 10-09 | F6–F8, `process_guid`, 5 live runs, `874ab334` trace; webapp windows/queue |
-| `c522b714` | 10-09 10:45 → 12:57 | 1.1 / 0.9 | ~85% | 0.95 | (this report) | B14–B18, O5, O6, issues report |
+| `c522b714` | 10-09 10:45 → 15:47 | 2.9 / 1.6 | ~85% | 2.5 | 10-09 pm | B14–B18, O5, O6, issues report; `c90ca5f9` trace; time standard design |
+| `2e19eb2d` | 10-09 15:47 → 19:34 | 0.7 / 0.4 | ~95% | 0.65 | 10-09 eve | B19, B21–B23; Analyst-owner list; prompt review |
+| `3cede18f` | 10-09 19:34 → 19:45 | 0.1 / 0.1 | 100% | 0.1 | (this report) | commit `276f789`, this update |
 
 ## What stands out
 
 - **B1 (the parent path) is the largest item at about 3 h**, including two prompt attempts that were reverted. The delivery side is done; the Analyst still doesn't read the path (T4, T13).
 - **B10 (encoded PowerShell) needed about 2.4 h over three designs**, two of which failed live. Each redesign came from a live run, not a test.
 - **Live verification is a large share of every item.** Most "Rework" entries trace to a run where the fix held in tests and not live, so a Broker fix isn't finished until a live run shows it.
-- **The last Broker hour (10-09) is unverified live:** both baseline attempts stopped at the Analyst's first call (Bedrock 403 on `FS8B_API_KEY`).
+- **10-09's Broker fixes are only partly verified live:** `c90ca5f9` ran after B14–B18 landed and surfaced B19–B22; B19–B23 wait on the baseline replay of that alert.
