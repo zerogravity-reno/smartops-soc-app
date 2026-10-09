@@ -56,6 +56,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T17 | Triage | REQUIRES_INVESTIGATION with gaps but no follow-up tasks ends the run | High | Worked around in code (gaps become follow-ups); recurred in 4 of 5 runs on 2026-10-08 when scores are close or low, or the JSON is unparsed; prompt and gate open |
 | T18 | Triage | Task windows reach weeks back; follow-ups inherit the widest, so old activity is narrated beside the alert | High | Open (Analyst planning + loop follow-ups) |
 | T19 | Triage | Synthesis misses a cross-reference between the alert and other rows it was given | High | Open (Analyst) |
+| T20 | Triage | Tasks aren't linked to hypotheses, but the contract's names say they are | Medium | Open (owner decision) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Partly fixed (C6) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
@@ -219,6 +220,12 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Both reached the Analyst.** The round-2 payload names the Caldera artifact 3 times, in T6's command-line footer near the end of a 23.8k-character payload. Round 3's payload names it twice.
 - **The round-2 reasoning uses neither.** It mentions Caldera, T1105 and the Public `splunkd.exe` parent 0 times. It describes a "Round 3" that hadn't run yet. It weighs "the internal IP's clean VirusTotal score (92)" against H1 (B18), and reads OneDrive.exe as "whitelisted", which is H2's own wording (T7). Round 3, which held more of it, was cut off before any JSON (T15).
 - **Broker share:** the payload went over budget with the facts last (B14), and the VirusTotal line for a private address (B18). Linking the two activities is synthesis's job.
+
+**T20. Tasks aren't linked to hypotheses, but the contract's names say they are.** *Medium. Open (owner decision).*
+- **By design today:** the planning prompt (`webapp/prompts/system_prompt.txt`) says at line 16 "Tasks must be a holistic evidence-gathering set designed to explore ALL possibilities. Do NOT map tasks to specific hypotheses", and for synthesis at lines 25–26 "do NOT assign findings to specific hypotheses. Every observation informs every hypothesis."
+- **In the data:** `874ab334`'s six planned tasks carry only `task_id`, `question`, `entity` and `time_window`. The engine's task file requires a unique `hypothesis_id`, so `run_trace.to_task_file` sets `hypothesis_id = task_id`. On the way back, `HypothesisFindings.hypothesis` and the payload's `hypothesis` field hold the task's question, not an H1–H3 description.
+- **Impact:** the names imply a link the prompt forbids, and the model takes them at their word. `874ab334` round 2 reasoned "Note that each task_id corresponds to a hypothesis in the plan". Nothing checks that every hypothesis got evidence, because nothing records which task tests which hypothesis.
+- **Options (to decide):** (a) keep tasks separate from hypotheses, and rename the payload's `hypothesis`/`hypothesis_id` to the task's question and id, which is a contract change for Yousef; or (b) link them: each planned task names the hypotheses it tests, carried as a real `hypothesis_id`, so the gate can check coverage. That's a planning-prompt change on the Analyst side. Where the "do NOT map" rule came from is still to be confirmed.
 
 ## Context pipeline
 
