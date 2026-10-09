@@ -102,6 +102,10 @@ _TIME_GUIDANCE = """\
 - Constrain every query to the time window given below. Pass the exact epoch
   values you are given -- do NOT use relative times like -24h, because the data
   you are searching is not necessarily recent.
+- Return times as Splunk stores them: `_time`, or `min(_time)`/`max(_time)` as
+  epoch seconds. Do not reformat them with `strftime`, `convert ctime` or
+  `fieldformat`: those render in the search head's zone with no offset, and code
+  converts every time to UTC itself.
 """
 
 _LOOKUP_GUIDANCE = """\

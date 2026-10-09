@@ -203,21 +203,26 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
         if not task.get("question"):
             drop("no question")
             continue
-        window = task.get("time_window") if isinstance(task.get("time_window"), dict) else {}
-        start, end = (_instant(window.get(k)) for k in ("start", "end"))
-        # Checked here so a placeholder window costs its own task: the engine's
+        asked = task.get("time_window") if isinstance(task.get("time_window"), dict) else {}
+        start, end = (_instant(asked.get(k)) for k in ("start", "end"))
+        # Widened before it is checked (B19): c90ca5f9's lookups (a path, a hash) had
+        # start == end at the event and were dropped. A missing or empty window
+        # becomes event +/- 1h; one the Analyst chose wider stays.
+        widened = False
+        if event:
+            floor = (min(start or event, event - _EVENT_MARGIN),
+                     min(max(end or event, event + _EVENT_MARGIN), datetime.now(UTC)))
+            widened, (start, end) = floor != (start, end), floor
+        # Checked here so an unusable window costs its own task: the engine's
         # `Scope` would reject it too, but at file load, taking every task with it.
         if not (start and end and start < end):
             drop("the time window needs a timezone-aware start and end, start first")
             continue
-        window = {"start": window["start"], "end": window["end"]}
-        if event:
-            floor = (min(start, event - _EVENT_MARGIN), min(max(end, event + _EVENT_MARGIN), datetime.now(UTC)))
-            if floor != (start, end):
-                window = {k: v.strftime("%Y-%m-%dT%H:%M:%SZ") for k, v in zip(("start", "end"), floor)}
-                dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
-                                "why": f"window {task['time_window']['start']}..{task['time_window']['end']} sent as "
-                                       f"{window['start']}..{window['end']}: event +/- 1h, never past now"})
+        window = {k: v.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") for k, v in zip(("start", "end"), (start, end))}
+        if widened:
+            dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
+                            "why": f"window {asked.get('start')}..{asked.get('end')} sent as "
+                                   f"{window['start']}..{window['end']}: event +/- 1h, never past now"})
         if rescoped:
             dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
                             "why": f"{', '.join(map(str, unusable)) or 'no entity'} is not a value to match: sent scoped to the alert's "

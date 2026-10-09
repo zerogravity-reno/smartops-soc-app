@@ -84,9 +84,17 @@ from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel, AnalystResponse
-from smartops.tools.native.decoder import commands_in, encoded_in
+from smartops.tools.native.virustotal import is_private_ip
+from smartops.tools.native.decoder import commands_in, encoded_in, hashes_in, private_addresses_in
 
-from contracts.reasoning import COMMANDS_FOOTER, ENCODED_FOOTER, NAMES_FOOTER, NO_ROWS_FOOTER
+from contracts.reasoning import (
+    ADDRESSES_FOOTER,
+    COMMANDS_FOOTER,
+    ENCODED_FOOTER,
+    HASHES_FOOTER,
+    NAMES_FOOTER,
+    NO_ROWS_FOOTER,
+)
 
 from .formatting import NO_TIME_MARKER, _middle, _truncate, name_expansions
 
@@ -94,6 +102,8 @@ ENCODED_LINE_CAP = 8
 COMMAND_LINE_CAP = 8
 COMMAND_CHAR_CAP = 400
 NO_ROWS_LINE_CAP = 3
+HASH_LINE_CAP = 8
+ADDRESS_LINE_CAP = 8
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -949,13 +959,34 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
         facts += [f"~ {n} events: {_truncate(cmd, COMMAND_CHAR_CAP)}" for cmd, n in commands[:COMMAND_LINE_CAP]]
         if len(commands) > COMMAND_LINE_CAP:
             facts.append(f"~ … {len(commands) - COMMAND_LINE_CAP} more command lines not shown (rows in report.json)")
+    values = [e.value.lower() for e in scope.entities] if scope else []
+    # Each file's SHA256, the scope's own files first (B22): OneDrive.exe's hash sat in
+    # c90ca5f9's rows and never reached the Analyst, so no task asked VirusTotal.
+    hashes = sorted(hashes_in(row for _, rs in sets for row in rs.rows).items(),
+                    key=lambda kv: not any(v in kv[0][0].lower() or v == kv[0][1].lower() for v in values))
+    if hashes:
+        facts.append(HASHES_FOOTER)
+        facts += [f"~ {_middle(file) if file != '-' else '(file not named)'}: SHA256 {sha}, {n} events"
+                  for (file, sha), n in hashes[:HASH_LINE_CAP]]
+        if len(hashes) > HASH_LINE_CAP:
+            facts.append(f"~ … {len(hashes) - HASH_LINE_CAP} more hashes not shown (rows in report.json)")
+    # Stated by code, the scope's own addresses first (B21): c90ca5f9 called
+    # 192.168.40.211 "external" once VirusTotal stopped looking it up (B18).
+    scoped = [e.value for e in scope.entities if e.kind == "ip" and is_private_ip(e.value)] if scope else []
+    seen = private_addresses_in(row for _, rs in sets for row in rs.rows)
+    addresses = [*dict.fromkeys(scoped), *(a for a in seen if a not in scoped)]
+    if addresses:
+        facts.append(ADDRESSES_FOOTER)
+        facts += [f"~ {a}: private address, not internet-routable" + (f", {seen[a]} events" if a in seen else ", in this task's scope")
+                  for a in addresses[:ADDRESS_LINE_CAP]]
+        if len(addresses) > ADDRESS_LINE_CAP:
+            facts.append(f"~ … {len(addresses) - ADDRESS_LINE_CAP} more private addresses not shown (rows in report.json)")
     # Searches that came back empty: a count, then the few naming this task's own
     # entities first. On 5aae1a35 T1's search for PID 220's creation was empty and
     # uncited, so the Analyst never read that its own question went unanswered;
     # listing every one instead was 26 lines in 874ab334 L2 and 47 in L3.
     empty = [rs.query for _, rs in sets if rs.row_count == 0 and rs.query]
     if empty:
-        values = [e.value.lower() for e in scope.entities] if scope else []
         empty.sort(key=lambda q: not any(v in q.lower() for v in values))
         facts.append(NO_ROWS_FOOTER)
         facts.append(f"~ {len(empty)} search{'es' if len(empty) != 1 else ''} returned no rows, including:")

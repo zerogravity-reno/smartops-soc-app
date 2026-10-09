@@ -770,9 +770,11 @@ NAMES_FOOTER = "Names in this narrative, computed over every row:"
 ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
 COMMANDS_FOOTER = "Interpreter and LOLBin command lines in these rows, rarest first:"
 NO_ROWS_FOOTER = "Searches that returned no rows:"
-_FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER)
+HASHES_FOOTER = "File hashes in these rows, rarest first:"
+ADDRESSES_FOOTER = "Private addresses in these rows and this task (VirusTotal holds no reputation for them):"
+_FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
 # Least needed first: an empty search is a count; a command line is in report.json.
-# Names and decoded text are what a narrative cannot recover, so they always cross.
+# Names, decoded text, hashes and addresses are what a narrative cannot recover, so they always cross.
 _FACTS_DROPPED_FIRST = (NO_ROWS_FOOTER, COMMANDS_FOOTER)
 
 

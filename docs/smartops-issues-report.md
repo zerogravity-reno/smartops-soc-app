@@ -60,7 +60,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T20 | Triage | Tasks aren't linked to hypotheses, but the contract's names say they are | Medium | Open (owner decision) |
 | T21 | Triage | A parent is judged by its name, not by what it ran | High | Open (Analyst) |
 | T22 | Triage | Synthesis describes rounds and tasks that never ran | Medium | Open (Analyst) |
-| P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning |
+| T23 | Triage | The evaluation header never states the event time | Low | Open (Analyst) |
+| P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning (decision pending) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
@@ -70,7 +71,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B3 | Broker | Planned steps for families with no tool (`investigate_edr`) | Medium | Fixed in `58d39c3` |
 | B4 | Broker | Sub-analyst misread a `+03:00` row as outside a `Z` window | High | Fixed in `58d39c3` |
 | B5 | Broker | Subagent hit its output-token cap; recovery produced no answer | Medium | Not reproduced since; now logged |
-| B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open |
+| B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open: needs the Analyst's follow-ups to name their task (B20) |
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
@@ -83,10 +84,11 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel tasks deferred |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
-| B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Open, planned |
-| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | Open, planned |
-| B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Open, planned |
-| B22 | Handoff | The parent process's hash never reaches the scope, so VT can't check the parent | Medium | Open, planned |
+| B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; live check pending |
+| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | Open: scoping is Analyst-side; "can't answer" is Broker-side, design for agreement |
+| B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; live check pending |
+| B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
+| B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; live check pending |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -95,6 +97,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | W6 | Webapp | Model and log text inserted into `innerHTML` unescaped | Medium | Fixed in `58d39c3` |
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
 | W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Fixed on `smartops-loop-fix` (option a); live run pending |
+| W9 | Webapp | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (frontend, smartops-worker) |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -248,11 +251,15 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   | 18 | `$count = (Get-Process).Count` |
   | 18 | `$targets = @('10.0.10.1','192.168.40.211',…)`, a sweep over a list of addresses |
 - **Synthesis** scored H2, "OneDrive.exe initiated a scheduled background update", highest (80) and wrote that "the user's routine OneDrive usage" keeps H3 plausible. It never weighed what OneDrive.exe spawned. Same pattern as T4 (by name, not path), one level up: by name, not behaviour.
-- **Fix (Analyst side):** for each parent, synthesis states what it spawned before scoring. A code fact can carry the child command lines per parent (B10/F8 already compute them), and the parent's own hash can go to VirusTotal (B22).
+- **Fix (Analyst side):** for each parent, synthesis states what it spawned before scoring. A code fact can carry the child command lines per parent (B10/F8 already compute them). Since B22 the parent's own SHA256 is in `facts`; a task naming it as a `file_hash` gets VirusTotal.
 
 **T22. Synthesis describes rounds and tasks that never ran.** *Medium. Open (Analyst).*
 - **Evidence:** `874ab334` round 2 and `c90ca5f9` round 2 both reasoned over a "Round 3" that hadn't run yet, attributing findings to it. `c90ca5f9` also cited T1, which was dropped at handoff (T14). The payload labels rounds as `[BROKER FINDINGS - Round 2]`; the plan lists every task, run or not.
 - **Fix candidates:** `plan_slim` lists only the tasks that were sent (T14), and the header says which round this is and how many have run.
+
+**T23. The evaluation header never states the event time.** *Low. Open (Analyst).*
+- **Evidence (`c90ca5f9`):** synthesis gets task windows and row times in UTC `Z`, but nothing in the evaluation prompt says when the alert's event happened. It has to infer it from the windows, which are widened to event ±1h (B19) or reach days back (T18).
+- **Fix (Analyst side):** the evaluation header states it once, labelled: "event 2026-10-06T11:51:16Z, notable 2026-10-06T11:59:55Z", from `normalized_seed.event_time` and the notable's `_time`.
 
 ## Context pipeline
 
@@ -272,6 +279,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   | `normalized_seed.ingest_time` | 2026-10-09T10:59:05Z | When the alert was imported into SmartOps |
 - **What reaches the Broker:** only the task windows. The Broker never sees the alert's times, and `TimeWindowPin` sets every Splunk call to the task window.
 - **Risk:** five different instants in one context, two of them without a zone (`firstTime`) or as bare epochs. `c90ca5f9` planned on the right one (T4/T5 end at 11:51:16Z); `874ab334` placed T3 a day early (2026-10-05). Candidate: send planning only `event_time` and the notable time, labelled, and keep the rest in the raw `finding`.
+- **Open decision (Mohammed):** does planning still see the raw time fields beside UTC `Z` copies, or only the two labelled instants (`event_time`, a new `notable_time`)? The safer default is only the two. Not built until decided.
+- **Optional (Splunk admin):** set the MCP service account's time zone to UTC. Then `_time`, `firstTime` and any `strftime` come back in UTC and the offset assumption goes away. B23 works without it.
 
 **P2. The seed drops the command line and the parent path.** *High. Open.*
 - **Evidence:** `normalized_seed.process.process_name` is filled from the form's *Signature / Action* field (`webapp/static/app.js:127`), not from the alert. `command_line` and `parent_process_path` are always `null`, and `entities` holds only `hostname` and `user`. The notable's `process` (the full command line with `-ExecutionPolicy Bypass`) and `parent_process` reach the Analyst only inside the raw `finding` dump.
@@ -407,21 +416,33 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Evidence (`874ab334` T2):** the Broker looked up `192.168.40.211`, an RFC 1918 address. The network narrative said "a reputation check … resulting in a score of 92 with no detected threats", and synthesis weighed "the internal IP's clean VirusTotal score (92)" against the malicious hypothesis. VirusTotal holds no meaningful reputation for a private address.
 - **Fix:** a non-global IP is never sent: `queryable_entities` leaves it out, and a model-called lookup returns "private address, not looked up" without a request.
 
-**B19. Lookup tasks with a zero-length or no window are dropped.** *High. Open, planned.*
+**B19. Lookup tasks with a zero-length or no window are dropped.** *High. Fixed on `smartops-loop-fix`.*
 - **Evidence (`c90ca5f9`):** T1 (full path of `svcupdate.dat`), T2 (is `192.168.40.211` part of the organisation's infrastructure) and T3 (hash of `svcupdate.dat`) each had start = end = `2026-10-06T11:51:16Z`, the event instant. They're lookups, not questions about a period; the schema makes the Analyst write a window anyway. `run_trace.to_task_file` checks `start < end` before it widens every window to event ±1h, so all three were dropped: the three that would have answered the run's own questions.
 - **Fix (planned):** widen first, check after: a missing or zero-length window becomes the alert's own window (event ±1h). A task is dropped only if its window is unusable even then. T2 isn't a search at all (B21).
+- **Done:** `to_task_file` widens to event ±1h first and checks after; every window it sends is written in UTC `Z`. With no event time, a zero-length window is still dropped, costing only its own task. Test: c90ca5f9's T1 goes out as 10:51:16Z–12:51:16Z.
 
-**B20. Follow-ups repeat the round's searches, and questions no source can answer are fetched anyway.** *Medium. Open, planned.*
+**B20. Follow-ups repeat the round's searches, and questions no source can answer are fetched anyway.** *Medium. Open.*
 - **Evidence (`c90ca5f9` round 3):** FU1 ("file reputation for svcupdate.dat using VirusTotal") had no hash in scope (T3, which would have found it, was dropped), so the Broker ran SIEM searches instead. FU2 ("is svcupdate.dat in trusted software repositories or patch management systems") names a source nothing connects to. Both re-ran round 2's file-event and process searches (Sysmon 11/23/26 and 1 on the same file and process): $1.56 for no new evidence. Neither came back saying it couldn't be answered. With B6, every follow-up also carries the union of the round's entities and its widest window.
 - **Fix (planned):** the Broker's plan states when a question needs a source or an observable it doesn't have, and the step returns that as the answer instead of substituting searches. Scoping follow-ups to the task they follow (B6) cuts the repeats.
+- **Split by owner (2026-10-09):**
+  - **Scoping (Analyst side):** synthesis `follow_up_tasks` carry only a question, so the handoff can't tell which task a follow-up follows and gives it the round's union (`run_trace.follow_up_tasks`). Ask: each follow-up names the task it follows (`follows: "T3"`), or carries its own `entity` and `time_window`. The handoff then inherits that task's scope; a follow-up with neither keeps today's union.
+  - **"Can't answer" (Broker side):** changes the Broker prompt and plan contract. To be framed and agreed before coding.
 
-**B21. A private address isn't stated as one.** *Medium. Open, planned.*
+**B21. A private address isn't stated as one.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`c90ca5f9` round 2):** synthesis called `192.168.40.211` "external". It's RFC 1918. Since B18 VirusTotal no longer reports on it, and nothing else says what it is.
 - **Fix (planned):** a code fact for each IP entity and each address in the rows' destinations: "192.168.40.211: private (RFC 1918) address". Computed, not judged.
+- **Done:** a `facts` block, "Private addresses in these rows and this task", lists the scope's private IPs first, then every private IPv4 in any row value, capped at 8. The address in c90ca5f9 sat in a download URL, not an address field. One check (`virustotal.is_private_ip`, `is_global`) serves both this and VirusTotal's skip. Over c90ca5f9's rows it lists `192.168.40.211` (150 events), `192.168.40.212`, `10.0.10.1`, `10.0.10.20` and `127.0.0.1`.
 
-**B22. The parent process's hash never reaches the scope.** *Medium. Open, planned.*
+**B22. The parent process's hash never reaches the Analyst.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`c90ca5f9`):** 6 rows carry OneDrive.exe's own SHA256 (`DCC9F3B8D19239C39E0152B4ECC35036A17B5D5A81E9CC9AB989795EF19C2254`). `alert_entities` adds the alert's `file_hash`, which here is powershell.exe's image hash. No task named the parent's hash, so VirusTotal was never asked whether this OneDrive.exe is Microsoft's.
 - **Fix (planned):** the hashes of the alert row's process and its parent both go into the alert scope, so the Broker can choose VirusTotal for either.
+- **Correction:** the alert context has no hash at all. c90ca5f9's notable names the process and parent by name and path only, so `alert_entities` has nothing to add. OneDrive.exe's hash came only from round 3's Sysmon rows (FU1), and it never reached the payload.
+- **Done instead:** a `facts` block, "File hashes in these rows", gives each file's SHA256 with its event count, scope files first, capped at 8. For Sysmon, the hash belongs to `ImageLoaded`/`TargetFilename` when the row names one, else to `Image`. Over c90ca5f9's rows: OneDrive.exe `DCC9F3B8…` and powershell.exe `1C84C863…`. The Analyst can now ask a `file_hash` task, which the Broker sends to VirusTotal.
+
+**B23. Row times reach the sub-analysts in several zones and formats.** *Medium. Fixed on `smartops-loop-fix`.*
+- **Evidence (`c90ca5f9`):** rows carried `first_seen`/`last_seen` as 18 epochs and 12 naive `10/05/2026 14:…` local strings, and Sysmon's `UtcTime` naive (it is UTC). `formatting._utc` converted only `_time`/`time`/`timestamp`, so the rest passed through unconverted beside UTC task windows.
+- **Done:** `formatting.utc_row` converts every time-named field (time/first/last/earliest/latest/utc) once, before rendering, in `format_row`, `format_result_set` and `summarise_rows`. Epochs (10 digits) and offset-bearing values → UTC `Z`; `UtcTime` is read as UTC; a naive value takes its own row's `_time` offset, otherwise it is marked `(zone-unknown)`, never guessed. The siem prompt now asks for times as Splunk stores them, not `strftime`/`convert ctime` output. `tests/test_run_times_utc.py` walks the newest stored run's `tasks.json` and `analyst-payload.json` and fails on any time that isn't UTC `Z`.
+- **Left alone:** the vended Splunk skill's `strftime(_time, "%Y-%m-%d %H:%M:%S UTC")` example labels search-head local time as UTC. It's third-party; the siem prompt rule overrides it.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
@@ -460,6 +481,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Cost:** about $2.50 of Broker spend per full round on `b3aa0dd2`, so a 15-loop run can approach $35.
 - **Fix (webapp, the Analyst's input; to be decided):** (a) keep the last 2 rounds in full and replace older ones with a short record built in code: each task's question, the findings cited, and what was answered. (b) Make the Analyst a Strands `Agent` with `SummarizingConversationManager`. (c) Stop when the next prompt would not fit. Lowering `_ANALYST_ROUNDS` to 15 instead would leave each round ~3k characters, which is too small to carry findings.
 - **Done (option a):** synthesis reads the last 2 rounds in full. Each older round becomes `run_trace.compact_round`: each task's question, the domains with observations, and the evaluation that followed (scores, verdict, refs, refused refs, gaps). On `b3aa0dd2`, rounds of 18.2k, 17.0k and 7.2k chars compact to 1.8k, 1.0k and 0.9k. The verdict gate still checks refs against every round's payload. Not yet run past round 4.
+
+**W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Open (frontend, smartops-worker).*
+- **Evidence:** `webapp/static/app.js:260` takes `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.
+- **Fix (frontend):** no fallback; show "event time unresolved".
 
 ## Cost
 
@@ -501,6 +526,15 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **S2. A Splunk Web scraper replaced the official MCP server.** *High. Fixed (C3).* `mcp_servers.json` points at the official server again (17 tools, time-bounded queries).
 
 ## Priorities
+
+**For the Analyst owner, from 2026-10-09** (the Broker side of each is done or not needed):
+- **B20 / B6:** follow-ups name the task they follow (or carry their own entity and window), so the handoff can scope them.
+- **T21:** state what each parent spawned before scoring it; ask VirusTotal about the parent's hash, now in `facts` (B22).
+- **T22, T14:** reason only over tasks that ran and rounds that happened.
+- **T23:** the evaluation header states the event and notable times once, in UTC `Z`.
+- **T15, T17:** c90ca5f9's round 3 thought through 8,192 tokens and wrote nothing; the run ended after 2 of 15 rounds.
+- **T8, T10:** no reasoning from absence; status and verdict from one vocabulary.
+
 
 1. **Rotate the credentials** (S1).
 2. **Make the verdict trustworthy:** a code-side stop gate (T1), a single plan (W1), a structured command line and parent path in the seed (P2), and the parent path kept in observations (B1). These four together decide whether a true positive is reached for the right reason.

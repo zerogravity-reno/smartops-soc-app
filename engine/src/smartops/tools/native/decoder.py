@@ -23,7 +23,8 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from smartops.subagent_analysts.formatting import _CMDLINE_LIMIT, _field, _row_weight, _sanitise, _truncate
+from smartops.subagent_analysts.formatting import _CMDLINE_LIMIT, _field, _first, _row_weight, _sanitise, _truncate
+from smartops.tools.native.virustotal import is_private_ip
 
 # `-e`, `-ec`, `-enc`, `-encodedcommand` and every prefix PowerShell accepts, with
 # `-` or `/`. The argument check below, not this pattern, rejects `-ExecutionPolicy`.
@@ -136,3 +137,42 @@ def encoded_in(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             if parent != "-":
                 entry["parents"][parent] = entry["parents"].get(parent, 0) + weight
     return found
+
+
+_SHA256 = re.compile(r"\b[0-9A-Fa-f]{64}\b")
+
+
+def hashes_in(rows: Iterable[dict[str, Any]]) -> dict[tuple[str, str], int]:
+    """`(file, SHA256) -> events` in `rows`, rarest first (B22).
+
+    On c90ca5f9 six rows held OneDrive.exe's own SHA256 and none reached the
+    Analyst, so VirusTotal was never asked about the parent that ran the download.
+    Sysmon's `Hashes` belongs to the loaded image (EID 7) or written file when the
+    row names one, else to the process `Image`."""
+    found: dict[tuple[str, str], int] = {}
+    for row in rows:
+        sha = _SHA256.search(_first(row, "Hashes", "Hash", "process_hash", "file_hash", "sha256", default=""))
+        if not sha:
+            continue
+        file = _first(row, "ImageLoaded", "TargetFilename", "Image", default="") or _field(row, "processes", "process")
+        key = (file, sha.group(0).upper())
+        found[key] = found.get(key, 0) + _row_weight(row)
+    return dict(sorted(found.items(), key=lambda kv: kv[1]))
+
+
+# ponytail: IPv4 only, and a dotted version string like `10.0.0.1` reads as an address.
+_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+
+
+def private_addresses_in(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """Private (not internet-routable) IPv4 addresses anywhere in `rows`: address -> events (B21).
+
+    VirusTotal no longer looks these up (B18), so nothing said what they were, and
+    c90ca5f9's round 2 called 192.168.40.211 "external". It sat in a download URL,
+    not an address field, hence every value is searched."""
+    found: dict[str, int] = {}
+    for row in rows:
+        addresses = {a for v in row.values() if isinstance(v, str) for a in _IPV4.findall(v) if is_private_ip(a)}
+        for a in addresses:
+            found[a] = found.get(a, 0) + _row_weight(row)
+    return dict(sorted(found.items(), key=lambda kv: kv[1]))

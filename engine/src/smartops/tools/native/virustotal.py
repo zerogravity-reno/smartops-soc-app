@@ -165,15 +165,19 @@ async def _lookup(entity: Entity, *, timeout: float = _DEFAULT_TIMEOUT) -> Verdi
 _CACHE: dict[tuple[str, str], Verdict] = {}
 
 
+def is_private_ip(value: str) -> bool:
+    """An IP address that is not globally routable (RFC 1918, loopback, link-local...).
+    False for anything that is not an IP address."""
+    try:
+        return not ipaddress.ip_address(value.strip()).is_global
+    except ValueError:
+        return False
+
+
 def _is_private(entity: Entity) -> bool:
     """A private address has no reputation: 874ab334 looked up 192.168.40.211 and
     its harmless count reached synthesis as "no detected threats" against H1."""
-    if entity.kind != "ip":
-        return False
-    try:
-        return not ipaddress.ip_address(entity.value).is_global
-    except ValueError:
-        return False
+    return entity.kind == "ip" and is_private_ip(entity.value)
 
 
 async def _fetch(entity: Entity, path: str, timeout: float) -> Verdict:

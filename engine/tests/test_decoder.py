@@ -4,7 +4,7 @@ import base64
 
 from contracts import DomainFinding, ResultSet
 
-from contracts.reasoning import COMMANDS_FOOTER, ENCODED_FOOTER
+from contracts.reasoning import ADDRESSES_FOOTER, COMMANDS_FOOTER, ENCODED_FOOTER, HASHES_FOOTER
 from smartops.subagent_analysts.analyze import ENCODED_LINE_CAP, _as_record
 from smartops.subagent_analysts.routing import DomainSlice
 from smartops.tools.native.decoder import commands_in, encoded, signature
@@ -78,7 +78,7 @@ def test_plain_interpreter_command_lines_reach_the_narrative():
     slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=4, rows=rows))])
 
     first = "\n".join(_as_record(DomainFinding(domain="endpoint", narrative="n"), slice_).facts)
-    block = first.split(COMMANDS_FOOTER + "\n")[1].splitlines()
+    block = first.split(COMMANDS_FOOTER + "\n")[1].split(ADDRESSES_FOOTER)[0].splitlines()
 
     assert block == [f"~ 1 events: {download}"]
 
@@ -87,3 +87,24 @@ def test_a_raw_sysmon_row_gives_its_command_line_from_the_xml():
     # 148b0e69's T4 searched by hash and tabled `_raw`: the download sat in the XML.
     raw = "<Data Name='CommandLine'>powershell.exe -C Test-Connection 10.0.10.1</Data>"
     assert commands_in([{"_raw": raw}]) == {"powershell.exe -C Test-Connection 10.0.10.1": 1}
+
+
+ONEDRIVE = r"C:\Users\Mariam\AppData\Local\Microsoft\OneDrive\OneDrive.exe"
+ONEDRIVE_SHA = "DCC9F3B8D19239C39E0152B4ECC35036A17B5D5A81E9CC9AB989795EF19C2254"
+
+
+def test_hashes_and_private_addresses_in_the_rows_are_facts():
+    # c90ca5f9: OneDrive.exe's own hash sat in Sysmon rows and never reached the
+    # Analyst (B22); 192.168.40.211, only in a download URL, was called "external" (B21).
+    rows = [
+        {"EventCode": "1", "Image": ONEDRIVE, "Hashes": f"MD5=5CF29AD16BE2B7CA2BB1C8C04D0B249E,SHA256={ONEDRIVE_SHA},IMPHASH=9CB"},
+        {"EventCode": "1", "Image": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+         "CommandLine": 'powershell -C "iwr http://192.168.40.211/update/win-agent-2.4.1.bin"', "DestinationIp": "8.8.8.8"},
+    ]
+    slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=2, rows=rows))])
+    facts = _as_record(DomainFinding(domain="endpoint", narrative="n"), slice_).facts
+
+    hashes = facts[facts.index(HASHES_FOOTER) + 1]
+    assert ONEDRIVE_SHA in hashes and "OneDrive.exe" in hashes
+    addresses = facts[facts.index(ADDRESSES_FOOTER) + 1:]
+    assert addresses == ["~ 192.168.40.211: private address, not internet-routable, 1 events"]

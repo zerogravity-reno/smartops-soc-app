@@ -219,6 +219,21 @@ def test_a_window_is_widened_to_the_event_and_never_runs_past_now():
     assert file["tasks"][0]["time_window"]["start"] == "2026-10-06T18:41:51Z" and not notes
 
 
+def test_a_lookup_with_a_zero_length_window_is_sent_at_event_plus_minus_an_hour():
+    # c90ca5f9's T1, as the Analyst wrote it: start == end, at the event (B19).
+    t1 = {"task_id": "T1", "question": "What is the full path of svcupdate.dat?",
+          "entity": {"type": "file", "value": "svcupdate.dat"},
+          "time_window": {"start": "2026-10-06T11:51:16Z", "end": "2026-10-06T11:51:16Z"}}
+    no_window = {**t1, "task_id": "T2", "time_window": None}
+    file, notes = run_trace.to_task_file([t1, no_window], "r", 2, event_time="2026-10-06T11:51:16.000Z")
+    assert [t["time_window"] for t in file["tasks"]] == [{"start": "2026-10-06T10:51:16Z", "end": "2026-10-06T12:51:16Z"}] * 2
+    assert all(n["sent"] for n in notes)
+
+    # With no event to widen to, it is still unusable, and costs only itself.
+    file, notes = run_trace.to_task_file([t1], "r", 2)
+    assert not file["tasks"] and "start first" in notes[0]["why"]
+
+
 def test_notables_fold_by_rule_and_host_in_first_seen_order():
     rows = [
         {"index": 0, "time": "t0", "rule_name": "A", "dest": "h1", "urgency": "low", "user": "u1", "src": ""},

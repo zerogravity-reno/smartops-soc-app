@@ -232,10 +232,57 @@ def _utc(value: str) -> str:
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+# A field holding a time, by name: `_time`, `firstTime`, `first_seen`, `earliest`, `UtcTime`.
+_TIME_NAME = re.compile(r"time|first|last|earliest|latest|utc", re.I)
+# Epoch seconds from 2001 to 2286; smaller numbers in a time-named field are durations.
+_EPOCH = re.compile(r"\d{10}(?:\.\d+)?")
+ZONE_UNKNOWN = "(zone-unknown)"  # one token: `_projection_is_empty` splits on spaces
+
+
+def _naive(value: str) -> datetime | None:
+    """A timestamp with no zone: ISO (`2026-10-06 11:51:16.123`) or Splunk's `ctime`
+    (`10/05/2026 14:38:58`). None for anything else, or for one that has a zone."""
+    for parse in (datetime.fromisoformat, lambda v: datetime.strptime(v.split(".")[0], "%m/%d/%Y %H:%M:%S")):
+        try:
+            parsed = parse(value)
+        except ValueError:
+            continue
+        return parsed if parsed.tzinfo is None else None
+    return None
+
+
+def utc_row(row: dict[str, Any]) -> dict[str, Any]:
+    """`row` with every time-named field in UTC (`...Z`), the one zone the pipeline uses.
+
+    c90ca5f9's rows carried `first_seen`/`last_seen` as 18 epochs and 12 local
+    `10/05/2026 14:…` strings, and Sysmon's `UtcTime` with no zone; only `_time`
+    was converted. Epochs and offset-bearing values convert; `UtcTime` is UTC; a
+    naive value takes its own row's `_time` offset (the search head's zone, which
+    `ctime`/`strftime` render in), and without one is marked, never guessed.
+    """
+    anchor = None
+    try:
+        anchor = datetime.fromisoformat(str(row.get("_time", "")).replace("Z", "+00:00")).tzinfo
+    except ValueError:
+        pass
+    out = dict(row)
+    for key, raw in row.items():
+        if not _TIME_NAME.search(str(key)) or not isinstance(raw, (str, int, float)) or isinstance(raw, bool):
+            continue
+        value = str(raw).strip()
+        if _EPOCH.fullmatch(value):
+            out[key] = datetime.fromtimestamp(float(value), UTC).isoformat().replace("+00:00", "Z")
+        elif (local := _naive(value)) is not None:
+            zone = UTC if "utc" in str(key).lower() else anchor
+            out[key] = local.replace(tzinfo=zone).astimezone(UTC).isoformat().replace("+00:00", "Z") if zone else value + ZONE_UNKNOWN
+        else:
+            out[key] = _utc(value)
+    return out
+
+
 def _field(row: dict[str, Any], category: str, name: str, default: str = "-") -> str:
     """Resolve one named field for `category` through `_FIELDS`."""
-    value = _first(row, *_FIELDS[category][name], default=default)
-    return _utc(value) if name == "time" else value
+    return _first(row, *_FIELDS[category][name], default=default)
 
 
 def _format_auth_event(row: dict[str, Any]) -> str:
@@ -329,7 +376,7 @@ def _format_generic(row: dict[str, Any]) -> str:
     items = list(row.items())[:8]
     return " ".join(
         f"{_sanitise(str(k))}="
-        + _truncate(_utc(_sanitise(str(v))) if str(k).lower() in _TIME_KEYS else _sanitise(str(v)), 80)
+        + _truncate(_sanitise(str(v)), 80)
         for k, v in items
     ) or "(empty row)"
 
@@ -399,6 +446,7 @@ def format_row(category: str, row: dict[str, Any]) -> str:
     the gate. Degrading to key=value keeps such rows visible and auditable
     instead of vanishing, for whatever sourcetype arrives next.
     """
+    row = utc_row(row)
     formatter = _FORMATTERS.get(category)
     if formatter is None:
         return _format_generic(row)
@@ -537,7 +585,7 @@ def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> 
     falling back rather than raising keeps an odd sourcetype from costing the
     whole summary.
     """
-    values = [_utc(v) for v in (_first(row, *candidates, default="") for row in rows) if v]
+    values = [v for v in (_first(row, *candidates, default="") for row in rows) if v]
     if not values:
         return None
     try:
@@ -580,6 +628,7 @@ def summarise_rows(
     if not rows:
         return None
 
+    rows = [utc_row(row) for row in rows]
     weights = [_row_weight(row) for row in rows]
     total = sum(weights)
     # The header id is repeated here, and it is not decoration. Sets are rendered
@@ -733,7 +782,7 @@ def format_result_set(
     if not result_set.rows:
         return f"{header}\n(no rows returned)"
 
-    shown = result_set.rows[:row_cap]
+    shown = [utc_row(row) for row in result_set.rows[:row_cap]]
     formatter = _FORMATTERS.get(category)
     lines: list[str] = []
     empty_count = 0

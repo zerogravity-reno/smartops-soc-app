@@ -7,6 +7,7 @@ from smartops.subagent_analysts.formatting import (
     format_row,
     format_vt_verdicts,
     summarise_rows,
+    utc_row,
 )
 
 from contracts import ResultSet, VtVerdict
@@ -498,9 +499,19 @@ class TestTimesInUtc:
         line = format_row("processes", {"_time": "2026-09-27T17:53:53.000+03:00", "dest": "h"})
         assert line.startswith("2026-09-27T14:53:53Z ")
 
-    def test_naive_and_unparseable_times_are_left_alone(self):
-        assert format_row("processes", {"_time": "2026-09-27T17:53:53", "dest": "h"}).startswith("2026-09-27T17:53:53 ")
-        assert format_row("processes", {"_time": "1695826433", "dest": "h"}).startswith("1695826433 ")
+    def test_a_naive_time_is_marked_never_guessed_and_an_epoch_converts(self):
+        assert format_row("processes", {"_time": "2026-09-27T17:53:53", "dest": "h"}).startswith("2026-09-27T17:53:53(zone-unknown) ")
+        assert format_row("processes", {"_time": "1695826433", "dest": "h"}).startswith("2023-09-27T14:53:53Z ")
+
+    def test_every_time_named_field_is_utc(self):
+        # c90ca5f9: first_seen as an epoch and as a local ctime string, Sysmon's UtcTime naive.
+        row = utc_row({"_time": "2026-10-06T14:51:16.000+03:00", "first_seen": "1791287476",
+                       "last_seen": "10/06/2026 14:51:16", "UtcTime": "2026-10-06 11:51:16.123",
+                       "LastLogon": "unknown", "duration_time": "120", "dest": "1791287476"})
+        assert row["_time"] == row["first_seen"] == row["last_seen"] == "2026-10-06T11:51:16Z"
+        assert row["UtcTime"] == "2026-10-06T11:51:16.123000Z"
+        assert (row["LastLogon"], row["duration_time"], row["dest"]) == ("unknown", "120", "1791287476")
+        assert utc_row({"first_seen": "10/06/2026 14:51:16"})["first_seen"] == "10/06/2026 14:51:16(zone-unknown)"
 
     def test_generic_row_time_is_utc(self):
         assert "_time=2026-09-27T14:53:53Z" in format_row("uncategorised", {"_time": "2026-09-27T17:53:53+03:00"})
