@@ -119,7 +119,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
 | W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Fixed on `smartops-loop-fix` (option a); live run pending |
 | W9 | Webapp | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (frontend, smartops-worker) |
-| W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Open |
+| W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Repeat filter on `smartops-loop-fix`; gap wording open (Analyst) |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -628,7 +628,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Done (option a):** synthesis reads the last 2 rounds in full. Each older round becomes `run_trace.compact_round`: each task's question, the domains with observations, and the evaluation that followed (scores, verdict, refs, refused refs, gaps). On `b3aa0dd2`, rounds of 18.2k, 17.0k and 7.2k chars compact to 1.8k, 1.0k and 0.9k. The verdict gate still checks refs against every round's payload. Not yet run past round 4.
 - **First live compaction (`89674d75` round 4):** round 2 was compacted. Synthesis read its `hypothesis_scores` as scores for the G tasks and copied an evaluation that never ran (T26). Scores in the compact record are a candidate to drop.
 
-**W10. Gap statements become tasks verbatim, so a round can repeat the last one exactly.** *Medium. Open.*
+**W10. Gap statements become tasks verbatim, so a round can repeat the last one exactly.** *Medium. Repeat filter on `smartops-loop-fix`; gap wording open (Analyst).*
 - **Evidence (`89674d75`):**
   - Round 3's tasks were round 2's three evidence gaps, used as questions: "Lack of explicit threat intel hits for 192.168.40.211", "Uncorroborated attacker identity", and T3's question, which the gate re-added for its refused ref (T25).
   - Round 3 refused all its refs, so the same three gaps came back. Round 4's `tasks.json` is identical to round 3's: questions, entities and window.
@@ -638,6 +638,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Fix candidates:**
   - Skip a follow-up whose question and scope match a task that already ran, and end the run when the whole round would repeat.
   - Turning gaps into questions is the Analyst's side.
+- **Done:**
+  - `follow_up_tasks` drops a follow-up whose question (ignoring case and spacing), entities and window match any task already sent. `main.py` passes every task sent so far.
+  - With nothing new, the run ends: "No new follow-up tasks (none given, or all already asked)".
+  - Replayed on `89674d75`, round 3's three follow-ups are all dropped. The run would have ended after round 3 instead of re-running it.
 
 **W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Open (frontend, smartops-worker).*
 - **Evidence:** `webapp/static/app.js:260` takes `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.

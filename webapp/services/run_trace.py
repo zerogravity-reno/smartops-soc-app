@@ -244,12 +244,22 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
     return {"schema_version": 1, "tasks": out}, dropped
 
 
-def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None) -> list:
+def _task_key(task: dict) -> tuple:
+    entities = frozenset((e.get("type"), e.get("value")) for e in task.get("entity") or [])
+    window = task.get("time_window") or {}
+    return " ".join(str(task.get("question", "")).lower().split()), entities, window.get("start"), window.get("end")
+
+
+def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None, asked: list | None = None) -> list:
     """Synthesis follow-ups as tasks for the next broker round.
 
     Follow-ups carry only a question, so they inherit every entity and the whole
     window of the tasks just sent. With no follow-ups, each evidence gap becomes
     one (T17): a gap left unasked ended the run with the gap unexamined.
+
+    A follow-up identical to a task in `asked` (every task already sent, any
+    round) is dropped (W10): on 89674d75 the same three gaps came back and round 4
+    re-ran round 3 unchanged. Nothing new left means the run ends.
     """
     # ponytail: union of entities + widest window; per-follow-up scoping needs the
     # synthesis prompt to emit entity/time_window, which is the main Analyst's side.
@@ -263,11 +273,13 @@ def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None) -> l
     ends = [t["time_window"]["end"] for t in sent]
     # Every window here already passed `to_task_file`, so `_instant` never returns None.
     window = {"start": min(starts, key=_instant), "end": max(ends, key=_instant)}
-    return [
+    seen = {_task_key(t) for t in asked or []}
+    tasks = [
         {"task_id": f.get("task_id"), "question": f["question"], "entity": entities, "time_window": window}
         for f in follow_ups
         if isinstance(f, dict) and f.get("question")
     ]
+    return [t for t in tasks if _task_key(t) not in seen]
 
 
 def compact_round(payload: dict, evaluation: dict) -> dict:

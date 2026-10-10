@@ -686,6 +686,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         all_findings = {}
         all_runs = []  # every round's broker runs, for the verdict gate's step check
         evaluations = {}  # round label -> the gated synthesis that read it
+        asked = []  # every task sent so far, so a repeat round is not sent (W10)
         for loop_num in range(2, req.max_loops + 2):
             at_loop = loop_num
             _checkpoint(run_id, q)
@@ -756,10 +757,12 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             if loop_num == req.max_loops + 1:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"}, message="Max loops reached")
                 break
-            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"], synth.get("evidence_gaps"))
+            asked += link["tasks"]
+            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"],
+                                              synth.get("evidence_gaps"), asked)
             if not tasks:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"},
-                      message="No actionable follow-up tasks")
+                      message="No new follow-up tasks (none given, or all already asked)")
                 break
 
         q.put({"type": "done", "message": "Investigation complete"})

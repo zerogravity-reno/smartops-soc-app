@@ -45,6 +45,19 @@ def test_follow_ups_inherit_the_entities_and_the_widest_window():
     assert task["time_window"] == {"start": "2026-09-01T00:00:00Z", "end": WINDOW["end"]}
 
 
+def test_a_follow_up_already_asked_is_not_sent_again():
+    # 89674d75: round 3's gaps came back unchanged, and round 4 re-ran round 3.
+    sent = [{"entity": [{"type": "ip", "value": "192.168.40.211"}], "time_window": WINDOW}]
+    gaps = ["Lack of explicit threat intel hits for 192.168.40.211", "Uncorroborated attacker identity"]
+    round_3 = run_trace.follow_up_tasks([], sent, gaps)
+
+    assert run_trace.follow_up_tasks([], round_3, gaps, asked=sent + round_3) == []
+    # Same question, whitespace and case aside, is still a repeat; a new one is not.
+    fresh = run_trace.follow_up_tasks([{"question": "  UNCORROBORATED attacker identity"}, {"question": "new"}],
+                                      round_3, asked=sent + round_3)
+    assert [t["question"] for t in fresh] == ["new"]
+
+
 def test_record_appends_and_reports_resolve_in_the_round_folder(tmp_path, monkeypatch):
     monkeypatch.setenv("SMARTOPS_RUNS_DIR", str(tmp_path))
     run_trace.record("run1", "analyst_plan", 1, plan={"tasks": []})
