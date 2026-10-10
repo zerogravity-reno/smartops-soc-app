@@ -25,6 +25,7 @@ model's own, and no per-family prompt specialisation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ from smartops.domains import ALL_FAMILIES, DOMAINS, scope_gap
 from smartops.subagent_analysts.formatting import to_utc
 from smartops.guards import (
     IndexScopeGuard,
+    RowLimitCap,
     ScopeGuard,
     TimeWindowPin,
     TstatsDeadEndGuard,
@@ -92,6 +94,23 @@ retrieval: it restates evidence already collected as the family answer model, so
 it needs room for `queries_run` and an assessment and nothing else. It is also
 what `investigate()` adds to its reservation, so the budget covers the worst case
 up front rather than discovering it at settle time."""
+
+MISSION_TIMEOUT_SECONDS = 900
+"""Wall clock for one mission, recovery call included (B24).
+
+Missions take one to two minutes; this leaves room for a slow Splunk and still
+ends a stuck call well inside the webapp's 1,800 s kill of the whole round, so
+one hung step costs that step, not the round."""
+
+CELL_CHAR_CAP = 8192
+"""Longest cell value kept in collected evidence (B27).
+
+Just above Windows' 8,191-character command-line limit, so every command line --
+encoded PowerShell included -- survives whole. What it cuts is script-block and
+module source: 4104 rows ran ~12 KB each, 57 of them 696 KB in one result."""
+
+SESSION_LOST = "the client session is not running"
+"""Strands' error text once an MCP session has died (`mcp_client.py:911`)."""
 
 # Same generous input floor the Broker uses, for the same reason: a reservation
 # is a ceiling and `settle()` credits back the difference, so over-estimating is
@@ -350,7 +369,7 @@ class _EvidenceCollector:
             _ToolCall(
                 tool=name,
                 query=_query_of(event.tool_use),
-                payload=_plain(result),
+                payload=_capped(_plain(result)),
             )
         )
 
@@ -364,6 +383,95 @@ class _EvidenceCollector:
             )
             for index, call in enumerate(self.calls)
         ]
+
+
+def _cap_strings(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > CELL_CHAR_CAP:
+        return f"{value[:CELL_CHAR_CAP]}…[+{len(value) - CELL_CHAR_CAP} chars]"
+    if isinstance(value, dict):
+        return {k: _cap_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_cap_strings(v) for v in value]
+    return value
+
+
+def _capped(payload: Any) -> Any:
+    """An MCP result with every cell cut to `CELL_CHAR_CAP` (B27).
+
+    Only an envelope carrying `structuredContent` is touched: that is where
+    `projection._rows_of` reads rows. Its `content` text is the same JSON again,
+    so it is rebuilt from the capped rows rather than cut mid-JSON. Anything else
+    (VirusTotal's text summary) passes through unchanged.
+    """
+    if not (isinstance(payload, dict) and isinstance(payload.get("structuredContent"), dict)):
+        return payload
+    inner = _cap_strings(payload["structuredContent"])
+    return {**payload, "structuredContent": inner, "content": [{"text": json.dumps(inner)}]}
+
+
+class _SessionWatch:
+    """Ends a mission at the first call a dead MCP session refuses (B24).
+
+    Strands returns that refusal as an ordinary error result, so the model kept
+    calling: 60 refusals on `89674d75` L5-FU2 before the round hung. Halting after
+    the batch lets the recovery call report what was already collected, and
+    `investigate()` marks the step ERROR, so a re-dispatch goes back through
+    `tools_for()`, which reconnects the client.
+    """
+
+    def __init__(self) -> None:
+        self.refused = 0
+        self.blocked: list[str] = []
+        """Always empty. Present so it pools with the guards' `blocked`."""
+
+    def register_hooks(self, registry: Any, **kwargs: Any) -> None:
+        from strands.hooks import AfterToolCallEvent, AfterToolsEvent
+
+        registry.add_callback(AfterToolCallEvent, self._check)
+        registry.add_callback(AfterToolsEvent, self._halt)
+
+    def _check(self, event: Any) -> None:
+        # `call_tool_async` raises this before its own try block, so it reaches
+        # the executor as an exception; its text also lands in the error result.
+        result = event.result
+        text = str(getattr(event, "exception", None) or "")
+        if isinstance(result, dict) and result.get("status") == "error":
+            text += json.dumps(result.get("content"), default=str)
+        if SESSION_LOST in text:
+            self.refused += 1
+
+    def _halt(self, event: Any) -> None:
+        if self.refused:
+            event.end_turn = "The Splunk connection was lost. Stop querying."
+
+
+def _error_keeping_evidence(
+    mission: SubagentMission, collector: _EvidenceCollector, guards: list, evidence: list, reason: str, error: str
+) -> SubtaskResult:
+    """An ERROR result that still carries every row already retrieved and paid for."""
+    # The queries the tools were actually *called* with, reconstructed from
+    # the collector. The model's own report of them is what went missing, but
+    # `_ToolCall.query` is the tool input and is the one that really ran.
+    #
+    # Leaving `queries_run` empty here is not cosmetic.
+    # `bench.check_index_scoping()` SKIPS any result with no `queries_run`, so a
+    # run that lost its structured answer would silently go un-scope-checked and
+    # still report 100% scoping correct. A security check that quietly does not
+    # run is worse than one that fails.
+    queries_run = [QueryRun(query=call.query) for call in collector.calls if call.query]
+    return SubtaskResult(
+        task_id=mission.task_id,
+        status=SubtaskStatus.ERROR,
+        reason=reason,
+        # No answer means no category tags, so every result set lands in
+        # `uncategorised` -- the rows were still retrieved and paid for.
+        findings=project(mission.tool_family, collector.calls, queries_run, mission.task_id),
+        error=error,
+        queries_run=queries_run,
+        blocked_queries=[q for g in guards for q in g.blocked],
+        citation_ids=[e.id for e in evidence],
+        evidence=evidence,
+    )
 
 
 def _plain(value: Any) -> Any:
@@ -553,18 +661,34 @@ async def investigate(
     # skip cannot drift from the model `_build_agent_and_invoke` forces the
     # subagent into.
     collector = _EvidenceCollector(answer_tool=answer_tool_name(family))
-    guards = _guards_for(family, mission.scope)
+    watch = _SessionWatch()
+    guards = [*_guards_for(family, mission.scope), watch]
     try:
-        result = await _build_agent_and_invoke(
-            prompt,
-            mission=mission,
-            model=model,
-            tools=tools,
-            turns=turns,
-            max_output_tokens=max_output_tokens,
-            collector=collector,
-            guards=guards,
+        result = await asyncio.wait_for(
+            _build_agent_and_invoke(
+                prompt,
+                mission=mission,
+                model=model,
+                tools=tools,
+                turns=turns,
+                max_output_tokens=max_output_tokens,
+                collector=collector,
+                guards=guards,
+            ),
+            MISSION_TIMEOUT_SECONDS,
         )
+    except TimeoutError:
+        # ponytail: released, not settled -- a cancelled loop reports no usage, so
+        # its real spend is missing from the ledger. Read it off the trace's spans
+        # if timeouts become common.
+        await budget.release(reservation)
+        evidence = collector.evidence(mission.task_id, family, datetime.now(UTC))
+        reason = (
+            f"{family} subagent timed out after {MISSION_TIMEOUT_SECONDS}s; "
+            f"{len(evidence)} raw result(s) were collected and retained"
+        )
+        logger.error("task_id=%s family=%s | %s", mission.task_id, family, reason)
+        return _error_keeping_evidence(mission, collector, guards, evidence, reason, reason)
     except BaseException:
         # Release, not settle: settle() appends a ledger entry, which would
         # record a call that never completed as a zero-cost one that did.
@@ -602,37 +726,19 @@ async def investigate(
             stop_reason,
             len(evidence),
         )
-        # The queries the tools were actually *called* with, reconstructed from
-        # the collector. The model's own report of them is what went missing, but
-        # `_ToolCall.query` is the tool input and is the one that really ran.
-        #
-        # This branch has happened twice on real runs, and leaving `queries_run`
-        # empty here is not cosmetic. `bench.check_index_scoping()` SKIPS any
-        # result with no `queries_run`, so a run that lost its structured answer
-        # would silently go un-scope-checked and still report 100% scoping
-        # correct. A security check that quietly does not run is worse than one
-        # that fails.
-        queries_run = [QueryRun(query=call.query) for call in collector.calls if call.query]
         reason = (
             f"{family} subagent produced no structured answer "
             f"(stop_reason={stop_reason}); {len(evidence)} raw result(s) were "
             "collected and retained"
         )
+        if watch.refused:
+            reason = f"MCP session lost ({watch.refused} call(s) refused); {reason}"
         # ERROR even with evidence: a lost answer is a failure, not "nothing
         # there". As NO_DATA it read as a negative finding while carrying rows
         # (F7: 74 fallback-scan rows on c7dbf51d T1). The rows are still kept.
-        return SubtaskResult(
-            task_id=mission.task_id,
-            status=SubtaskStatus.ERROR,
-            reason=reason,
-            # No answer means no category tags, so every result set lands in
-            # `uncategorised` -- the rows were still retrieved and paid for.
-            findings=project(family, collector.calls, queries_run, mission.task_id),
-            error=reason if evidence else "subagent returned no structured output and no evidence",
-            queries_run=queries_run,
-            blocked_queries=[q for g in guards for q in g.blocked],
-            citation_ids=[e.id for e in evidence],
-            evidence=evidence,
+        return _error_keeping_evidence(
+            mission, collector, guards, evidence, reason,
+            reason if evidence else "subagent returned no structured output and no evidence",
         )
 
     # Citations are ours, not the model's. `SubtaskResult` validates that every
@@ -657,12 +763,17 @@ async def investigate(
     )
     # `from_answer` cites nothing, because only this layer knows the evidence ids;
     # nor does it know what the guard refused, which is not the model's to report.
-    return result.model_copy(
-        update={
-            "citation_ids": [e.id for e in evidence],
-            "blocked_queries": [q for g in guards for q in g.blocked],
-        }
-    )
+    update: dict[str, Any] = {
+        "citation_ids": [e.id for e in evidence],
+        "blocked_queries": [q for g in guards for q in g.blocked],
+    }
+    if watch.refused:
+        # The answer covers only what ran before the session died: ERROR, so the
+        # Broker sees an incomplete step, not a clean "ok" or "no_data".
+        reason = f"MCP session lost ({watch.refused} call(s) refused); answer covers only the queries before it"
+        logger.error("task_id=%s family=%s | %s", mission.task_id, family, reason)
+        update |= {"status": SubtaskStatus.ERROR, "reason": reason, "error": reason}
+    return result.model_copy(update=update)
 
 
 def _guard_for(family: str) -> IndexScopeGuard | None:
@@ -700,7 +811,7 @@ def _guards_for(family: str, scope: Scope) -> list:
     index_guard = _guard_for(family)
     if index_guard is None:
         return []
-    guards = [index_guard, ScopeGuard(family, scope), TstatsDeadEndGuard(family)]
+    guards = [index_guard, ScopeGuard(family, scope), TstatsDeadEndGuard(family), RowLimitCap(family)]
     if DOMAINS[family].time_scoped:
         guards.append(TimeWindowPin(family, scope.time_window))
     return guards

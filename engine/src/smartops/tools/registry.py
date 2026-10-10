@@ -298,13 +298,6 @@ async def warm_mcp_clients() -> None:
     if not clients:
         return
 
-    def reset(client: MCPClient) -> None:
-        """Clear the sticky failure flag, then restore our consumer claim."""
-        client.stop(None, None, None)
-        claim = getattr(client, "add_consumer", None)
-        if callable(claim):
-            claim(PROCESS_CONSUMER)
-
     async def warm(client: MCPClient) -> None:
         for attempt in range(1, WARM_ATTEMPTS + 1):
             try:
@@ -331,7 +324,7 @@ async def warm_mcp_clients() -> None:
                     attempt, WARM_ATTEMPTS,
                 )
                 try:
-                    await asyncio.to_thread(reset, client)
+                    await asyncio.to_thread(_reset, client)
                 except Exception:
                     # A client that cannot even be reset is not recoverable here;
                     # let the remaining attempts fall through to the warning.
@@ -346,6 +339,38 @@ async def warm_mcp_clients() -> None:
         )
 
     await asyncio.gather(*(warm(client) for client in clients))
+
+
+def _reset(client: MCPClient) -> None:
+    """Clear a client's dead or failed session, then restore our consumer claim.
+
+    `stop()` resets the client's state and only then raises
+    `RuntimeError("Connection to the MCP server was closed")` from whatever
+    killed the session (`mcp_client.py:563-566`). Strands logs that cause at
+    DEBUG only, so this is the one place it can be seen: logged here at WARNING,
+    and not allowed to skip the re-claim (see `warm_mcp_clients`, point 2).
+    """
+    try:
+        client.stop(None, None, None)
+    except RuntimeError as exc:
+        logger.warning("an MCP session had closed: %s (cause: %r)", exc, exc.__cause__)
+    claim = getattr(client, "add_consumer", None)
+    if callable(claim):
+        claim(PROCESS_CONSUMER)
+
+
+def _session_died(client: MCPClient) -> bool:
+    """True for a client that connected and whose session has since ended (B24).
+
+    Strands keeps the session on a background thread; any transport error after
+    the handshake ends that thread for good, and every later call fails with
+    "the client session is not running" (`mcp_client.py:911`). `load_tools()`
+    still returns its cached tools, bound to the dead session, so nothing
+    reconnects unless this is checked. Private SDK attributes, read defensively:
+    a stand-in without them is never treated as dead.
+    """
+    is_active = getattr(client, "_is_session_active", None)
+    return bool(getattr(client, "_tool_provider_started", False)) and callable(is_active) and not is_active()
 
 
 def _read_servers(source: str | Path | dict[str, Any]) -> dict[str, Any]:
@@ -618,4 +643,8 @@ async def _load_tools_off_loop(client: MCPClient) -> Sequence[Any]:
         lock = asyncio.Lock()
         _resolve_locks[id(client)] = lock
     async with lock:
+        # Inside the lock, so parallel steps on one dead client reset it once.
+        if _session_died(client):
+            logger.warning("an MCP client's session ended mid-run; reconnecting it")
+            await asyncio.to_thread(_reset, client)
         return await asyncio.to_thread(asyncio.run, client.load_tools())

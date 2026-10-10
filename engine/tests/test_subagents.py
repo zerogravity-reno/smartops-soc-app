@@ -666,7 +666,8 @@ class TestABlockedQueryReachesTheResult:
 
     async def test_a_family_with_no_guard_reports_nothing_blocked(self, monkeypatch):
         async def fake(*args, **kwargs):
-            assert kwargs["guards"] == []
+            # Only the session watch (B24), which every mission runs under.
+            assert [type(g) for g in kwargs["guards"]] == [subagents._SessionWatch]
             return _Result(None)
 
         monkeypatch.setattr(subagents, "_build_agent_and_invoke", fake)

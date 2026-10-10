@@ -1,6 +1,6 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-09 (through run `c90ca5f9`). **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
+**As of:** 2026-10-10 (through run `89674d75`). **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail and security. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
@@ -29,6 +29,20 @@ Runs up to `b3aa0dd2` investigated the same Splunk ES notable: *Threat - Custom 
 | `99e26b1e` | 2026-10-08 | no verdict, 1 round | *ESCU Encoded Command*. BENIGN 70 (needs 85); the reasoning itself says "Status: VERDICT_REACHED"; no follow-ups (T17) |
 | `5dc65b8c` | 2026-10-08 | no verdict, 1 round | *Custom Process Discovery*. FP 95 vs BENIGN 88, lead 7 (needs 20); refs `T1:T1`, `T2:T2` (T1, T9, T17) |
 | `c90ca5f9` | 2026-10-09 | no verdict, 2 rounds | First run on `78a2fdc`, replaying `874ab334`'s alert. 3 of 5 tasks dropped at handoff for zero-length windows (B19). Round 2 FALSE_POSITIVE 80 with status REQUIRES_INVESTIGATION (60/80/75); round 3 spent 8,192 tokens thinking on an 11.7k prompt and wrote nothing (T15). Broker $1.01 + $1.56. Observations crossed (11, 14), B18/O5/O6 held |
+| `89674d75` | 2026-10-10 | no verdict, stopped in round 5 | First run on `1f63130` (prompt review), same alert as `874ab334`. Round 2 TRUE_POSITIVE 98/65/78 and round 3 95/60/45 both met the score rule and were refused on refs (T25). Round 4 re-ran round 3's tasks unchanged (W10) and came back 90/82/83 (T26). Round 5 lost the Splunk MCP session after FU1 and hung for 21 min until stopped (B24). Broker $4.02 + $2.70 + $3.47 + ≥$0.55 |
+
+**Baseline checks on `89674d75`** (the list in `docs/handover-2026-10-10.md`):
+- **Held:**
+  - B19: T1–T3 were all sent.
+  - B21: `192.168.40.211` arrived as a private-address fact, and round 2 called it private.
+  - B22: OneDrive.exe's hash `DCC9F3B8…` is in rounds 3 and 4's `facts`. No task asked VirusTotal about it (T21).
+  - P-8: vt was never dispatched.
+  - P-1: sets read "20 of 100 rows shown".
+  - B23: `tests/test_run_times_utc.py` passes, and no `+03:00` appears in any `tasks.json` or payload.
+- **Not held:**
+  - B14: 0 observations reached the Analyst in any round.
+  - B15: the cut-off recurred twice.
+  - P-10: a `no_data` status came back beside returned rows (B26).
 
 Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investigation (O5). The `072fd610` trace is at `tests/test-integration/trace-072fd610.html`.
 
@@ -61,6 +75,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T21 | Triage | A parent is judged by its name, not by what it ran | High | Open (Analyst) |
 | T22 | Triage | Synthesis describes rounds and tasks that never ran | Medium | Open (Analyst) |
 | T23 | Triage | The evaluation header never states the event time | Low | Open (Analyst) |
+| T24 | Triage | Task questions and row counts cited as findings ("CrowdStrike telemetry", "execution of svcupdate.dat") | High | Open (Analyst) |
+| T25 | Triage | Verdicts that meet the score rule are refused on one bad ref or a malformed ref format | High | Open (decision pending) |
+| T26 | Triage | Synthesis reads gap tasks G1–G3 as hypotheses H1–H3 and copies scores from an evaluation that never ran | High | Open (Analyst + W8 compaction) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning (decision pending) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
 | P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
@@ -79,16 +96,20 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Open |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
-| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Partly fixed on `smartops-loop-fix` (`facts` field, trimmed by priority); budget size open |
-| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Diagnostics added; fix pending the first logged failure |
+| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Partly fixed on `smartops-loop-fix` (`facts` field, trimmed by priority); budget size open; recurred on `89674d75`: 0 observations in all 3 rounds |
+| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | First logged failures on `89674d75`: the answer itself runs past 3,072 tokens; fix to decide |
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel tasks deferred |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
-| B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; live check pending |
+| B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | Open: scoping is Analyst-side; "can't answer" is Broker-side, design for agreement |
-| B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; live check pending |
+| B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
-| B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; live check pending |
+| B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
+| B24 | Broker | The Splunk MCP session dies mid-round, nothing restarts it, and the round hangs | High | Fixed on `smartops-loop-fix`; live check pending |
+| B25 | Broker | The Broker writes the task's IP as the host's address | Medium | Open |
+| B26 | Broker | siem tasks disagree on whether svcupdate.dat is in the data; `no_data` beside returned rows | Medium | Open (Splunk check first) |
+| B27 | Broker | A siem step pulls every script block on the host (6.9 MB of evidence in one step) | Medium | Fixed on `smartops-loop-fix`; live check pending |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -98,6 +119,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
 | W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Fixed on `smartops-loop-fix` (option a); live run pending |
 | W9 | Webapp | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (frontend, smartops-worker) |
+| W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Open |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -228,6 +250,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Impact:** rows from Sep 7–21 were narrated beside the Oct 6 alert ("Between September 21 and October 6, scripts consistently downloaded files from http://192.168.40.211"), with nothing marking them as two weeks before the alert. That's T6's pattern, now built into the windows.
 - **Analyst bug, same run:** T3's planned window was 2026-10-05T11:45–12:15Z, a day early. The widening happened to cover the event.
 - **Fix (owner to decide):** a planning rule for when a baseline window is warranted; follow-ups scoped to the task they follow up (B6); or a code line in each set's facts giving how many rows fall within the alert's ±1h.
+- **Again on `89674d75`:** T3 asked for "the past 72 hours" with a window of 09-29 → 10-06 23:59Z, which is eight days. Every follow-up in rounds 3–5 inherited that window.
 
 **T19. Synthesis misses a cross-reference between the alert and other rows it was given.** *High. Open (Analyst).*
 - **Evidence (`874ab334`):** the alert's own row is PowerShell under `Mariam`, parent `C:\Users\Mariam\AppData\Local\Microsoft\OneDrive\OneDrive.exe`, fetching `http://192.168.40.211/update/win-agent-2.4.1.bin` to `%TEMP%\svcupdate.dat`. The same server shows up in T6's rows on 2026-09-20/21: PowerShell under `Administrator`, parent `C:\Users\Public\splunkd.exe`, fetching `/api/v1/t1105-demo-artifact` to `caldera-demo-t1105.txt`.
@@ -260,6 +283,40 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **T23. The evaluation header never states the event time.** *Low. Open (Analyst).*
 - **Evidence (`c90ca5f9`):** synthesis gets task windows and row times in UTC `Z`, but nothing in the evaluation prompt says when the alert's event happened. It has to infer it from the windows, which are widened to event ±1h (B19) or reach days back (T18).
 - **Fix (Analyst side):** the evaluation header states it once, labelled: "event 2026-10-06T11:51:16Z, notable 2026-10-06T11:59:55Z", from `normalized_seed.event_time` and the notable's `_time`.
+
+**T24. Task questions and row counts are cited as findings.** *High. Open (Analyst).*
+- **Evidence (`89674d75`, round 2, TRUE_POSITIVE 98):**
+  - "CrowdStrike telemetry revealed anomalous process behavior." No CrowdStrike source is connected. T4's *question* asked for CrowdStrike, and the Broker answered it from Sysmon in Splunk.
+  - "followed by execution of svcupdate.dat". No row shows svcupdate.dat run. No row shows it written either: no Sysmon 11 names it in any task (B26).
+  - "lateral movement attempts". No task returned any.
+  - The refs list described T1 as "asset verification of 192.168.40.211". Nothing can verify that (B20).
+- **Round 3 (95):**
+  - "high-volume uncategorized Windows events (4688, 1, 4105) showing suspicious process activity". That's a count of rows the Broker couldn't categorise, not their content.
+  - The `$env:username` encoded command was read as an indicator, which is T6's pattern.
+- **Related:** T7 (alert and hypothesis wording cited). Here it's the task's wording.
+
+**T25. Verdicts that meet the score rule are refused on one bad ref, or on the ref format.** *High. Open (decision pending).*
+- **Round 2:** H1 98 against H3 78 met the rule (≥85, lead ≥20). 5 of 6 refs held. `T3:endpoint` was refused because T3's endpoint sub-analyst was cut off on both calls (B15) and produced nothing. One refused ref sends the whole verdict back (`run_trace.verdict_gate`), and T3's question returns as a gap.
+- **Round 3:** 95 against 60. All 9 refs were written as `G1:T1:identity`, the task id followed by a `T1:` prefix, so all 9 were refused.
+- **Effect:** two evaluations that met the score rule became more rounds, and the fourth flipped (T26).
+- **Also:** the refs that held point at domains whose observations were all "omitted for size" (B14). The gate checks the stored findings, so the Analyst cited evidence it never read.
+- **For Mohammed:**
+  - Should the gate accept a verdict when most refs hold, dropping and reporting the bad ones?
+  - Should a malformed ref like `G1:T1:identity` be normalised, or refused with the reason sent back to synthesis?
+
+**T26. Synthesis reads gap tasks G1–G3 as hypotheses H1–H3, and copies scores from an evaluation that never ran.** *High. Open (Analyst; W8 compaction contributes).*
+- **Evidence (`89674d75` round 4):** this was the first synthesis with a compacted round (W8).
+  - Its reasoning maps "G1: Lack of explicit threat intel hits for 192.168.40.211 -> High confidence (98)". That's round 2's H1/H2/H3 scores read as G1/G2/G3.
+  - It then describes a "Round 4" evaluation of H1 90 / H2 82 / H3 83. Round 4's evaluation was the one it was writing. It output exactly those scores, after 4,669 tokens of reasoning.
+- **Outcome:** H1 went from 95 to 90 and H3 from 45 to 83 with no new evidence, because round 4 re-ran round 3's tasks (W10).
+  - The reasoning says "the current evidence doesn't explicitly show a backdoor download". The alert's own command line is that download.
+  - Round 4's payload names neither `svcupdate.dat` nor `win-agent-2.4.1.bin`: every observation and command line was omitted for size (B14).
+- **Our share:**
+  - The payload's `hypothesis_id`/`hypothesis` hold the task id and the gap text (T20), so "G1 … hypothesis" reads like a hypothesis.
+  - `compact_round` sends earlier evaluations' `hypothesis_scores` back, which invites anchoring.
+- **Fix candidates:**
+  - Compacted rounds carry the questions, the answered domains and the gaps, but no scores.
+  - The payload names a task as a task (T20 option a).
 
 ## Context pipeline
 
@@ -400,11 +457,27 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Evidence (`874ab334`):** L2 sent 0 of 42 observations and 0 of 62 set summaries; L3 sent 0 of 37 and 0 of 113. Narratives always cross (B9a), and they were 18,968 (L2) and 28,391 (L3) characters, of which the code footers were 62% and 73%. The largest was the no-rows footer (F8): 26 lines in L2, 47 in L3. The batch still shipped over budget (23.8k and 31.8k against 16.5k), and the packer's warning never reached `broker-L*.log` (O6).
 - **Fix:** the footers move to their own field, `facts`, on `DomainRecord` (renamed from `DomainJudgement`, which no longer judges) and `DomainNarrative`. `narrative` is the model's prose again. Over budget, `pack_for_analyst` drops empty-search lines first, then command lines, then summaries, then observations; names and decoded lines are kept, and each drop leaves an "omitted for size" line. The no-rows block is a count plus at most 3 searches, those naming the task's own entities first. Decoded text is cut at 400 characters, like command lines.
 - **Still open: the budget itself.** Re-packed offline from 874ab334's stored findings, L2 is 17.3k and L3 20.1k against 16,480, still with 0 observations. The model's prose is 7.2k/7.6k, the JSON structure of 18 domain objects about 5k, and L3's kept decoded lines 5.2k. `HANDOFF_CHAR_BUDGET` assumes 2.5 characters per token; round 3's synthesis ran about 3.2. Options (to decide): re-measure the ratio, send the payload without indentation, or accept that observations give way at 6 tasks per round.
+- **Recurred on `89674d75`:**
+  - The payloads sent 0 observations: 51 were omitted in round 2, 59 in round 3 and 52 in round 4.
+  - Every round warned that narratives alone exceed the budget.
+  - With 3 tasks a round (rounds 3 and 4), observations still didn't fit, so it isn't only "6 tasks per round".
+  - The command lines went too. Round 4's payload names neither `svcupdate.dat` nor the download URL. Synthesis then said no download was shown (T26) and asked FU1 to "extract full PowerShell command-line arguments", which the Broker had already fetched in rounds 2–4.
 
 **B15. The endpoint sub-analyst is cut off on both calls, and the answer is lost.** *Medium. Diagnostics added.*
 - **Evidence:** both calls hit `max_gen_len` (3,072 each, 6,144 billed) in `874ab334` L2-T2, T4 and T5, and in `25965109` T4 and T7. Not only large slices: 874ab334 T4's prompt was 3.8k tokens a call. The domain was lost with "no NARRATIVE block" (twice) and "no OBSERVATIONS or CITATIONS block" (once); the payload carried the placeholder sentence.
 - **Cause:** not established. The thinking closed (1.5k characters were kept), so about 2,400 tokens of answer had no NARRATIVE block, and nothing recorded the answer.
 - **Done:** when the re-ask fails, both replies' `stop_reason`, token count and the first and last 300 characters of the answer are logged. The prompt or `max_gen_len` changes wait for that evidence.
+- **First logged failures (`89674d75`):** every reply was `stop_reason=length` at 3,072 tokens.
+  - L2-T3 endpoint wrote 7,509 and 9,095 characters of answer.
+  - L4-G2 network wrote 11,234 and 8,628.
+  - It isn't the thinking. Every reply starts `NARRATIVE:`, and the answer runs out while copying full PowerShell command lines into the narrative and observations.
+  - L2-T3's re-ask repeated one sentence ("Host … ran processes under user … started by OneDrive.exe; one command line, …") until it was cut off.
+  - It's not endpoint-only: L4-G2 is the network domain.
+  - T3's empty endpoint domain later cost round 2 its verdict (T25).
+- **Options (to decide):**
+  - Cap quoted command lines in the sub-analyst's rows (they're already in `facts`).
+  - Raise `max_gen_len`.
+  - Stop the re-ask when the first reply was cut off, and treat it as a length failure, not a format failure.
 
 **B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Cache fixed; parallel tasks deferred.*
 - **Evidence:** `25965109` looked up one hash 7 times in one round. Round 2 of `874ab334` took 10.5 minutes, 1–4 minutes per task, one after another.
@@ -427,6 +500,12 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Split by owner (2026-10-09):**
   - **Scoping (Analyst side):** synthesis `follow_up_tasks` carry only a question, so the handoff can't tell which task a follow-up follows and gives it the round's union (`run_trace.follow_up_tasks`). Ask: each follow-up names the task it follows (`follows: "T3"`), or carries its own `entity` and `time_window`. The handoff then inherits that task's scope; a follow-up with neither keeps today's union.
   - **"Can't answer" (Broker side):** changes the Broker prompt and plan contract. To be framed and agreed before coding.
+- **Again on `89674d75`:** none of these were reported back as unanswerable. Each was fetched as SIEM searches instead:
+  - T1: "authorized software distribution point within the organization's asset inventory".
+  - T4: "CrowdStrike telemetry".
+  - G1: "threat intel hits" for a private IP.
+  - FU2: "map … to organizational maintenance procedures".
+  - FU3: "validate file integrity … through digital forensics tools".
 
 **B21. A private address isn't stated as one.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`c90ca5f9` round 2):** synthesis called `192.168.40.211` "external". It's RFC 1918. Since B18 VirusTotal no longer reports on it, and nothing else says what it is.
@@ -443,6 +522,72 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Evidence (`c90ca5f9`):** rows carried `first_seen`/`last_seen` as 18 epochs and 12 naive `10/05/2026 14:…` local strings, and Sysmon's `UtcTime` naive (it is UTC). `formatting._utc` converted only `_time`/`time`/`timestamp`, so the rest passed through unconverted beside UTC task windows.
 - **Done:** `formatting.utc_row` converts every time-named field (time/first/last/earliest/latest/utc) once, before rendering, in `format_row`, `format_result_set` and `summarise_rows`. Epochs (10 digits) and offset-bearing values → UTC `Z`; `UtcTime` is read as UTC; a naive value takes its own row's `_time` offset, otherwise it is marked `(zone-unknown)`, never guessed. The siem prompt now asks for times as Splunk stores them, not `strftime`/`convert ctime` output. `tests/test_run_times_utc.py` walks the newest stored run's `tasks.json` and `analyst-payload.json` and fails on any time that isn't UTC `Z`.
 - **Left alone:** the vended Splunk skill's `strftime(_time, "%Y-%m-%d %H:%M:%S UTC")` example labels search-head local time as UTC. It's third-party; the siem prompt rule overrides it.
+
+**B24. The Splunk MCP session dies mid-round, nothing restarts it, and the round hangs.** *High. Fixed on `smartops-loop-fix`; live check pending.*
+- **Evidence (`89674d75` round 5):**
+  - FU1 finished at 17:51:09Z: 3 siem steps, 25 queries.
+  - From FU2's first query on, every `splunk_run_query` failed at once with `MCPClientInitializationError: the client session is not running`. That happened 60 times (`L5/broker.log`).
+  - Then no line for 21 minutes, until the run was stopped at 18:13:10Z. The webapp kills a round after 1,800 s (`webapp/main.py:835`), so left alone it would have ended at 30 minutes as a Broker failure.
+- **Why every call failed:**
+  - Strands' `MCPClient` keeps the session on a background thread.
+  - If the transport raises after the handshake, the thread exits and `_close_future` resolves. This applies to any exception except "unknown request id" (`_handle_error_message`).
+  - From then on `_is_session_active()` is false, and `call_tool_async` raises before sending anything (`strands/tools/mcp/mcp_client.py:911`).
+  - The exception is kept in `_close_exception` and logged only at DEBUG, so the log doesn't say what killed the session.
+- **Why nothing reconnected:**
+  - `tools_for()` (`tools/registry.py:566`) calls `load_tools()`, which sees `_tool_provider_started` and returns the cached tools, still bound to the dead client.
+  - `warm_mcp_clients()` does `stop()` then a restart, but only once, at process start.
+- **Why it hung instead of failing:**
+  - Each failure reaches the siem agent as an ordinary error result, so it kept calling.
+  - No wall-clock limit applies to a fetch step. Nothing in the fetch path uses `asyncio.wait_for`. The 120 s `read_timeout` covers Bedrock only. MCP calls carry no `read_timeout_seconds`.
+  - Which await blocked isn't recorded, so the exact cause of the hang is not established. The likely one is a call sent while the session was closing, whose future never resolves.
+- **Trigger:** not established, because it was logged at DEBUG only.
+  - The last thing the session served was FU1's `ps_scriptblocks` step: every 4104 script block on the host, 6.9 MB of evidence (B27).
+  - The other transport failure seen before is splunkd's `500 bad character in reply size` (see `warm_mcp_clients`).
+- **Fix (to agree before coding):**
+  1. In `tools_for()`, a client that had started and is no longer active gets `stop()` and a fresh `load_tools()`. That's the reset `warm_mcp_clients` already does, applied at the one place every dispatch passes through.
+  2. Log `_close_exception` at WARNING when that happens.
+  3. A step whose tool returns "client session is not running" ends as `error` instead of spending its turns.
+  4. A wall-clock cap per mission, so a stuck await ends one step, not the round.
+- **Done:**
+  1. `registry._reset` is shared with `warm_mcp_clients`. It catches the `RuntimeError` that `stop()` raises from the dead session, logs its cause at WARNING, and still re-claims `PROCESS_CONSUMER`.
+  2. `_load_tools_off_loop` resets a client whose session has ended (`_session_died`) before `load_tools()`. It does this under the per-client lock, so parallel steps reset it once. A client whose startup failed never started, so it isn't retried on every step.
+  3. `subagents._SessionWatch` counts calls refused with "the client session is not running" and sets `AfterToolsEvent.end_turn` after that batch. The recovery call reports what was already collected, and the step returns `ERROR` "MCP session lost (N call(s) refused)" with its evidence kept, so a re-dispatch reconnects through (2).
+  4. `investigate()` runs the mission under `asyncio.wait_for(…, MISSION_TIMEOUT_SECONDS=900)`. A timeout returns `ERROR` with the evidence collected so far. The reservation is released, not settled, so a timed-out step's spend is missing from the ledger (marked `ponytail:`).
+  - Tests: `engine/tests/test_mcp_session_and_result_size.py`. The watch was also checked through Strands' real `HookRegistry`.
+
+**B25. The Broker writes the task's IP as the host's address.** *Medium. Open.*
+- **Evidence (`89674d75` L2-T1, step `siem_processes`):** "process creation events on host ar-f6eddb5b-df6 (192.168.40.211)".
+  - `192.168.40.211` is the download server in the alert's command line, not the host. The flows to it in the rows come from `10.0.10.20`.
+  - The handoff adds the alert host to every task (`alert_entities`), and the Broker paired the two scope values.
+- **Fix candidate:** the Broker's user turn labels each entity's role, since the alert row already says which address is the destination.
+
+**B26. siem tasks disagree on whether svcupdate.dat is in the data, and `no_data` is reported beside returned rows.** *Medium. Open (check in Splunk first).*
+- **Evidence (`89674d75` L3-G2, `siem_file_events`):**
+  - Status `no_data`. The note says "svcupdate.dat does not appear in any indexed event for this host during the 2026-09-29 to 2026-10-06 window".
+  - That came after 8 searches with `host="ar-f6eddb5b-df6"`, including `_raw="*svcupdate*"`, all returning 0 rows.
+- **In the same round:**
+  - L3-G3 ran `index=windows_lab sourcetype=XmlWinEventLog "svcupdate.dat"` with no `host=` and got 12 rows, all `Computer=ar-f6eddb5b-df6`.
+  - The rows are Sysmon 1, 4104 and 4100 for four downloads: 10-05 11:42Z, and 10-06 10:40Z, 10:53Z and 11:51Z.
+  - L2-T6 and L5-FU1 found the same rows.
+- **Unexplained:** the visible difference is the `host=` filter. Why it returns 0 here is not established, because the rows don't carry `host`.
+- **Status:** the same result held 150 file-event rows for other files and was still `no_data`. P-10's rule is "ok if any query or lookup returned data".
+- **Also:** no task's rows hold a Sysmon 11 (FileCreate) for svcupdate.dat, so the file write itself is unconfirmed (T24).
+- **Next:** run one query with and without `host=` in Splunk before proposing a fix.
+
+**B27. A siem step pulls every script block on the host.** *Medium. Fixed on `smartops-loop-fix`; live check pending.*
+- **Evidence (`89674d75` L5-FU1, `ps_scriptblocks`):**
+  - The search was `EventCode=4104 | table … ScriptBlockText` with no content filter.
+  - It returned 435 script blocks: a 10.3 MB result and 6.9 MB of evidence. FU1's `report.json` is 11.8 MB.
+- **Impact:**
+  - The prompt says "Keep result sets small … set a row limit". The packer then shows 20 rows.
+  - A reply this large is the main suspect for B24's trigger.
+  - Memory ran out on two earlier runs (`6fc4f590`, `71ef7d21`).
+- **Fix candidate:** a row cap in the query guard instead of in the prompt.
+- **The size is row width, not row count:** 57 rows took 696 KB and 86 rows 1.2 MB, at about 12 KB of `ScriptBlockText` a row. A row cap alone would not have fixed it.
+- **Done:**
+  - `guards.RowLimitCap` caps `row_limit` at 100 (the tool's default) on every call, the same way `TimeWindowPin` sets the window.
+  - The evidence collector cuts every `structuredContent` cell longer than 8,192 characters, with a `…[+N chars]` marker, and rebuilds the duplicate `content` text from the capped rows. 8,192 is above Windows' 8,191-character command-line limit, so command lines, encoded PowerShell included, stay whole; only script and module source is cut.
+  - Results with no `structuredContent` (VirusTotal) pass through unchanged.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
@@ -481,6 +626,18 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Cost:** about $2.50 of Broker spend per full round on `b3aa0dd2`, so a 15-loop run can approach $35.
 - **Fix (webapp, the Analyst's input; to be decided):** (a) keep the last 2 rounds in full and replace older ones with a short record built in code: each task's question, the findings cited, and what was answered. (b) Make the Analyst a Strands `Agent` with `SummarizingConversationManager`. (c) Stop when the next prompt would not fit. Lowering `_ANALYST_ROUNDS` to 15 instead would leave each round ~3k characters, which is too small to carry findings.
 - **Done (option a):** synthesis reads the last 2 rounds in full. Each older round becomes `run_trace.compact_round`: each task's question, the domains with observations, and the evaluation that followed (scores, verdict, refs, refused refs, gaps). On `b3aa0dd2`, rounds of 18.2k, 17.0k and 7.2k chars compact to 1.8k, 1.0k and 0.9k. The verdict gate still checks refs against every round's payload. Not yet run past round 4.
+- **First live compaction (`89674d75` round 4):** round 2 was compacted. Synthesis read its `hypothesis_scores` as scores for the G tasks and copied an evaluation that never ran (T26). Scores in the compact record are a candidate to drop.
+
+**W10. Gap statements become tasks verbatim, so a round can repeat the last one exactly.** *Medium. Open.*
+- **Evidence (`89674d75`):**
+  - Round 3's tasks were round 2's three evidence gaps, used as questions: "Lack of explicit threat intel hits for 192.168.40.211", "Uncorroborated attacker identity", and T3's question, which the gate re-added for its refused ref (T25).
+  - Round 3 refused all its refs, so the same three gaps came back. Round 4's `tasks.json` is identical to round 3's: questions, entities and window.
+  - The repeat cost $3.47 in Broker spend for evidence already fetched.
+  - Neither gap is a question a search can answer (B20).
+- **Code:** `run_trace.follow_up_tasks` (`webapp/services/run_trace.py:247`) turns each gap into a task when synthesis gives no follow-ups. That's the T17 workaround.
+- **Fix candidates:**
+  - Skip a follow-up whose question and scope match a task that already ran, and end the run when the whole round would repeat.
+  - Turning gaps into questions is the Analyst's side.
 
 **W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Open (frontend, smartops-worker).*
 - **Evidence:** `webapp/static/app.js:260` takes `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.
@@ -534,6 +691,17 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **T23:** the evaluation header states the event and notable times once, in UTC `Z`.
 - **T15, T17:** c90ca5f9's round 3 thought through 8,192 tokens and wrote nothing; the run ended after 2 of 15 rounds.
 - **T8, T10:** no reasoning from absence; status and verdict from one vocabulary.
+- **From `89674d75`:**
+  - T24: cite only what rows show, not task questions or row counts.
+  - T26: G tasks are not hypotheses; never copy scores from earlier rounds.
+  - W10: gaps written as questions a source can answer.
+
+**Broker and webapp, from `89674d75`** (ours, in order):
+1. **B24:** reconnect a dead MCP client in `tools_for()`, end a step on "session is not running", and cap each mission's wall clock. Without this a long run can't finish.
+2. **B14 / B15:** observations still never reach the Analyst, and two domains were lost to the length cap. Both feed T25 and T26.
+3. **W10:** don't re-send a round identical to the last.
+4. **T25 (Mohammed to decide):** whether one bad ref, or a malformed one, should block a verdict.
+5. **B26, B27, B25:** check the `host=` difference in Splunk; cap row counts in the query guard; label entity roles.
 
 
 1. **Rotate the credentials** (S1).
