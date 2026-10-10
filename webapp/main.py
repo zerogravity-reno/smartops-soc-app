@@ -552,8 +552,67 @@ def start_run(req: RunRequest):
     run_id = str(uuid.uuid4())[:8]
     q: Queue = Queue()
     _run_queues[run_id] = q
+    go = threading.Event()
+    go.set()
+    _run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "proc": None}
     threading.Thread(target=_run_investigation, args=(run_id, req, q), daemon=True).start()
     return {"run_id": run_id}
+
+# ── Run control: stop, pause, resume ─────────────────────────────────────────
+# Pause and stop land at the next stage boundary (_checkpoint): a model call in
+# flight cannot be interrupted. Stop also kills a running broker at once.
+_run_ctrl: dict[str, dict] = {}
+
+class RunStopped(Exception):
+    pass
+
+def _checkpoint(run_id: str, q: Queue) -> None:
+    c = _run_ctrl.get(run_id)
+    if not c:
+        return
+    if not c["go"].is_set():
+        _emit(q, "paused", {}, message="Paused at a stage boundary")
+        while not c["go"].wait(0.5):
+            if c["stop"].is_set():
+                break
+        if not c["stop"].is_set():
+            _emit(q, "resumed", {}, message="Resumed")
+    if c["stop"].is_set():
+        raise RunStopped()
+
+def _ctrl_or_404(run_id: str):
+    c = _run_ctrl.get(run_id)
+    if not c:
+        return None, Response(status_code=404, content='{"status":"error","message":"run not found or finished"}',
+                              media_type="application/json")
+    return c, None
+
+@app.post("/api/run/{run_id}/stop")
+def stop_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["stop"].set()
+    c["go"].set()  # a paused run wakes up only to stop
+    if c["proc"] is not None and c["proc"].poll() is None:
+        c["proc"].kill()
+    return {"status": "ok"}
+
+@app.post("/api/run/{run_id}/pause")
+def pause_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["go"].clear()
+    return {"status": "ok"}
+
+@app.post("/api/run/{run_id}/resume")
+def resume_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["go"].set()
+    return {"status": "ok"}
 
 @app.get("/api/run/stream/{run_id}")
 def stream_run(run_id: str):
@@ -565,7 +624,7 @@ def stream_run(run_id: str):
             try:
                 item = q.get(timeout=300)
                 yield f"data: {json.dumps(item)}\n\n"
-                if item.get("type") in ("done", "error"):
+                if item.get("type") in ("done", "error", "stopped"):
                     break
             except Empty:
                 # Silence is not failure: a cold model or a long broker round can go
@@ -579,6 +638,7 @@ def _emit(q: Queue, event_type: str, data: dict, **extra):
 
 def _run_investigation(run_id: str, req: RunRequest, q: Queue):
     system_prompt = _load_system_prompt()
+    at_loop = 1  # where a stop landed, for the run record
     try:
         # â”€â”€ Build alert context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if req.context_contract:
@@ -608,6 +668,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                        "verdict_confidence", "verdict_reasoning", "evidence_gaps"}
         clean_context = {k: v for k, v in alert_context.items() if k not in _STRIP_KEYS}
         user_msg = "[ALERT CONTEXT]\n" + json.dumps(clean_context, indent=2)
+        _checkpoint(run_id, q)
         r1 = call_llm(system_prompt, user_msg)
         plan = extract_json(r1["answer"]) or {}
         plan["reasoning"] = r1["reasoning"]
@@ -626,6 +687,8 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         all_runs = []  # every round's broker runs, for the verdict gate's step check
         evaluations = {}  # round label -> the gated synthesis that read it
         for loop_num in range(2, req.max_loops + 2):
+            at_loop = loop_num
+            _checkpoint(run_id, q)
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
             findings, link = _run_broker_proc_streaming(
@@ -673,7 +736,8 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             for round_label in labels[-FULL_ROUNDS:]:
                 slim = {k:v for k,v in all_findings[round_label].items() if k != "_raw_intel_dump"}
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
-            rN = call_llm(system_prompt, "\n\n".join(sections))
+            _checkpoint(run_id, q)
+            rN = call_llm(system_prompt,"\n\n".join(sections))
             raw_synth = extract_json(rN["answer"]) or {}
             synth = evaluations[f"Round {loop_num}"] = run_trace.verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
             _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
@@ -700,10 +764,14 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
 
         q.put({"type": "done", "message": "Investigation complete"})
 
+    except RunStopped:
+        run_trace.record(run_id, "stopped", at_loop)
+        q.put({"type": "stopped", "message": "Stopped by the analyst"})
     except Exception as exc:
         q.put({"type": "error", "message": str(exc)})
     finally:
         _run_queues.pop(run_id, None)
+        _run_ctrl.pop(run_id, None)
 
 
 def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue,
@@ -754,6 +822,8 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     # timeout and the UI reported a failure while the broker was still working.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             encoding="utf-8", errors="replace", env=env, cwd=str(repo))
+    ctrl = _run_ctrl.get(run_id) or {}
+    ctrl["proc"] = proc  # the stop endpoint kills it
     timed_out = threading.Event()
     cli_errors: list[str] = []
     prev_was_error = False
@@ -777,6 +847,9 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
         returncode = proc.wait()
     finally:
         killer.cancel()
+        ctrl["proc"] = None
+    if ctrl.get("stop") and ctrl["stop"].is_set():
+        raise RunStopped()  # killed on purpose: not a broker failure
     link.update(exit_code=returncode, log=str(log_path))
 
     link["broker_runs"] = run_trace.broker_runs(task_ids, round_dir)

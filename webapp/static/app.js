@@ -44,30 +44,112 @@ function shortRule(name) {
 
 // ── Incident queue ─────────────────────────────────────────────────────────
 
-async function loadQueue() {
+// Repeat alerts arrive grouped (same rule + host). A group of one renders as a plain row.
+let queueGroups = [];
+// ponytail: verdicts this session only, lost on reload; persist when a run-history endpoint exists.
+const seen = {};          // event key -> {tag, color}
+let currentKey = null;    // key of the imported alert
+const _key = ev => ev.rule_name + '|' + ev.time;
+const _SEV = { critical: ['critical', 'CRIT'], high: ['high', 'HIGH'], medium: ['medium', 'MED'], low: ['low', 'LOW'], informational: ['low', 'INFO'] };
+const _sev = u => _SEV[String(u || '').toLowerCase()] || null;
+// The rule's family is its first prefix: "Endpoint - sama - ESCU - ..." -> Endpoint.
+const _FAMILY = { endpoint: 'ph-desktop', threat: 'ph-warning-octagon', network: 'ph-share-network', identity: 'ph-key', access: 'ph-key' };
+const _fam = rule => '<i class="ph ' + (_FAMILY[String(rule || '').split(/\s*-\s*/)[0].toLowerCase()] || 'ph-bell-simple') + ' q-fam" aria-hidden="true"></i>';
+
+function _qRow(ev, inGroup, i) {
+  const t = String(ev.time || ''), sev = _sev(ev.urgency), k = _key(ev), s = seen[k];
+  const busy = run ? ' disabled' : '';
+  const cls = [sev ? 'sev-' + sev[0] : '', run && k === currentKey ? 'running' : '', s ? 'ran' : ''].filter(Boolean).join(' ');
+  const who = inGroup ? [ev.user, ev.src] : [ev.dest, ev.user, ev.src];
+  return '<li' + (i == null ? '' : ' style="--i:' + i + '"') + '><button type="button" data-index="' + Number(ev.index) + '"' + (cls ? ' class="' + cls + '"' : '') + (s ? ' style="--c:' + s.color + '"' : '') +
+      (k === currentKey ? ' aria-current="true"' : '') + busy + ' title="' + _esc(ev.rule_name + '\n' + t) + '">' +
+    (inGroup ? '' : '<span class="q-rule">' + _fam(ev.rule_name) + _esc(shortRule(ev.rule_name) || 'Unnamed rule') + '</span>') +
+    '<span class="q-time">' + _esc(t.slice(11, 19) || t) + '</span>' +
+    '<span class="q-who">' + (sev && !inGroup ? '<span class="q-sev">' + sev[1] + '</span>' : '') +
+      '<span>' + _esc(who.filter(Boolean).join(', ')) + '</span>' +
+      (s ? '<span class="q-seen" style="--c:' + s.color + '">' + _esc(s.tag) + '</span>' : '') + '</span>' +
+  '</button></li>';
+}
+
+function renderQueue() {
+  const list = $('queueList');
+  const open = new Set([...list.querySelectorAll('details[open]')].map(d => d.dataset.g));
+  list.innerHTML = queueGroups.map((g, i) => {
+    if ((g.count || 1) < 2) return _qRow(g.events[0], false, i);
+    const sev = _sev(g.urgency), t = String(g.time || '');
+    const id = _esc(g.rule_name + '|' + g.dest);
+    // A group shows how many of its alerts ran this session; its streak takes the gravest verdict seen.
+    const ran = g.events.map(e => seen[_key(e)]).filter(Boolean);
+    const edge = (ran.find(x => x.tag === 'TP') || ran[0] || {}).color;
+    return '<li class="grp" style="--i:' + i + '"><details data-g="' + id + '"' + (open.has(g.rule_name + '|' + g.dest) || g.events.some(e => _key(e) === currentKey) ? ' open' : '') + '>' +
+      '<summary class="' + (sev ? 'sev-' + sev[0] : '') + (edge ? ' ran" style="--c:' + edge : '') + '" title="' + _esc(g.rule_name) + '">' +
+        '<span class="q-rule">' + _fam(g.rule_name) + _esc(shortRule(g.rule_name) || 'Unnamed rule') + '</span>' +
+        '<span class="q-time">' + _esc(t.slice(11, 19) || t) + '</span>' +
+        '<span class="q-who">' + (sev ? '<span class="q-sev">' + sev[1] + '</span>' : '') +
+          '<span class="q-count">×' + Number(g.count) + '</span><span>' + _esc(g.dest || '') + '</span>' +
+          '<span class="q-ran' + (ran.length ? ' some' : '') + '">' + (ran.length ? 'ran ' + ran.length + '/' + g.events.length : 'none ran') + '</span></span>' +
+      '</summary><ol class="q-inst">' + g.events.map(e => _qRow(e, true)).join('') + '</ol></details></li>';
+  }).join('') || '<li class="q-state">No alerts in the last 30 days. Enter the fields by hand to investigate.</li>';
+}
+
+// A poll refreshes in place: no skeleton, and a failed poll keeps the list it has.
+async function loadQueue(poll) {
   const list = $('queueList');
   list.setAttribute('aria-busy', 'true');
-  list.innerHTML = '<li class="skel"></li><li class="skel"></li><li class="skel"></li>';
+  if (!poll) list.innerHTML = '<li class="skel"></li><li class="skel"></li><li class="skel"></li>';
   try {
     const data = await getJSON('/api/incident-queue');
     if (data.status === 'error') throw new Error(data.message);
-    const events = data.events || [];
-    list.innerHTML = events.length ? events.map(ev => {
-      const t = String(ev.time || '');
-      return '<li><button type="button" data-index="' + Number(ev.index) + '" title="' + _esc(ev.rule_name + '\n' + t) + '">' +
-        '<span class="q-rule">' + _esc(shortRule(ev.rule_name) || 'Unnamed rule') + '</span>' +
-        '<span class="q-time">' + _esc(t.slice(11, 19) || t) + '</span>' +
-        '<span class="q-who">' + (ev.urgency ? '<span class="q-urg">' + _esc(ev.urgency) + '</span> ' : '') +
-          _esc([ev.dest, ev.user, ev.src].filter(Boolean).join(', ')) + '</span>' +
-      '</button></li>';
-    }).join('')
-      : '<li class="q-state">No notable events in the last 30 days. You can still fill the alert fields by hand.</li>';
+    // Older servers send flat `events`; treat each as a group of one.
+    queueGroups = data.groups || (data.events || []).map(e => ({ ...e, count: 1, events: [e] }));
+    const top = list.scrollTop;
+    list.classList.toggle('intro', !poll);
+    renderQueue();
+    list.scrollTop = top;
+    renderOverview(!poll);
   } catch (e) {
+    if (poll) return;
     list.innerHTML = '<li class="q-state bad">Could not reach Splunk: ' + _esc(e.message) +
       '<br>Check the Splunk MCP connection, then Refresh.</li>';
   } finally {
     list.setAttribute('aria-busy', 'false');
   }
+}
+
+// ── Overview: what the queue holds, shown until a run starts ──────────────
+
+function renderOverview(intro) {
+  const el = $('overview');
+  const evs = queueGroups.flatMap(g => g.events || []);
+  const ts = evs.map(e => Date.parse(e.time)).filter(n => !isNaN(n));
+  if (!ts.length) { el.innerHTML = ''; return; }
+  const lo = Math.min(...ts), hi = Math.max(...ts), span = Math.max(hi - lo, 1);
+  const at = t => ((Date.parse(t) - lo) / span * 100).toFixed(2);
+  const N = 36, bins = Array(N).fill(0);
+  ts.forEach(t => bins[Math.min(N - 1, Math.floor((t - lo) / span * N))]++);
+  const peak = Math.max(...bins);
+  const clock = t => String(evs.find(e => Date.parse(e.time) === t).time).slice(11, 16);
+  const hot = evs.filter(e => /^(critical|high)$/i.test(e.urgency || '')).length;
+  const ran = evs.filter(e => seen[_key(e)]).length;
+  const stat = (n, label) => '<div class="ov-stat"><b data-n="' + n + '">' + n + '</b><span>' + label + '</span></div>';
+  el.innerHTML =
+    '<div class="ov-stats">' + stat(evs.length, 'Alerts') + stat(queueGroups.length, queueGroups.length === 1 ? 'Group' : 'Groups') +
+      stat(hot, 'Critical or high') + stat(ran, 'Investigated') + '</div>' +
+    '<div class="ov-card"><h3>Activity</h3><div class="ov-bars">' +
+      bins.map(b => '<span style="height:' + (b / peak * 100).toFixed(1) + '%" title="' + b + ' alert' + (b === 1 ? '' : 's') + '"></span>').join('') +
+      '</div><div class="ov-axis"><span>' + clock(lo) + '</span><span>' + clock(hi) + '</span></div></div>' +
+    '<div class="ov-card"><h3>By rule and host</h3><ol class="ov-rules">' + queueGroups.map(g =>
+      '<li><button type="button" data-g="' + _esc(g.rule_name + '|' + g.dest) + '" data-index="' + Number(g.events[0].index) + '">' +
+        _fam(g.rule_name) + '<span class="ov-name">' + _esc(shortRule(g.rule_name)) + '<small>' + _esc(g.dest || '') + '</small></span>' +
+        '<span class="ov-ticks">' + g.events.map(e => { const x = seen[_key(e)];
+          return '<span' + (x ? ' class="ran" style="--c:' + x.color + ';left:' : ' style="left:') + at(e.time) + '%"></span>'; }).join('') + '</span>' +
+        '<span class="ov-n">×' + Number(g.count || 1) + '</span></button></li>').join('') + '</ol></div>';
+  if (!intro || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  el.querySelectorAll('[data-n]').forEach(b => {
+    const n = Number(b.dataset.n), t0 = performance.now();
+    const step = now => { const k = Math.min(1, (now - t0) / 700); b.textContent = Math.round(n * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
 }
 
 // ── Alert strip ────────────────────────────────────────────────────────────
@@ -80,20 +162,27 @@ function showForm(open) {
 
 function _sha256(h) { const m = /SHA256=([0-9A-Fa-f]{64})/.exec(h || ''); return m ? m[1] : (h || ''); }
 
+const _ICON = { host: 'ph-desktop-tower', user: 'ph-user', ip: 'ph-globe-simple', mitre: 'ph-crosshair', time: 'ph-clock',
+  integrity: 'ph-shield', hash: 'ph-fingerprint', proc: 'ph-terminal-window', parent: 'ph-tree-structure' };
+// "2026-10-06T22:48:19.000+03:00" -> "2026-10-06 22:48:19 +03:00"; a UTC time reads "... UTC".
+const _when = t => t ? String(t).replace('T', ' ').replace(/\.\d+/, '').replace(/(\d)([+-]\d\d:\d\d|Z)$/, '$1 $2').replace(/ (\+00:00|Z)$/, ' UTC') : '';
+
 function showFacts(data) {
   const r = data.raw_event_data || {};
   const one = v => Array.isArray(v) ? v[0] : v;
-  const facts = [
-    ['Host', data.dest], ['User', data.user], ['Source IP', data.src],
-    ['Event time (UTC)', data.event_time], ['Notable created', one(r._time)], ['Urgency', data.urgency],
-    ['Parent process', one(r.parent_process_path) || one(r.parent_process), 'm wide'],
-    ['Integrity', one(r.process_integrity_level)], ['MITRE', one(r['annotations.mitre_attack'])],
-    ['Command line', one(r.process) || data.sig, 'm wide'],
-    ['SHA256', _sha256(one(r.process_hash) || data.file_hash), 'm wide'],
-  ].filter(f => f[1]);
-  $('alertFacts').innerHTML = facts.map(([k, v, c]) =>
-    '<div class="' + (c && c.includes('wide') ? 'wide' : '') + '"><dt>' + _esc(k) + '</dt><dd' + (c && c.includes('m') ? ' class="m"' : '') + '>' + _esc(v) + '</dd></div>').join('');
-  $('alertFacts').hidden = !facts.length;
+  const sev = _sev(data.urgency);
+  const pills = [['host', 'Host', data.dest], ['user', 'User', data.user], ['ip', 'Source IP', data.src],
+    ['mitre', 'MITRE', one(r['annotations.mitre_attack'])], ['integrity', 'Integrity', one(r.process_integrity_level)],
+    ['time', 'Event', _when(data.event_time)], ['time', 'Notable', _when(one(r._time))]].filter(p => p[2]);
+  const codes = [['parent', 'Parent process', one(r.parent_process_path) || one(r.parent_process)],
+    ['proc', 'Command line', one(r.process) || data.sig], ['hash', 'SHA256', _sha256(one(r.process_hash) || data.file_hash)]].filter(c => c[2]);
+  $('alertFacts').innerHTML = '<div class="pills">' +
+      (sev ? '<span class="pill sev sev-' + sev[0] + '">' + sev[1] + '</span>' : '') +
+      pills.map(([i, k, v]) => '<span class="pill"><i class="ph ' + _ICON[i] + '" aria-hidden="true"></i><small>' + _esc(k) + '</small>' + _esc(v) + '</span>').join('') +
+    '</div>' + codes.map(([i, k, v]) =>
+      '<div class="code"><div class="code-h"><i class="ph ' + _ICON[i] + '" aria-hidden="true"></i>' + _esc(k) +
+        '<button type="button" class="copy" data-copy>Copy</button></div><code>' + _esc(v) + '</code></div>').join('');
+  $('alertFacts').hidden = !(pills.length || codes.length || sev);
 }
 
 // ponytail: the queue and the import both take "sort -_time | head", so a notable that
@@ -102,6 +191,8 @@ async function importAlert(index, btn) {
   if (run) { toast('A run is in progress. Wait for it to finish.', true); return; }
   document.querySelectorAll('#queueList button').forEach(b => b.removeAttribute('aria-current'));
   btn.setAttribute('aria-current', 'true');
+  const ev = queueGroups.flatMap(g => g.events).find(e => Number(e.index) === index);
+  currentKey = ev ? _key(ev) : null;
   $('alertNote').textContent = 'Importing the alert from Splunk ES...';
   try {
     const data = await getJSON('/api/import-from-splunk?index=' + index);
@@ -271,8 +362,16 @@ async function buildContract(f, raw) {
 const _li = name => $('stream').querySelector('.stg[data-stage="' + name + '"]');
 const _secs = ms => { const s = Math.round(ms / 1000); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's'; };
 
-// One stage active at a time; earlier ones done. A finished stage folds to its line once;
-// after that it stays however the reader left it.
+const _dot = name => $('now').querySelector('.track li[data-stage="' + name + '"]');
+const STAGE_NAMES = { context: 'Context', plan: 'Plan', broker: 'Evidence', findings: 'Findings', synthesis: 'Synthesis' };
+function _time(s, text) { _li(s).querySelector('.stg-time').textContent = text; _dot(s).querySelector('time').textContent = text; }
+function setNow(text, stage) {
+  if (stage) $('nowStage').textContent = STAGE_NAMES[stage];
+  $('nowText').textContent = text;
+}
+
+// One stage active at a time; earlier ones done. The active stage opens; nothing folds
+// on its own, so the page never shifts under the reader. The track above mirrors it.
 function setStage(name, st) {
   const at = STAGES.indexOf(name);
   const now = Date.now();
@@ -284,13 +383,16 @@ function setStage(name, st) {
     if (cls !== 'active' && t.start && !t.end) t.end = now;
     if (cls === 'active') t.end = null;
     li.className = 'stg' + (cls ? ' ' + cls : '');
-    const d = li.querySelector('details');
-    if (cls === 'active' || cls === 'failed') d.open = true;
-    else if (was === 'active') d.open = false;
-    li.querySelector('.stg-time').textContent = t.start ? _secs((t.end || now) - t.start) : '';
+    _dot(s).className = cls;
+    if (cls === 'active' || cls === 'failed') li.querySelector('details').open = true;
+    _time(s, t.start ? _secs((t.end || now) - t.start) : '');
   });
+  $('nowStage').textContent = STAGE_NAMES[name];
 }
-function setSum(name, text) { _li(name).querySelector('.stg-sum').textContent = text; }
+function setSum(name, text) {
+  _li(name).querySelector('.stg-sum').textContent = text;
+  if (run && /active|failed/.test(_li(name).className)) setNow(text, name);
+}
 
 function resetLedger() {
   STAGES.forEach(s => {
@@ -299,8 +401,13 @@ function resetLedger() {
     li.querySelector('details').open = false;
     li.querySelector('.stg-body').innerHTML = '';
     li.querySelector('.stg-sum').textContent = '';
-    li.querySelector('.stg-time').textContent = '';
+    _time(s, '');
+    _dot(s).className = '';
   });
+  $('now').hidden = false;
+  $('stream').hidden = false;
+  $('overview').hidden = true;
+  setNow('', 'context');
 }
 
 function endRun(text, cls) {
@@ -312,20 +419,22 @@ function endRun(text, cls) {
   run = null;
   renderMeta();
   setConn(text, cls);
-  $('runBtn').disabled = false;
-  $('runBtn').textContent = 'Investigate';
+  setNow(cls === 'bad' || cls === 'warn' ? text : 'Finished in ' + _secs(state.ended - state.started));
+  setControls('ended');
+  devLog('ui', text, cls === 'bad' ? 'bad' : cls === 'warn' ? 'warn' : 'ok');
   document.querySelectorAll('#queueList button').forEach(b => { b.disabled = false; b.classList.remove('running'); });
 }
 
 function tick() {
   if (!run) return;
   const cur = STAGES.find(s => _li(s).classList.contains('active'));
-  if (cur && state.t[cur] && state.t[cur].start) _li(cur).querySelector('.stg-time').textContent = _secs(Date.now() - state.t[cur].start);
+  if (cur && state.t[cur] && state.t[cur].start) _time(cur, _secs(Date.now() - state.t[cur].start));
   renderMeta();
+  devHead();
 }
 
 async function investigate(ev) {
-  ev.preventDefault();
+  if (ev) ev.preventDefault();
   if (run) return;
   const v = k => $('f_' + k).value.trim();
   const f = { rule_name: v('rule'), src_ip: v('src'), dest: v('dest'), user: v('user'), hash: v('hash'),
@@ -340,10 +449,11 @@ async function investigate(ev) {
   if (!$('alertFacts').innerHTML) { $('alertTitle').textContent = shortRule(f.rule_name); }
 
   run = { started: Date.now(), lastEvent: Date.now(), timer: setInterval(tick, 1000) };
-  state = { started: Date.now(), t: {}, tasks: [], plan: null, spend: 0, tokIn: 0, tokOut: 0, loops: 0, status: 'Building context' };
+  state = { key: currentKey, started: Date.now(), t: {}, tasks: [], plan: null, spend: 0, tokIn: 0, tokOut: 0, loops: 0, status: 'Building context', prevScores: {}, curScores: {} };
   showForm(false);
-  $('runBtn').disabled = true;
-  $('runBtn').textContent = 'Running...';
+  devReset();
+  setControls('running');
+  devLog('ui', 'Building context: ESCU match and OpenCTI lookup for ' + shortRule(f.rule_name));
   document.querySelectorAll('#queueList button').forEach(b => { b.disabled = true; if (b.getAttribute('aria-current') === 'true') b.classList.add('running'); });
   resetLedger();
   railReset();
@@ -356,10 +466,13 @@ async function investigate(ev) {
     const { contract, escuData, ctiData } = await buildContract(f, lastImportedRaw);
     run.contract = contract;
     _add(_contextCard(contract, escuData, ctiData), 'context');
+    devLog('ui', 'Context built. ' + _li('context').querySelector('.stg-sum').textContent, '', { escu: escuData, opencti: ctiData });
+    if (run.stopAsked) { _stoppedLocally(); return; }
 
     const { run_id } = await postJSON('/api/run', { context_contract: contract });
     if (!run_id) throw new Error('The server did not return a run id.');
     run.id = state.id = run_id;
+    devLog('ui', 'Run ' + run_id + ' started. Files in .smartops/runs/' + run_id + '/');
     setStage('plan');
     setSum('plan', 'Analyst is planning. A cold model can take a few minutes.');
     setConn('Run ' + run_id + ' connecting', 'warn');
@@ -367,14 +480,17 @@ async function investigate(ev) {
 
     const es = new EventSource('/api/run/stream/' + encodeURIComponent(run_id));
     run.es = es;
-    es.onopen = () => setConn('Run ' + run_id + ' live', 'live');
+    es.onopen = () => { setConn('Run ' + run_id + ' live', 'live'); devLog('ui', 'Live stream connected'); };
     es.onmessage = e => {
       if (!run) return;
       run.lastEvent = Date.now();
       const msg = JSON.parse(e.data);
+      devEvent(msg);
       handleSSE(msg);
       if (msg.type === 'done') endRun('Run ' + run_id + ' complete', 'live');
       else if (msg.type === 'error') endRun('Run ' + run_id + ' failed', 'bad');
+      else if (msg.type === 'stopped') endRun('Run ' + run_id + ' stopped', 'warn');
+      if (!run && restartAsked) { restartAsked = false; investigate(); }
     };
     // EventSource reconnects by itself and the server keeps the run's queue, so a
     // dropped connection resumes. CLOSED means it gave up (e.g. the server restarted).
@@ -385,6 +501,7 @@ async function investigate(ev) {
         endRun('Stream lost', 'bad');
       } else {
         setConn('Run ' + run_id + ' reconnecting', 'warn');
+        devLog('ui', 'Stream dropped, reconnecting', 'warn');
       }
     };
   } catch (e) {
@@ -423,7 +540,7 @@ function handleSSE(ev) {
     if (!tasks.length) {
       setStage('plan', 'failed');
       setSum('plan', 'No usable plan: nothing to send to the Tool Broker');
-      _add(_card('a', 'Plans the investigation', _tok(ev.tokens),
+      _add(_card('a', 'Plan', _tok(ev.tokens),
         '<div class="xr-p bad">The Analyst answered without a usable plan (no tasks' + (data.hypotheses ? '' : ', no hypotheses, no JSON') + '), so there is nothing to send to the Tool Broker.</div>' +
         _details('What the model said', data.reasoning ? '<div class="xr-p dim">' + _esc(data.reasoning) + '</div>' : '', true)), 'plan');
       return;
@@ -457,6 +574,7 @@ function handleSSE(ev) {
     if (atBottom) term.scrollTop = term.scrollHeight;
     const last = $('bk-last-' + loop);
     if (last && txt.trim()) last.textContent = txt.trim().slice(0, 90);
+    if (txt.trim()) setNow(txt.trim(), 'broker');
   } else if (ev.type === 'broker') {
     if (!$('bk-' + loop)) _add(_brokerShell(loop), 'broker');
     const st = $('bk-st-' + loop);
@@ -504,15 +622,27 @@ function handleSSE(ev) {
     _add(_synthCard(data, ev.reasoning, ev.tokens), 'synthesis');
     const top = Object.entries(data.hypothesis_scores || {}).sort((a, b) => b[1] - a[1])[0];
     setSum('synthesis', (top ? top[0] + ' scores ' + top[1] + ', ' : '') + (data.status === 'VERDICT_REACHED' ? 'verdict reached' : 'needs another loop'));
-    renderScores(data.hypothesis_scores || {});
+    state.prevScores = state.curScores; state.curScores = data.hypothesis_scores || {};
+    renderScores(state.curScores);
   } else if (ev.type === 'verdict') {
     const decided = data.status === 'VERDICT_REACHED';
     if (_li('synthesis').className.includes('active')) setStage('synthesis', decided ? 'done' : 'undecided');
     else STAGES.forEach(s => { const li = _li(s); if (li.className === 'stg active') setStage(s, 'done'); });
     // The run's last word stays open, so the decision fills the ledger rather than blank space.
     const last = [...STAGES].reverse().find(s => _li(s).querySelector('.stg-body').children.length);
-    if (last) _li(last).querySelector('details').open = true;
+    // The banner now carries the case, so the ledger folds once to its stage lines.
+    STAGES.forEach(s => { _li(s).querySelector('details').open = s === last || _li(s).classList.contains('failed'); });
     _verdict(data, ev.message);
+  } else if (ev.type === 'paused') {
+    run.mode = 'paused'; setControls('paused');
+    setConn('Run ' + state.id + ' paused', 'warn'); setNow('Paused. Resume to continue, or Stop.');
+    state.status = 'Paused'; renderMeta();
+  } else if (ev.type === 'resumed') {
+    run.mode = 'running'; setControls('running');
+    setConn('Run ' + state.id + ' live', 'live'); setNow('Resumed');
+    state.status = 'Running'; renderMeta();
+  } else if (ev.type === 'stopped') {
+    _markStopped();
   } else if (ev.type === 'error') {
     const st = $('bk-st-' + loop);
     if (st) st.textContent = 'Failed';
@@ -531,8 +661,10 @@ function _fail(msg) {
   const why = _explain(msg);
   _add('<div class="xr-stamp bad" role="alert">' + _esc(msg) + (why ? '<small>' + why + '</small>' : '') + '</div>', stage);
   const b = $('verdict');
-  b.style.setProperty('--v', 'var(--bad)');
-  b.innerHTML = '<div class="v-label">Run failed</div><div class="v-conf">' + _esc(msg) + '</div>';
+  setV('var(--bad)');
+  if (state.key && !seen[state.key]) { seen[state.key] = { tag: 'FAILED', color: 'var(--faint)' }; renderQueue(); }
+  b.innerHTML = '<div class="v-main"><div class="v-label">Run failed</div><div class="v-conf">' + _esc(msg) + '</div></div>';
+  b.hidden = false;
 }
 
 // What an error means and where to look. First match wins; order is specific to general.
@@ -572,19 +704,20 @@ function _contextCard(c, escu, cti) {
   const keys = Object.keys(res);
   const failed = keys.filter(k => JSON.stringify(res[k]).includes('"error"'));
   const seed = c.normalized_seed || {};
+  const down = cti.status === 'unavailable';
   const fps = (ec.known_false_positives || []).filter(Boolean);
   setSum('context', ((escu.matches || [])[0] ? 'ESCU: ' + escu.matches[0].rule : 'No ESCU match') + ', OpenCTI ' +
-    (keys.length ? (keys.length - failed.length) + ' of ' + keys.length + ' lookups answered' : 'not asked') +
+    (down ? 'unavailable' : keys.length ? (keys.length - failed.length) + ' of ' + keys.length + ' lookups answered' : 'not asked') +
     (seed.event_time ? ', event at ' + seed.event_time.slice(11, 19) + ' UTC' : ''));
-  return _card('a', 'Builds the alert context', '',
+  return _card('a', 'Context', '',
     '<div class="xr-h">ESCU matches</div>' + (matches || '<div class="xr-p dim">No ESCU rule matched this name.</div>') +
     (ec.description ? '<div class="xr-p dim">' + _esc(ec.description) + '</div>' : '') +
     ((ec.mitre_techniques || []).length ? '<div class="xr-h">MITRE</div><div class="chips">' + _list(ec.mitre_techniques) + '</div>' : '') +
     ((ec.analytic_story || []).length ? '<div class="xr-h">Analytic stories</div><div class="chips">' + _list(ec.analytic_story) + '</div>' : '') +
     ((ec.data_sources || []).length ? '<div class="xr-h">Data sources</div><div class="chips">' + _list(ec.data_sources) + '</div>' : '') +
     (fps.length ? '<div class="xr-h">Known false positives (ESCU)</div>' + fps.map(f => '<div class="xr-p">' + _esc(f) + '</div>').join('') : '') +
-    '<div class="xr-h">OpenCTI</div><div class="xr-p ' + (failed.length ? 'bad' : '') + '">' +
-      (keys.length ? (failed.length ? failed.length + ' of ' + keys.length + ' lookups failed (OpenCTI unreachable or timing out)' : keys.length + ' lookups answered') : 'No observables to look up') + '</div>' +
+    '<div class="xr-h">OpenCTI</div><div class="xr-p ' + (failed.length || down ? 'bad' : '') + '">' +
+      (down ? 'Threat intel unavailable: ' + _esc(cti.message || 'OpenCTI did not answer') : keys.length ? (failed.length ? failed.length + ' of ' + keys.length + ' lookups failed (OpenCTI unreachable or timing out)' : keys.length + ' lookups answered') : 'No observables to look up') + '</div>' +
     '<details class="raw"><summary>Raw context sent to the pipeline</summary>' +
       '<div class="xr-h">Context contract</div><pre id="contractOut">' + _esc(JSON.stringify(c, null, 2)) + '</pre>' +
       '<div class="xr-h">ESCU match</div><pre id="escuOut">' + _esc(JSON.stringify(escu, null, 2)) + '</pre>' +
@@ -606,7 +739,7 @@ function _analystCard(data, tokens) {
   const hyps = (data.hypotheses || []).map(h =>
     '<div class="xr-p"><b style="color:' + (_VERDICT[h.verdict] || 'inherit') + '">' + _esc(h.id) + ' ' + _esc(String(h.verdict || '').replace(/_/g, ' ').toLowerCase()) + '</b> ' + _esc(h.description) + '</div>'
   ).join('') || '<div class="xr-p dim">No hypotheses in the plan.</div>';
-  return _card('a', 'Plans the investigation', _tok(tokens),
+  return _card('a', 'Plan', _tok(tokens),
     (data.model_reasoning ? '<div class="xr-p dim">' + _esc(data.model_reasoning) + '</div>' : '') +
     '<div class="xr-h">Hypotheses</div>' + hyps + _alignment(data) +
     _details('Full reasoning', data.reasoning ? '<div class="xr-p dim">' + _esc(data.reasoning) + '</div>' : ''));
@@ -625,13 +758,13 @@ function _handoffCard(loop, data) {
   const changed = notes.map(d => '<div class="xr-p dim"><b>' + _esc(_short(d.task_id) || 'Task') + '</b> sent changed: ' + _esc(d.why) + '</div>').join('');
   const lost = dropped.map(d => '<div class="xr-p bad"><b>' + _esc(_short(d.task_id) || 'Task') + '</b> not sent: ' + _esc(d.why) + '</div>' +
     (d.question ? '<div class="xr-p dim">' + _esc(d.question) + '</div>' : '')).join('');
-  return _card('b', 'Receives ' + tasks.length + ' task' + (tasks.length === 1 ? '' : 's'), dropped.length ? dropped.length + ' not sent' : '',
+  return _card('b', 'Handoff, ' + tasks.length + ' task' + (tasks.length === 1 ? '' : 's'), dropped.length ? dropped.length + ' not sent' : '',
     (list || '<div class="xr-p bad">Nothing arrived: no task could be converted.</div>') + changed + lost +
     '<div class="xr-mono" style="margin-top:8px">' + _esc(data.task_file) + '</div>');
 }
 
 function _brokerShell(loop) {
-  return _card('b', 'Fetches the evidence', '<span id="bk-st-' + loop + '">Running</span>',
+  return _card('b', 'Evidence fetch', '<span id="bk-st-' + loop + '">Running</span>',
     '<details><summary>Engine log<span class="log-last" id="bk-last-' + loop + '"></span></summary><div class="xr-log xr-mono" id="bk-term-' + loop + '"></div></details>' +
     '<div id="bk-fd-' + loop + '" hidden></div>', 'bk-' + loop);
 }
@@ -723,7 +856,7 @@ function _payloadCard(data) {
       ' <span class="dim dom-line">' + mark + '</span></summary>' +
       (doms.map(_finding).join('') || '<div class="xr-p dim">No domain had evidence to describe.</div>') + '</details>';
   }).join('') || '<div class="xr-p dim">No findings.</div>';
-  return _card('b', 'Sub-analysts describe the evidence', ps.length + ' finding set' + (ps.length === 1 ? '' : 's'), body);
+  return _card('b', 'Findings', ps.length + ' finding set' + (ps.length === 1 ? '' : 's'), body);
 }
 
 function _synthCard(data, reasoning, tokens) {
@@ -731,7 +864,7 @@ function _synthCard(data, reasoning, tokens) {
   const fups = (data.follow_up_tasks || []).map(t => '<div class="xr-p">' + _esc(t.question || JSON.stringify(t)) + '</div>').join('');
   const done = data.status === 'VERDICT_REACHED';
   const scores = Object.entries(data.hypothesis_scores || {}).map(([k, v]) => _esc(k) + ' ' + _esc(v)).join(', ');
-  return _card('a', 'Weighs the hypotheses', _tok(tokens),
+  return _card('a', 'Assessment', _tok(tokens),
     '<div class="xr-p ' + (done ? 'ok' : '') + '" style="font-weight:650">' + (done ? 'Verdict reached' : 'Needs another loop') + (scores ? ' <span class="dim">(' + scores + ')</span>' : '') + '</div>' +
     (data.verdict_reasoning ? '<div class="xr-h">Why</div><div class="xr-p">' + _esc(data.verdict_reasoning) + '</div>' : '') +
     ((data.evidence_refs || []).length ? '<div class="xr-h">Evidence cited</div><div class="chips">' + _list(data.evidence_refs) + '</div>' : '') +
@@ -742,35 +875,61 @@ function _synthCard(data, reasoning, tokens) {
 
 // ── Rail ───────────────────────────────────────────────────────────────────
 
+function setV(color) {
+  if (color) document.body.style.setProperty('--v', color);
+  else document.body.style.removeProperty('--v');
+}
+const _VTAG = { TRUE_POSITIVE: 'TP', FALSE_POSITIVE: 'FP', BENIGN: 'BENIGN' };
+
 function railReset() {
+  setV(null);
   const b = $('verdict');
-  b.style.removeProperty('--v');
+  b.hidden = true;
   b.classList.remove('landed');
-  b.innerHTML = '<div class="v-label">Investigating</div><div class="v-conf">The verdict lands here when synthesis finishes.</div><div id="scores"></div>';
+  b.innerHTML = '';
   state.tasks = [];
+  renderScores({});
   renderTasks();
   renderMeta();
 }
 
+// Ranked by score; when a synthesis rescores, rows slide to their new rank (FLIP).
 function renderScores(scores) {
   const el = $('scores');
-  if (!el) return;
   const hyps = (state.plan && state.plan.hypotheses) || [];
   const ids = hyps.length ? hyps.map(h => h.id) : Object.keys(scores);
-  const top = Math.max(...ids.map(id => Number(scores[id]) || 0));
-  el.innerHTML = ids.length ? '<div class="v-h">Hypotheses</div>' + ids.map(id => {
+  if (!ids.length) { el.innerHTML = '<li class="dim">Appear with the plan.</li>'; return; }
+  const num = id => scores[id] == null ? -1 : Number(scores[id]) || 0;
+  ids.sort((x, y) => num(y) - num(x));
+  const before = {};
+  el.querySelectorAll('.score').forEach(r => { before[r.dataset.id] = r.getBoundingClientRect().top; });
+  const prev = state.prevScores || {};
+  el.innerHTML = ids.map((id, i) => {
     const h = hyps.find(x => x.id === id) || {};
-    const has = scores[id] != null, v = Math.max(0, Math.min(100, Number(scores[id]) || 0));
-    return '<div class="score' + (has && v === top ? ' top' : '') + '" title="' + _esc((h.verdict || '') + ': ' + (h.description || '')) + '">' +
-      '<b>' + _esc(id) + '</b><span class="bar"><i style="width:' + v + '%;--c:' + (_VERDICT[h.verdict] || 'var(--warn)') + '"></i></span>' +
-      '<span class="n">' + (has ? _esc(scores[id]) : '') + '</span></div>';
-  }).join('') : '';
+    const has = scores[id] != null;
+    const d = has && prev[id] != null ? Number(scores[id]) - Number(prev[id]) : 0;
+    return '<li class="score' + (has && i === 0 ? ' top' : '') + '" data-id="' + _esc(id) + '">' +
+      '<span class="h-id">' + _esc(id) + '</span>' +
+      '<span class="h-desc" title="' + _esc(h.description || '') + '">' + _esc(h.description || '') + '</span>' +
+      '<span class="h-n' + (has ? '' : ' none') + '">' + (has ? _esc(scores[id]) : '–') + '</span>' +
+      '<span class="h-meta"><span class="h-v" style="--c:' + (_VERDICT[h.verdict] || 'var(--warn)') + '">' + _esc(_VTAG[h.verdict] || h.verdict || '') + '</span>' +
+        (d ? '<span class="h-d flash' + (d > 0 ? ' up' : '') + '">' + (d > 0 ? '+' : '−') + Math.abs(d) + '</span>' : '') + '</span></li>';
+  }).join('');
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  el.querySelectorAll('.score').forEach(r => {
+    const dy = before[r.dataset.id] - r.getBoundingClientRect().top;
+    if (!dy) return;
+    r.style.transform = 'translateY(' + dy + 'px)';
+    r.getBoundingClientRect();
+    r.style.transition = 'transform .7s cubic-bezier(.2,.8,.2,1)';
+    r.style.transform = '';
+  });
 }
 
 function renderTasks() {
   const el = $('taskBoard');
   if (!state.tasks || !state.tasks.length) {
-    el.innerHTML = '<li class="dim">The plan\'s tasks appear here once the Analyst sends them.</li>';
+    el.innerHTML = '<li class="dim">Appear with the plan.</li>';
     return;
   }
   el.innerHTML = state.tasks.map(t => {
@@ -806,30 +965,260 @@ function _verdict(data, why) {
   const decided = data.status === 'VERDICT_REACHED';
   const v = String(data.verdict || 'UNKNOWN').toUpperCase();
   const conf = data.verdict_confidence ?? data.confidence;
+  const color = decided ? (_VERDICT[v] || 'var(--warn)') : 'var(--warn)';
+  const words = v.replace(/_/g, ' ').toLowerCase();
   const b = $('verdict');
-  const scores = data.hypothesis_scores || {};
-  b.style.setProperty('--v', decided ? (_VERDICT[v] || 'var(--warn)') : 'var(--warn)');
-  const li = (h, xs) => (xs || []).length ? '<div class="v-h">' + h + '</div><ul class="v-list">' + xs.map(x => '<li>' + _esc(x) + '</li>').join('') + '</ul>' : '';
-  b.innerHTML = '<div class="v-label">' + (decided ? _esc(v.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase())) : 'No verdict') + '</div>' +
-    '<div class="v-conf">' + (decided ? '' : 'Leaning ' + _esc(v.replace(/_/g, ' ').toLowerCase()) + ', but the evidence gate did not pass. Stopped: ' + _esc(why || 'unknown') + '. ') +
-      (conf != null ? 'Confidence ' + _esc(conf) + '%' : '') + '</div>' +
-    '<div id="scores"></div>' +
-    '<div class="v-h">Why</div><div class="v-sum">' + _esc(data.verdict_reasoning || data.reasoning || data.executive_summary || 'The model gave no reasoning for this verdict.') + '</div>' +
-    li('Evidence cited', data.evidence_refs) + li('Still missing', data.evidence_gaps);
-  renderScores(scores);
+  setV(color);
+  const ul = (h, xs) => (xs || []).length ? '<div><div class="v-h">' + h + '</div><ul class="v-list">' + xs.map(x => '<li>' + _esc(x) + '</li>').join('') + '</ul></div>' : '';
+  const ring = conf != null && !isNaN(Number(conf));
+  b.innerHTML = (ring ? '<div class="v-ring"><span>' + _esc(Math.round(Number(conf))) + '<small>%</small></span></div>' : '') +
+    '<div class="v-main">' +
+      '<div class="v-label"><i class="ph-bold ' + (!decided ? 'ph-question' : v === 'TRUE_POSITIVE' ? 'ph-shield-warning' : 'ph-shield-check') + '" aria-hidden="true"></i>' +
+        (decided ? _esc(words.replace(/^./, c => c.toUpperCase())) : 'No verdict') + '</div>' +
+      '<div class="v-conf">' + (decided ? (ring ? 'Confidence ' + _esc(conf) + '%' : '') : 'Leaning ' + _esc(words) + '. The evidence gate did not pass. Stopped: ' + _esc(why || 'unknown') + '.') + '</div>' +
+      '<div class="v-sum">' + _esc(data.verdict_reasoning || data.reasoning || data.executive_summary || 'The model gave no reasoning for this verdict.') + '</div>' +
+      '<div class="v-cols">' + ul('Evidence cited', data.evidence_refs) + ul('Still missing', data.evidence_gaps) + '</div>' +
+    '</div>';
+  b.hidden = false;
   b.classList.remove('landed'); void b.offsetWidth; b.classList.add('landed');
+  if (ring) requestAnimationFrame(() => requestAnimationFrame(() => b.querySelector('.v-ring').style.setProperty('--conf', Math.max(0, Math.min(100, Number(conf))))));
+  renderScores(data.hypothesis_scores || state.curScores || {});
+  if (state.key) { seen[state.key] = { tag: decided ? (_VTAG[v] || v) : 'NO VERDICT', color }; renderQueue(); }
   state.status = decided ? 'Verdict reached' : 'Stopped without a verdict';
   renderMeta();
+}
+
+// ── Run controls ───────────────────────────────────────────────────────────
+// One place decides which buttons show: idle -> Investigate; running -> Pause, Stop;
+// pausing/paused -> Resume, Stop; ended -> Restart, Reset, Investigate.
+function setControls(mode) {
+  const show = { runBtn: mode === 'idle' || mode === 'ended', runPause: /running|paus/.test(mode), runStop: /running|paus/.test(mode),
+                 runRestart: mode === 'ended', runReset: mode === 'ended' };
+  Object.entries(show).forEach(([id, on]) => { $(id).hidden = !on; $(id).disabled = false; });
+  $('runPause').innerHTML = /paus/.test(mode) ? '<i class="ph-bold ph-play"></i>Resume' : '<i class="ph-bold ph-pause"></i>Pause';
+  $('runStop').innerHTML = '<i class="ph-bold ph-stop"></i>Stop';
+  $('runBtn').textContent = 'Investigate';
+}
+
+async function _control(action) {
+  if (!run || !run.id) return false;
+  try { await postJSON('/api/run/' + encodeURIComponent(run.id) + '/' + action, {}); return true; }
+  catch (e) {
+    toast('Could not ' + action + ' the run: ' + e.message, true); devLog('ui', action + ' failed: ' + e.message, 'bad');
+    if (run) setControls(run.mode || 'running');
+    return false;
+  }
+}
+
+async function pauseOrResume() {
+  if (!run) return;
+  $('runPause').disabled = true;  // instant feedback; setControls re-enables it
+  if (/paus/.test(run.mode || '')) {
+    devLog('ui', 'Resume requested');
+    if (await _control('resume')) { run.mode = 'running'; setControls('running'); setNow('Resuming'); }
+  } else {
+    devLog('ui', 'Pause requested: holds at the next stage boundary');
+    $('runPause').innerHTML = '<i class="ph-bold ph-pause"></i>Pausing';
+    if (await _control('pause')) { run.mode = 'pausing'; setControls('pausing'); setNow('Pausing after this step. A model call or broker round in flight finishes first.'); }
+  }
+}
+
+async function stopRun() {
+  if (!run) return;
+  $('runStop').disabled = true; $('runPause').disabled = true;
+  $('runStop').innerHTML = '<i class="ph-bold ph-stop"></i>Stopping';
+  devLog('ui', 'Stop requested: kills the broker now, or lands when the current model call returns', 'warn');
+  setNow('Stopping. A model call in flight finishes first.');
+  if (!run.id) { run.stopAsked = true; return; }  // still building context: stops before the run starts
+  if (!(await _control('stop'))) setControls(run.mode || 'running');
+}
+
+function _markStopped() {
+  const stage = STAGES.find(s => /active|failed/.test(_li(s).className)) || 'context';
+  setStage(stage, 'undecided');
+  setSum(stage, 'Stopped by the analyst');
+  state.status = 'Stopped';
+  if (state.key) { seen[state.key] = { tag: 'STOPPED', color: 'var(--faint)' }; renderQueue(); }
+}
+function _stoppedLocally() {
+  _markStopped(); endRun('Stopped before the run started', 'warn');
+  if (restartAsked) { restartAsked = false; investigate(); }
+}
+
+let restartAsked = false;
+function restartRun() {
+  devLog('ui', 'Restart requested');
+  if (run) { restartAsked = true; stopRun(); return; }
+  investigate();
+}
+
+function resetView() {
+  if (run) return;
+  STAGES.forEach(s => { const li = _li(s); li.className = 'stg'; li.querySelector('.stg-body').innerHTML = ''; li.querySelector('.stg-sum').textContent = ''; _time(s, ''); _dot(s).className = ''; });
+  $('now').hidden = true; $('stream').hidden = true; $('overview').hidden = false;
+  state = {};
+  railReset();
+  setConn('Idle');
+  setControls('idle');
+  renderOverview(false);
+  devLog('ui', 'View reset');
+}
+
+// ── Dev mode (Ctrl+D): the run's live log ──────────────────────────────────
+// ponytail: keeps the last 5000 lines and redraws on filter/search; add virtual scrolling if runs outgrow it.
+const DEV_MAX = 5000;
+let devLines = [], devFilter = 'all', devQuery = '', devFollow = true;
+const DEV_SRC = { pipe: 'Pipeline', analyst: 'Analyst', broker: 'Broker', ui: 'UI' };
+const _demojibake = t => String(t || '').replace(/\u00e2\u20ac\u201d/g, '-').replace(/\u00e2\u20ac\u201c/g, '-');
+
+function devLog(src, text, cls, json) {
+  const at = Date.now();
+  const line = { at, rel: state.started ? (at - state.started) / 1000 : null, src, text: _demojibake(text), cls: cls || '',
+    stage: run ? STAGE_NAMES[currentStage()] : '', json };
+  devLines.push(line);
+  if (devLines.length > DEV_MAX) { devLines.shift(); if (!$('dev').hidden) return devRender(); }
+  devCounts();
+  if (!$('dev').hidden && _devMatch(line)) {
+    $('devLog').insertAdjacentHTML('beforeend', _devRow(line, devLines.length - 1));
+    if (devFollow) $('devLog').scrollTop = $('devLog').scrollHeight;
+  }
+  devHead();
+}
+
+// One SSE event -> one readable line. Broker lines are kept verbatim.
+function devEvent(m) {
+  const d = m.data || {};
+  const has = d && Object.keys(d).length;
+  if (m.type === 'broker_log') return devLog('broker', d.line || '', /\[ok|success/i.test(d.line) ? 'ok' : /\[rejected|\[error|ERROR|Traceback/i.test(d.line) ? 'bad' : '');
+  const src = /^(analyst|synthesis|verdict)$/.test(m.type) ? 'analyst' : 'pipe';
+  const digest = {
+    analyst: has ? 'Plan: ' + (d.hypotheses || []).length + ' hypotheses, ' + (d.tasks || []).length + ' tasks' : '',
+    handoff: (d.tasks || []).length + ' task(s) handed to the broker' + ((d.dropped || []).length ? ', ' + d.dropped.length + ' dropped or changed' : ''),
+    broker: d.handshake ? (d.handshake.returned || []).length + ' of ' + (d.handshake.sent || []).length + ' tasks returned' : '',
+    payload: (d.payloads || []).length + ' finding set(s) from the sub-analysts',
+    synthesis: has ? 'Scores ' + JSON.stringify(d.hypothesis_scores || {}) + ', ' + (d.status || '') : '',
+    verdict: 'Verdict ' + (d.verdict || '?') + (d.verdict_confidence != null ? ' at ' + d.verdict_confidence + '%' : ''),
+  }[m.type];
+  const text = [m.message, digest].filter(Boolean).join('. ') || m.type;
+  const cls = m.type === 'error' ? 'bad' : /paused|stopped/.test(m.type) ? 'warn' : /done|verdict|resumed/.test(m.type) ? 'ok' : '';
+  devLog(src, '[' + m.type + '] ' + text, cls, has ? d : null);
+}
+
+function _devMatch(l) {
+  if (devFilter === 'err' ? l.cls !== 'bad' : devFilter !== 'all' && l.src !== devFilter) return false;
+  return !devQuery || (l.text + ' ' + l.stage).toLowerCase().includes(devQuery);
+}
+function _devRow(l, i) {
+  let text = _esc(l.text);
+  if (devQuery) { const q = _esc(devQuery).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); text = text.replace(new RegExp(q, 'gi'), m => '<mark>' + m + '</mark>'); }
+  return '<li class="dl ' + l.cls + (l.json ? ' has-json' : '') + '" data-i="' + i + '"' + (l.json ? ' tabindex="0" aria-expanded="false"' : '') + '>' +
+    '<time title="' + new Date(l.at).toLocaleTimeString() + '">' + (l.rel == null ? '' : '+' + l.rel.toFixed(1) + 's') + '</time>' +
+    '<b class="dl-src src-' + l.src + '">' + DEV_SRC[l.src] + '</b><span class="dl-stage">' + _esc(l.stage) + '</span>' +
+    '<span class="dl-text">' + text + (l.json ? '<i class="ph ph-caret-right dl-caret" aria-hidden="true"></i>' : '') + '</span></li>';
+}
+function devRender() {
+  const rows = devLines.map((l, i) => _devMatch(l) ? _devRow(l, i) : '').join('');
+  $('devLog').innerHTML = rows || '<li class="dl-empty">' + (devLines.length ? 'No lines match.' : 'No run yet. Start an investigation and its live log streams here.') + '</li>';
+  if (devFollow) $('devLog').scrollTop = $('devLog').scrollHeight;
+  devCounts(); devHead();
+}
+function devCounts() {
+  const n = { all: devLines.length, err: 0 };
+  devLines.forEach(l => { n[l.src] = (n[l.src] || 0) + 1; if (l.cls === 'bad') n.err++; });
+  $('devFilters').querySelectorAll('button').forEach(b => { const k = n[b.dataset.src] || 0; b.querySelector('span').textContent = k; b.classList.toggle('has', k > 0); });
+}
+function devHead() {
+  if ($('dev').hidden) return;
+  const mode = run ? (run.mode === 'paused' ? 'paused' : 'live') : (state.id ? 'ended' : 'idle');
+  $('devRun').innerHTML = state.id
+    ? '<span class="dev-st ' + mode + '">' + mode + '</span><b>' + _esc(state.id) + '</b><span>' + (run ? _esc(STAGE_NAMES[currentStage()]) : _esc(state.status || '')) + '</span>' +
+      '<span>' + (state.started ? _secs((state.ended || Date.now()) - state.started) : '') + '</span><code>.smartops/runs/' + _esc(state.id) + '/</code>'
+    : '<span class="dev-st ' + mode + '">' + mode + '</span>';
+}
+function devReset() { devLines = []; devRender(); }
+function toggleDev(open) {
+  const on = open ?? $('dev').hidden;
+  $('dev').hidden = !on;
+  document.body.classList.toggle('dev-open', on);
+  try { localStorage.setItem('devOpen', on ? '1' : ''); } catch (e) { /* storage blocked: not remembered */ }
+  if (on) devRender();
+}
+function _devText(lines) {
+  return lines.map(l => [(l.rel == null ? '' : '+' + l.rel.toFixed(1) + 's').padStart(8), DEV_SRC[l.src].padEnd(8), (l.stage || '').padEnd(9), l.text].join('  ')).join('\n');
 }
 
 // ── Wire up ────────────────────────────────────────────────────────────────
 
 $('alertForm').addEventListener('submit', investigate);
-$('queueRefresh').addEventListener('click', loadQueue);
+$('runPause').addEventListener('click', pauseOrResume);
+$('runStop').addEventListener('click', stopRun);
+$('runRestart').addEventListener('click', restartRun);
+$('runReset').addEventListener('click', resetView);
+$('devToggle').addEventListener('click', () => toggleDev());
+$('devClose').addEventListener('click', () => toggleDev(false));
+$('devFilters').addEventListener('click', e => {
+  const b = e.target.closest('button[data-src]');
+  if (!b) return;
+  devFilter = b.dataset.src;
+  $('devFilters').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  devRender();
+});
+$('devSearch').addEventListener('input', e => { devQuery = e.target.value.trim().toLowerCase(); devRender(); });
+$('devFollow').addEventListener('change', e => { devFollow = e.target.checked; $('devJump').hidden = devFollow; if (devFollow) $('devLog').scrollTop = $('devLog').scrollHeight; });
+$('devLog').addEventListener('scroll', () => {
+  const el = $('devLog'), atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  if (devFollow !== atEnd) { devFollow = atEnd; $('devFollow').checked = atEnd; $('devJump').hidden = atEnd; }
+});
+$('devJump').addEventListener('click', () => { $('devFollow').checked = true; $('devFollow').dispatchEvent(new Event('change')); });
+// A row with a structured event opens its JSON underneath.
+function _devToggleRow(li) {
+  const l = devLines[Number(li.dataset.i)];
+  if (!l || !l.json) return;
+  const open = li.nextElementSibling && li.nextElementSibling.classList.contains('dl-json');
+  if (open) li.nextElementSibling.remove();
+  else li.insertAdjacentHTML('afterend', '<li class="dl-json"><pre>' + _esc(JSON.stringify(l.json, null, 2)) + '</pre></li>');
+  li.setAttribute('aria-expanded', String(!open));
+}
+$('devLog').addEventListener('click', e => { const li = e.target.closest('li.has-json'); if (li) _devToggleRow(li); });
+$('devLog').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('li.has-json')) _devToggleRow(e.target); });
+$('devCopy').addEventListener('click', () => {
+  navigator.clipboard.writeText(_devText(devLines.filter(_devMatch)))
+    .then(() => toast('Copied ' + devLines.filter(_devMatch).length + ' lines'), () => toast('Copy failed: the browser blocked the clipboard.', true));
+});
+$('devSave').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([_devText(devLines)], { type: 'text/plain' }));
+  a.download = 'run-' + (state.id || 'none') + '.log';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'd') { e.preventDefault(); toggleDev(); return; }
+  if ($('dev').hidden) return;
+  if (e.key === 'Escape') { toggleDev(false); $('devToggle').focus(); }
+  else if (e.key === '/' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); $('devSearch').focus(); }
+});
+$('queueRefresh').addEventListener('click', () => loadQueue());
 $('alertEdit').addEventListener('click', () => { const open = $('alertForm').hidden; showForm(open); if (open) $('f_rule').focus(); });
 $('queueList').addEventListener('click', e => {
   const btn = e.target.closest('button[data-index]');
   if (btn) importAlert(Number(btn.dataset.index), btn);
+});
+$('alertFacts').addEventListener('click', e => {
+  const b = e.target.closest('[data-copy]');
+  if (!b) return;
+  navigator.clipboard.writeText(b.closest('.code').querySelector('code').textContent)
+    .then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); },
+          () => toast('Copy failed: the browser blocked the clipboard.', true));
+});
+// An overview row opens its group in the queue, or imports a lone alert.
+$('overview').addEventListener('click', e => {
+  const b = e.target.closest('button[data-g]');
+  if (!b) return;
+  const d = $('queueList').querySelector('details[data-g="' + CSS.escape(b.dataset.g) + '"]');
+  if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); d.querySelector('summary').focus({ preventScroll: true }); return; }
+  const q = $('queueList').querySelector('button[data-index="' + b.dataset.index + '"]');
+  if (q) { q.scrollIntoView({ block: 'nearest' }); q.click(); }
 });
 // A task in the rail opens its findings (or, before they arrive, its evidence run).
 $('taskBoard').addEventListener('click', e => {
@@ -842,4 +1231,8 @@ $('taskBoard').addEventListener('click', e => {
   el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
   el.querySelector('summary').focus({ preventScroll: true });
 });
+setControls('idle');
+try { if (localStorage.getItem('devOpen')) toggleDev(true); } catch (e) { /* storage blocked: starts closed */ }
 loadQueue();
+// ponytail: fixed 60s poll, each one a Splunk search; push from the server if that load matters.
+setInterval(() => { if (!document.hidden) loadQueue(true); }, 60000);
