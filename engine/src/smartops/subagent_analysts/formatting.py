@@ -213,7 +213,7 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
 _COUNT_FIELD: tuple[str, ...] = ("count",)
 
 
-def _utc(value: str) -> str:
+def to_utc(value: str) -> str:
     """An offset-bearing ISO timestamp restated in UTC (`...Z`); anything else as is.
 
     The task window reaches the prompt in UTC, while Splunk returns `_time` in
@@ -276,7 +276,7 @@ def utc_row(row: dict[str, Any]) -> dict[str, Any]:
             zone = UTC if "utc" in str(key).lower() else anchor
             out[key] = local.replace(tzinfo=zone).astimezone(UTC).isoformat().replace("+00:00", "Z") if zone else value + ZONE_UNKNOWN
         else:
-            out[key] = _utc(value)
+            out[key] = to_utc(value)
     return out
 
 
@@ -571,6 +571,14 @@ def _generic_dimensions(rows: Sequence[dict[str, Any]]) -> list[str]:
 _TIME_KEYS = frozenset({"time", "_time", "timestamp"})
 
 
+def _iso(value: str) -> bool:
+    """True for a zoned ISO timestamp; a `(zone-unknown)` value or a duration is not one."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
+    except ValueError:
+        return False
+
+
 def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> str | None:
     """Earliest and latest timestamp across ALL rows, or `None` if they carry none.
 
@@ -586,6 +594,13 @@ def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> 
     whole summary.
     """
     values = [v for v in (_first(row, *candidates, default="") for row in rows) if v]
+    if not values:
+        # A `| stats min(_time) max(_time) by …` row has no `_time` but carries its
+        # span in its own time-named columns, already UTC through `utc_row` (P-2).
+        values = [
+            _sanitise(str(v)) for row in rows for k, v in row.items()
+            if _TIME_NAME.search(str(k)) and _iso(str(v))
+        ]
     if not values:
         return None
     try:
@@ -797,8 +812,10 @@ def format_result_set(
     if empty_count > 0:
         lines.append(f"… ({empty_count} of {len(shown)} shown rows projected nothing into {category} schema)")
 
-    if len(result_set.rows) > row_cap:
-        lines.append(f"… ({len(result_set.rows) - row_cap} more rows not shown)")
+    # Both numbers, written by code: the prompt has the model copy this line, and
+    # a model asked for "20 of 4,000" got the 20 by counting lines (P-1).
+    if result_set.row_count > len(shown):
+        lines.append(f"… {len(shown)} of {result_set.row_count} rows shown")
 
     # Rendered for EVERY set, not only a truncated one. A capped set needs it
     # because the analyst cannot count rows it was never shown; a fully printed

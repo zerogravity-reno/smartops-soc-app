@@ -299,3 +299,21 @@ class TestAddingADomainIsOneEntry:
         # time_scoped=False must select the lookup guidance, not the time rule.
         assert "rate limited" in prompt
         assert "do NOT use relative times" not in prompt
+
+
+def test_a_private_ip_is_not_a_vt_observable():
+    """P-8: a scope whose only IP is private got `investigate_vt` offered, and the
+    step came back "private, not looked up"."""
+    from datetime import UTC, datetime
+
+    from smartops.domains import scope_gap
+
+    from contracts import Entity, Scope
+
+    def scope(*ips):
+        return Scope(entities=[Entity(kind="ip", value=v) for v in ips],
+                     time_window=(datetime(2026, 10, 5, tzinfo=UTC), datetime(2026, 10, 6, tzinfo=UTC)))
+
+    assert "private IPs" in scope_gap("vt", scope("192.168.40.211"))
+    assert scope_gap("vt", scope("192.168.40.211", "8.8.8.8")) is None
+    assert scope_gap("ndr", scope("192.168.40.211")) is None  # private is still traffic

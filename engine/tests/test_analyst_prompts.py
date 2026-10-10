@@ -165,8 +165,8 @@ class TestFactsSystemPrompt:
             assert "TRUE number of rows the query matched" in _flat(p)
             # The literal marker `format_result_set` appends, so the model is
             # told what to watch for rather than left to infer it.
-            assert "… (N more rows not shown)" in p
-            assert "give both numbers" in p
+            assert "… 20 of 4000 rows shown" in p
+            assert "copying that line's two numbers" in _flat(p)
 
     def test_augments_metis_persona_not_replaces_it(self):
         p = facts_system_prompt("network")
@@ -451,7 +451,7 @@ class TestTheRowCapDoesNotHideRowsTheBudgetCouldAfford:
         text, _ids, _truncated, row_cap = pack_evidence(self._slice(500))
 
         assert row_cap == _ROW_CAP_LADDER[0]
-        assert "not shown" in text
+        assert "rows shown" in text
 
 
 class TestTheDerivedBudgetLeavesRoom:
@@ -811,7 +811,7 @@ class TestExhibitsRenderAtTheAnalystsOwnCap:
 
         # All 12 fit under the cap of 20, so nothing is withheld -- which the old
         # fixed cap of 8 would have hidden behind "4 more rows not shown".
-        assert "more rows not shown" not in exhibit.text
+        assert "rows shown" not in exhibit.text
 
 
 class TestThePromptsCannotBeMistakenForEvidence:

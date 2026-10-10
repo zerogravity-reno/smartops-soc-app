@@ -378,7 +378,7 @@ class TestPrompt:
         prompt = subagents._prompt_for(mission("siem"))
 
         assert str(int(START.timestamp())) in prompt
-        assert "2018-08-20T00:00:00+00:00" in prompt
+        assert "2018-08-20T00:00:00Z" in prompt
 
     def test_relative_times_are_explicitly_forbidden_for_time_scoped_domains(self):
         # The failure this prevents: a relative window over 2018 data returns
@@ -412,7 +412,11 @@ class TestPrompt:
     def test_family_prompt_specializations(self):
         siem_prompt = subagents._system_prompt_for("siem", turns=14)
         assert "SIEM SPECIALIZATION (Splunk)" in siem_prompt
-        assert "stats, top, and timechart" in siem_prompt
+        assert "aggregate with stats/top" in siem_prompt
+        # P-4: the siem working rules stay out of vt's prompt.
+        vt_prompt = subagents._system_prompt_for("vt", turns=14)
+        for siem_only in ("BATCH YOUR FIRST TURN", "stats/top", "CIM category", "sourcetype"):
+            assert siem_only not in vt_prompt
 
         edr_prompt = subagents._system_prompt_for("edr", turns=14)
         assert "EDR SPECIALIZATION (Endpoint Telemetry)" in edr_prompt
@@ -463,7 +467,7 @@ class TestPrompt:
         # model is being told to issue queries in turn 1 that depend on values it
         # has not retrieved yet, and the way a model satisfies that is by
         # inventing the value.
-        assert "genuinely need a value from an earlier result" in prompt
+        assert "need a value from an earlier result" in prompt
 
     def test_the_question_cannot_break_out_of_its_fence_by_any_tag(self):
         """Was a single literal `replace("</question>", ...)`, so `</QUESTION>`,
@@ -483,7 +487,9 @@ class TestPrompt:
         prompt = subagents._prompt_for(mission("siem", kinds=("host", "ip")))
 
         assert "value-host" in prompt and "value-ip" in prompt
-        assert "Do not investigate anything outside" in prompt
+        assert "Search only for the entities listed below" in prompt
+        # P-3: the pivots the system prompt asks for are not forbidden here.
+        assert "a parent process, a resolved address" in " ".join(prompt.split())
         # In their own fence, not in the region the system prompt vouches for.
         assert "<entities>" in prompt and "</entities>" in prompt
 

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from contracts import AnalystDomain, Scope
 from smartops.guards import fenced
+from smartops.subagent_analysts.formatting import to_utc
 
 # Verbatim from the imported model's tokenizer_config.json chat_template (the
 # default system prompt the template injects only when none is supplied). Kept
@@ -54,7 +55,7 @@ In the rare case when the user asks a harmful or unsafe question, especially per
 def _render_scope(scope: Scope) -> str:
     entities = "\n".join(f"  {e.kind}: {e.value}" for e in scope.entities)
     start, end = scope.time_window
-    return f"entities:\n{entities}\ntime window: {start.isoformat()} to {end.isoformat()}"
+    return f"entities:\n{entities}\ntime window: {to_utc(start.isoformat())} to {to_utc(end.isoformat())}"
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +131,10 @@ HOW TO WRITE EACH LINE. Every rule below fixes something a real reply got wrong 
    `[auth_events#6, #9]` and never a bare `#9`.
 
 3. TIMES ARE COPIED, NEVER CONVERTED. Take the range verbatim from the set's computed
-   summary, offset included — if it reads `2018-08-20T15:35:34+02:00`, write exactly
-   that. Do not re-render it as prose, do not restate it in another zone, do not do
-   arithmetic on it. A converted time is a time you have got wrong.
+   summary — if it reads `2018-08-20T13:35:34Z`, write exactly that. Do not re-render it
+   as prose, do not restate it in another zone, do not do arithmetic on it. A converted
+   time is a time you have got wrong. A value ending `(zone-unknown)` is copied as is,
+   marker included; never give it a zone.
 
 4. WHEN A SET HAS NO TIME, SAY SO IN THOSE WORDS. If its summary line reads that the rows
    carry no timestamp, end that observation with `(these rows carry no time)`. Never
@@ -165,7 +167,7 @@ no sanctioned way to say so."""
 _NARRATIVE_FOOTER = f"""\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
-`dns_resolutions#1`, `processes#1`, `reputation#1`, or `uncategorised#3` — cite
+`dns_resolutions#1`, `processes#1`, `file_events#1`, `reputation#1`, or `uncategorised#3` — cite
 whatever is actually shown, including `uncategorised#N` rows.
 CRITICAL CITATION RULES:
 - Always include the full category prefix with the number (e.g. `dns_resolutions#1` or `connections#2` or `auth_events#1`).
@@ -237,6 +239,28 @@ it means, never suggest what it could be.
   path, not an endpoint, host or destination. `events=` and event totals are events,
   never destinations, hosts or users."""
 
+# How rows, headers and the computed summary read. One copy for the three bodies,
+# which used to restate it word for word.
+_ROWS_BLOCK = """\
+Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
+one line of a `| stats count by ...` result standing for many events, and it ends in
+`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
+Take a set's time range only from its computed summary, never from the rows.
+
+A header may say rows=0 — the query ran and found nothing.
+`rows=N` in a header is the TRUE number of rows the query matched, and can be larger
+than the number of lines printed beneath it. When lines were held back the set ends with
+a line like `… 20 of 4000 rows shown`. Say so by copying that line's two numbers as
+printed, rather than treating the printed lines as the whole set.
+
+THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
+`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
+including the ones not printed — and it gives you the event total, the distinct count and
+top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
+every distinct count and every time range from it, and never by counting the printed
+lines: those are a sample. Where its time line says the rows carry no timestamp, the set
+has no time range and you must not state one."""
+
 _IDENTITY_FACTS_BODY = f"""\
 Your task in this investigation is to act as the identity and authentication analyst.
 You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
@@ -257,33 +281,16 @@ contains.
 EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
 `auth_events#1`:
   <timestamp> user=<account> src=<source addr> dest=<host> action=<success|failure> app=<log source>
-Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
-one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Never give a time range for a set whose rows show no timestamp.
-
-A header may say rows=0 — the query ran and found nothing.
-`rows=N` in a header is the TRUE number of rows the query matched, and can be larger
-than the number of lines printed beneath it. When lines were held back you will see a
-trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
-4,000 rows are printed here"), rather than counting the printed lines as the whole set.
-
-THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
-`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
-including the ones not printed — and it gives you the event total, the distinct count and
-top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
-every distinct count and every time range from it, and never by counting the printed
-lines: those are a sample. Where its time line says the rows carry no timestamp, the set
-has no time range and you must not state one.
+{_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
 - Cite the exact header id of each row you use, e.g. [auth_events#1]. Only cite ids
   that appear in the evidence — never invent one.
 - Do NOT infer process, file, or network activity; you cannot see it here.
-- A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "successful logons only, no failures, all from
-  10.0.0.0/8") rather than leaving it out.
+- A set the rows show nothing else in is still part of what happened: say what it
+  contains and cite it (e.g. "action=success on every row, src 10.0.0.5, user svc_backup")
+  rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
@@ -310,24 +317,7 @@ EVIDENCE YOU RECEIVE — under headers like these:
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
   dns_resolutions#1 <timestamp> query=<domain>→<answer> rtype=<type>
   connections#1     <timestamp> <src>:<port>→<dst>:<port> proto=<t> bytes=<n> action=<>
-Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
-one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Never give a time range for a set whose rows show no timestamp.
-
-A header may say rows=0 — the query ran and found nothing.
-`rows=N` in a header is the TRUE number of rows the query matched, and can be larger
-than the number of lines printed beneath it. When lines were held back you will see a
-trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
-4,000 rows are printed here"), rather than counting the printed lines as the whole set.
-
-THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
-`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
-including the ones not printed — and it gives you the event total, the distinct count and
-top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
-every distinct count and every time range from it, and never by counting the printed
-lines: those are a sample. Where its time line says the rows carry no timestamp, the set
-has no time range and you must not state one.
+{_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
@@ -336,8 +326,8 @@ GROUNDING RULES (do not hallucinate)
 - A reputation line describes the indicator itself, not proof our host reached it —
   pair it with a dns or connection row before describing it as activity.
 - Do NOT infer host process, file, or authentication activity; you cannot see it here.
-- A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "dns queries, every one resolving an internal name")
+- A set the rows show nothing else in is still part of what happened: say what it
+  contains and cite it (e.g. "dns queries from 10.0.0.5, every answer in 10.0.0.0/8")
   rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
@@ -362,35 +352,21 @@ row without picking a winner. Never drop a set because it looks uninteresting �
 contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
-  processes#1  <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
-  reputation#1 kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
-Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
-one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Never give a time range for a set whose rows show no timestamp.
-
-A header may say rows=0 — the query ran and found nothing.
-`rows=N` in a header is the TRUE number of rows the query matched, and can be larger
-than the number of lines printed beneath it. When lines were held back you will see a
-trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
-4,000 rows are printed here"), rather than counting the printed lines as the whole set.
-
-THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
-`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
-including the ones not printed — and it gives you the event total, the distinct count and
-top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
-every distinct count and every time range from it, and never by counting the printed
-lines: those are a sample. Where its time line says the rows carry no timestamp, the set
-has no time range and you must not state one.
+  processes#1       <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
+  file_events#1     <timestamp> host=<> process=<> file=<path> action=<> code=<>
+  registry_events#1 <timestamp> host=<> process=<> key=<> value=<> action=<> code=<>
+  script_blocks#1   <timestamp> host=<> path=<> script=<text> code=<>
+  reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
+{_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
 - Cite the exact header id of each row you use, e.g. [processes#1], [reputation#1].
   Only cite ids that appear in the evidence — never invent one.
 - Do NOT infer network volume or authentication history; you cannot see it here.
-- A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "process starts, all of them the same scheduled backup
-  job under SYSTEM") rather than leaving it out.
+- A set the rows show nothing else in is still part of what happened: say what it
+  contains and cite it (e.g. "process starts, process=backup.exe on every row, user=SYSTEM")
+  rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
