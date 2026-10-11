@@ -98,7 +98,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
 | B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed on `smartops-loop-fix`: budget re-measured, 16,480 → 27,608 characters; replayed on `89674d75`, 0 → 43/51, 59/59, 52/52 observations; live check pending |
-| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Recurred on `8807fafa` (the template sentence repeated); prompt change waiting on a replay |
+| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | The example sentence was the loop seed; removed in every domain. 6/6 lost slices parse on replay (10-11); live check pending |
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel tasks deferred |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
@@ -593,6 +593,19 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - The loops that survive are near-duplicates: the same shape sentence with a different parent or user per process group, so no two are identical. With 20 rows a set and many distinct parents, the shape template alone fills the 3,072 tokens.
   - Every lost endpoint domain then refused its round at the gate (G3).
 - **Next lever (to decide):** stop asking the model to enumerate process groups. Code already computes the per-set summaries; the narrative could describe the set in a fixed number of sentences, with the group list carried in `facts`. Alternatives: a per-domain `max_gen_len` for endpoint, or cutting at the first near-duplicate (same sentence with values masked).
+- **A/B (2026-10-11), the 6 lost endpoint slices, one first call each at temp 0:**
+  | Prompt | Parsed |
+  |---|---|
+  | Current | 0/6, every reply the example sentence to 3,072 tokens |
+  | OBSERVATIONS first | 2/6, the loop moved into the observations |
+  | OBSERVATIONS first, no example | 4/6; one copied the grounding rule's `(e.g. …)` quote, one skipped NARRATIVE |
+  | O → N → C, no example, no grounding quote | 5/6; T2 wrote one observation per grouped row and ran out before NARRATIVE |
+  | **NARRATIVE first (unchanged), no example, no grounding quote** | **6/6**, 500–900 tokens; 942115f7 L2-T3 still hit the cap, but on a citation loop after the narrative |
+  - The narratives now carry what the old prompt lost on all six, e.g. the OneDrive → PowerShell → download chain.
+  - The near-duplicate cut and a larger `max_gen_len` were not tried: a cut after generation still has no OBSERVATIONS to save, and a loop fills any cap.
+- **Done (`prompts.py`, every domain):** the per-group SHAPE sentence is replaced by one shared `_grouping_block`: one or two sentences per kind of set, naming the values its computed summary lists first, never one sentence per value. The three grounding `(e.g. …)` quotes are gone. The block order is unchanged.
+- **Verified through `gather_finding` (production path):** the 6 tasks, all 3 domains: every domain with evidence (15) parsed, no re-ask failed. Two network replies still over-ran (9 repeats collapsed; 29 observations against the 10 limit) but parsed.
+- **Waiting on Mohammed:** a code safety net (a cut-off reply with cited observations and no NARRATIVE keeps the observations); dropping the length re-ask (it repeats itself at temp 0).
 
 **B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Cache fixed; parallel tasks deferred.*
 - **Evidence:** `25965109` looked up one hash 7 times in one round. Round 2 of `874ab334` took 10.5 minutes, 1–4 minutes per task, one after another.
