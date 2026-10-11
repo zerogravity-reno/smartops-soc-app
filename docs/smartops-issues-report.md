@@ -143,12 +143,12 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | AR1 | Architecture | Six webapp routes and their job store have no caller in the UI | Low | Open |
 | AR2 | Architecture | The webapp has its own Foundation-Sec-8B client beside the engine's `AnalystModel` | Medium | Open (question: is the boto3 Windows socket issue still real?) |
 | AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Open |
-| AR4 | Architecture | Four engine symbols only tests use | Low | Open |
+| AR4 | Architecture | Four engine symbols only tests use | Low | Fixed on `broker-a818-fixes`: three deleted; `output_tokens_remaining` is live (`subagents/__init__.py:673`), kept |
 | AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Engine half fixed on `broker-a818-fixes` (`broker.runs_root()`); `run_trace.py`'s copy routed to the webapp owner |
 | AR6 | Architecture | `extract_json` scans braces by hand | Low | Open |
-| AR7 | Architecture | `bench._pinned_skills` only delegates | Low | Open |
+| AR7 | Architecture | `bench._pinned_skills` only delegates | Low | Fixed on `broker-a818-fixes` |
 | AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Open |
-| AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Open |
+| AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Fixed on `broker-a818-fixes`: moved to the engine, which imports both directly |
 | AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Open (frontend, smartops-worker) |
 
 ## Triage logic (Analyst plan and synthesis)

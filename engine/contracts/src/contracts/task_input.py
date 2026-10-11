@@ -205,11 +205,6 @@ class TaskInputFile(BaseModel):
                 ) from exc
         return self
 
-    def analyst_tasks(self) -> list[AnalystTask]:
-        """Every task in file order. Order is preserved deliberately: it is the
-        order the producer wrote them in, and the order results are reported in."""
-        return [task.to_analyst_task() for task in self.tasks]
-
     def select(self, task_ids: list[str] | None) -> list[TaskInput]:
         """The named tasks in **file order**, or all of them when nothing is named.
 

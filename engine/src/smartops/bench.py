@@ -30,11 +30,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import re
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import get_args
@@ -61,27 +60,6 @@ logger = logging.getLogger(__name__)
 # figure the run reports would silently be measuring that configuration instead
 # of the default one -- with nothing in the artifact to say so.
 BENCH_SKILLS_ENABLED = False
-
-
-@contextlib.contextmanager
-def _pinned_skills(enabled: bool) -> Iterator[bool]:
-    """Pin the skill-pack switch for the duration of a benchmark, then restore
-    whatever the caller had (including "unset").
-
-    Delegates to `pinned_skills_enabled()`, whose `ContextVar` is scoped to this
-    task and the tasks it spawns. The pin is held across the whole await-heavy
-    run loop below, so writing `os.environ` here -- as this once did -- would
-    have forced the pin onto every other coroutine in the process for the
-    duration: harmless while the loop is sequential, silent and invisible in the
-    artifact the moment it is not.
-
-    Yields `skills_enabled()` read inside the block. That is the pin round-tripped
-    through the predicate -- proof the pin took effect, not an independent
-    observation of a run. The genuinely observed per-run value is
-    `RunMetrics.skills_enabled`, sampled while each run is executing.
-    """
-    with pinned_skills_enabled(enabled):
-        yield skills_enabled()
 
 
 DEFAULT_BOTSV3_TASK = AnalystTask(
@@ -888,7 +866,8 @@ async def run_interleaved_benchmark(
     # read: the pack is measurable on request, but only when a caller asked for
     # it in as many words. An ambient `SMARTOPS_SKILLS_ENABLED` still cannot
     # reach this -- that is the whole point of pinning rather than inheriting.
-    with _pinned_skills(skills) as pinned_skills:
+    with pinned_skills_enabled(skills):
+        pinned_skills = skills_enabled()
         for case_name in cases:
             if case_name in BENCHMARK_CASES:
                 task, expected_families = BENCHMARK_CASES[case_name]

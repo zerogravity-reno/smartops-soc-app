@@ -201,7 +201,6 @@ class TestPartialResults:
 
         assert len(outcome.verdicts) == 2
         assert all(v.is_flagged for v in outcome.verdicts)
-        assert outcome.is_partial
         assert outcome.attempted == 4
         assert "rate limit" in outcome.failure
 
