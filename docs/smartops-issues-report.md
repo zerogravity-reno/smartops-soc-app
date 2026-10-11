@@ -116,6 +116,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B30 | Broker | Tokens, cache reads and requests per role aren't recorded | Low | Fixed on `broker-k4-ab-fixes` |
 | B31 | Broker | siem reports `gaps: vt` on every task with nothing vt could look up | Low | Prompt fixed on `broker-k4-ab-fixes`; live check pending |
 | B32 | Handoff | A refused ref says "step … is ok" for an incomplete step | Low | Fixed on `broker-k4-ab-fixes` |
+| B33 | Broker | Hash questions unanswered: siem never searched Sysmon 15/29, and file_events held non-file rows the narrative called file writes | High | Fixed on `broker-k4-ab-fixes` (siem hint, 15/29 as file events, `event_code=`); svcupdate.dat's hash is not in the lab's data |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -126,6 +127,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Fixed on `smartops-loop-fix` (option a); live run pending |
 | W9 | Webapp | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (frontend, smartops-worker) |
 | W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Repeat filter on `smartops-loop-fix`; gap wording open (Analyst) |
+| W11 | Webapp | The webapp opened its own Splunk MCP client beside the backend's | Medium | Fixed on `broker-k4-ab-fixes`: `smartops.tools.registry.call_tool` |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -725,7 +727,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Evidence (`8807fafa`):** all 9 tasks reported `gaps: vt`; `3bf5fce8` (Sonnet siem) reported none. Every scope was `file_name/host/user/process`, so vt was rightly not offered.
 - **VT had nothing to look up:**
   - The only SHA256 in the rows is `1C84C863…`, powershell.exe's own image hash from Sysmon EID 1 `Hashes`.
-  - svcupdate.dat has no hash in any row: EID 11 carries none, and nothing logs EID 15/29.
+  - svcupdate.dat has no hash in any row, and no siem query asked for Sysmon 15/29, where a written file's hash would be (B33).
   - `Signed`, `Signature` and `SignatureStatus` are `-`.
   - "Is svcupdate.dat signed, by which CA, what is its hash" can't be answered by any connected source (B20).
 - **Fix:** `_gaps_line` now says to name a family only when the rows hold a value it would look up (for vt: a file hash, public IP, domain or URL tied to the question), and otherwise to leave `gaps` empty. `gaps` stays `list[ToolFamily]` in the contract.
@@ -733,6 +735,24 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **B32. A refused ref says "step … is ok".** *Low. Fixed on `broker-k4-ab-fixes`.*
 - **Evidence (`8807fafa` round 2):** "T2:network: step s1_net is ok". The step had `completed=False, status=ok`, and `_ref_problem` printed the status.
 - **Fix:** the reason names the state: `rejected` or `incomplete`.
+
+**B33. The hash questions went unanswered.** *High. Fixed on `broker-k4-ab-fixes`; the hash itself is not in the data.*
+- **Evidence:** three tasks asked for svcupdate.dat's hash (`8807fafa` L2-T1 and L3-G3, `3bf5fce8` L2-T4), and one whether it is signed (L3-G5).
+  - The only SHA256 in any of their rows was `1C84C863…`, powershell.exe's image hash (Sysmon 1 `Hashes`).
+  - No query asked for Sysmon 15 (FileCreateStreamHash) or 29 (FileExecutableDetected), where a written file's hash is recorded.
+  - Nothing told the Analyst "no hash was recorded". G3's narrative instead read `code=1` as "PowerShell executing with exit code 1".
+- **Checked in Splunk (2026-10-11):**
+  - `index=windows_lab EventCode IN (15, 29)` over 60 days: 5 EID 15 events on the host, all before the alert. No EID 29.
+  - No EID 11 names svcupdate.dat; `svcupdate.dat` appears only in EID 1, 4100 and 4104.
+  - So its hash isn't in the lab's data. That is B20's "can't answer" case, and the search should have said so.
+- **Worse, on `3bf5fce8` L2-T4:** `file_events#1` held six EID 4100, 4104 and 1 rows. The query named `TargetFilename`, so the whole call was filed as file events.
+  - The narrative wrote "File events occurred involving process powershell.exe creating files at … svcupdate.dat".
+  - The Analyst's TRUE_POSITIVE cites `T4:file_events#1` for the file's creation. No row shows it.
+  - B28's per-row split now files the EID 1 and 4104 rows as processes and script blocks.
+- **Fix:**
+  - The siem specialisation says where hashes live: an executed image in Sysmon 1 `Hashes`, a written file only in Sysmon 15/29 `Hash` matched on `TargetFilename`, and "say so" when neither names the file.
+  - Sysmon 15/29 rows count as file events.
+  - Rows render `event_code=` instead of `code=`, so an event code can't be read as an exit status.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
@@ -791,6 +811,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Open (frontend, smartops-worker).*
 - **Evidence:** `webapp/static/app.js:260` takes `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.
 - **Fix (frontend):** no fallback; show "event time unresolved".
+
+**W11. The webapp opened its own Splunk MCP client.** *Medium. Fixed on `broker-k4-ab-fixes`.*
+- **Evidence:** `webapp/services/splunk_mcp.py` (from `58d39c3`) built a raw `mcp` session with its own URL, token and TLS-skip handling for the alert reads (`webapp/main.py`: events, notables, ESCU rules). It ran beside the backend's `smartops.tools.registry`, which owns `mcp_servers.json`, the TLS rule and dead-session resets.
+- **Fix:** `registry.call_tool(family, name, arguments)` runs one tool call on the family's client, outside any agent: started once, reset if its session died, and raising on a tool error. `splunk_mcp.run_query` now delegates to it. Checked live: two queries in a row on one session.
 
 ## Cost
 
