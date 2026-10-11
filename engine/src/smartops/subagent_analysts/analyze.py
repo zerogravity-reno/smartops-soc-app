@@ -51,7 +51,7 @@ import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 
 from contracts import (
     AnalystVerdict,
@@ -79,7 +79,7 @@ from contracts import (
 # `available_broker_tools()` gates on, and the two must agree about what
 # "configured" means or a gap would be classified differently from the way it
 # was caused. No cycle -- `smartops.broker` imports nothing from this package.
-from smartops.broker import family_is_configured
+from smartops.broker import _finding_counts, family_is_configured
 from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
@@ -1231,6 +1231,12 @@ def _retrieval_summary(
             for category in getattr(assessment, source, ()) or ():
                 if category not in target:
                     target.append(category)
+        # Rows code projected into a category settle it, whatever the model's own
+        # assessment says: a818a3fd T1 printed "not covered: script_blocks" beside
+        # two script_blocks rows the endpoint narrative cites (B-6).
+        for name, rows in _finding_counts(result.findings):
+            if rows and name in get_args(CimCategory) and name not in covered:
+                covered.append(name)
     not_covered = [category for category in unmet if category not in covered]
 
     return RetrievalSummary(

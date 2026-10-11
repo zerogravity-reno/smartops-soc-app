@@ -946,10 +946,12 @@ class TestGatherCarriesTheRetrievalRecord:
         assert by_id["siem-2"].completed is False
         assert by_id["siem-2"].evaluated is False
 
-    async def test_coverage_comes_from_the_subagents_own_assessment(self):
+    async def test_coverage_is_the_assessment_plus_what_rows_settle(self):
+        # The assessment omits `processes`, but a processes row was projected:
+        # rows settle coverage, not the model's claim (a818a3fd T1, B-6).
         findings = await gather(self._report(), _scope(), _RecordingDomainModel(self._GENS))
 
-        assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
+        assert findings.retrieval.covered == ["auth_events", "dns_resolutions", "processes"]
         assert findings.retrieval.not_covered == ["connections"]
 
     async def test_a_category_one_dispatch_retrieved_is_not_reported_unmet(self):
@@ -972,7 +974,7 @@ class TestGatherCarriesTheRetrievalRecord:
                     connections=[ResultSet(query="conn", row_count=2, rows=[{"src_ip": "1.1.1.1"}])]
                 ),
                 assessment=SiemAssessment(
-                    covered=["connections"], not_covered=["auth_events", "processes"]
+                    covered=["connections"], not_covered=["auth_events", "registry_events"]
                 ),
             )
         )
@@ -981,9 +983,9 @@ class TestGatherCarriesTheRetrievalRecord:
 
         covered = findings.retrieval.covered
         not_covered = findings.retrieval.not_covered
-        assert set(covered) == {"auth_events", "dns_resolutions", "connections"}
-        # `processes` is the only category nobody retrieved.
-        assert not_covered == ["processes"]
+        assert set(covered) == {"auth_events", "dns_resolutions", "processes", "connections"}
+        # `registry_events` is the only category nobody retrieved.
+        assert not_covered == ["registry_events"]
         assert not set(covered) & set(not_covered)
 
     async def test_a_vt_assessment_contributes_no_categories(self):
@@ -1006,7 +1008,7 @@ class TestGatherCarriesTheRetrievalRecord:
 
         # Unchanged by the vt result -- no spurious category, and no crash on an
         # assessment that has no `covered` field at all.
-        assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
+        assert findings.retrieval.covered == ["auth_events", "dns_resolutions", "processes"]
         assert findings.retrieval.not_covered == ["connections"]
 
 
