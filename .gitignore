@@ -36,3 +36,6 @@ Thumbs.db
 scratch_*.py
 /test_*.py
 
+
+# Frontend
+node_modules/
