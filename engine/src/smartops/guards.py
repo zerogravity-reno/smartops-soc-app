@@ -231,7 +231,8 @@ def _match_terms(entities: Any) -> set[str]:
         # A path's file name too: `%TEMP%\svcupdate.dat` is searched as `svcupdate.dat`,
         # which carries no substring of the full path or of its first dotted label.
         base = re.split(r"[\\/]", value)[-1]
-        for term in (value, value.partition(".")[0], base, base.partition(".")[0]):
+        # And a GUID without its braces: `{66ac357b-…}` is often searched bare.
+        for term in (value, value.partition(".")[0], base, base.partition(".")[0], value.strip("{}")):
             if len(term) >= _MIN_TERM:
                 terms.add(term)
     return terms
@@ -611,3 +612,41 @@ class TimeWindowPin:
             )
         args["earliest_time"] = self._earliest
         args["latest_time"] = self._latest
+
+
+class RowLimitCap:
+    """Caps `row_limit` on every search at the tool's own default (B27).
+
+    Same mechanism as `TimeWindowPin`: a rewrite, not a cancel, and only for a
+    tool that declares `row_limit` (Splunk MCP's `splunk_run_query`, default 100,
+    maximum 1000). Models asked for 200 on every wide 4104 search in `89674d75`;
+    the packer shows sub-analysts 20 rows a set, so rows past 100 were fetched,
+    stored and never read.
+    """
+
+    CAP = 100
+
+    def __init__(self, family: str) -> None:
+        self._family = family
+        self.blocked: list[str] = []
+        """Always empty -- this never cancels."""
+
+    def register_hooks(self, registry: Any, **kwargs: Any) -> None:
+        from strands.hooks import BeforeToolCallEvent
+
+        registry.add_callback(BeforeToolCallEvent, self._cap)
+
+    def _cap(self, event: Any) -> None:
+        tool = event.selected_tool
+        tool_use = event.tool_use or {}
+        if tool is None or not isinstance(tool_use.get("input"), dict):
+            return
+        properties = tool.tool_spec.get("inputSchema", {}).get("json", {}).get("properties", {})
+        if "row_limit" not in properties:
+            return
+        args = tool_use["input"]
+        try:
+            asked = int(args.get("row_limit", self.CAP))
+        except (TypeError, ValueError):
+            asked = self.CAP
+        args["row_limit"] = min(max(asked, 1), self.CAP)

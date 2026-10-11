@@ -7,6 +7,7 @@ from smartops.subagent_analysts.formatting import (
     format_row,
     format_vt_verdicts,
     summarise_rows,
+    utc_row,
 )
 
 from contracts import ResultSet, VtVerdict
@@ -214,7 +215,7 @@ class TestAggregateSetsCarryTheirEventTotal:
         """The withheld rows are exactly the ones the analyst cannot add up."""
         out = format_result_set("auth_events", self._agg([10] * 50), index=1, row_cap=5)
         assert "events=500" in out
-        assert "45 more rows not shown" in out
+        assert "5 of 50 rows shown" in out
 
     def test_a_row_without_a_count_is_one_event(self):
         """`_count_suffix` omits the field on single-event rows rather than
@@ -277,7 +278,7 @@ class TestResultSetRendering:
         rows = [{"user": f"u{i}"} for i in range(30)]
         rs = ResultSet(query="q", row_count=30, rows=rows)
         out = format_result_set("auth_events", rs, index=1, row_cap=10)
-        assert "20 more rows not shown" in out
+        assert "10 of 30 rows shown" in out
 
 
 class TestVtRendering:
@@ -464,7 +465,7 @@ class TestTheAggregateReachesTheAnalyst:
     def test_a_truncated_set_still_reports_the_whole_population(self):
         result_set = ResultSet(query='search index=botsv3', rows=self._rows(100), row_count=100)
         text = format_result_set("processes", result_set, index=2, row_cap=20)
-        assert "(80 more rows not shown)" in text     # the sample is still capped
+        assert "20 of 100 rows shown" in text     # the sample is still capped
         assert "computed over all 100 rows (200 events)" in text
         assert "host: 100 distinct" in text           # over all 100, not the 20 shown
 
@@ -498,9 +499,19 @@ class TestTimesInUtc:
         line = format_row("processes", {"_time": "2026-09-27T17:53:53.000+03:00", "dest": "h"})
         assert line.startswith("2026-09-27T14:53:53Z ")
 
-    def test_naive_and_unparseable_times_are_left_alone(self):
-        assert format_row("processes", {"_time": "2026-09-27T17:53:53", "dest": "h"}).startswith("2026-09-27T17:53:53 ")
-        assert format_row("processes", {"_time": "1695826433", "dest": "h"}).startswith("1695826433 ")
+    def test_a_naive_time_is_marked_never_guessed_and_an_epoch_converts(self):
+        assert format_row("processes", {"_time": "2026-09-27T17:53:53", "dest": "h"}).startswith("2026-09-27T17:53:53(zone-unknown) ")
+        assert format_row("processes", {"_time": "1695826433", "dest": "h"}).startswith("2023-09-27T14:53:53Z ")
+
+    def test_every_time_named_field_is_utc(self):
+        # c90ca5f9: first_seen as an epoch and as a local ctime string, Sysmon's UtcTime naive.
+        row = utc_row({"_time": "2026-10-06T14:51:16.000+03:00", "first_seen": "1791287476",
+                       "last_seen": "10/06/2026 14:51:16", "UtcTime": "2026-10-06 11:51:16.123",
+                       "LastLogon": "unknown", "duration_time": "120", "dest": "1791287476"})
+        assert row["_time"] == row["first_seen"] == row["last_seen"] == "2026-10-06T11:51:16Z"
+        assert row["UtcTime"] == "2026-10-06T11:51:16.123000Z"
+        assert (row["LastLogon"], row["duration_time"], row["dest"]) == ("unknown", "120", "1791287476")
+        assert utc_row({"first_seen": "10/06/2026 14:51:16"})["first_seen"] == "10/06/2026 14:51:16(zone-unknown)"
 
     def test_generic_row_time_is_utc(self):
         assert "_time=2026-09-27T14:53:53Z" in format_row("uncategorised", {"_time": "2026-09-27T17:53:53+03:00"})
@@ -509,3 +520,18 @@ class TestTimesInUtc:
         rows = [{"_time": "2026-09-27T17:53:53+03:00"}, {"_time": "2026-09-27T14:54:10Z"}]
         summary = summarise_rows("processes", rows)
         assert "time: 2026-09-27T14:53:53Z … 2026-09-27T14:54:10Z" in summary
+
+
+class TestPromptReviewFixes:
+    """P-1 and P-2 of the 2026-10-09 prompt review."""
+
+    def test_a_stats_row_reports_its_own_min_and_max_time(self):
+        rows = [{"min(_time)": "2026-10-05T14:00:00+03:00", "max(_time)": "2026-10-05T11:30:00Z",
+                 "host": "H", "count": "4"}]
+        out = summarise_rows("processes", rows)
+        assert "time: 2026-10-05T11:00:00Z … 2026-10-05T11:30:00Z" in out
+
+    def test_shown_of_total_uses_the_true_row_count(self):
+        # Splunk matched 4000; 3 came back; all 3 are printed. Code says both numbers.
+        rs = ResultSet(query="q", row_count=4000, rows=[{"user": f"u{i}"} for i in range(3)])
+        assert "… 3 of 4000 rows shown" in format_result_set("auth_events", rs, index=1)

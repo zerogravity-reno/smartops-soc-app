@@ -33,7 +33,7 @@ import json
 from pathlib import Path
 
 import pytest
-from contracts import DomainJudgement, HypothesisFindings
+from contracts import DomainRecord, HypothesisFindings
 
 SCHEMA_DIR = Path(__file__).resolve().parents[1] / "schemas"
 CURRENT = HypothesisFindings.model_fields["schema_version"].default
@@ -141,7 +141,7 @@ class TestTheConstraintsAConsumerReliesOnSurvive:
         because a consumer that finds one has been handed a verdict this tier
         has no standing to form.
         """
-        judgement = _published()["$defs"]["DomainJudgement"]["properties"]
+        judgement = _published()["$defs"]["DomainRecord"]["properties"]
 
         assert "disposition" not in judgement
         assert "confidence" not in judgement
@@ -158,6 +158,7 @@ class TestTheConstraintsAConsumerReliesOnSurvive:
         changed under it, the exact failure the versioning exists to prevent.
         """
         v1 = _v1()
+        # v1 is frozen: published before the DomainJudgement -> DomainRecord rename.
         judgement = v1["$defs"]["DomainJudgement"]["properties"]
 
         assert v1["properties"]["schema_version"]["default"] == 1
@@ -179,7 +180,7 @@ class TestTheConstraintsAConsumerReliesOnSurvive:
         Putting a model's private chain of thought into a contract handed to
         another model is exactly re-feeding it, so its absence from the wire
         projection is a security property, not an oversight."""
-        judgement = _published()["$defs"]["DomainJudgement"]["properties"]
+        judgement = _published()["$defs"]["DomainRecord"]["properties"]
 
         assert "reasoning_trace" not in judgement
         assert "prompt_tokens" not in judgement
@@ -229,14 +230,14 @@ class TestTheTaskInputSchemaTellsTheProducerWhatItNeeds:
         }
 
     def test_the_entity_kinds_are_published_as_a_closed_enum(self):
-        """The producer can see all nine and validate against them locally,
+        """The producer can see all eleven and validate against them locally,
         rather than discovering an unsupported kind when the Broker refuses the
         file."""
         entity = self._schema()["$defs"]["TaskEntity"]["properties"]
 
         assert entity["type"]["enum"] == [
             "host", "user", "ip", "file_hash", "domain", "url", "process",
-            "file_name", "command_line",
+            "file_name", "command_line", "process_id", "process_guid",
         ]
 
     def test_entity_is_published_as_one_object_or_a_list(self):
@@ -259,7 +260,7 @@ class TestTheTaskInputSchemaTellsTheProducerWhatItNeeds:
 class TestAllThreeDomainsProduceTheSameShape:
     """The actual question behind "fixed schema output from the three subagents".
 
-    They share one `DomainFinding` -> `DomainJudgement` projection, so identical
+    They share one `DomainFinding` -> `DomainRecord` projection, so identical
     shape is structural rather than coincidental. Asserted anyway, on the failure
     path as well as the success path: an analyst whose model call died is where a
     shape would most plausibly diverge, and it is the case a consumer is least
@@ -270,31 +271,31 @@ class TestAllThreeDomainsProduceTheSameShape:
 
     @pytest.mark.parametrize("domain", DOMAINS)
     def test_a_populated_judgement_has_the_published_key_set(self, domain):
-        judgement = DomainJudgement(
+        judgement = DomainRecord(
             domain=domain,
             narrative="one account authenticated twice from 10.0.1.50.",
             observations=["something [auth_events#1]"],
             citations=["auth_events#1"],
         )
 
-        published_keys = set(_published()["$defs"]["DomainJudgement"]["properties"])
+        published_keys = set(_published()["$defs"]["DomainRecord"]["properties"])
         assert set(judgement.model_dump().keys()) == published_keys
 
     def test_an_empty_domain_has_the_same_keys_as_a_populated_one(self):
         """"We looked and found nothing" must be shaped like any other judgement.
         `HypothesisFindings` requires all three domains present precisely so a
         consumer cannot mistake an empty one for an absent one."""
-        populated = DomainJudgement(
+        populated = DomainRecord(
             domain="identity", narrative="two logons for bostoll.",
             observations=["x [auth_events#1]"], citations=["auth_events#1"],
         )
-        empty = DomainJudgement(domain="endpoint")
+        empty = DomainRecord(domain="endpoint")
 
         assert set(populated.model_dump()) == set(empty.model_dump())
 
     def test_the_three_domains_are_the_only_accepted_values(self):
         with pytest.raises(ValueError):
-            DomainJudgement(domain="cloud", narrative="something happened.")
+            DomainRecord(domain="cloud", narrative="something happened.")
 
 
 class TestEveryAssessmentTellsTheModelWhatNoteIsFor:

@@ -1,4 +1,4 @@
-"""
+﻿"""
 main.py - SmartOps SOC Unified Web Application
 FastAPI server wiring the Web UI to the SmartOps Engine (Broker + Subagents)
 using Foundation-Sec-8B-Reasoning on AWS Bedrock (invoke_model, NOT Converse).
@@ -91,12 +91,17 @@ OPENCTI_HEADERS = {
     "Content-Type":  "application/json",
 }
 
+# Seconds per OpenCTI request. A server that accepts and never answers made each
+# observable wait out a 10s read, one after another, before the run could start.
+OPENCTI_TIMEOUT = float(os.environ.get("OPENCTI_TIMEOUT", "5"))
+
+
 def _gql(query: str, variables: dict = {}):
     """Execute a GraphQL query against OpenCTI."""
     try:
         resp = _http_requests.post(
             OPENCTI_URL, headers=OPENCTI_HEADERS,
-            json={"query": query, "variables": variables}, timeout=10)
+            json={"query": query, "variables": variables}, timeout=OPENCTI_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
@@ -147,174 +152,78 @@ def _classify_observable(value: str) -> str:
     return "general"
 
 # â”€â”€ Import from Splunk ES Mission Control â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-# ── List Detection Rules from Splunk ES ──────────────────────────────────────
-@app.get("/api/list-detection-rules")
-async def list_detection_rules(q: str = ""):
-    """Return detection rules from Splunk ES. Pass ?q=keyword to filter by name."""
-    import json as _json
-
-    def _parse_rule(r: dict, label_key: str = "action.correlationsearch.label") -> dict:
-        label = r.get(label_key, r.get("name", r.get("title", "")))
-        name = r.get("name", r.get("title", ""))
-        mitre = []
-        try:
-            ann = r.get("action.correlationsearch.annotations", r.get("annotations", "{}"))
-            if isinstance(ann, str):
-                ann = _json.loads(ann)
-            mitre = ann.get("mitre_attack", [])
-        except Exception:
-            pass
-        sev = r.get("alert.severity", r.get("severity", 3))
-        try:
-            sev = int(sev)
-        except Exception:
-            sev = 3
-        enabled = r.get("enabled", r.get("action.correlationsearch.enabled", False))
-        if isinstance(enabled, str):
-            enabled = enabled == "1"
-        return {"name": name, "label": label, "app": r.get("app", r.get("eai:acl.app", "")),
-                "enabled": bool(enabled), "severity": sev, "mitre": mitre}
-
-    try:
-        q_stripped = q.strip()
-        if q_stripped:
-            # Use direct REST SPL search — covers ALL rules including Threat-prefixed ones
-            safe_q = q_stripped.replace('"', '\\"').replace("'", "\\'")
-            spl = (
-                "| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches "
-                f'splunk_server=local count=0 | rename title as name, eai:acl.app as app, '
-                "action.correlationsearch.label as label, alert.severity as severity, "
-                "action.correlationsearch.annotations as annotations, "
-                "action.correlationsearch.enabled as is_enabled "
-                f'| search name="*{safe_q}*" OR label="*{safe_q}*" '
-                "| fields name, label, app, is_enabled, severity, annotations"
-            )
-            raw = await splunk_mcp.run_query(spl, row_limit=500)
-            
-            simplified = []
-            for r in raw:
-                label = r.get("label", r.get("name", ""))
-                name = r.get("name", "")
-                mitre = []
-                try:
-                    ann = r.get("annotations", "{}")
-                    if isinstance(ann, str):
-                        ann = _json.loads(ann)
-                    mitre = ann.get("mitre_attack", [])
-                except Exception:
-                    pass
-                sev = r.get("severity", 3)
-                try:
-                    sev = int(sev)
-                except Exception:
-                    sev = 3
-                is_en = str(r.get("is_enabled", "0")) == "1"
-                simplified.append({"name": name, "label": label, "app": r.get("app", ""),
-                                    "enabled": is_en, "severity": sev, "mitre": mitre})
-        else:
-            # No keyword: return first 1000 rules fast from splunk_list_alerts
-            result = await splunk_mcp.call_tool("splunk_list_alerts", {"count": 1000})
-            raw = result.get("results", [])
-            simplified = [_parse_rule(r) for r in raw]
-
-        simplified.sort(key=lambda x: (not x["enabled"], x["label"].lower()))
-        return {"status": "ok", "rules": simplified, "total": len(simplified)}
-    except Exception as exc:
-        import traceback
-        return {"status": "error", "message": str(exc), "detail": traceback.format_exc()}
+def _first(ev: dict, keys: list) -> str:
+    """The first non-empty value among `keys` in a Splunk row (multivalue -> first value)."""
+    for k in keys:
+        v = ev.get(k)
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
 
 
-# -- Import from Splunk ES by specific Rule Name --
-@app.get("/api/import-from-splunk-by-rule")
-async def import_from_splunk_by_rule(rule_name: str):
-    try:
-        events = await splunk_mcp.run_query(
-            f'search index=notable (source="{rule_name}" OR search_name="{rule_name}") | sort -_time | head 1'
-            " | table _time search_name source urgency status src dest user src_ip rule_id *",
-            earliest_time="-30d", latest_time="now", row_limit=1)
-        if not events:
-            return {"status": "empty", "message": f"No notable events found for rule: {rule_name}"}
-        ev = events[0]
-        def _get_val(keys):
-            for k in keys:
-                if k in ev:
-                    v = ev[k]
-                    if isinstance(v, list) and len(v) > 0 and v[0]: return v[0]
-                    elif isinstance(v, str) and v.strip(): return v.strip()
-            return ""
-        raw_full = {k: v for k, v in ev.items() if k not in ["_bkt", "_cd", "_si", "_indextime", "_kv"]}
-        deployed_spl = ""
-        escaped = rule_name.replace("\\", "\\\\").replace('"', '\\"')
-        spl_rows = await splunk_mcp.run_query(
-            "| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches splunk_server=local"
-            f' search="name=\\"{escaped}\\"" | head 1 | fields search', row_limit=1)
-        if spl_rows:
-            deployed_spl = spl_rows[0].get("search", "")
-        return {
-            "status": "ok", "event_time": _get_val(["_time", "time"]),
-            "rule_name": rule_name, "urgency": _get_val(["urgency"]),
-            "src": _get_val(["src", "src_ip"]), "dest": _get_val(["dest", "Registry.dest"]),
-            "user": _get_val(["user", "Registry.user"]),
-            "file_hash": _get_val(["file_hash", "hash", "md5", "sha256"]),
-            "domain": _get_val(["domain", "url"]),
-            "mitre": _get_val(["mitre_attack_id", "mitre_technique_id", "annotations.mitre_attack"]),
-            "sig": _get_val(["signature", "action", "category", "registry_path"]),
-            "deployed_spl": deployed_spl, "raw_event_data": raw_full,
-        }
-    except Exception as exc:
-        import traceback
-        return {"status": "error", "message": str(exc), "detail": traceback.format_exc()}
+def _spl_escape(value: str) -> str:
+    # The quote escape keeps an attacker-influenced name from closing an SPL string.
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _rule_of(ev: dict) -> str:
+    rule = _first(ev, ["rule_name", "search_name", "source"])
+    return rule[:-len(" - Rule")] if rule.endswith(" - Rule - Rule") else rule
 
 
 @app.get("/api/import-from-splunk")
-async def import_from_splunk():
-    """Pull the latest notable event from Splunk ES Mission Control and
-    enrich it with the matching detection rule SPL from Content Management."""
+def import_from_splunk(index: int = 0, rule_name: str = None):
+    """Pull a notable event from Splunk ES Mission Control and enrich it with the
+    matching detection rule SPL from Content Management. `index=0` is the latest;
+    `rule_name` keeps only that rule's notables."""
     try:
-        # --- Step 1: Get latest notable event ---
-        events = await splunk_mcp.run_query(
-            "search index=notable | sort -_time | head 1"
+        # --- Step 1: Get notable events ---
+        fetch_count = max(index + 1, 10)
+        pattern = None
+        if rule_name:
+            clean_rule = rule_name.replace(" - Rule - Rule", "").replace(" - Rule", "")
+            pattern = _spl_escape(f"*{clean_rule}*")
+        events = splunk_mcp.run_query(
+            f"{run_trace.notables_spl(pattern)} | head {fetch_count}"
             " | table _time rule_name urgency status src dest user src_ip rule_id search_name *",
-            earliest_time="-30d", latest_time="now", row_limit=1)
+            earliest_time="-30d", latest_time="now", row_limit=fetch_count)
         if not events:
             return {"status": "empty", "message": "No notable events found in the last 30 days."}
+        if not 0 <= index < len(events):
+            return {"status": "error", "message": f"index={index} out of range: {len(events)} events found.",
+                    "available": len(events)}
 
-        ev = events[0]
-        
-        def _get_val(keys):
-            for k in keys:
-                if k in ev:
-                    v = ev[k]
-                    if isinstance(v, list) and len(v) > 0 and v[0]:
-                        return v[0]
-                    elif isinstance(v, str) and v.strip():
-                        return v.strip()
-            return ""
+        ev = events[index]
 
-        rule_name = _get_val(["rule_name", "search_name"])
-        src        = _get_val(["src", "src_ip"])
-        dest       = _get_val(["dest", "Registry.dest"])
-        user_field = _get_val(["user", "Registry.user"])
-        urgency    = _get_val(["urgency"])
-        event_time = _get_val(["_time", "time"])
-        
+        rule_name  = _rule_of(ev)
+        src        = _first(ev, ["src", "src_ip"])
+        dest       = _first(ev, ["dest", "Registry.dest", "dest_host"])
+        user_field = _first(ev, ["user", "Registry.user", "user_name"])
+        urgency    = _first(ev, ["urgency"])
+        event_time = run_trace.notable_event_time(ev)
+
         # Try to extract additional context if present in the raw event
-        file_hash = _get_val(["file_hash", "hash", "md5", "sha256"])
-        domain    = _get_val(["domain", "url"])
-        mitre     = _get_val(["mitre_attack_id", "mitre_technique_id", "annotations.mitre_attack"])
-        sig       = _get_val(["signature", "action", "category", "registry_path"])
-        
+        file_hash = _first(ev, ["file_hash", "hash", "md5", "sha256", "process_hash"])
+        domain    = _first(ev, ["domain", "url", "domain_query"])
+        mitre     = _first(ev, ["mitre_attack_id", "mitre_technique_id", "annotations.mitre_attack"])
+        sig       = _first(ev, ["signature", "process", "process_name", "registry_path",
+                              "registry_key_name", "category", "action"])
+
         # Capture the entire raw dictionary to send as context
         raw_full = {k: v for k, v in ev.items() if k not in ["_bkt", "_cd", "_si", "_indextime", "_kv"]}
 
 
         # --- Step 2: Find matching detection rule SPL ---
         deployed_spl = ""
-        if rule_name:
-            # `| rest` is read-only; the quote escape keeps a rule name from closing the filter.
-            escaped = rule_name.replace("\\", "\\\\").replace('"', '\\"')
-            rules = await splunk_mcp.run_query(
+        # Look up by the saved search's real name: ES doubles the suffix ("... - Rule - Rule"),
+        # and `rule_name` is the cleaned display name, which matches no saved search.
+        saved_name = _first(ev, ["search_name", "source"]) or rule_name
+        if saved_name:
+            # `| rest` is read-only.
+            escaped = _spl_escape(saved_name)
+            rules = splunk_mcp.run_query(
                 "| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches splunk_server=local"
                 f' search="name=\\"{escaped}\\"" | head 1 | fields search',
                 row_limit=1)
@@ -323,6 +232,8 @@ async def import_from_splunk():
 
         return {
             "status": "ok",
+            "selected_index": index,
+            "total_available": len(events),
             "event_time": event_time,
             "rule_name": rule_name,
             "urgency": urgency,
@@ -337,13 +248,74 @@ async def import_from_splunk():
             "raw_event_data": raw_full
         }
     except Exception as exc:
-        import traceback
-        return {"status": "error", "message": str(exc), "detail": traceback.format_exc()}
+        return {"status": "error", "message": str(exc)}
+
+
+@app.get("/api/incident-queue")
+def get_incident_queue():
+    """The latest alert events for the Incident Queue, one per event (see
+    `run_trace.notables_spl`), grouped by rule and host."""
+    try:
+        events = splunk_mcp.run_query(
+            run_trace.notables_spl() + " | head 50"
+            " | table _time rule_name urgency status src dest user src_ip rule_id search_name source dest_host user_name",
+            earliest_time="-30d", latest_time="now", row_limit=50)
+        return {"status": "ok", "groups": run_trace.group_notables([
+            {"index": i, "time": _first(ev, ["_time", "time"]), "rule_name": _rule_of(ev),
+             "urgency": _first(ev, ["urgency"]), "src": _first(ev, ["src", "src_ip"]),
+             "dest": _first(ev, ["dest", "dest_host"]), "user": _first(ev, ["user", "user_name"])}
+            for i, ev in enumerate(events)])}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.get("/api/list-detection-rules")
+def list_detection_rules(q: str = ""):
+    """Detection rules in ES Content Management, enabled first. `?q=` keeps names or labels containing it."""
+    try:
+        spl = ("| rest /servicesNS/-/SplunkEnterpriseSecuritySuite/saved/searches splunk_server=local count=0"
+               " | rename title as name, eai:acl.app as app, action.correlationsearch.label as label,"
+               " alert.severity as severity, action.correlationsearch.annotations as annotations,"
+               " action.correlationsearch.enabled as is_enabled")
+        if q.strip():
+            safe_q = _spl_escape(q.strip())
+            spl += f' | search name="*{safe_q}*" OR label="*{safe_q}*"'
+        rows = splunk_mcp.run_query(spl + " | fields name, label, app, is_enabled, severity, annotations",
+                                    row_limit=1000)
+        rules = []
+        for r in rows:
+            try:
+                ann = r.get("annotations") or "{}"
+                mitre = (json.loads(ann) if isinstance(ann, str) else ann).get("mitre_attack", [])
+            except (ValueError, AttributeError):
+                mitre = []
+            try:
+                sev = int(r.get("severity", 3))
+            except (TypeError, ValueError):
+                sev = 3
+            rules.append({"name": r.get("name", ""), "label": r.get("label") or r.get("name", ""),
+                          "app": r.get("app", ""), "enabled": str(r.get("is_enabled", "0")) == "1",
+                          "severity": sev, "mitre": mitre})
+        rules.sort(key=lambda x: (not x["enabled"], x["label"].lower()))
+        return {"status": "ok", "rules": rules, "total": len(rules)}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.get("/api/import-from-splunk-by-rule")
+def import_from_splunk_by_rule(rule_name: str):
+    """The latest notable of one rule."""
+    return import_from_splunk(index=0, rule_name=rule_name)
 
 
 @app.post("/api/opencti")
 
 def opencti_endpoint(req: OpenCTIRequest):
+    # One probe first: unreachable OpenCTI costs one timeout, not one per observable.
+    probe = _gql("{ about { version } }")
+    if "error" in probe:
+        return {"status": "unavailable", "source": f"OpenCTI ({OPENCTI_URL})", "message": probe["error"],
+                "total_observables": len(req.observables), "results": {}}
     results = {}
     for obs in req.observables:
         t = _classify_observable(obs)
@@ -356,6 +328,8 @@ def opencti_endpoint(req: OpenCTIRequest):
                  "observable_result": _search_stix_observable(obs),
                  "malware_result":    _search_malware(obs)}
         results[obs] = r
+        if "error" in r or "error" in r.get("observable_result", {}):
+            break  # it went down mid-request: the rest would each wait out a timeout
     return {"status": "success", "source": f"OpenCTI Live API ({OPENCTI_URL})",
             "total_observables": len(req.observables), "results": results}
 
@@ -385,26 +359,20 @@ def escu_endpoint(req: ESCURequest):
     
     query_tokens = clean_name.split()
     scores = bm25.get_scores(query_tokens)
-    
-    # OS Boost Logic
-    query_lower = req.rule_name.lower()
+
+    # The alert's OS boosts a rule naming it; another OS halves it.
     os_keywords = ["windows", "linux", "mac", "macos", "aws", "azure", "gcp"]
-    present_os = [os_name for os_name in os_keywords if os_name in query_lower]
-    
-    for i, name in enumerate(names):
-        name_lower = name.lower()
-        if present_os:
-            for os_name in present_os:
-                if os_name in name_lower:
-                    scores[i] *= 1.5
-            for os_name in os_keywords:
-                if os_name not in present_os and os_name in name_lower:
-                    scores[i] *= 0.5
-                    
+    present_os = [o for o in os_keywords if o in req.rule_name.lower()]
+    if present_os:
+        for i, name in enumerate(names):
+            name_lower = name.lower()
+            for o in os_keywords:
+                if o in name_lower:
+                    scores[i] *= 1.5 if o in present_os else 0.5
+
     top_idx = scores.argsort()[::-1][:3]
-    
-    results = [{"rule": names[i], "score": float(scores[i]), "data": rules_data[i]} for i in top_idx if scores[i] > 0]
-    return {"status": "success", "matches": results}
+    return {"status": "success", "matches": [
+        {"rule": names[i], "score": float(scores[i]), "data": rules_data[i]} for i in top_idx if scores[i] > 0]}
 
 # â”€â”€ Analyst job store (non-blocking pattern) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _analyst_jobs: dict = {}   # job_id â†’ {"status": "pending"|"done", "result": ...}
@@ -495,11 +463,10 @@ RULES:
         raw_output = result["answer"]  # answer is after </think>
         reasoning  = result["reasoning"]
 
-        # â”€â”€ Robust JSON extraction (same logic as before) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         planning_template = extract_json(raw_output)
         if not planning_template:
-            with open("failed_raw_output.txt", "w", encoding="utf-8") as dump:
-                dump.write(result["raw"])
+            run_trace.runs_dir().mkdir(parents=True, exist_ok=True)
+            (run_trace.runs_dir() / "failed_raw_output.txt").write_text(result["raw"], encoding="utf-8")
             planning_template = {"parse_error": "Model did not return valid JSON", "_raw": raw_output[:500]}
 
         return {
@@ -566,12 +533,14 @@ def synthesis_endpoint(req: SynthesisRequest):
 # â”€â”€ Run queue for SSE debug streaming â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _run_queues: dict[str, Queue] = {}
 
+FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must match
+
 class RunRequest(BaseModel):
     alert_name: str = "Potential Cryptomining Activity Detected"
     host: str = "BSTOLL-L"
     domain: str = "coinhive.com"
     event_time: str = "2018-08-20T12:00:00Z"
-    max_loops: int = 3
+    max_loops: int = 15  # headroom to finish; older rounds are compacted (FULL_ROUNDS)
     context_contract: dict = None
 
 @app.get("/debug")
@@ -583,8 +552,67 @@ def start_run(req: RunRequest):
     run_id = str(uuid.uuid4())[:8]
     q: Queue = Queue()
     _run_queues[run_id] = q
+    go = threading.Event()
+    go.set()
+    _run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "proc": None}
     threading.Thread(target=_run_investigation, args=(run_id, req, q), daemon=True).start()
     return {"run_id": run_id}
+
+# ── Run control: stop, pause, resume ─────────────────────────────────────────
+# Pause and stop land at the next stage boundary (_checkpoint): a model call in
+# flight cannot be interrupted. Stop also kills a running broker at once.
+_run_ctrl: dict[str, dict] = {}
+
+class RunStopped(Exception):
+    pass
+
+def _checkpoint(run_id: str, q: Queue) -> None:
+    c = _run_ctrl.get(run_id)
+    if not c:
+        return
+    if not c["go"].is_set():
+        _emit(q, "paused", {}, message="Paused at a stage boundary")
+        while not c["go"].wait(0.5):
+            if c["stop"].is_set():
+                break
+        if not c["stop"].is_set():
+            _emit(q, "resumed", {}, message="Resumed")
+    if c["stop"].is_set():
+        raise RunStopped()
+
+def _ctrl_or_404(run_id: str):
+    c = _run_ctrl.get(run_id)
+    if not c:
+        return None, Response(status_code=404, content='{"status":"error","message":"run not found or finished"}',
+                              media_type="application/json")
+    return c, None
+
+@app.post("/api/run/{run_id}/stop")
+def stop_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["stop"].set()
+    c["go"].set()  # a paused run wakes up only to stop
+    if c["proc"] is not None and c["proc"].poll() is None:
+        c["proc"].kill()
+    return {"status": "ok"}
+
+@app.post("/api/run/{run_id}/pause")
+def pause_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["go"].clear()
+    return {"status": "ok"}
+
+@app.post("/api/run/{run_id}/resume")
+def resume_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["go"].set()
+    return {"status": "ok"}
 
 @app.get("/api/run/stream/{run_id}")
 def stream_run(run_id: str):
@@ -596,7 +624,7 @@ def stream_run(run_id: str):
             try:
                 item = q.get(timeout=300)
                 yield f"data: {json.dumps(item)}\n\n"
-                if item.get("type") in ("done", "error"):
+                if item.get("type") in ("done", "error", "stopped"):
                     break
             except Empty:
                 # Silence is not failure: a cold model or a long broker round can go
@@ -610,6 +638,7 @@ def _emit(q: Queue, event_type: str, data: dict, **extra):
 
 def _run_investigation(run_id: str, req: RunRequest, q: Queue):
     system_prompt = _load_system_prompt()
+    at_loop = 1  # where a stop landed, for the run record
     try:
         # â”€â”€ Build alert context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if req.context_contract:
@@ -631,14 +660,15 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 "goal": f"Investigate {req.domain} activity on host {req.host}"
             }
 
-        # ── LOOP 1: Analyst ────────────────────────────────────────
-        _emit(q, "analyst", {}, message="Loop 1 – Analyst planning...")
-        # Strip prior analyst/synthesis keys so model starts in Planning Mode
+        # â”€â”€ LOOP 1: Analyst â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        _emit(q, "analyst", {}, message="Loop 1 â€” Analyst planning...")
+        # Strip prior analyst/synthesis keys so the model starts in planning mode.
         _STRIP_KEYS = {"planning_template", "analyst_plan", "synthesis",
                        "verdict", "status", "hypothesis_scores",
                        "verdict_confidence", "verdict_reasoning", "evidence_gaps"}
         clean_context = {k: v for k, v in alert_context.items() if k not in _STRIP_KEYS}
         user_msg = "[ALERT CONTEXT]\n" + json.dumps(clean_context, indent=2)
+        _checkpoint(run_id, q)
         r1 = call_llm(system_prompt, user_msg)
         plan = extract_json(r1["answer"]) or {}
         plan["reasoning"] = r1["reasoning"]
@@ -646,20 +676,25 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         _emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
         run_trace.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1, context=clean_context)
 
-        # If the model already returned a final verdict in Loop 1 (context was
-        # unambiguous), emit it directly and skip the broker.
+        # â”€â”€ LOOPS 2..N: Broker + Synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         tasks = plan.get("tasks", [])
+        # A verdict already in Loop 1 (the context was unambiguous) skips the broker.
         if not tasks and plan.get("status") == "VERDICT_REACHED":
             _emit(q, "verdict", plan, message="VERDICT (direct): " + str(plan.get("verdict", "?")))
             q.put({"type": "done", "message": "Investigation complete"})
             return
-
-        # ── LOOPS 2..N: Broker + Synthesis ────────────────────────────────
         all_findings = {}
+        all_runs = []  # every round's broker runs, for the verdict gate's step check
+        evaluations = {}  # round label -> the gated synthesis that read it
+        asked = []  # every task sent so far, so a repeat round is not sent (W10)
         for loop_num in range(2, req.max_loops + 2):
+            at_loop = loop_num
+            _checkpoint(run_id, q)
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
-            findings, link = _run_broker_proc_streaming(tasks, run_id, loop_num, q)
+            findings, link = _run_broker_proc_streaming(
+                tasks, run_id, loop_num, q, run_trace.alert_entities(alert_context),
+                (alert_context.get("normalized_seed") or {}).get("event_time"))
             run_trace.record(run_id, "broker", loop_num, **link)
             if "broker_runs" in link:
                 _emit(q, "broker", {"runs": link["broker_runs"], "handshake": link["handshake"]},
@@ -670,20 +705,47 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 q.put({"type": "error", "message": f"Loop {loop_num} broker failed: {link['error']}", "trace": link})
                 return
             all_findings[f"Round {loop_num}"] = findings
+            all_runs += link.get("broker_runs", [])
             _emit(q, "payload", findings, loop=loop_num, message=f"Loop {loop_num}: sub-analyst findings returned to the Analyst")
 
             # Synthesis â€” build accumulated findings sections
             _emit(q, "synthesis", {}, loop=loop_num, message=f"Loop {loop_num} â€” Synthesis evaluating...")
-            sections = [f"[INVESTIGATION PLAN]\n{json.dumps(plan, indent=2)}"]
-            for round_label, round_findings in all_findings.items():
-                slim = {k:v for k,v in round_findings.items() if k != "_raw_intel_dump"}
+            # The plan as context only, and the mode stated: with the whole plan the
+            # model sometimes answered with another plan instead of an evaluation.
+            plan_slim = {"hypotheses": plan.get("hypotheses", []), "tasks": tasks[:6],
+                         "semantic_alignment": plan.get("semantic_alignment", "")}
+            hyp_ids = [h.get("id", "") for h in plan_slim["hypotheses"]] or ["H1", "H2", "H3"]
+            eval_header = (
+                "YOU ARE NOW IN EVALUATION MODE.\n"
+                f"The investigation has {len(hyp_ids)} hypotheses with IDs: {', '.join(hyp_ids)}.\n"
+                "Output ONLY the EVALUATION JSON schema. Required fields:\n"
+                "  hypothesis_scores: {" + ", ".join(f'"{h}": <0-100>' for h in hyp_ids) + "}\n"
+                "  verdict: one of TRUE_POSITIVE / FALSE_POSITIVE / BENIGN / REQUIRES_INVESTIGATION\n"
+                "  verdict_reasoning: string explanation\n"
+                "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
+                "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
+                "Do NOT output planning JSON (hypotheses list, tasks list).\n"
+                "---\n"
+            )
+            sections = [eval_header + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]
+            # The last FULL_ROUNDS in full; older ones as a short record (W8): re-sending
+            # every round outgrew the 32k window by round ~6. The gate still checks all rounds.
+            labels = list(all_findings)
+            for round_label in labels[:-FULL_ROUNDS]:
+                record = run_trace.compact_round(all_findings[round_label], evaluations.get(round_label, {}))
+                sections.append(f"[EARLIER ROUND - {round_label}, summarised]\n{json.dumps(record, indent=2)}")
+            for round_label in labels[-FULL_ROUNDS:]:
+                slim = {k:v for k,v in all_findings[round_label].items() if k != "_raw_intel_dump"}
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
-            rN = call_llm(system_prompt, "\n\n".join(sections))
-            synth = extract_json(rN["answer"]) or {}
+            _checkpoint(run_id, q)
+            rN = call_llm(system_prompt,"\n\n".join(sections))
+            raw_synth = extract_json(rN["answer"]) or {}
+            synth = evaluations[f"Round {loop_num}"] = run_trace.verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
             _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                   tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
                   message=f"Loop {loop_num} â€” Synthesis complete: {synth.get('status','?')}")
-            run_trace.record(run_id, "synthesis", loop_num, output=synth, reasoning=rN["reasoning"],
+            run_trace.record(run_id, "synthesis", loop_num, output=synth, model_status=raw_synth.get("status"),
+                             reasoning=rN["reasoning"],
                              tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]})
 
             status  = synth.get("status", "")
@@ -695,21 +757,28 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             if loop_num == req.max_loops + 1:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"}, message="Max loops reached")
                 break
-            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"])
+            asked += link["tasks"]
+            tasks = run_trace.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"],
+                                              synth.get("evidence_gaps"), asked)
             if not tasks:
                 _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"},
-                      message="No actionable follow-up tasks")
+                      message="No new follow-up tasks (none given, or all already asked)")
                 break
 
         q.put({"type": "done", "message": "Investigation complete"})
 
+    except RunStopped:
+        run_trace.record(run_id, "stopped", at_loop)
+        q.put({"type": "stopped", "message": "Stopped by the analyst"})
     except Exception as exc:
         q.put({"type": "error", "message": str(exc)})
     finally:
         _run_queues.pop(run_id, None)
+        _run_ctrl.pop(run_id, None)
 
 
-def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue) -> tuple[dict, dict]:
+def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue,
+                               alert_scope: list | None = None, event_time: str | None = None) -> tuple[dict, dict]:
     """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
 
     The tasks go as a `task-input.v1` file (`--task-file`), and what comes back is
@@ -718,10 +787,12 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     everything for this round lives; it has an `error` key when there is nothing
     to judge.
     """
-    run_dir = run_trace.runs_dir() / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num)
-    task_path = run_dir / f"tasks-L{loop_num}.json"
+    # One folder per investigation (O5): runs/<run_id>/L<n>/ holds the round's task
+    # file, Broker log, payload and one folder per task.
+    round_dir = run_trace.runs_dir() / run_id / f"L{loop_num}"
+    round_dir.mkdir(parents=True, exist_ok=True)
+    task_file, dropped = run_trace.to_task_file(tasks, run_id, loop_num, alert_scope, event_time)
+    task_path = round_dir / "tasks.json"
     task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")
     task_ids = [t["task_id"] for t in task_file["tasks"]]
     link = {"task_file": str(task_path), "task_ids": task_ids, "tasks": task_file["tasks"], "dropped": dropped}
@@ -733,7 +804,7 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
 
     repo = Path(__file__).parent.parent
     batch_id = f"{run_id}-L{loop_num}"
-    log_path = run_dir / f"broker-L{loop_num}.log"
+    log_path = round_dir / "broker.log"
     env = {
         **os.environ,
         # contracts lives beside the engine, not inside engine/src.
@@ -741,6 +812,9 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
         "PYTHONIOENCODING": "utf-8",
         # Piped stdout is block-buffered; without this the "live" log arrives at exit.
         "PYTHONUNBUFFERED": "1",
+        "SMARTOPS_OUT_DIR": str(round_dir),
+        # Every span of this round joins the run's one trace (O5).
+        "TRACEPARENT": run_trace.traceparent(run_id, loop_num),
     }
     cmd = [sys.executable, "-m", "smartops.main",
            "--task-file", str(task_path),
@@ -751,7 +825,11 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     # timeout and the UI reported a failure while the broker was still working.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             encoding="utf-8", errors="replace", env=env, cwd=str(repo))
+    ctrl = _run_ctrl.get(run_id) or {}
+    ctrl["proc"] = proc  # the stop endpoint kills it
     timed_out = threading.Event()
+    cli_errors: list[str] = []
+    prev_was_error = False
 
     def _kill():
         timed_out.set()
@@ -764,21 +842,29 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
             log.write(f"$ {' '.join(cmd)}\n\n")
             for line in proc.stdout:
                 log.write(line)
+                # The CLI's own `error:` lines and their 7-space continuations (main.py return-2 paths).
+                if line.startswith("error:") or (cli_errors and re.match(r" {7}\S", line) and prev_was_error):
+                    cli_errors.append(line.strip())
+                prev_was_error = bool(cli_errors) and cli_errors[-1] == line.strip()
                 _emit(q, "broker_log", {"line": line.rstrip()}, loop=loop_num)
         returncode = proc.wait()
     finally:
         killer.cancel()
+        ctrl["proc"] = None
+    if ctrl.get("stop") and ctrl["stop"].is_set():
+        raise RunStopped()  # killed on purpose: not a broker failure
     link.update(exit_code=returncode, log=str(log_path))
 
-    link["broker_runs"] = run_trace.broker_runs(task_ids)
-    payload_path = run_trace.runs_dir() / batch_id / "analyst-payload.json"
+    link["broker_runs"] = run_trace.broker_runs(task_ids, round_dir)
+    payload_path = round_dir / "analyst-payload.json"
     link["payload"] = str(payload_path)
     payload = json.loads(payload_path.read_text(encoding="utf-8")) if payload_path.is_file() else None
     link["handshake"] = run_trace.handshake(task_ids, link["broker_runs"], payload)
     if timed_out.is_set():
         return {}, {**link, "error": f"broker timed out after 30 minutes, see {log_path}"}
     if returncode != 0:
-        return {}, {**link, "error": f"broker exited {returncode}, see {log_path}"}
+        said = " ".join(cli_errors[-4:]) or "no error line printed"
+        return {}, {**link, "error": f"broker exited {returncode}: {said} (log: {log_path})"}
     if payload is None:
         return {}, {**link, "error": f"broker wrote no analyst payload (analyst model configured?), see {log_path}"}
     return payload, link

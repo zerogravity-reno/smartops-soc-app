@@ -78,6 +78,16 @@ class TestSiemRouting:
         assert routed.network.untagged_sets == []
         assert routed.endpoint.untagged_sets == []
 
+    def test_identical_rows_route_once_and_empty_sets_all_stay(self):
+        # c7dbf51d T3: `summariesonly=t` and `=f`, across two missions, same rows.
+        empty = ResultSet(query="nothing", row_count=0, rows=[])
+        first = SubtaskResult(task_id="t1:siem:1", status=SubtaskStatus.OK,
+                              findings=SiemFindings(file_events=[_rs("summariesonly=t"), empty]))
+        retry = SubtaskResult(task_id="t1:siem:2", status=SubtaskStatus.OK,
+                              findings=SiemFindings(file_events=[_rs("summariesonly=f"), empty]))
+        routed = route(_report(first, retry), _scope("host"))
+        assert [rs.query for _, rs in routed.endpoint.siem_sets] == ["summariesonly=t", "nothing", "nothing"]
+
     def test_host_untagged_reaches_endpoint(self):
         siem = SubtaskResult(
             task_id="t1:siem:1",

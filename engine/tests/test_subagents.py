@@ -378,7 +378,7 @@ class TestPrompt:
         prompt = subagents._prompt_for(mission("siem"))
 
         assert str(int(START.timestamp())) in prompt
-        assert "2018-08-20T00:00:00+00:00" in prompt
+        assert "2018-08-20T00:00:00Z" in prompt
 
     def test_relative_times_are_explicitly_forbidden_for_time_scoped_domains(self):
         # The failure this prevents: a relative window over 2018 data returns
@@ -412,7 +412,11 @@ class TestPrompt:
     def test_family_prompt_specializations(self):
         siem_prompt = subagents._system_prompt_for("siem", turns=14)
         assert "SIEM SPECIALIZATION (Splunk)" in siem_prompt
-        assert "stats, top, and timechart" in siem_prompt
+        assert "aggregate with stats/top" in siem_prompt
+        # P-4: the siem working rules stay out of vt's prompt.
+        vt_prompt = subagents._system_prompt_for("vt", turns=14)
+        for siem_only in ("BATCH YOUR FIRST TURN", "stats/top", "CIM category", "sourcetype"):
+            assert siem_only not in vt_prompt
 
         edr_prompt = subagents._system_prompt_for("edr", turns=14)
         assert "EDR SPECIALIZATION (Endpoint Telemetry)" in edr_prompt
@@ -463,7 +467,7 @@ class TestPrompt:
         # model is being told to issue queries in turn 1 that depend on values it
         # has not retrieved yet, and the way a model satisfies that is by
         # inventing the value.
-        assert "genuinely need a value from an earlier result" in prompt
+        assert "need a value from an earlier result" in prompt
 
     def test_the_question_cannot_break_out_of_its_fence_by_any_tag(self):
         """Was a single literal `replace("</question>", ...)`, so `</QUESTION>`,
@@ -483,7 +487,9 @@ class TestPrompt:
         prompt = subagents._prompt_for(mission("siem", kinds=("host", "ip")))
 
         assert "value-host" in prompt and "value-ip" in prompt
-        assert "Do not investigate anything outside" in prompt
+        assert "Search only for the entities listed below" in prompt
+        # P-3: the pivots the system prompt asks for are not forbidden here.
+        assert "a parent process, a resolved address" in " ".join(prompt.split())
         # In their own fence, not in the region the system prompt vouches for.
         assert "<entities>" in prompt and "</entities>" in prompt
 
@@ -660,7 +666,8 @@ class TestABlockedQueryReachesTheResult:
 
     async def test_a_family_with_no_guard_reports_nothing_blocked(self, monkeypatch):
         async def fake(*args, **kwargs):
-            assert kwargs["guards"] == []
+            # Only the session watch (B24), which every mission runs under.
+            assert [type(g) for g in kwargs["guards"]] == [subagents._SessionWatch]
             return _Result(None)
 
         monkeypatch.setattr(subagents, "_build_agent_and_invoke", fake)
@@ -720,6 +727,33 @@ class TestNoStructuredAnswerStillReportsItsQueries:
         assert result.findings is not None
         assert len(result.findings.uncategorised) == 2
         assert len(result.findings.discovery) == 1
+
+    async def test_a_lost_answer_is_an_error_and_completes_no_step(self, monkeypatch):
+        # F7: cut off at `limit_turns`, T1 read `no_data` while carrying 74 rows,
+        # and its step read `complete`.
+        from contracts import CompletionRule, FetchStep
+
+        from smartops.broker import evaluate_step
+
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            self._invoke_recording(
+                [subagents._ToolCall("splunk_search", "index=botsv3 sourcetype=x", {"results": [{"a": 1}]})]
+            ),
+        )
+
+        result = await investigate(
+            mission("siem"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"]
+        )
+
+        assert result.status is SubtaskStatus.ERROR
+        assert result.evidence and result.error
+        step = FetchStep(step_id="siem-1", family="siem", objective="x",
+                         completion=CompletionRule(requires="rows_or_confirmed_empty"))
+        outcome = evaluate_step(step, result)
+        assert outcome.completed is False
+        assert outcome.confirmed_empty is False
 
     async def test_a_scope_check_that_skips_empty_queries_now_sees_this_path(
         self, monkeypatch

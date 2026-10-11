@@ -4,10 +4,10 @@ Three destinations, three different answers, and the point of this file is that
 they stay different:
 
 - `traces.json` on the run directory  -- YES, this is the audit record
-- `findings.json` / `DomainJudgement` -- NO, that crosses to another model
+- `findings.json` / `DomainRecord` -- NO, that crosses to another model
 - an OTel span attribute              -- NO, that leaves the process
 
-The middle one was already true and tested. The first was NOT: `_as_judgement`
+The middle one was already true and tested. The first was NOT: `_as_record`
 drops the trace, `gather()` did not hand it to anyone, and nothing wrote it --
 while `DomainFinding.reasoning_trace` still described itself as "persisted for
 audit". It had been, by an older artifact format that dumped `DomainFinding`
@@ -113,7 +113,7 @@ class TestTheSinkIsTheOnlyWayToReachTheTrace:
 
     def test_no_sink_means_the_trace_is_discarded(self):
         """The default, stated so it reads as a decision rather than an accident.
-        `gather` returns only the wire artifact, and `_as_judgement` has already
+        `gather` returns only the wire artifact, and `_as_record` has already
         dropped the trace by then -- with no sink there is no other reference."""
         findings = asyncio.run(gather(_report(), _scope(), _FakeModel()))
 

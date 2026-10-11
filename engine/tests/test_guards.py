@@ -302,6 +302,14 @@ class TestRegistration:
         monkeypatch.setenv(subagents.SIEM_INDEXES_ENV_VAR, "")
         assert subagents._guard_for("siem")._allowlist == DOMAINS["siem"].index_allowlist
 
+    def test_the_siem_prompt_names_the_allowlist(self, monkeypatch):
+        # F9: an agent not told the indexes probed them one by one.
+        monkeypatch.setenv(subagents.SIEM_INDEXES_ENV_VAR, "windows_lab, notable")
+        prompt = subagents._system_prompt_for("siem", turns=4)
+        assert "may search: windows_lab, notable" in prompt
+        assert "(index=windows_lab OR index=notable)" in prompt
+        assert "may search" not in subagents._system_prompt_for("vt", turns=4)
+
     def test_the_collector_is_still_registered_alongside(self):
         assert any(isinstance(h, subagents._EvidenceCollector) for h in self._hooks("siem"))
 
@@ -476,6 +484,16 @@ class TestScopeGuard:
         event = _BeforeEvent("splunk_run_query", {"query": "index=botsv3 | top 10 host"})
         guard._check(event)
         assert isinstance(event.cancel_tool, str)
+
+    @pytest.mark.parametrize("guid", ["{66ac357b-3e84-6ac5-5dff-030000000e00}", "66ac357b-3e84-6ac5-5dff-030000000e00"])
+    def test_a_process_guid_anchors_a_search_with_or_without_braces(self, guid):
+        scope = Scope(
+            entities=[Entity(kind="process_guid", value="{66ac357b-3e84-6ac5-5dff-030000000e00}")],
+            time_window=SCOPE.time_window,
+        )
+        event = _BeforeEvent("splunk_run_query", {"query": f'index=botsv3 EventCode=1 ProcessGuid="{guid}"'})
+        ScopeGuard("siem", scope)._check(event)
+        assert event.cancel_tool is None or event.cancel_tool is False
 
 
 class TestCancelledCallsAreNotEvidence:

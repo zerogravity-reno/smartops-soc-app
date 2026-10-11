@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from contracts import AnalystDomain, Scope
 from smartops.guards import fenced
+from smartops.subagent_analysts.formatting import to_utc
 
 # Verbatim from the imported model's tokenizer_config.json chat_template (the
 # default system prompt the template injects only when none is supplied). Kept
@@ -54,7 +55,7 @@ In the rare case when the user asks a harmful or unsafe question, especially per
 def _render_scope(scope: Scope) -> str:
     entities = "\n".join(f"  {e.kind}: {e.value}" for e in scope.entities)
     start, end = scope.time_window
-    return f"entities:\n{entities}\ntime window: {start.isoformat()} to {end.isoformat()}"
+    return f"entities:\n{entities}\ntime window: {to_utc(start.isoformat())} to {to_utc(end.isoformat())}"
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +100,8 @@ SECURITY CONSTRAINTS
 
 _NARRATIVE_ANSWER_BLOCK = """\
 NARRATIVE: <plain English: what these rows show, in order, naming the hosts,
-accounts, addresses and times. Group like rows and give counts. What happened,
-not what it means.>
+accounts, addresses and processes. Group like rows. No numbers and no times: code
+attaches those. What happened, not what it means.>
 OBSERVATIONS:
 - <one distinct thing the rows state> [header_id]
 - <one line per distinct thing; repeat as many times as you have>
@@ -130,9 +131,10 @@ HOW TO WRITE EACH LINE. Every rule below fixes something a real reply got wrong 
    `[auth_events#6, #9]` and never a bare `#9`.
 
 3. TIMES ARE COPIED, NEVER CONVERTED. Take the range verbatim from the set's computed
-   summary, offset included — if it reads `2018-08-20T15:35:34+02:00`, write exactly
-   that. Do not re-render it as prose, do not restate it in another zone, do not do
-   arithmetic on it. A converted time is a time you have got wrong.
+   summary — if it reads `2018-08-20T13:35:34Z`, write exactly that. Do not re-render it
+   as prose, do not restate it in another zone, do not do arithmetic on it. A converted
+   time is a time you have got wrong. A value ending `(zone-unknown)` is copied as is,
+   marker included; never give it a zone.
 
 4. WHEN A SET HAS NO TIME, SAY SO IN THOSE WORDS. If its summary line reads that the rows
    carry no timestamp, end that observation with `(these rows carry no time)`. Never
@@ -165,7 +167,7 @@ no sanctioned way to say so."""
 _NARRATIVE_FOOTER = f"""\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
-`dns_resolutions#1`, `processes#1`, `reputation#1`, or `uncategorised#3` — cite
+`dns_resolutions#1`, `processes#1`, `file_events#1`, `reputation#1`, or `uncategorised#3` — cite
 whatever is actually shown, including `uncategorised#N` rows.
 CRITICAL CITATION RULES:
 - Always include the full category prefix with the number (e.g. `dns_resolutions#1` or `connections#2` or `auth_events#1`).
@@ -178,26 +180,24 @@ CRITICAL CITATION RULES:
   `uncategorised#N` when it is the only place the rows appear.
 - Cite EVERY set a statement rests on. A sentence taking its count from one set and its
   times from another, or spanning `processes#2` through `processes#6`, cites all of them.
-- A set whose header says `rows=0` holds NOTHING. Say it returned no rows; never attach a
-  host, address, account, time or count to it. A statement whose only ids are `rows=0`
-  sets has no evidence and does not belong in your reply.
+- A set whose header says `rows=0` holds NOTHING. Never attach a host, address, account,
+  time or count to it. Code already lists every empty search for the reader, so leave
+  `rows=0` sets out of your reply entirely.
 
-TIME RANGES: rows are NOT always printed in time order — some sets print newest first.
-Read the timestamps and write every range earliest to latest. Never take a set's first
-and last printed lines as a period's start and end; a range ending before it begins is
-always wrong.
+NUMBERS AND TIMES ARE NEVER CALCULATED BY YOU. Code has already counted every set and
+found its time range; those figures reach the reader without you. So:
+- NARRATIVE carries no numbers and no times at all. Say what happened and who and what
+  was involved; leave how many and when to the code.
+- An OBSERVATION may carry a number or a time only by copying it exactly as printed in a
+  header (`rows=`, `events=`) or a computed summary. Never count lines, add `count=`
+  values, subtract, split a total, or work out a range from the printed rows.
 
-COUNTS: when a header carries `events=M`, its rows are GROUPS and M is the true number of
-events — quote M, and never add the `count=` values up yourself. `rows=N` is how many
-groups there are, not how many events. Where no total is given, count only what is
-printed and say so.
-
-HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per evidence set, in the order
-the sets are printed — two to five sentences for a set with rows, one sentence for a set
-with none. Every set you were given must appear in it. When a domain hands you many
-sets, make each paragraph shorter; never drop one to make room. Around 400 words in
-total is right, and a longer account is correct only when the evidence is genuinely
-larger.
+HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per KIND of activity, in the order
+the sets are printed — sets showing the same kind of rows share one paragraph, cited to
+each of them. Every set with rows must appear in it; never drop one to make room. Never
+retype a long value: a command line, script or URL is named by its first few words and
+cited, because code passes the full text on. Keep the whole narrative under 400 words,
+however many sets you were given.
 
 UNTAGGED SETS: a header reading `uncategorised#N` is a set whose query no category could
 be inferred from, so it MAY HOLD ANOTHER DOMAIN'S DATA, or estate bookkeeping rather than
@@ -239,38 +239,19 @@ it means, never suggest what it could be.
   path, not an endpoint, host or destination. `events=` and event totals are events,
   never destinations, hosts or users."""
 
-_IDENTITY_FACTS_BODY = f"""\
-Your task in this investigation is to act as the identity and authentication analyst.
-You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
-to TRANSLATE it into plain English: say what happened in these rows, in order, naming
-the accounts, source addresses, hosts and times involved.
-
-{_DESCRIBE_ONLY_BLOCK}
-
-COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
-numbers, which are placeholders and are not in your evidence — is: "Account <account>
-appears in <count> events from <count> source addresses between <earliest> and <latest>,
-<count> of them successes against <host> and <count> failures against <other host>". That accounts for every
-row without picking a winner. When the set's summary says its rows carry no timestamp,
-drop the time clause and end with `(these rows carry no time)` instead — never write a
-placeholder into it. Never drop a set because it looks uninteresting — say what it
-contains.
-
-EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
-`auth_events#1`:
-  <timestamp> user=<account> src=<source addr> dest=<host> action=<success|failure> app=<log source>
+# How rows, headers and the computed summary read. One copy for the three bodies,
+# which used to restate it word for word.
+_ROWS_BLOCK = """\
 Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
 one line of a `| stats count by ...` result standing for many events, and it ends in
 `count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Never give a time range for a set whose rows show no timestamp.
+Take a set's time range only from its computed summary, never from the rows.
 
 A header may say rows=0 — the query ran and found nothing.
 `rows=N` in a header is the TRUE number of rows the query matched, and can be larger
-than the number of lines printed beneath it. When lines were held back you will see a
-trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
-4,000 rows are printed here"), rather than counting the printed lines as the whole set.
+than the number of lines printed beneath it. When lines were held back the set ends with
+a line like `… 20 of 4000 rows shown`. Say so by copying that line's two numbers as
+printed, rather than treating the printed lines as the whole set.
 
 THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
 `~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
@@ -278,16 +259,38 @@ including the ones not printed — and it gives you the event total, the distinc
 top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
 every distinct count and every time range from it, and never by counting the printed
 lines: those are a sample. Where its time line says the rows carry no timestamp, the set
-has no time range and you must not state one.
+has no time range and you must not state one."""
+
+_IDENTITY_FACTS_BODY = f"""\
+Your task in this investigation is to act as the identity and authentication analyst.
+You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
+to TRANSLATE it into plain English: say what happened in these rows, in order, naming
+the accounts, source addresses and hosts involved.
+
+{_DESCRIBE_ONLY_BLOCK}
+
+COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
+can retype. Group like rows and describe the group — the values involved and the shape
+of any repetition. The SHAPE to copy — never the names or the
+values, which are placeholders and are not in your evidence — is: "Account <account>
+logged on from <source address> to <host>, with successes against <host> and failures
+against <other host>". That accounts for every
+row without picking a winner. Never drop a set because it looks uninteresting — say what it
+contains.
+
+EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
+`auth_events#1`:
+  <timestamp> user=<account> src=<source addr> dest=<host> action=<success|failure> app=<log source>
+{_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
 - Cite the exact header id of each row you use, e.g. [auth_events#1]. Only cite ids
   that appear in the evidence — never invent one.
 - Do NOT infer process, file, or network activity; you cannot see it here.
-- A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "142 successful logons for 9 accounts, no failures, all
-  from 10.0.0.0/8") rather than leaving it out.
+- A set the rows show nothing else in is still part of what happened: say what it
+  contains and cite it (e.g. "action=success on every row, src 10.0.0.5, user svc_backup")
+  rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
@@ -297,43 +300,24 @@ _NETWORK_FACTS_BODY = f"""\
 Your task in this investigation is to act as the network detection and response
 analyst. You are given the NETWORK evidence retrieved for this investigation. Your job
 is to TRANSLATE it into plain English: say what happened in these rows, in order, naming
-the hosts, addresses, domains, ports and times involved.
+the hosts, addresses, domains and ports involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
-numbers, which are placeholders and are not in your evidence — is: "Host <host> opened
-<count> connections to <count> distinct destinations between <earliest> and <latest>;
-<count> of them went to <address> at roughly <interval> intervals". That accounts for every
-row without picking a winner. When the set's summary says its rows carry no timestamp,
-drop the time clause and end with `(these rows carry no time)` instead — never write a
-placeholder into it. Never drop a set because it looks uninteresting — say what it
+can retype. Group like rows and describe the group — the values involved and the shape
+of any repetition. The SHAPE to copy — never the names or the
+values, which are placeholders and are not in your evidence — is: "Host <host> opened
+connections to several destinations; the repeated ones went to <address> on port
+<port>". That accounts for every
+row without picking a winner. Never drop a set because it looks uninteresting — say what it
 contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
   dns_resolutions#1 <timestamp> query=<domain>→<answer> rtype=<type>
   connections#1     <timestamp> <src>:<port>→<dst>:<port> proto=<t> bytes=<n> action=<>
-Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
-one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Never give a time range for a set whose rows show no timestamp.
-
-A header may say rows=0 — the query ran and found nothing.
-`rows=N` in a header is the TRUE number of rows the query matched, and can be larger
-than the number of lines printed beneath it. When lines were held back you will see a
-trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
-4,000 rows are printed here"), rather than counting the printed lines as the whole set.
-
-THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
-`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
-including the ones not printed — and it gives you the event total, the distinct count and
-top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
-every distinct count and every time range from it, and never by counting the printed
-lines: those are a sample. Where its time line says the rows carry no timestamp, the set
-has no time range and you must not state one.
+{_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
@@ -342,8 +326,8 @@ GROUNDING RULES (do not hallucinate)
 - A reputation line describes the indicator itself, not proof our host reached it —
   pair it with a dns or connection row before describing it as activity.
 - Do NOT infer host process, file, or authentication activity; you cannot see it here.
-- A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "38 dns queries, every one resolving an internal name")
+- A set the rows show nothing else in is still part of what happened: say what it
+  contains and cite it (e.g. "dns queries from 10.0.0.5, every answer in 10.0.0.0/8")
   rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
@@ -354,51 +338,35 @@ _ENDPOINT_FACTS_BODY = f"""\
 Your task in this investigation is to act as the endpoint and host-forensics analyst.
 You are given the ENDPOINT evidence retrieved for this investigation. Your job is to
 TRANSLATE it into plain English: say what happened in these rows, in order, naming the
-hosts, users, processes, parent processes, command lines and times involved.
+hosts, users, processes, parent processes and command lines involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — counts, distinct values, time
-ranges, and the shape of any repetition. The SHAPE to copy — never the names or the
-numbers, which are placeholders and are not in your evidence — is: "Host <host> ran
-<count> processes under user <account> between <earliest> and <latest>, <count> of them
-distinct images; <count> repeated one command line at roughly <interval> intervals". That accounts for every
-row without picking a winner. When the set's summary says its rows carry no timestamp,
-drop the time clause and end with `(these rows carry no time)` instead — never write a
-placeholder into it. Never drop a set because it looks uninteresting — say what it
+can retype. Group like rows and describe the group — the values involved and the shape
+of any repetition. The SHAPE to copy — never the names or the
+values, which are placeholders and are not in your evidence — is: "Host <host> ran
+processes under user <account>, started by <parent>; one command line, starting
+<first few words>, repeated". That accounts for every
+row without picking a winner. Never drop a set because it looks uninteresting — say what it
 contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
-  processes#1  <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
-  reputation#1 kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
-Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
-one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Never give a time range for a set whose rows show no timestamp.
-
-A header may say rows=0 — the query ran and found nothing.
-`rows=N` in a header is the TRUE number of rows the query matched, and can be larger
-than the number of lines printed beneath it. When lines were held back you will see a
-trailing `… (N more rows not shown)`. Say so when you do, and give both numbers ("20 of
-4,000 rows are printed here"), rather than counting the printed lines as the whole set.
-
-THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
-`~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
-including the ones not printed — and it gives you the event total, the distinct count and
-top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
-every distinct count and every time range from it, and never by counting the printed
-lines: those are a sample. Where its time line says the rows carry no timestamp, the set
-has no time range and you must not state one.
+  processes#1       <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
+  file_events#1     <timestamp> host=<> process=<> file=<path> action=<> code=<>
+  registry_events#1 <timestamp> host=<> process=<> key=<> value=<> action=<> code=<>
+  script_blocks#1   <timestamp> host=<> path=<> script=<text> code=<>
+  reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
+{_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
 - Cite the exact header id of each row you use, e.g. [processes#1], [reputation#1].
   Only cite ids that appear in the evidence — never invent one.
 - Do NOT infer network volume or authentication history; you cannot see it here.
-- A set holding nothing but routine entries is still part of what happened: say what it
-  contains and cite it (e.g. "31 process starts, all of them the same scheduled backup
-  job under SYSTEM") rather than leaving it out.
+- A set the rows show nothing else in is still part of what happened: say what it
+  contains and cite it (e.g. "process starts, process=backup.exe on every row, user=SYSTEM")
+  rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
@@ -431,6 +399,6 @@ def build_facts_user_turn(scope: Scope, evidence_text: str) -> str:
         fenced("scope", _render_scope(scope))
         + "\n\n"
         + fenced("evidence", evidence_text)
-        + "\n\nDescribe what the evidence above shows, in order, grouping like rows and "
-        "giving counts. Give your reasoning, then the required block."
+        + "\n\nDescribe what the evidence above shows, in order, grouping like rows. "
+        "Give your reasoning, then the required block."
     )

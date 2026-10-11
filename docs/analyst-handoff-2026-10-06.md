@@ -26,9 +26,9 @@ The integration side is ready for follow-ups: `run_trace.follow_up_tasks` turns 
 
 The broker contract (`task-input.v1`, `EntityKind` in `engine/contracts/src/contracts/subtask.py`) now accepts:
 
-`host, user, ip, file_hash, domain, url, process, file_name, command_line`
+`host, user, ip, file_hash, domain, url, process, file_name, command_line, process_id`
 
-`file_name` and `command_line` were added today, so tasks like "was `OneDrive.exe` replaced" or "decode `JAB...`" now reach the SIEM agent.
+`process_id` was added after run `148b0e69`, whose plan put a PID in the process field (`process=2900`). The handoff now turns an all-digit `process` into `process_id`. `file_name` and `command_line` were added earlier the same day, so tasks like "was `OneDrive.exe` replaced" or "decode `JAB...`" now reach the SIEM agent.
 
 The handoff now also absorbs the common drift:
 - **Spellings:** `ip_address`, `username`, `sha256`, `file_path` and so on map to the nine types.
@@ -59,6 +59,36 @@ The evaluation schema has only `verdict_reasoning`. In `30b729b6`:
 - `evidence_refs` were bare task ids (`T1`, `T2`...) rather than `<task_id>:<domain>`, and cited `T2`, which was never sent.
 
 **Ask:** consider a required narrative (an ordered timeline citing finding refs) that has to account for every finding set returned, plus refs in the `<task_id>:<domain>` form.
+
+## 6. Run `148b0e69`: synthesis against its own findings
+
+The broker side has changed since this run:
+- The payload now carries a code-written block of interpreter command lines.
+- File, registry and script-block rows have their own categories.
+- Every task carries the alert's host and hash.
+
+The items below are on the Analyst side.
+
+- **A1. Synthesis contradicts its findings.**
+  - It wrote "No secondary indicators … like network connections, file writes".
+  - The findings it was given include file writes to `Temp\4\` (T3), connections to 192.168.40.211:8888 (T5) and reachability tests (T2).
+  - It also cites "documented OneDrive sync behavior", which appears in no evidence.
+  - **Ask:** the same as item 5. The reasoning must account for every finding set, and only from the payload.
+- **A2. Wrong premise on the hash.**
+  - T4 asked about "the encoded command hash", but `process_hash` is the hash of the `powershell.exe` image.
+  - A clean VirusTotal result for `powershell.exe` was then used as evidence about the command.
+  - **Ask:** the planning prompt should say the alert hash is the image's hash and says nothing about the command it ran.
+- **A3. A task no SIEM can answer.**
+  - T5 asked "did any users report unusual activity".
+  - **Ask:** tasks ask about log data only.
+- **A4. Windows into the future.**
+  - T4 ended 2026-10-07 23:59Z and T5 ended 2026-10-07 17:00Z, for an event at 2026-10-06 11:50Z.
+  - **Ask:** the end must not be later than now.
+- **A5. Invented `evidence_refs`.**
+  - Example: `T4:hash_1C84…_no_malware_detections_high_harmlessness_score`.
+  - `verdict_gate` in `webapp/services/run_trace.py` accepts any ref not starting with `ALERT:`, so these pass.
+  - **Ask:** refs in the `<task_id>:<domain>` form (item 5). Tightening the gate to that form is a small integration change once the prompt emits it.
+- **A6.** No follow-ups, so there was one round only. This is item 1 again.
 
 ## What the console shows now
 

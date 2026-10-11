@@ -65,7 +65,8 @@ class TestBucketing:
             ('"Network_Traffic"', "connections"),
             ("Network_Resolution.DNS", "dns_resolutions"),
             ("Authentication", "auth_events"),
-            ("Endpoint.Registry", "uncategorised"),
+            ("Endpoint.Registry", "registry_events"),
+            ("Endpoint.Filesystem", "file_events"),
         ],
     )
     def test_a_tstats_over_a_cim_data_model_lands_in_its_category(self, datamodel, bucket):
@@ -125,10 +126,10 @@ class TestNothingIsSilentlyDropped:
         assert proc.processes[0].row_count == 1
         assert proc.uncategorised == []
 
-        for code in (11, 13, 15, 100):
+        for code, bucket in ((11, "file_events"), (13, "registry_events"), (4104, "script_blocks"), (15, "uncategorised"), (100, "uncategorised")):
             findings = project_siem([call(f"index=botsv3 EventCode={code}", [{"e": code}])], [], task_id="t")
             assert findings.processes == [], f"EventCode={code} wrongly inferred as processes"
-            assert findings.uncategorised[0].row_count == 1
+            assert getattr(findings, bucket)[0].row_count == 1, code
 
     def test_sysmon_network_connection_eventcode_3_infers_connections(self):
         findings = project_siem(

@@ -27,6 +27,14 @@ def _isolate_run_artifacts(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_vt_cache():
+    """VirusTotal answers are cached per process; no test may see another's."""
+    from smartops.tools.native import virustotal
+
+    virustotal._CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_mcp_registry(tmp_path, monkeypatch):
     """Start every test with no MCP clients registered, and no real servers to load.
 

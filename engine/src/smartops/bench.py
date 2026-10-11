@@ -37,8 +37,9 @@ import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
-from contracts.findings import SiemFindings, VtFindings
+from contracts.findings import CimCategory, SiemFindings, VtFindings
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
@@ -654,11 +655,8 @@ def extract_findings_completeness(results: list[SubtaskResult]) -> dict[str, int
     for res in results:
         if res.findings is not None:
             if isinstance(res.findings, SiemFindings):
-                counts["dns_resolutions"] += sum(rs.row_count for rs in res.findings.dns_resolutions)
-                counts["connections"] += sum(rs.row_count for rs in res.findings.connections)
-                counts["processes"] += sum(rs.row_count for rs in res.findings.processes)
-                counts["auth_events"] += sum(rs.row_count for rs in res.findings.auth_events)
-                counts["uncategorised"] += sum(rs.row_count for rs in res.findings.uncategorised)
+                for bucket in (*get_args(CimCategory), "uncategorised"):
+                    counts[bucket] = counts.get(bucket, 0) + sum(rs.row_count for rs in getattr(res.findings, bucket))
             elif isinstance(res.findings, VtFindings):
                 counts["vt_verdicts"] += len(res.findings.verdicts)
     return counts

@@ -59,7 +59,7 @@ from contracts import (
     CimCategory,
     DomainFinding,
     DomainGap,
-    DomainJudgement,
+    DomainRecord,
     Exhibit,
     HypothesisAssessment,
     HypothesisFindings,
@@ -83,13 +83,27 @@ from smartops.broker import family_is_configured
 from smartops.domains import DOMAINS
 from smartops.telemetry import analyst_span, record_analyst_finding
 
-from .model import AnalystModel
-from smartops.tools.native.decoder import encoded_in
+from .model import AnalystModel, AnalystResponse
+from smartops.tools.native.virustotal import is_private_ip
+from smartops.tools.native.decoder import commands_in, encoded_in, hashes_in, private_addresses_in
 
-from .formatting import NAMES_FOOTER, NO_TIME_MARKER, _middle, name_expansions
+from contracts.reasoning import (
+    ADDRESSES_FOOTER,
+    COMMANDS_FOOTER,
+    ENCODED_FOOTER,
+    HASHES_FOOTER,
+    NAMES_FOOTER,
+    NO_ROWS_FOOTER,
+)
 
-ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
+from .formatting import NO_TIME_MARKER, _middle, _truncate, name_expansions
+
 ENCODED_LINE_CAP = 8
+COMMAND_LINE_CAP = 8
+COMMAND_CHAR_CAP = 400
+NO_ROWS_LINE_CAP = 3
+HASH_LINE_CAP = 8
+ADDRESS_LINE_CAP = 8
 from .packing import (
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
@@ -292,8 +306,19 @@ def _invoke_with_one_reask(
             _GENERATION_RESERVE,
         )
 
+    def parse_whole(reply: AnalystResponse) -> Any:
+        # A reply cut off at `max_gen_len` parses as if whole: c7dbf51d's T1 ran
+        # one observation into ", , , , had no matching events" until the limit and
+        # shipped 2.7k characters of it. Cut off means re-ask, never parse.
+        if reply.stop_reason == "length":
+            raise parse_error(
+                "your reply hit the token limit and was cut off. Keep it short: "
+                "list a set of empty results once, and do not repeat citations"
+            )
+        return parse(reply.generation, domain=domain)
+
     try:
-        return _Attempt(parse(response.generation, domain=domain), prompt_tokens, generation_tokens)
+        return _Attempt(parse_whole(response), prompt_tokens, generation_tokens)
     except parse_error as exc:
         logger.info(
             "domain=%s | first reply had no parseable %s (%s), re-asking once",
@@ -317,9 +342,34 @@ def _invoke_with_one_reask(
         # Bill both calls: the failed first attempt was still generated and paid for.
         prompt_tokens += retry.prompt_tokens
         generation_tokens += retry.generation_tokens
-        return _Attempt(parse(retry.generation, domain=domain), prompt_tokens, generation_tokens)
-    except parse_error:
-        logger.warning("domain=%s | re-ask still produced no parseable %s", domain, noun)
+        try:
+            return _Attempt(parse_whole(retry), prompt_tokens, generation_tokens)
+        except parse_error:
+            if retry.stop_reason != "length":
+                raise
+            # Cut off twice (N2, 78cd60ec T1 endpoint): keep what was finished and
+            # drop the line the limit cut through, rather than lose the domain.
+            head, _, tail = retry.generation.rstrip().rpartition("\n")
+            salvaged = parse(head, domain=domain)
+            logger.warning(
+                "domain=%s | re-ask also hit the token limit; kept the finished %s "
+                "and dropped its cut-off last line (%d chars): %r",
+                domain, noun, len(tail), tail[:300],
+            )
+            return _Attempt(salvaged, prompt_tokens, generation_tokens)
+    except parse_error as exc:
+        # The reason, not just the fact: b3aa0dd2 lost endpoint twice and the log could not say why.
+        logger.warning("domain=%s | re-ask still produced no parseable %s: %s", domain, noun, exc)
+        # What the replies actually said (B15): 874ab334 lost endpoint three times on
+        # "no NARRATIVE block" with both calls at the token limit, and nothing kept
+        # the answer, so whether it looped, reordered or never closed its thinking
+        # could not be told.
+        for label, reply in (("first", response), ("re-ask", retry)):
+            _, answer = split_reasoning(reply.generation)
+            logger.warning(
+                "domain=%s | %s reply: stop_reason=%s generation_tokens=%d answer_chars=%d head=%r tail=%r",
+                domain, label, reply.stop_reason, reply.generation_tokens, len(answer), answer[:300], answer[-300:],
+            )
         # The FIRST reply's trace, not the retry's: it is the one that shows what
         # the analyst was thinking when it read the evidence.
         reasoning, _ = split_reasoning(response.generation)
@@ -603,7 +653,9 @@ _TIME_CLAIM_RE = re.compile(r"\d{1,2}:\d{2}")
 def _figures(text: str) -> set[str]:
     """Multi-digit figures an observation asserts, less its citations and times."""
     stripped = _TIME_TOKEN_RE.sub(" ", _CITATION_DIGITS_RE.sub(" ", text))
-    return set(_FIGURE_RE.findall(stripped.replace(",", "")))
+    # Only thousands separators: stripping every comma fused "4720,4722,4724" into
+    # one figure no row holds, and dropped three true observations (25965109).
+    return set(_FIGURE_RE.findall(re.sub(r"(?<=\d),(?=\d{3}\b)", "", stripped)))
 
 
 def _drop_unsupported_figures(
@@ -770,21 +822,58 @@ def _finalize_finding(
     # Second gate, and a different question. `_apply_grounding` asks whether the
     # cited id exists; this asks whether the rows behind it say what the
     # observation claims they say. Run after, so it only ever sees observations
-    # whose citations already resolve. Narrative is untouched for the same reason
-    # `_apply_grounding` keeps it: it is the record of what the model claimed.
+    # whose citations already resolve.
     survivors = _drop_unsupported_figures(
-        list(grounded.observations), slice_, grounded.domain
+        # Identical lines once: 148b0e69's T1 carried one observation eight times.
+        list(dict.fromkeys(grounded.observations)), slice_, grounded.domain
     )
-    if len(survivors) == len(grounded.observations):
+    # The narrative keeps every sentence but those asserting a figure or time the
+    # code-computed summaries do not print; the rest is the record of what the
+    # model claimed, and each dropped sentence is logged whole.
+    narrative = _drop_unsupported_sentences(grounded.narrative, slice_, grounded.domain)
+    if len(survivors) == len(grounded.observations) and narrative == grounded.narrative:
         return grounded
-    return grounded.model_copy(update={"observations": survivors})
+    return grounded.model_copy(update={"observations": survivors, "narrative": narrative})
 
 
-def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgement:
+def _drop_unsupported_sentences(narrative: str, slice_: DomainSlice, domain: str) -> str:
+    """The narrative less each sentence stating a figure or a clock time that
+    appears nowhere in the evidence the analyst read.
+
+    The prompt asks for no figures; c7dbf51d's narratives carried them anyway,
+    and T5's contradicted itself ("four times", then "11 under SYSTEM" where no
+    block prints 11). The same rule as `_drop_unsupported_figures`, over every
+    block rather than the cited ones, since narrative sentences cite nothing.
+    Summaries alone were tried and dropped true sentences naming event codes.
+
+    ponytail: spelled-out counts ("twice", "four times") pass, and so does a
+    figure that happens to occur elsewhere in the rows; a word-number list if
+    the first keeps turning up.
+    """
+    shown = " ".join(b.text for b in blocks(slice_))
+    shown_figures = _figures(shown)
+    parts = re.split(r"(?<=[.!?])(\s+)", narrative)
+    kept: list[str] = []
+    for sentence, gap in zip(parts[::2], [*parts[1::2], ""]):
+        bare = _CITATION_DIGITS_RE.sub(" ", sentence)
+        unsupported = sorted(_figures(sentence) - shown_figures) + [
+            t for t in _TIME_CLAIM_RE.findall(bare) if t not in shown
+        ]
+        if unsupported:
+            logger.warning(
+                "domain=%s | dropped a narrative sentence asserting %s, which no "
+                "computed summary prints: %s", domain, ", ".join(unsupported), sentence,
+            )
+            continue
+        kept.append(sentence + gap)
+    return narrative if len(kept) * 2 >= len(parts) + 1 else "".join(kept).rstrip()
+
+
+def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None = None) -> DomainRecord:
     """Project one finding onto the wire, attaching the evidence it cited.
 
     The projection is where `reasoning_trace` and the token counts stop: they are
-    our audit record, not the Analyst Agent's input. See `DomainJudgement`.
+    our audit record, not the Analyst Agent's input. See `DomainRecord`.
     """
     exhibits = [
         Exhibit(
@@ -827,14 +916,24 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
             len(finding.observations),
             ", ".join(e.citation for e in exhibits),
         )
+    # Beside real rows, empty exhibits are noise: T1 on c7dbf51d cited 26 zero-row
+    # sets and each crossed to the Analyst (F8). The no-rows footer below names
+    # them instead. Kept whole when every exhibit is empty -- that IS the negative
+    # evidence. `citations` is untouched, so the verdict gate sees the same ids.
+    if any(e.row_count for e in exhibits):
+        exhibits = [e for e in exhibits if e.row_count]
 
-    # Code-written, after the model's prose and marked `~`: the narrative is what
-    # the Analyst reads, and a name in it can stand for several files (B1c).
+    # Code-written lines go in `facts`, not the narrative (B14): as narrative footers
+    # they were 62-73% of 874ab334's narratives, and since narratives always cross,
+    # every observation was cut. `pack_for_analyst` trims facts by priority instead.
+    facts: list[str] = []
+    # A name in the narrative can stand for several files (B1c).
     sets = [*slice_.siem_sets, *(("uncategorised", rs) for rs in slice_.untagged_sets)]
     names = name_expansions(finding.narrative, sets)
-    narrative = "\n".join([finding.narrative, "", NAMES_FOOTER, *names]) if names else finding.narrative
-    # Code-written too (B10): each encoded command these rows hold, with what it
-    # decodes to. Facts only -- what a parent path means is the Analyst's call.
+    if names:
+        facts += [NAMES_FOOTER, *names]
+    # Each encoded command these rows hold, with what it decodes to (B10). Facts
+    # only -- what a parent path means is the Analyst's call.
     tagged = encoded_in(row for _, rs in sets for row in rs.rows)
     if tagged:
         # Capped (B10c: 39 lines/11.3k chars crowded every summary out on dce405e5),
@@ -843,21 +942,62 @@ def _as_judgement(finding: DomainFinding, slice_: DomainSlice) -> DomainJudgemen
         # Desktop splunkd.exe's single command and pushed it past the cap.
         spread = Counter(p for e in tagged.values() for p in e["parents"])
         ranked = sorted(tagged.items(), key=lambda kv: (min((spread[p] for p in kv[1]["parents"]), default=math.inf), kv[1]["events"]))
-        lines = [
+        facts.append(ENCODED_FOOTER)
+        facts += [
             f"~ encoded command {sig}: {e['events']} events"
             + (", parent " + ", ".join(f"{_middle(p)}={n}" for p, n in sorted(e["parents"].items())) if e["parents"] else "")
-            + f"; decodes to: {e['plain']}"
+            + f"; decodes to: {_truncate(e['plain'], COMMAND_CHAR_CAP)}"
             for sig, e in ranked[:ENCODED_LINE_CAP]
         ]
         if len(ranked) > ENCODED_LINE_CAP:
-            lines.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
-        narrative = "\n".join([narrative, "", ENCODED_FOOTER, *lines])
+            facts.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
+    # And the plain ones: interpreter/LOLBin command lines, rarest first, capped.
+    # The download on 148b0e69 sat in four tasks' rows and reached no narrative.
+    commands = list(commands_in(row for _, rs in sets for row in rs.rows).items())
+    if commands:
+        facts.append(COMMANDS_FOOTER)
+        facts += [f"~ {n} events: {_truncate(cmd, COMMAND_CHAR_CAP)}" for cmd, n in commands[:COMMAND_LINE_CAP]]
+        if len(commands) > COMMAND_LINE_CAP:
+            facts.append(f"~ … {len(commands) - COMMAND_LINE_CAP} more command lines not shown (rows in report.json)")
+    values = [e.value.lower() for e in scope.entities] if scope else []
+    # Each file's SHA256, the scope's own files first (B22): OneDrive.exe's hash sat in
+    # c90ca5f9's rows and never reached the Analyst, so no task asked VirusTotal.
+    hashes = sorted(hashes_in(row for _, rs in sets for row in rs.rows).items(),
+                    key=lambda kv: not any(v in kv[0][0].lower() or v == kv[0][1].lower() for v in values))
+    if hashes:
+        facts.append(HASHES_FOOTER)
+        facts += [f"~ {_middle(file) if file != '-' else '(file not named)'}: SHA256 {sha}, {n} events"
+                  for (file, sha), n in hashes[:HASH_LINE_CAP]]
+        if len(hashes) > HASH_LINE_CAP:
+            facts.append(f"~ … {len(hashes) - HASH_LINE_CAP} more hashes not shown (rows in report.json)")
+    # Stated by code, the scope's own addresses first (B21): c90ca5f9 called
+    # 192.168.40.211 "external" once VirusTotal stopped looking it up (B18).
+    scoped = [e.value for e in scope.entities if e.kind == "ip" and is_private_ip(e.value)] if scope else []
+    seen = private_addresses_in(row for _, rs in sets for row in rs.rows)
+    addresses = [*dict.fromkeys(scoped), *(a for a in seen if a not in scoped)]
+    if addresses:
+        facts.append(ADDRESSES_FOOTER)
+        facts += [f"~ {a}: private address, not internet-routable" + (f", {seen[a]} events" if a in seen else ", in this task's scope")
+                  for a in addresses[:ADDRESS_LINE_CAP]]
+        if len(addresses) > ADDRESS_LINE_CAP:
+            facts.append(f"~ … {len(addresses) - ADDRESS_LINE_CAP} more private addresses not shown (rows in report.json)")
+    # Searches that came back empty: a count, then the few naming this task's own
+    # entities first. On 5aae1a35 T1's search for PID 220's creation was empty and
+    # uncited, so the Analyst never read that its own question went unanswered;
+    # listing every one instead was 26 lines in 874ab334 L2 and 47 in L3.
+    empty = [rs.query for _, rs in sets if rs.row_count == 0 and rs.query]
+    if empty:
+        empty.sort(key=lambda q: not any(v in q.lower() for v in values))
+        facts.append(NO_ROWS_FOOTER)
+        facts.append(f"~ {len(empty)} search{'es' if len(empty) != 1 else ''} returned no rows, including:")
+        facts += [f"~ {_truncate(q, COMMAND_CHAR_CAP)}" for q in empty[:NO_ROWS_LINE_CAP]]
 
-    return DomainJudgement(
+    return DomainRecord(
         domain=finding.domain,
-        narrative=narrative,
+        narrative=finding.narrative,
         observations=list(finding.observations),
         citations=list(finding.citations),
+        facts=facts,
         exhibits=exhibits,
         # Every routed set, cited or not: a narrative that drops a set's rare rows
         # otherwise leaves the Analyst Agent no way to recover them (B1). Cited sets
@@ -894,7 +1034,7 @@ async def gather(
       refute anything. That is the Analyst Agent's job, and `HypothesisFindings`
       carries no field for it.
 
-    Each finding is projected to a `DomainJudgement` before it leaves: the audit
+    Each finding is projected to a `DomainRecord` before it leaves: the audit
     fields stay here, and the rows behind each kept citation travel with it, so
     the consumer can check a narrative against the rows it was written from.
 
@@ -906,7 +1046,7 @@ async def gather(
     contract sets it here rather than at write time.
 
     **`trace_sink`** receives the raw `DomainFinding`s before projection, and is
-    the only way to reach the model's `reasoning_trace`: `_as_judgement` drops it
+    the only way to reach the model's `reasoning_trace`: `_as_record` drops it
     on the way to the wire, deliberately, so a caller that wants it for audit has
     to be handed it here or never see it. It WAS never seeing it -- the contract
     claimed the trace was "persisted for audit" while nothing persisted it, a
@@ -925,7 +1065,7 @@ async def gather(
     findings = await asyncio.gather(
         *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
     )
-    # Before `_as_judgement` below drops `reasoning_trace`, which is the last
+    # Before `_as_record` below drops `reasoning_trace`, which is the last
     # point at which anything can.
     if trace_sink is not None:
         trace_sink(list(findings))
@@ -940,7 +1080,7 @@ async def gather(
         # strictly: a finding paired with the wrong slice would attach another
         # domain's rows to this domain's judgement.
         findings=[
-            _as_judgement(f, s)
+            _as_record(f, s, scope)
             for f, s in zip(findings, slices, strict=True)
         ],
         retrieval=_retrieval_summary(report, scope, slices),

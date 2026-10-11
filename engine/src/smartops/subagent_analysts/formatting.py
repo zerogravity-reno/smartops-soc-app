@@ -149,6 +149,32 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "uri": ("uri_path", "uri", "url", "site"),
         "action": ("action", "status", "http_method"),
     },
+    # 148b0e69: Sysmon 11 rows and 4104 script blocks went `uncategorised`, and
+    # synthesis said "no file writes". Sysmon spelling first, then CIM.
+    "file_events": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "process": ("Image", "process_path", "process_name", "process"),
+        "file": ("TargetFilename", "file_path", "file_name"),
+        "action": ("action", "EventType"),
+        "code": ("EventCode", "signature_id", "event_id"),
+    },
+    "registry_events": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "process": ("Image", "process_path", "process_name", "process"),
+        "key": ("TargetObject", "registry_path", "registry_key_name"),
+        "value": ("Details", "registry_value_data"),
+        "action": ("EventType", "action"),
+        "code": ("EventCode", "signature_id", "event_id"),
+    },
+    "script_blocks": {
+        "time": ("time", "_time", "timestamp"),
+        "host": ("dest", "host", "Computer", "ComputerName"),
+        "path": ("Path", "ScriptName"),
+        "script": ("ScriptBlockText", "Message"),
+        "code": ("EventCode", "signature_id", "event_id"),
+    },
     "processes": {
         "time": ("time", "_time", "timestamp"),
         "host": ("dest", "host", "Computer", "ComputerName"),
@@ -187,7 +213,7 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
 _COUNT_FIELD: tuple[str, ...] = ("count",)
 
 
-def _utc(value: str) -> str:
+def to_utc(value: str) -> str:
     """An offset-bearing ISO timestamp restated in UTC (`...Z`); anything else as is.
 
     The task window reaches the prompt in UTC, while Splunk returns `_time` in
@@ -206,10 +232,57 @@ def _utc(value: str) -> str:
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+# A field holding a time, by name: `_time`, `firstTime`, `first_seen`, `earliest`, `UtcTime`.
+_TIME_NAME = re.compile(r"time|first|last|earliest|latest|utc", re.I)
+# Epoch seconds from 2001 to 2286; smaller numbers in a time-named field are durations.
+_EPOCH = re.compile(r"\d{10}(?:\.\d+)?")
+ZONE_UNKNOWN = "(zone-unknown)"  # one token: `_projection_is_empty` splits on spaces
+
+
+def _naive(value: str) -> datetime | None:
+    """A timestamp with no zone: ISO (`2026-10-06 11:51:16.123`) or Splunk's `ctime`
+    (`10/05/2026 14:38:58`). None for anything else, or for one that has a zone."""
+    for parse in (datetime.fromisoformat, lambda v: datetime.strptime(v.split(".")[0], "%m/%d/%Y %H:%M:%S")):
+        try:
+            parsed = parse(value)
+        except ValueError:
+            continue
+        return parsed if parsed.tzinfo is None else None
+    return None
+
+
+def utc_row(row: dict[str, Any]) -> dict[str, Any]:
+    """`row` with every time-named field in UTC (`...Z`), the one zone the pipeline uses.
+
+    c90ca5f9's rows carried `first_seen`/`last_seen` as 18 epochs and 12 local
+    `10/05/2026 14:…` strings, and Sysmon's `UtcTime` with no zone; only `_time`
+    was converted. Epochs and offset-bearing values convert; `UtcTime` is UTC; a
+    naive value takes its own row's `_time` offset (the search head's zone, which
+    `ctime`/`strftime` render in), and without one is marked, never guessed.
+    """
+    anchor = None
+    try:
+        anchor = datetime.fromisoformat(str(row.get("_time", "")).replace("Z", "+00:00")).tzinfo
+    except ValueError:
+        pass
+    out = dict(row)
+    for key, raw in row.items():
+        if not _TIME_NAME.search(str(key)) or not isinstance(raw, (str, int, float)) or isinstance(raw, bool):
+            continue
+        value = str(raw).strip()
+        if _EPOCH.fullmatch(value):
+            out[key] = datetime.fromtimestamp(float(value), UTC).isoformat().replace("+00:00", "Z")
+        elif (local := _naive(value)) is not None:
+            zone = UTC if "utc" in str(key).lower() else anchor
+            out[key] = local.replace(tzinfo=zone).astimezone(UTC).isoformat().replace("+00:00", "Z") if zone else value + ZONE_UNKNOWN
+        else:
+            out[key] = to_utc(value)
+    return out
+
+
 def _field(row: dict[str, Any], category: str, name: str, default: str = "-") -> str:
     """Resolve one named field for `category` through `_FIELDS`."""
-    value = _first(row, *_FIELDS[category][name], default=default)
-    return _utc(value) if name == "time" else value
+    return _first(row, *_FIELDS[category][name], default=default)
 
 
 def _format_auth_event(row: dict[str, Any]) -> str:
@@ -282,6 +355,16 @@ def _format_process(row: dict[str, Any]) -> str:
     )
 
 
+def _format_fields(category: str) -> Any:
+    """`time` then `name=value` for each of `category`'s fields; wide values cut."""
+    def fmt(row: dict[str, Any]) -> str:
+        names = [n for n in _FIELDS[category] if n != "time"]
+        return f"{_field(row, category, 'time')} " + " ".join(
+            f"{n}={_truncate(_field(row, category, n), _CMDLINE_LIMIT)}" for n in names
+        ) + _count_suffix(row)
+    return fmt
+
+
 def _format_generic(row: dict[str, Any]) -> str:
     """Fallback for uncategorised rows: a compact key=value of the first few keys.
 
@@ -293,7 +376,7 @@ def _format_generic(row: dict[str, Any]) -> str:
     items = list(row.items())[:8]
     return " ".join(
         f"{_sanitise(str(k))}="
-        + _truncate(_utc(_sanitise(str(v))) if str(k).lower() in _TIME_KEYS else _sanitise(str(v)), 80)
+        + _truncate(_sanitise(str(v)), 80)
         for k, v in items
     ) or "(empty row)"
 
@@ -303,6 +386,9 @@ _FORMATTERS: dict[CimCategory, Any] = {
     "dns_resolutions": _format_dns_resolution,
     "connections": _format_connection,
     "processes": _format_process,
+    "file_events": _format_fields("file_events"),
+    "registry_events": _format_fields("registry_events"),
+    "script_blocks": _format_fields("script_blocks"),
 }
 
 
@@ -360,6 +446,7 @@ def format_row(category: str, row: dict[str, Any]) -> str:
     the gate. Degrading to key=value keeps such rows visible and auditable
     instead of vanishing, for whatever sourcetype arrives next.
     """
+    row = utc_row(row)
     formatter = _FORMATTERS.get(category)
     if formatter is None:
         return _format_generic(row)
@@ -412,6 +499,9 @@ _SUMMARY_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "dns_resolutions": ("src", "query", "answer", "rtype", "rcode"),
     "connections": ("src", "dest", "dest_port", "proto", "action"),
     "processes": ("host", "user", "process", "parent"),
+    "file_events": ("host", "process", "file", "code"),
+    "registry_events": ("host", "process", "key", "code"),
+    "script_blocks": ("host", "path", "code"),
 }
 
 _TOP_N = 5
@@ -481,6 +571,14 @@ def _generic_dimensions(rows: Sequence[dict[str, Any]]) -> list[str]:
 _TIME_KEYS = frozenset({"time", "_time", "timestamp"})
 
 
+def _iso(value: str) -> bool:
+    """True for a zoned ISO timestamp; a `(zone-unknown)` value or a duration is not one."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
+    except ValueError:
+        return False
+
+
 def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> str | None:
     """Earliest and latest timestamp across ALL rows, or `None` if they carry none.
 
@@ -495,7 +593,14 @@ def _time_range(rows: Sequence[dict[str, Any]], candidates: tuple[str, ...]) -> 
     falling back rather than raising keeps an odd sourcetype from costing the
     whole summary.
     """
-    values = [_utc(v) for v in (_first(row, *candidates, default="") for row in rows) if v]
+    values = [v for v in (_first(row, *candidates, default="") for row in rows) if v]
+    if not values:
+        # A `| stats min(_time) max(_time) by …` row has no `_time` but carries its
+        # span in its own time-named columns, already UTC through `utc_row` (P-2).
+        values = [
+            _sanitise(str(v)) for row in rows for k, v in row.items()
+            if _TIME_NAME.search(str(k)) and _iso(str(v))
+        ]
     if not values:
         return None
     try:
@@ -538,6 +643,7 @@ def summarise_rows(
     if not rows:
         return None
 
+    rows = [utc_row(row) for row in rows]
     weights = [_row_weight(row) for row in rows]
     total = sum(weights)
     # The header id is repeated here, and it is not decoration. Sets are rendered
@@ -601,7 +707,6 @@ _PATH_FIELDS: dict[str, tuple[str, ...]] = {"processes": ("process", "parent")}
 """The path-valued `_FIELDS` per category. `uncategorised` has no schema, so
 every value of its rows that is a `_PATH` counts."""
 
-NAMES_FOOTER = "Names in this narrative, computed over every row:"
 
 
 def _middle(path: str, limit: int = _SUMMARY_VALUE_LIMIT) -> str:
@@ -692,7 +797,7 @@ def format_result_set(
     if not result_set.rows:
         return f"{header}\n(no rows returned)"
 
-    shown = result_set.rows[:row_cap]
+    shown = [utc_row(row) for row in result_set.rows[:row_cap]]
     formatter = _FORMATTERS.get(category)
     lines: list[str] = []
     empty_count = 0
@@ -707,8 +812,10 @@ def format_result_set(
     if empty_count > 0:
         lines.append(f"… ({empty_count} of {len(shown)} shown rows projected nothing into {category} schema)")
 
-    if len(result_set.rows) > row_cap:
-        lines.append(f"… ({len(result_set.rows) - row_cap} more rows not shown)")
+    # Both numbers, written by code: the prompt has the model copy this line, and
+    # a model asked for "20 of 4,000" got the 20 by counting lines (P-1).
+    if result_set.row_count > len(shown):
+        lines.append(f"… {len(shown)} of {result_set.row_count} rows shown")
 
     # Rendered for EVERY set, not only a truncated one. A capped set needs it
     # because the analyst cannot count rows it was never shown; a fully printed

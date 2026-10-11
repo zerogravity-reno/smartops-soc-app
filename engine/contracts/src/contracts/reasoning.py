@@ -14,6 +14,7 @@ Shape only. Routing, prompt construction, model invocation, and parsing live in
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
@@ -21,6 +22,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from contracts.findings import CimCategory
 from contracts.subtask import ToolFamily
+
+logger = logging.getLogger(__name__)
 
 AnalystDomain = Literal["identity", "network", "endpoint"]
 """The three analysis domains, distinct from the fetch-side `ToolFamily`.
@@ -117,7 +120,7 @@ class AnalystVerdict(BaseModel):
         default=None,
         description=(
             "The model's <think> chain. Never re-fed into any prompt, and never on "
-            "the wire -- `DomainJudgement` drops it. Persisted for audit only by a "
+            "the wire -- `DomainRecord` drops it. Persisted for audit only by a "
             "caller that passes `analyze.gather(trace_sink=...)`, which writes "
             "`traces.json` beside the run's other artifacts; a caller that passes "
             "no sink discards it. It said 'Persisted for audit' unconditionally, "
@@ -293,7 +296,7 @@ class Exhibit(BaseModel):
     )
 
 
-class DomainJudgement(BaseModel):
+class DomainRecord(BaseModel):
     """One domain's judgement as it crosses to the Analyst Agent.
 
     The wire projection of a `DomainFinding`. Same judgement, minus what is ours
@@ -309,11 +312,9 @@ class DomainJudgement(BaseModel):
 
     Added: `exhibits`. See `Exhibit`.
 
-    **The name predates the shape.** It was named while this tier judged, and it
-    was deliberately NOT renamed when the judging was removed on 2026-08-31: a
-    rename would churn the contracts export, `analyze`, `main`, the published
-    schema and every test that names the type, for no behavioural gain. Read it
-    as "one domain's contribution", and read the fields for what it now is.
+    Renamed from `DomainJudgement` on 2026-10-09: this tier stopped judging on
+    2026-08-31, and the name kept saying it did. Only the type name changed; the
+    field data is the same, so older `findings.json` files load unchanged.
     There is no verdict in it -- no `disposition`, no `confidence`, no stance.
     See `Disposition` for where the deciding happens instead.
     """
@@ -339,6 +340,15 @@ class DomainJudgement(BaseModel):
             "or not: totals, distinct counts, top and rarest values and the time "
             "range, calculated in code over every row. Not model-authored, so it "
             "holds what the narrative may have left out."
+        ),
+    )
+    facts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Lines computed in code over every routed row, never written by a model: "
+            "the full paths behind each name the narrative uses, decoded encoded "
+            "commands, interpreter and LOLBin command lines, and searches that "
+            "returned no rows. Each block opens with its own header line."
         ),
     )
 
@@ -600,7 +610,7 @@ class HypothesisFindings(BaseModel):
             "before it reaches any prompt."
         ),
     )
-    findings: list[DomainJudgement] = Field(
+    findings: list[DomainRecord] = Field(
         default_factory=list,
         description="One per analysis domain, including domains that saw no evidence.",
     )
@@ -623,7 +633,7 @@ class HypothesisFindings(BaseModel):
 
         The field list itself is in `pack_for_analyst`, beside this shape, and the
         test that pins the field set fails until someone decides whether a new
-        field crosses the boundary. That is the intended friction: `_as_judgement`
+        field crosses the boundary. That is the intended friction: `_as_record`
         once gained fields by being edited in sympathy with the model rather than
         by decision.
 
@@ -631,27 +641,6 @@ class HypothesisFindings(BaseModel):
         window (B1). See `pack_for_analyst`, which this is the one-task case of.
         """
         return pack_for_analyst([self], max_chars)[0]
-        if max_chars is None:
-            share = None
-        else:
-            spare = max_chars - len(payload.model_dump_json(indent=2))
-            # -90 keeps room for the omission note itself.
-            share = max(spare, 0) // len(with_summaries) - 90
-        for narrative, f in zip(payload.findings, self.findings, strict=True):
-            used = 0
-            for summary in f.summaries:
-                # +8: the indent, quotes and comma each list item costs on the wire.
-                cost = len(json.dumps(summary)) + 8
-                if share is not None and used + cost > share:
-                    break
-                narrative.summaries.append(summary)
-                used += cost
-            omitted = len(f.summaries) - len(narrative.summaries)
-            if omitted:
-                narrative.summaries.append(
-                    f"… {omitted} set summaries omitted for size (full in findings.json)"
-                )
-        return payload
 
     # No token totals here, deliberately. Two such methods stood on this model
     # and both summed `self.verdicts` -- a field of `HypothesisAssessment`, not of
@@ -659,7 +648,7 @@ class HypothesisFindings(BaseModel):
     # the rest of the shape and never exercised, because their only caller was
     # `main._print_assessment`, which has since been deleted along with the rest
     # of the hypothesis-shown path. Not repaired against `findings` either:
-    # `DomainJudgement` drops the token counts on purpose (see its docstring), so
+    # `DomainRecord` drops the token counts on purpose (see its docstring), so
     # there is nothing on this side of the wire to sum. Token spend is our
     # telemetry, and it stays on `DomainFinding`.
 
@@ -667,7 +656,7 @@ class HypothesisFindings(BaseModel):
 class DomainNarrative(BaseModel):
     """One domain's account of its rows, stripped to what the consumer reads.
 
-    The transmission shape. `DomainJudgement` is the record; this is the message.
+    The transmission shape. `DomainRecord` is the record; this is the message.
 
     Mohammed's call on 2026-09-01, taken with the trade-off stated twice and
     accepted: the Analyst Agent is sent the prose and the observations, and
@@ -683,6 +672,10 @@ class DomainNarrative(BaseModel):
     round 2 that kept T7's `processes#1` (powershell's parents: Desktop and
     Public `splunkd.exe`) and dropped 11 of its 12 other sets.
 
+    `facts` crosses too (2026-10-09, B14): the code-written lines that used to
+    be appended to `narrative`. Kept separate so the packer can trim them by
+    priority instead of cutting every observation to let them through.
+
     **What this costs, so a future reader is not surprised by it.** Dropping
     `citations` removes the handle for checking a claim against the rows behind
     it; the ids still exist in `findings.json`, but a consumer holding only this
@@ -692,7 +685,7 @@ class DomainNarrative(BaseModel):
     2026-09-01, with Splunk unreachable, that is exactly what two of three
     domains produced.
 
-    Deliberately named for what it carries, unlike `DomainJudgement`, which was
+    Deliberately named for what it carries, unlike `DomainRecord`, which was
     left misnamed in v2 to avoid churning the published schema and every test
     that names it.
     """
@@ -717,6 +710,15 @@ class DomainNarrative(BaseModel):
             "or not: totals, distinct counts, top and rarest values and the time "
             "range, calculated in code over every row. Not model-authored, so it "
             "holds what the narrative may have left out."
+        ),
+    )
+    facts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Lines computed in code over every routed row, never written by a model: "
+            "the full paths behind each name the narrative uses, decoded encoded "
+            "commands, interpreter and LOLBin command lines, and searches that "
+            "returned no rows. Each block opens with its own header line."
         ),
     )
 
@@ -762,12 +764,37 @@ class AnalystPayload(BaseModel):
     # gap is on the record only, so `findings.json` carries it and this does not.
 
 
+# The header line opening each block of `DomainRecord.facts`, here because the
+# packer trims by them and the writer (`smartops.subagent_analysts`) imports them.
+NAMES_FOOTER = "Names in this narrative, computed over every row:"
+ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
+COMMANDS_FOOTER = "Interpreter and LOLBin command lines in these rows, rarest first:"
+NO_ROWS_FOOTER = "Searches that returned no rows:"
+HASHES_FOOTER = "File hashes in these rows, rarest first:"
+ADDRESSES_FOOTER = "Private addresses in these rows and this task (VirusTotal holds no reputation for them):"
+_FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
+# Least needed first: an empty search is a count; a command line is in report.json.
+# Names, decoded text, hashes and addresses are what a narrative cannot recover, so they always cross.
+_FACTS_DROPPED_FIRST = (NO_ROWS_FOOTER, COMMANDS_FOOTER)
+
+
+def _fact_blocks(facts: list[str]) -> list[list[str]]:
+    """`facts` split into its blocks, each starting at its header line."""
+    blocks: list[list[str]] = []
+    for line in facts:
+        if line in _FACT_HEADERS or not blocks:
+            blocks.append([])
+        blocks[-1].append(line)
+    return blocks
+
+
 def pack_for_analyst(
     findings: list[HypothesisFindings], max_chars: int | None = None
 ) -> list[AnalystPayload]:
     """Project several tasks onto the wire under ONE size budget (B1, B9).
 
-    Narratives and observations always cross. The space left is water-filled
+    The model's narratives always cross; code `facts` and then observations give
+    way when the batch is over budget (B14). The space left is water-filled
     across every domain holding summaries, in every task: the smallest need is
     met first, and what it leaves flows to the larger ones. Each domain keeps its
     summaries in order (cited sets first) while its allocation lasts, and says
@@ -786,14 +813,50 @@ def pack_for_analyst(
             hypothesis_id=h.hypothesis_id,
             hypothesis=h.hypothesis,
             findings=[
-                DomainNarrative(domain=f.domain, narrative=f.narrative, observations=list(f.observations))
+                DomainNarrative(domain=f.domain, narrative=f.narrative,
+                                observations=list(f.observations), facts=list(f.facts))
                 for f in h.findings
             ],
         )
         for h in findings
     ]
-    def cost(summary: str) -> int:
-        return len(json.dumps(summary)) + 8  # the indent, quotes and comma it costs on the wire
+    def cost(line: str) -> int:
+        return len(json.dumps(line)) + 8  # the indent, quotes and comma it costs on the wire
+
+    # Only the model's prose always crosses. Over budget, code facts give way first
+    # (empty searches, then command lines), then observations from the tail of the
+    # domain holding the most. On 874ab334 the facts sat inside the narratives, so
+    # 0 of 42 observations crossed and the batch still shipped 7k over (B14).
+    if max_chars is not None:
+        # Plus the omission note each summary-holding domain may add below.
+        notes = 90 * sum(1 for h in findings for f in h.findings if f.summaries)
+        over = sum(len(p.model_dump_json(indent=2)) for p in payloads) + notes - max_chars
+        for header in _FACTS_DROPPED_FIRST:
+            while over > 0:
+                held = [(n, b) for p in payloads for n in p.findings
+                        for b in _fact_blocks(n.facts) if b[0] == header and len(b) > 2]
+                if not held:
+                    break
+                # The header stays, so the reader still sees the block existed.
+                narrative, block = max(held, key=lambda nb: sum(cost(x) for x in nb[1]))
+                note = f"~ … {len(block) - 1} lines omitted for size (full in findings.json)"
+                narrative.facts = [x for b in _fact_blocks(narrative.facts)
+                                   for x in ([header, note] if b == block else b)]
+                over -= sum(cost(x) for x in block[1:]) - cost(note)
+        trimmed: dict[int, list] = {}
+        while over > 0:
+            heavy = [n for p in payloads for n in p.findings if n.observations]
+            if not heavy:
+                logger.warning("analyst payload: narratives alone exceed the %d-character budget by %d", max_chars, over)
+                break
+            biggest = max(heavy, key=lambda n: sum(cost(o) for o in n.observations))
+            if id(biggest) not in trimmed:
+                trimmed[id(biggest)] = [biggest, 0]
+                over += 90  # its omission note
+            over -= cost(biggest.observations.pop())
+            trimmed[id(biggest)][1] += 1
+        for narrative, n in trimmed.values():
+            narrative.observations.append(f"… {n} observations omitted for size (full in findings.json)")
     units = [
         (narrative, f)
         for payload, h in zip(payloads, findings, strict=True)

@@ -241,26 +241,37 @@ _PACK_TOKEN_BUDGET` and this module's own default were two literals that
 happened to both say 20,000)."""
 
 # The way back has a budget too. The Analyst Agent is the same model with the same
-# window, and the webapp re-sends every earlier round's payload on each synthesis
-# call (`webapp/main.py`, `max_loops` 3), so each round gets a third of what its
-# system prompt and plan leave. Uncapped, B1's summaries alone added 27k chars to
-# 072fd610 round 2.
+# window, and every synthesis call re-reads the last FULL_ROUNDS rounds in full and
+# the older ones as `run_trace.compact_round` records (`webapp/main.py`, W8).
 _ANALYST_PROMPT_RESERVE = 4_300
 """Webapp system prompt + investigation plan, in tokens. Measured on 072fd610:
 the round-2 synthesis call was 8,195 prompt tokens, of which the 6.3k-char system
-prompt and the 10.4k-char plan were ~4.2k."""
+prompt and the 10.4k-char plan were ~4.2k. 89674d75's were ~2.3k; plans vary."""
 
-# ponytail: assumes 3 re-sent rounds; set to 1 if the webapp stops re-sending old rounds.
-_ANALYST_ROUNDS = 3
+_ANALYST_ROUNDS = 2
+"""Rounds synthesis reads in full: `webapp/main.py` FULL_ROUNDS."""
+
+_COMPACT_ROUNDS_RESERVE = 4_000
+"""Tokens for the compacted older rounds: 0.9-1.8 kB each (b3aa0dd2), so about 10."""
+
+_HANDOFF_CHARS_PER_TOKEN = 3.5
+"""The payload JSON, not raw rows (`_CHARS_PER_TOKEN`). Measured 3.76 on 89674d75:
+round 3's synthesis prompt grew 4,789 tokens for round 3's 17,985 characters."""
+
+_ANALYST_GENERATION_RESERVE = 8_192
+"""The Analyst's own `max_gen_len` (`webapp/services/llm_service.DEFAULT_MAX_GEN_LEN`),
+not the sub-analysts' `_GENERATION_RESERVE`: at 4,096 its synthesis thinking ran
+out before the JSON on 78cd60ec (T15). `tests/test_verdict_gate.py` holds the two equal."""
 
 HANDOFF_CHAR_BUDGET = int(
-    (_CONTEXT_WINDOW - _GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE - _SAFETY_MARGIN)
+    (_CONTEXT_WINDOW - _ANALYST_GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE
+     - _SAFETY_MARGIN - _COMPACT_ROUNDS_RESERVE)
     // _ANALYST_ROUNDS
-    * _CHARS_PER_TOKEN
+    * _HANDOFF_CHARS_PER_TOKEN
 )
 """Characters one round's whole payload batch may take, split across its tasks by
-the caller. `_CHARS_PER_TOKEN` (2.5) is conservative for this JSON, which ran
-~4 chars/token on 072fd610."""
+the caller. 27,608: on 89674d75 the old 16,480 (a third share at 2.5 chars/token)
+sent 0 observations in every round while synthesis peaked at 13.5k of 24.5k tokens (B14)."""
 
 
 @dataclass(frozen=True)

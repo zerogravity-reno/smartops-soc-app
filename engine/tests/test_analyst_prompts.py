@@ -165,8 +165,8 @@ class TestFactsSystemPrompt:
             assert "TRUE number of rows the query matched" in _flat(p)
             # The literal marker `format_result_set` appends, so the model is
             # told what to watch for rather than left to infer it.
-            assert "… (N more rows not shown)" in p
-            assert "give both numbers" in p
+            assert "… 20 of 4000 rows shown" in p
+            assert "copying that line's two numbers" in _flat(p)
 
     def test_augments_metis_persona_not_replaces_it(self):
         p = facts_system_prompt("network")
@@ -200,7 +200,7 @@ class TestFactsPromptSteadiesTheReport:
             flat = _flat(facts_system_prompt(domain))
 
             assert "HOW MUCH TO REPORT:" in flat
-            assert "Every set you were given must appear in it." in flat
+            assert "Every set with rows must appear in it" in flat
             assert "Never drop a set because it looks uninteresting" in flat
 
     def test_category_matched_evidence_is_preferred_over_uncategorised(self):
@@ -363,7 +363,7 @@ class TestFactsUserTurn:
 
         assert "security-relevant" not in turn.lower()
         assert "Describe what the evidence above shows" in turn
-        assert "grouping like rows and giving counts" in turn
+        assert "grouping like rows." in turn and "giving counts" not in turn
 
 
 class TestPacking:
@@ -451,7 +451,7 @@ class TestTheRowCapDoesNotHideRowsTheBudgetCouldAfford:
         text, _ids, _truncated, row_cap = pack_evidence(self._slice(500))
 
         assert row_cap == _ROW_CAP_LADDER[0]
-        assert "not shown" in text
+        assert "rows shown" in text
 
 
 class TestTheDerivedBudgetLeavesRoom:
@@ -811,7 +811,7 @@ class TestExhibitsRenderAtTheAnalystsOwnCap:
 
         # All 12 fit under the cap of 20, so nothing is withheld -- which the old
         # fixed cap of 8 would have hidden behind "4 more rows not shown".
-        assert "more rows not shown" not in exhibit.text
+        assert "rows shown" not in exhibit.text
 
 
 class TestThePromptsCannotBeMistakenForEvidence:
@@ -997,12 +997,15 @@ class TestEveryWorkedExampleOffersBothTimeVariants:
     example showing only a timed shape is therefore a trap for any set that has no
     time, which is most grouped sets."""
 
-    def test_each_body_shows_the_no_time_variant(self):
+    def test_each_body_shows_no_count_or_time_slot(self):
+        # 148b0e69: the model calculates nothing. With no count or time slot in the
+        # example there is no timed shape to trap a timeless set, which is what
+        # the no-time variant used to guard.
         for domain in ("identity", "network", "endpoint"):
             block = facts_system_prompt(domain)
             example = block[block.index("COMPRESS BY GROUPING"):]
             example = example[: example.index("EVIDENCE YOU RECEIVE")]
-            assert "(these rows carry no time)" in _flat(example), domain
+            assert not re.search(r"<(count|earliest|latest|interval)>", example), domain
 
     def test_the_examples_still_carry_no_copyable_figures(self):
         # T5's guarantee, restated here because T11 rewrote the same block: a

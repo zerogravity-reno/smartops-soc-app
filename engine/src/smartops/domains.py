@@ -229,6 +229,22 @@ def spec_for(family: ToolFamily) -> DomainSpec:
     return DOMAINS[family]
 
 
+def scope_gap(family: ToolFamily, scope) -> str | None:
+    """Why `scope` gives `family` nothing to query, or None when it can run."""
+    required = DOMAINS[family].required_kinds
+    in_scope = scope.kinds()
+    if family == "vt":
+        # A private address has no reputation, so it is not a vt observable (P-8).
+        in_scope = {e.kind for e in scope.entities if not (e.kind == "ip" and virustotal.is_private_ip(e.value))}
+    if required is None or required & in_scope:
+        return None
+    return (
+        f"no {family} observable in scope: needs one of "
+        f"{sorted(required)}, scope has {sorted(in_scope)}"
+        + (" (private IPs have no reputation)" if family == "vt" and "ip" in scope.kinds() else "")
+    )
+
+
 def describe(spec: DomainSpec, is_configured: Callable[[ToolFamily], bool]) -> str:
     """`spec.description` as the Broker's model should read it in this process.
 

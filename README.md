@@ -32,7 +32,7 @@ Everything for one investigation is joined by the webapp's `run_id`:
 - `.smartops/runs/<run_id>/broker-L<n>.log` has the engine's output for each loop.
 - `.smartops/runs/<run_id>-L<n>-T<k>/<stamp>/` has each task's `report.json`, `evidence.json` and `findings.json`.
 
-The UI shows the loop in two lanes, Analyst and Tool Broker, with a handshake stamp per loop (`sent → fetched → returned`).
+The UI shows the run as five stages (Context, Plan, Evidence, Findings, Synthesis), each card tagged Analyst or Tool Broker, with a handshake stamp per loop (`sent → fetched → returned`).
 
 ---
 
@@ -166,9 +166,9 @@ uv run uvicorn webapp.main:app --port 8001
 `start_server.bat` also works, but it uses whatever `python` is on your PATH, so run it from an activated `.venv`.
 
 **In the browser:**
-1. Pick an alert in the **Incident queue** on the left (the latest 10 notables from Splunk ES). Its fields fill the form. You can also fill the form by hand; the rule name is required.
+1. Pick an alert in the **Incident queue** on the left (the latest 10 notables from Splunk ES). Its facts (host, user, event time, command line, parent, hash) show at the top; **Edit fields** opens the form, which you can also fill by hand (the rule name is required).
 2. Click **Investigate**. This builds the context contract (seed, ESCU match, OpenCTI lookup) and starts one `/api/run`: Analyst plan, Broker loops, synthesis, verdict. The OpenCTI lookup can take a few minutes.
-3. Follow it live in the two lanes (Analyst | Tool Broker) and the stage bar. The context sent to the pipeline is under **Context sent to the pipeline** at the bottom.
+3. Follow it live in the stage list: the active stage is open, a finished one folds to a one-line summary (click to reopen). The right rail keeps the verdict, hypothesis scores, per-task progress (click a task to open its findings) and the run's spend and tokens in view. The raw context sent to the pipeline is under the Context stage.
 
 ### The Tool Broker on its own
 

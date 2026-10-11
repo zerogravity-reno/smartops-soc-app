@@ -19,6 +19,7 @@ from smartops.broker import (
     MissingStepIdGuard,
     ModelChoice,
     _digest,
+    _stub_subagent,
     _estimated_input_tokens,
     broker_task,
     evaluate_step,
@@ -27,7 +28,7 @@ from smartops.broker import (
     missing_step_id_refusal,
     plan_fetch,
 )
-from smartops.budget import Budget
+from smartops.budget import Budget, Usage
 from smartops.tools import registry
 from smartops.domains import DOMAINS, spec_for
 
@@ -60,7 +61,8 @@ MODEL = ModelChoice(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", pri
 def make_scope(**overrides):
     now = datetime(2026, 8, 11, tzinfo=UTC)
     defaults = dict(
-        entities=[Entity(kind="host", value="host-1")],
+        # A hash too: `plan_fetch` refuses a vt step on a scope with no indicator.
+        entities=[Entity(kind="host", value="host-1"), Entity(kind="file_hash", value="a" * 64)],
         time_window=(now - timedelta(hours=1), now),
     )
     return Scope(**{**defaults, **overrides})
@@ -315,13 +317,17 @@ class TestStubSubagent:
         # vt needs a hash/ip/domain/url; a user-only scope cannot be asked. This
         # is a precondition, not a judgement, so it must be reported distinctly
         # from "the server isn't connected".
-        task = make_task(scope=make_scope(entities=[Entity(kind="user", value="someuser")]))
-
-        outcome = await broker_task(
-            task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"])
+        # Called directly: `plan_fetch` now refuses such a step before dispatch.
+        result = await _stub_subagent(
+            SubagentMission(
+                task_id="t1:vt:1",
+                hypothesis_id="h1",
+                tool_family="vt",
+                goal="g",
+                scope=make_scope(entities=[Entity(kind="user", value="someuser")]),
+            )
         )
 
-        result = outcome.results[0]
         assert result.status == SubtaskStatus.REJECTED
         assert "no vt observable in scope" in result.reason
         # REJECTED must never set `error` -- `_StatusErrorContract` raises if it does.
@@ -333,7 +339,7 @@ class TestStubSubagent:
         # far as the lookup and reports the credential as the blocker, which is
         # the honest state and a different thing to go fix.
         monkeypatch.delenv("VT_API_KEY", raising=False)
-        task = make_task(scope=make_scope(entities=[Entity(kind="ip", value="10.2.4.9")]))
+        task = make_task(scope=make_scope(entities=[Entity(kind="ip", value="8.8.4.4")]))
 
         outcome = await broker_task(
             task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"])
@@ -652,6 +658,33 @@ class TestBudget:
         assert entry.usage.cache_creation_input_tokens == 300
         assert budget.spend_by_role() == {"broker": entry.cost_micro_usd}
 
+    async def test_each_report_carries_its_own_spend_not_the_batchs(self):
+        # A batch shares one Budget. Run 148b0e69's reports each carried the
+        # running total, so the console summed $7.65 for a $2.87 run (W1).
+        budget = Budget.from_usd(1.0)
+        usage = {"inputTokens": 1000, "outputTokens": 200}
+
+        async def charging_subagent(mission):
+            # Subagents settle under their own mission id (`t1:siem:…`), not the
+            # task id; c7dbf51d's reports read only the bare key and lost them.
+            reservation = await budget.reserve(
+                role="siem", model=MODEL.pricing_key, max_output_tokens=500, task_id=f"{mission.task_id}:siem:x"
+            )
+            await budget.settle(reservation, Usage(input_tokens=2000, output_tokens=300))
+            return ok_result(mission)
+
+        outcomes = [
+            await broker_task(
+                make_task(task_id=t, hypothesis_id=t), budget, model=MODEL,
+                run_subagent=charging_subagent, invoke=fake_invoker(["siem"], usage=usage),
+            )
+            for t in ("t1", "t2")
+        ]
+        spends = [o.report.cost.total_spend_micro_usd for o in outcomes]
+        assert spends == [budget.spend_for_task("t1"), budget.spend_for_task("t2")]
+        assert spends[0] > budget.spend_by_task()["t1"]  # the subagent's share is in it
+        assert sum(spends) == sum(budget.spend_by_role().values())
+
     async def test_exception_during_invocation_releases_the_reservation(self):
         budget = Budget.from_usd(1.0)
         before = budget.remaining
@@ -725,7 +758,9 @@ class TestDefaultInvoker:
 
         with patch("strands.Agent", return_value=fake_agent) as agent_cls:
             invoker = default_broker_invoker(MODEL, max_output_tokens=500, turns=6)
-            await invoker("prompt", BrokerRequest(task=make_task()))
+            # An ip as well, so ndr's required kinds are in scope too.
+            scope = make_scope(entities=[*make_scope().entities, Entity(kind="ip", value="10.0.0.1")])
+            await invoker("prompt", BrokerRequest(task=make_task(scope=scope)))
 
         kwargs = agent_cls.call_args.kwargs
         assert kwargs["model"] is sentinel
@@ -2389,6 +2424,33 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
 
         assert "plan_fetch" in names
 
+    def test_a_family_the_scope_cannot_serve_is_not_offered(self, monkeypatch):
+        # F6: vt on a host+user scope was planned, dispatched, then rejected.
+        monkeypatch.setattr(registry, "server_count", lambda family: 1)
+        scope = make_scope(entities=[Entity(kind="host", value="h"), Entity(kind="user", value="u")])
+
+        names = {t.tool_spec["name"] for t in broker_module.available_broker_tools(scope)}
+
+        assert "investigate_vt" not in names
+        assert "investigate_siem" in names
+
+    async def test_a_step_the_scope_cannot_serve_is_refused_at_plan_time(self):
+        from contracts import FetchStep
+
+        scope = make_scope(entities=[Entity(kind="host", value="h"), Entity(kind="user", value="u")])
+        request = BrokerRequest(task=make_task(scope=scope))
+        context = FakeToolContext(tool_use={"toolUseId": "tu"}, invocation_state={"smartops": request})
+
+        res = await plan_fetch(
+            steps=[FetchStep(step_id="siem-1", family="siem", objective="x"),
+                   FetchStep(step_id="vt-1", family="vt", objective="x")],
+            rationale="r",
+            tool_context=context,
+        )
+
+        assert res.startswith("status=refused") and "file_hash" in res
+        assert request.plan is None
+
 
 class TestAFailedSubagentIsNotANegativeFinding:
     """`confirmed_empty` means "we looked and the data is not there".
@@ -2640,7 +2702,7 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
         assert outcome.rows_retrieved == 30
         assert outcome.completed is True
 
-    def test_naming_no_category_counts_every_bucket_as_before(self):
+    def test_naming_no_category_counts_every_bucket_but_uncategorised(self):
         # The default. Every existing plan and every vt step relies on it.
         step = FetchStep(step_id="siem-1", family="siem", objective="Anything")
         result = self._result(
@@ -2653,7 +2715,8 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
 
         outcome = evaluate_step(step, result)
 
-        assert outcome.rows_retrieved == 62
+        # `uncategorised` is the one bucket that never counts (F7).
+        assert outcome.rows_retrieved == 61
         assert outcome.completed is True
 
     def test_a_category_scoped_step_accumulates_across_redispatch(self):
@@ -2836,3 +2899,17 @@ class TestPlanFetchRefusesUnservedFamilies:
 
         assert "Fetch plan recorded" in res
         assert request.plan is not None
+
+
+class TestOneFolderPerRound:
+    async def test_a_task_lands_in_the_round_folder_under_its_short_id(self, tmp_path, monkeypatch):
+        # 874ab334 was 12 sibling folders under the runs root (O5).
+        monkeypatch.setenv("SMARTOPS_OUT_DIR", str(tmp_path / "874ab334" / "L2"))
+        task = make_task(task_id="874ab334-L2-T1", scope=make_scope(entities=[Entity(kind="ip", value="8.8.4.4")]))
+
+        first = await broker_task(task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"]))
+        again = await broker_task(task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"]))
+
+        assert first.run_dir == tmp_path / "874ab334" / "L2" / "T1"
+        assert (first.run_dir / "report.json").is_file() and (first.run_dir / "evidence.json").is_file()
+        assert again.run_dir.name == "874ab334-L2-T1"  # a clash takes the full id, never overwrites

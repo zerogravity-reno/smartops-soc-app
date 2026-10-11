@@ -11,5 +11,5 @@ Get-Content .env | Where-Object { $_ -notmatch "^#" -and $_ -match "=" } | ForEa
 uv sync
 
 # Start server
-Write-Host "Starting SmartOps SOC on http://localhost:8001" -ForegroundColor Green
-uv run uvicorn webapp.main:app --host 0.0.0.0 --port 8001 --reload
+Write-Host "Starting SmartOps SOC on http://localhost:8013" -ForegroundColor Green
+uv run uvicorn webapp.main:app --host 0.0.0.0 --port 8013 --reload

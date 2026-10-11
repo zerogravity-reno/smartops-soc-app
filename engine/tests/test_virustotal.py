@@ -355,7 +355,7 @@ class TestBrokerIntegration:
         )
 
         task = test_broker.make_task(
-            scope=make_scope(Entity(kind="ip", value="10.2.4.9"))
+            scope=make_scope(Entity(kind="ip", value="8.8.4.4"))
         )
         outcome = await broker_task(
             task,
@@ -478,3 +478,36 @@ class TestLookupSerialisation:
         # tells the model what to send instead.
         assert "punycode" in message
         assert "ValidationError" not in message and "validation error for" not in message
+
+
+class TestPrivateAndRepeatLookups:
+    async def test_a_private_ip_is_never_sent_and_never_reads_as_clean(self, monkeypatch):
+        def handler(request):
+            raise AssertionError(f"private address reached VirusTotal: {request.url}")
+
+        monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(handler))
+        private = Entity(kind="ip", value="192.168.40.211")
+        assert queryable_entities(make_scope(private)) == []
+        verdict = await virustotal._lookup(private)
+        assert not verdict.found
+        assert "private address" in verdict.summary()
+
+    async def test_the_same_indicator_is_fetched_once(self, monkeypatch):
+        calls = []
+
+        def handler(request):
+            calls.append(request.url)
+            return httpx.Response(200, json=stats_response())
+
+        monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(handler))
+        for _ in range(3):
+            await virustotal._lookup(Entity(kind="ip", value="8.8.8.8"))
+        assert len(calls) == 1
+
+    async def test_a_failed_lookup_is_not_cached(self, monkeypatch):
+        responses = iter([httpx.Response(429), httpx.Response(200, json=stats_response())])
+        monkeypatch.setattr(virustotal.httpx, "AsyncClient", fake_transport(lambda r: next(responses)))
+        entity = Entity(kind="ip", value="8.8.8.8")
+        with pytest.raises(virustotal.VirusTotalError):
+            await virustotal._lookup(entity)
+        assert (await virustotal._lookup(entity)).found
