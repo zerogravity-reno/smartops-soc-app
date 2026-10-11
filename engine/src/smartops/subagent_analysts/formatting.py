@@ -131,18 +131,19 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         # spellings -- the literal braces are part of the JSON key, so a
         # candidate list naming only `query` misses every Stream DNS row (66 of
         # them across the saved runs).
-        "query": ("query", "query{}", "domain", "name", "name{}"),
-        "answer": ("answer", "answer{}", "answers", "ip", "dest_ip"),
+        "query": ("query", "query{}", "domain", "name", "name{}", "QueryName"),
+        "answer": ("answer", "answer{}", "answers", "ip", "dest_ip", "QueryResults"),
         "rtype": ("record_type", "query_type", "type"),
         "rcode": ("reply_code", "response_code", "rcode"),
     },
     "connections": {
         "time": ("time", "_time", "timestamp"),
-        "src": ("src", "src_ip"),
-        "src_port": ("src_port",),
-        "dest": ("dest", "dest_ip"),
-        "dest_port": ("dest_port",),
-        "proto": ("transport", "protocol", "proto"),
+        # Sysmon EID 3/22 spellings last (a818a3fd T4, B-4: rows rendered `dest=-`).
+        "src": ("src", "src_ip", "SourceIp"),
+        "src_port": ("src_port", "SourcePort"),
+        "dest": ("dest", "dest_ip", "DestinationIp"),
+        "dest_port": ("dest_port", "DestinationPort"),
+        "proto": ("transport", "protocol", "proto", "Protocol"),
         "bytes_in": ("bytes_in",),
         "bytes_out": ("bytes_out",),
         "bytes": ("bytes",),

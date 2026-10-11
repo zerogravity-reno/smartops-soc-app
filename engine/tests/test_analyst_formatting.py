@@ -54,6 +54,16 @@ class TestFieldProjection:
         )
         assert "10.0.0.5:51000→1.2.3.4:443" in line
 
+    def test_sysmon_connection_spellings_are_read(self):
+        # a818a3fd T4 (B-4): Sysmon EID 3 rows rendered `dest=-`.
+        line = format_row(
+            "connections",
+            {"_time": "t", "SourceIp": "10.0.10.20", "DestinationIp": "192.168.40.211",
+             "DestinationPort": "8888", "Protocol": "tcp"},
+        )
+        assert "10.0.10.20→192.168.40.211:8888" in line
+        assert "proto=tcp" in line
+
     def test_process_cmdline_is_truncated(self):
         line = format_row(
             "processes", {"process": "powershell.exe " + "A" * 500}
