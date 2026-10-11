@@ -59,7 +59,7 @@ from contracts import (
     TaskClassification,
     ToolFamily,
 )
-from smartops.budget import Budget, ModelChoice, Usage
+from smartops.budget import Budget, ModelChoice, call_usages, usage_from
 from smartops.domains import DOMAINS, DomainSpec, describe, scope_gap
 from smartops.subagent_analysts.formatting import to_utc
 from smartops.errors import NotConfigured
@@ -228,20 +228,6 @@ class BrokerInvokerResult(Protocol):
 
 
 BrokerInvoker = Callable[[str, BrokerRequest], Awaitable[BrokerInvokerResult]]
-
-
-def _usage_from_accumulated(accumulated: dict) -> Usage:
-    """Translate Strands' `EventLoopMetrics.accumulated_usage` (Bedrock/
-    Converse-style camelCase keys) into `Budget.Usage` (Anthropic-API-style
-    snake_case, used everywhere else in this codebase). This is the one place
-    that bridges the two.
-    """
-    return Usage(
-        input_tokens=accumulated.get("inputTokens", 0),
-        output_tokens=accumulated.get("outputTokens", 0),
-        cache_creation_input_tokens=accumulated.get("cacheWriteInputTokens", 0),
-        cache_read_input_tokens=accumulated.get("cacheReadInputTokens", 0),
-    )
 
 
 def _vt_lookup_tool_name(kind: str) -> str:
@@ -1355,7 +1341,7 @@ async def _run_broker_task(
 
     record_cost(
         reservation,
-        await budget.settle(reservation, _usage_from_accumulated(result.metrics.accumulated_usage)),
+        await budget.settle(reservation, usage_from(result.metrics.accumulated_usage), calls=call_usages(result.metrics)),
     )
 
     classification = result.structured_output

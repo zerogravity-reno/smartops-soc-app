@@ -123,7 +123,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
-| K4 | Cost | One model for every Broker call: the planner, each fetch subagent and each recovery call | Medium | Planned: model tiering per task, then the Claude API |
+| K4 | Cost | One model for every Broker call: the planner, each fetch subagent and each recovery call | Medium | Built: Anthropic API provider, per-role tiers A/B, per-request pricing; A/B live runs pending |
 | O1 | Audit | Context contract not saved with the run | Medium | Fixed (`c85eb93`) |
 | O2 | Audit | Dispatch-to-step link not recorded | Low | Fixed on this branch |
 | O3 | Audit | Broker log written only at the end of a loop | Low | Fixed (`c85eb93`) |
@@ -715,15 +715,52 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 **K3. 19 loops on empty input.** *Medium. Fixed.* SOC3 spent 18 synthesis calls re-reading the same stale findings. W2 removed the stale input, `max_loops` was 3 (15 since 2026-10-08, W8), and the T1 gate stops a confident verdict that cites no evidence. The teammate branch's `max_loops` 9999 was not ported.
 
-**K4. One model for every Broker call.** *Medium. Planned (2026-10-11).*
-- **Today:** the Broker planner, every fetch subagent (siem, vt, edr, ndr) and every structured-output recovery call run on one `ModelChoice`, `AWS_BEDROCK_MODEL_ID` (`us.anthropic.claude-sonnet-4-6`). `budget.PRICING` already holds the tiers (Opus, Sonnet, Haiku), and pure VirusTotal lookups already skip the model (`broker.py`, the lookup path).
-- **Plan: model tiering.** Each task, and each call within it, gets the model that fits the work:
-  - **Broker planning** (`plan_fetch`, choosing domains, deciding when a question is unanswerable, B20) is the agent's reasoning, so it stays on the strongest tier.
-  - **The siem subagent** (writing and correcting SPL from a planned step) is mechanics, a candidate for a mid or small tier. Measure it against the 10-11 baseline before switching.
-  - **Recovery and structured-output calls** (re-asking for the answer schema after a cut-off) go to the small tier.
-- **Shape:** one `ModelChoice` per role, `SMARTOPS_MODEL_ID_<ROLE>`, falling back to today's single id. The budget ledger already prices by model, so the savings show per role in the spend log.
-- **Then the Claude API:** the Broker moves to the Anthropic API as a provider beside Bedrock. `PRICING` is already first-party rates, so cost estimates become exact instead of approximations.
-- **Check:** the same alert replayed per tier, comparing cost per round and whether each step returned the rows the larger tier did.
+**K4. One model for every Broker call.** *Medium. Built on `smartops-loop-fix` (2026-10-11); A/B live runs pending.*
+- **Before:** the Broker planner, both fetch subagents (siem, vt) and every recovery call ran on one `ModelChoice`, Sonnet 4.6 on Bedrock (`AWS_BEDROCK_MODEL_ID`).
+- **Done: the Broker on the Anthropic API, with one model per role.**
+  - `Provider.ANTHROPIC` uses Strands' `AnthropicModel`, through the `strands-agents[anthropic]` extra (anthropic SDK 0.125.0).
+  - It is chosen only by `SMARTOPS_LLM_PROVIDER=anthropic`. Bedrock stays selectable, and rollback is manual: `SMARTOPS_LLM_PROVIDER=bedrock`.
+  - `budget.model_choices_from_env()` gives `broker`, `siem` and `vt` their own choice. `main.py` builds all three eagerly and logs them: `model: anthropic tier=A broker=… siem=… vt=…`.
+  - `domain_runner` takes a family→choice map.
+  - vt was already a model agent with `virustotal.TOOLS` whenever a model is configured, so it only needed its own tier.
+  - The recovery call stays on its family's model, because switching models mid-conversation drops the agent's thinking blocks.
+- **Tiers** (`SMARTOPS_BROKER_TIERS`; per-role `SMARTOPS_MODEL_ID_<ROLE>` and `SMARTOPS_EFFORT_<ROLE>` override them):
+
+  | Role | A | B |
+  |---|---|---|
+  | Broker planner | `claude-opus-5-5`, effort high | `claude-sonnet-5-5`, effort high |
+  | siem subagent | `claude-sonnet-5-5`, effort medium | `claude-haiku-5-5`, effort medium |
+  | vt subagent | `claude-haiku-5-5`, effort low | `claude-haiku-5-5`, effort low |
+
+- **API differences handled:**
+  - **Sampling:** Opus 5.5, Sonnet 5.5 and Haiku 5.5 reject `temperature`/`top_p`, so the Anthropic provider sends neither.
+  - **Forced tool choice:** Strands forces `tool_choice: any` when a turn ends without the answer tool. Opus 5.5 and Sonnet 5.5 reject that with a 400, so a small `AnthropicModel` subclass sends `auto` for those two. Haiku 5.5 accepts forced use. If the model still skips the tool, the step takes the existing no-answer `ERROR` path.
+  - **Caching:** top-level `cache_control: ephemeral` caches the tools and system prompt.
+- **Output caps follow effort:** the loop-wide output caps were sized for Sonnet 4.6, which did not think (siem had about 480 tokens a turn). Now a role with an effort gets `turns × OUTPUT_TOKENS_PER_TURN[effort]`, with low 1,000, medium 2,000 and high 4,000 (`budget.loop_output_tokens`). On both tiers that gives the Broker 44,000, siem 50,000 and vt 25,000. Recovery gets 4,000 plus one turn's allowance. A role with no effort (Bedrock) keeps 16,000 / 12,000 / 4,000. The allowances are estimates, to be reset from the smoke run's per-turn usage.
+- **Cost calculation:**
+  - New `PRICING` rows, with live rates from platform.claude.com on 2026-10-11:
+    - `claude-opus-5-5`: $4/$20, cache read 0.05×.
+    - `claude-sonnet-5-5`: $2/$10, cache read 0.05×.
+    - `claude-haiku-5-5`: $0.10/$0.50.
+  - `claude-sonnet-5` was $3/$15 and is now $2/$10.
+  - Haiku 5.5 bills a request whose prompt (input plus cache reads plus cache writes) is over 100k tokens at $0.50/$2.50. That threshold is judged per request, so the budget now settles each model request on its own (`budget.call_usages`, from Strands' per-cycle metrics), not the loop's summed usage.
+  - The two copies of the camelCase usage bridge became one, `budget.usage_from`.
+- **Tests:** `engine/tests/test_model_tiers.py` (13) covers:
+  - presets, overrides and the Bedrock fallback;
+  - request params: no sampling, effort, `cache_control`;
+  - tool-choice relaxation;
+  - rates;
+  - output caps per effort;
+  - per-request pricing: two 60k calls at the low rate and one 120k call at the high rate.
+- **Next, live A/B:** the `89674d75` alert under A, then B. Per round, compare:
+  - Broker cost;
+  - step statuses and rows;
+  - observations reaching the Analyst;
+  - SPL errors.
+- **Watch in those runs:**
+  - Output tokens per turn, set against the effort allowances (no `limit_output_tokens`).
+  - All three models return a 400 if earlier turns are rewritten while thinking blocks are sent back, so check `ContextOffloader` and the sliding window.
+  - Cache reads should be above 0.
 
 ## Audit trail
 
@@ -773,7 +810,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Next, in order:**
   1. **Live run:** check the 10-10 list (reconnects, no hung step, sizes, no repeated round), plus observations in every payload, no `stop_reason=length`, and no `no_data` beside rows.
   2. **B20:** the "can't answer" design above, once agreed.
-  3. **K4:** model tiering per Broker role, then the Claude API.
+  3. **K4:** A/B live runs of the tier presets.
   4. **T25 (Mohammed to decide):** whether one bad ref, or a malformed one, should block a verdict.
 
 

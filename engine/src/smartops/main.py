@@ -19,7 +19,7 @@ windows on the other.
 
 **When this calls a model, and when it does not.** `broker.default_broker_invoker()`
 builds a real Strands `Agent`, and `broker_task()` uses it whenever
-`model_choice_from_env()` resolves a configured provider. Only when none is
+`model_choices_from_env()` resolves a configured provider. Only when none is
 configured (or `--scripted` is passed) does this CLI fall back to
 `_scripted_invoker()` instead: a deterministic stand-in that dispatches exactly
 the families named by `--families` -- a flag that does nothing on the model
@@ -94,11 +94,18 @@ from smartops.broker import (
     OUT_DIR_ENV_VAR,
     RUNS_DIR_ENV_VAR,
     TOOL_BY_FAMILY,
+    DEFAULT_BROKER_TURNS,
     BrokerRequest,
     broker_task,
     plan_fetch,
 )
-from smartops.budget import PROVIDER_ENV_VAR, Budget, ModelChoice, model_choice_from_env
+from smartops.budget import (
+    PROVIDER_ENV_VAR,
+    Budget,
+    ModelChoice,
+    loop_output_tokens,
+    model_choices_from_env,
+)
 from smartops.domains import ALL_FAMILIES
 from smartops.subagent_analysts.analyze import gather
 from smartops.subagent_analysts.packing import HANDOFF_CHAR_BUDGET
@@ -441,7 +448,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Run the Task Broker over one investigative task.",
         epilog=(
             "A real model runs whenever a provider is configured (see "
-            "model_choice_from_env()); --families only drives the scripted path "
+            "model_choices_from_env()); --families only drives the scripted path "
             "(--scripted, or no provider configured) -- on the model path the "
             "tool gate decides what's available instead. Splunk is configured, "
             "so siem dispatches return real rows."
@@ -559,15 +566,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        # The Broker's cumulative output-token ceiling for one run. The library
-        # default (4000) is too low for a thinking-heavy model like Sonnet 4.6: it
-        # spends the budget authoring the fetch plan and hits limit_output_tokens
-        # before emitting a single dispatch, so nothing is fetched. Sonnet's large
-        # context affords a much higher ceiling; 16000 clears planning + dispatch.
+        # The Broker's cumulative output-token ceiling for one run. Unset, it follows
+        # the planner's effort (`budget.loop_output_tokens`, K4), else 16000: the
+        # library default (4000) ran out on Sonnet 4.6 while authoring the fetch
+        # plan, before a single dispatch.
         "--broker-output-tokens",
         type=int,
-        default=16000,
-        help="cumulative output-token ceiling for the Broker's run (default: 16000)",
+        default=None,
+        help="cumulative output-token ceiling for the Broker's run "
+        "(default: turns x the planner effort's allowance, else 16000)",
     )
     parser.add_argument(
         "--subagent-turns",
@@ -1254,10 +1261,15 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
     # rather than an error. `--scripted` forces the floor even when credentials
     # exist, for testing the dispatch path without spending anything.
     try:
-        choice = None if args.scripted else model_choice_from_env()
+        # One choice per Broker role (K4): the planner, siem and vt can each run their own model.
+        choices = None if args.scripted else model_choices_from_env()
+        choice = choices["broker"] if choices else None
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    broker_output_tokens = args.broker_output_tokens or (
+        loop_output_tokens(choice, DEFAULT_BROKER_TURNS, 16_000) if choice else 16_000
+    )
 
     if choice is None:
         model = _PLACEHOLDER_MODEL
@@ -1268,7 +1280,8 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
         # construction, so a bad region or absent credentials fails here rather
         # than mid-investigation, after budget has been reserved.
         try:
-            choice.build()
+            for role_choice in choices.values():
+                role_choice.build()
         except Exception as exc:
             print(
                 f"error: provider {choice.provider.value!r} is selected but not usable: {exc}",
@@ -1289,7 +1302,10 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
             return 2
         model = choice
         invoke = None  # broker_task builds default_broker_invoker itself
-        print(f"model:    {choice.provider.value}:{choice.model_id}")
+        tier = os.environ.get("SMARTOPS_BROKER_TIERS", "").strip().upper() or "-"
+        print(f"model:    {choice.provider.value} tier={tier} "
+              + " ".join(f"{role}={c.model_id}" + (f"/{c.effort}" if c.effort else "") for role, c in choices.items())
+              + f" broker_output_tokens={broker_output_tokens}")
 
     # Per task, then multiplied: see `DEFAULT_BUDGET_USD_PER_TASK`. An explicit
     # value is a whole-run ceiling and is not scaled.
@@ -1360,7 +1376,7 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
         # what each family *could* have used. `vt` answers either way -- its lookup
         # needs no model at all.
         run_subagent = (
-            domain_runner(model=choice, budget=budget, turns=args.subagent_turns)
+            domain_runner(model=choices, budget=budget, turns=args.subagent_turns)
             if choice is not None
             else None
         )
@@ -1379,7 +1395,7 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
                     model=model,
                     invoke=invoke,
                     run_subagent=run_subagent,
-                    max_output_tokens=args.broker_output_tokens,
+                    max_output_tokens=broker_output_tokens,
                 )
             except Exception as exc:
                 # An investigation failing must not look like the tool crashing.

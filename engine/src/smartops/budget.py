@@ -72,16 +72,27 @@ class ModelPrice:
     output_per_token_nano: int
     cache_write_multiplier: float = 1.25
     cache_read_multiplier: float = 0.1
+    long_context_threshold: int | None = None
+    """Prompt tokens (input + cache reads + cache writes) above which ONE request
+    bills at `long_context` instead. Per request, not per mission: Haiku 5.5 prices
+    a 120k prompt at 5x, two 60k prompts at 1x."""
+    long_context: ModelPrice | None = None
 
 
 PRICING: dict[str, ModelPrice] = {
-    # nano-USD per token: $5.00/Mtok -> 5_000.
+    # nano-USD per token: $5.00/Mtok -> 5_000. Rates from platform.claude.com/docs pricing, 2026-10-11.
+    "claude-opus-5-5": ModelPrice(input_per_token_nano=4_000, output_per_token_nano=20_000, cache_read_multiplier=0.05),
+    "claude-sonnet-5-5": ModelPrice(input_per_token_nano=2_000, output_per_token_nano=10_000, cache_read_multiplier=0.05),
+    "claude-haiku-5-5": ModelPrice(
+        input_per_token_nano=100, output_per_token_nano=500, long_context_threshold=100_000,
+        long_context=ModelPrice(input_per_token_nano=500, output_per_token_nano=2_500),
+    ),
     "claude-opus-5": ModelPrice(input_per_token_nano=5_000, output_per_token_nano=25_000),
-    "claude-sonnet-5": ModelPrice(input_per_token_nano=3_000, output_per_token_nano=15_000),
+    "claude-sonnet-5": ModelPrice(input_per_token_nano=2_000, output_per_token_nano=10_000),
     "claude-sonnet-4-6": ModelPrice(input_per_token_nano=3_000, output_per_token_nano=15_000),
     "claude-haiku-4-5": ModelPrice(input_per_token_nano=1_000, output_per_token_nano=5_000),
 }
-"""Anthropic **first-party** rates.
+"""Anthropic **first-party** rates: exact on `Provider.ANTHROPIC`.
 
 ⚠️ These are NOT Bedrock rates. Amazon Bedrock is partner-operated with its own
 separate price list, so every figure a `ModelChoice` bills through a Bedrock
@@ -114,6 +125,7 @@ class Provider(StrEnum):
 
     BEDROCK = "bedrock"
     DEEPSEEK = "deepseek"
+    ANTHROPIC = "anthropic"
 
 
 @dataclass(frozen=True)
@@ -148,6 +160,12 @@ class ModelChoice:
     read_timeout: float = 120.0
     temperature: float = 0.3
     top_p: float | None = None
+    effort: str | None = None
+    """`output_config.effort` on the Anthropic API (low/medium/high/xhigh/max); None
+    keeps the model's default. Ignored by the other providers."""
+    max_tokens: int = 16_000
+    """Per-request output ceiling the Anthropic API requires. Thinking counts
+    against it; `Limits(output_tokens=...)` still caps the whole loop."""
     cache_prefix: bool = True
     """Whether to mark the tool schemas and system prompt as a cacheable prefix.
 
@@ -195,6 +213,8 @@ class ModelChoice:
             return self._build_bedrock()
         if self.provider is Provider.DEEPSEEK:
             return self._build_openai_compatible()
+        if self.provider is Provider.ANTHROPIC:
+            return self._build_anthropic()
         raise ValueError(f"unsupported provider {self.provider!r}")
 
     def _build_bedrock(self) -> Any:
@@ -242,6 +262,22 @@ class ModelChoice:
             return [{"text": text}, {"cachePoint": {"type": "default"}}]
         return text
 
+    def _build_anthropic(self) -> Any:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not set")
+        # No temperature/top_p: Opus 5.5, Sonnet 5.5 and Haiku 5.5 all reject them
+        # with a 400. Top-level `cache_control` caches the tools + system prefix.
+        params: dict[str, Any] = {"cache_control": {"type": "ephemeral"}}
+        if self.effort:
+            params["output_config"] = {"effort": self.effort}
+        return _anthropic_model_class()(
+            client_args={"api_key": api_key},
+            model_id=self.model_id,
+            max_tokens=self.max_tokens,
+            params=params,
+        )
+
     def _build_openai_compatible(self) -> Any:
         from strands.models.openai import OpenAIModel
 
@@ -283,6 +319,9 @@ _PROVIDER_DEFAULTS: dict[Provider, dict[str, Any]] = {
         #   aws bedrock list-inference-profiles --region <r> --query \
         #     "inferenceProfileSummaries[?contains(inferenceProfileId,'sonnet')].inferenceProfileId"
     },
+    # Model id from SMARTOPS_MODEL_ID or a role's own (`model_choices_from_env`).
+    # Chosen only by SMARTOPS_LLM_PROVIDER=anthropic: switching back is manual.
+    Provider.ANTHROPIC: {},
     Provider.DEEPSEEK: {
         "model_id": "deepseek-chat",
         "base_url": "https://api.deepseek.com",
@@ -349,7 +388,9 @@ def available_provider() -> Provider | None:
     return None
 
 
-def model_choice_from_env(provider: Provider | None = None) -> ModelChoice | None:
+def model_choice_from_env(
+    provider: Provider | None = None, *, model_id: str | None = None, effort: str | None = None
+) -> ModelChoice | None:
     """Build the `ModelChoice` this environment implies, or None if no provider.
 
     Model id comes from `AWS_BEDROCK_MODEL_ID` for Bedrock (or `SMARTOPS_MODEL_ID`
@@ -364,10 +405,14 @@ def model_choice_from_env(provider: Provider | None = None) -> ModelChoice | Non
     defaults = dict(_PROVIDER_DEFAULTS[provider])
 
     if provider is Provider.BEDROCK:
-        if model_id := os.environ.get(BEDROCK_MODEL_ID_ENV_VAR, "").strip():
-            defaults["model_id"] = model_id
-    if model_id := os.environ.get("SMARTOPS_MODEL_ID", "").strip():
-        defaults["model_id"] = model_id  # provider-agnostic override, wins
+        if bedrock_id := os.environ.get(BEDROCK_MODEL_ID_ENV_VAR, "").strip():
+            defaults["model_id"] = bedrock_id
+    if env_id := os.environ.get("SMARTOPS_MODEL_ID", "").strip():
+        defaults["model_id"] = env_id  # provider-agnostic override, wins
+    if model_id:
+        defaults["model_id"] = model_id  # a role's own id (`model_choices_from_env`)
+    if effort:
+        defaults["effort"] = effort
 
     # Model id before region: when both are missing, the id is the more
     # fundamental gap and naming it first is the more useful error.
@@ -398,7 +443,9 @@ def model_choice_from_env(provider: Provider | None = None) -> ModelChoice | Non
             )
         defaults["region"] = region
 
-    if pricing_key := os.environ.get("SMARTOPS_PRICING_KEY", "").strip():
+    # A role's own id is priced from that id: one SMARTOPS_PRICING_KEY would bill
+    # every role at one tier.
+    if not model_id and (pricing_key := os.environ.get("SMARTOPS_PRICING_KEY", "").strip()):
         defaults["pricing_key"] = pricing_key
     elif "pricing_key" not in defaults:
         inferred = infer_pricing_key(defaults["model_id"])
@@ -412,6 +459,80 @@ def model_choice_from_env(provider: Provider | None = None) -> ModelChoice | Non
         defaults["pricing_key"] = inferred
 
     return ModelChoice(provider=provider, **defaults)
+
+
+ROLES = ("broker", "siem", "vt")
+"""Broker roles that can each run their own model (K4). Recovery calls ride on
+their family's agent: switching models mid-conversation drops its thinking."""
+
+TIER_PRESETS: dict[str, dict[str, tuple[str, str]]] = {
+    "A": {"broker": ("claude-opus-5-5", "high"), "siem": ("claude-sonnet-5-5", "medium"),
+          "vt": ("claude-haiku-5-5", "low")},
+    "B": {"broker": ("claude-sonnet-5-5", "high"), "siem": ("claude-haiku-5-5", "medium"),
+          "vt": ("claude-haiku-5-5", "low")},
+}
+"""Anthropic-API tier sets for the K4 A/B test, picked by `SMARTOPS_BROKER_TIERS`.
+Model ids, not Bedrock ids: on Bedrock only per-role env ids apply."""
+
+
+def model_choices_from_env(provider: Provider | None = None) -> dict[str, ModelChoice] | None:
+    """One `ModelChoice` per Broker role, or None if no provider.
+
+    Per role: `SMARTOPS_MODEL_ID_<ROLE>` / `SMARTOPS_EFFORT_<ROLE>`, else the
+    `SMARTOPS_BROKER_TIERS` preset (Anthropic only), else the single id every
+    role used before.
+    """
+    provider = provider or available_provider()
+    if provider is None:
+        return None
+    tier = os.environ.get("SMARTOPS_BROKER_TIERS", "").strip().upper()
+    if tier and tier not in TIER_PRESETS:
+        raise ValueError(f"SMARTOPS_BROKER_TIERS={tier!r} -- expected one of {sorted(TIER_PRESETS)}")
+    preset = TIER_PRESETS[tier] if tier and provider is Provider.ANTHROPIC else {}
+    choices = {}
+    for role in ROLES:
+        preset_id, preset_effort = preset.get(role, (None, None))
+        choices[role] = model_choice_from_env(
+            provider,
+            model_id=os.environ.get(f"SMARTOPS_MODEL_ID_{role.upper()}", "").strip() or preset_id,
+            effort=os.environ.get(f"SMARTOPS_EFFORT_{role.upper()}", "").strip() or preset_effort,
+        )
+    return choices
+
+
+OUTPUT_TOKENS_PER_TURN = {"low": 1_000, "medium": 2_000, "high": 4_000}
+"""Output one loop turn may take at each effort, thinking included (K4). The loop
+caps were sized for Bedrock Sonnet 4.6, which did not think: siem had ~480 a turn."""
+# ponytail: allowance per effort is an estimate; reset from the smoke run's per-turn usage
+
+
+def loop_output_tokens(choice: ModelChoice, turns: int, default: int) -> int:
+    """A loop's cumulative output cap: `turns` x the effort's allowance, else `default`."""
+    per_turn = OUTPUT_TOKENS_PER_TURN.get(choice.effort or "")
+    return turns * per_turn if per_turn else default
+
+
+_FORCED_TOOL_CHOICE_REJECTED = ("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def _anthropic_model_class() -> type:
+    """Strands' `AnthropicModel`, with forced tool choice relaxed where it 400s.
+
+    Strands forces `tool_choice: any` when a turn ends without the structured
+    answer tool (`strands/event_loop/event_loop.py:366`); Opus 5.5 and Sonnet 5.5
+    reject forced tool use. `auto` lets the model answer; if it still skips the
+    tool, Strands raises and the step takes the existing no-answer ERROR path.
+    """
+    from strands.models.anthropic import AnthropicModel
+
+    class _AnthropicModel(AnthropicModel):
+        # ponytail: model-id match; ask the Models API for capabilities if the list grows
+        def _format_tool_choice(self, tool_choice):  # type: ignore[override]
+            if tool_choice and self.config["model_id"].startswith(_FORCED_TOOL_CHOICE_REJECTED):
+                tool_choice = {"auto": {}}
+            return AnthropicModel._format_tool_choice(tool_choice)
+
+    return _AnthropicModel
 
 
 
@@ -432,12 +553,16 @@ class Usage(BaseModel):
 
 
 def cost_of(model: str, usage: Usage) -> int:
-    """Real cost of a completed call, in micro-USD.
+    """Real cost of ONE completed request, in micro-USD (a long-context tier is
+    judged per request; pass each call to `settle(calls=...)`).
 
     Accumulates in nano-USD and converts once at the end, so a sub-dollar rate
     survives the arithmetic instead of truncating to zero on the way in.
     """
     price = _price_for(model)
+    prompt = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+    if price.long_context and price.long_context_threshold is not None and prompt > price.long_context_threshold:
+        price = price.long_context
     nano = (
         usage.input_tokens * price.input_per_token_nano
         + usage.output_tokens * price.output_per_token_nano
@@ -445,6 +570,24 @@ def cost_of(model: str, usage: Usage) -> int:
         + round(usage.cache_read_input_tokens * price.input_per_token_nano * price.cache_read_multiplier)
     )
     return _nano_to_micro(nano)
+
+
+def usage_from(accumulated: dict) -> Usage:
+    """Strands' camelCase usage dict (`inputTokens`, `cacheReadInputTokens`, ...)
+    as this codebase's snake_case `Usage`."""
+    return Usage(
+        input_tokens=accumulated.get("inputTokens", 0),
+        output_tokens=accumulated.get("outputTokens", 0),
+        cache_creation_input_tokens=accumulated.get("cacheWriteInputTokens", 0),
+        cache_read_input_tokens=accumulated.get("cacheReadInputTokens", 0),
+    )
+
+
+def call_usages(metrics: Any) -> list[Usage]:
+    """Each model request's usage, from Strands' per-cycle metrics; [] when the
+    metrics carry no cycles (scripted invokers, test doubles)."""
+    return [usage_from(cycle.usage) for inv in getattr(metrics, "agent_invocations", None) or []
+            for cycle in inv.cycles]
 
 
 def estimate_cost(model: str, max_output_tokens: int, estimated_input_tokens: int = 0) -> int:
@@ -605,12 +748,14 @@ class Budget:
             if self._output_remaining is not None:
                 self._output_remaining += reservation.reserved_output_tokens
 
-    async def settle(self, reservation: Reservation, usage: Usage) -> int:
+    async def settle(self, reservation: Reservation, usage: Usage, calls: list[Usage] | None = None) -> int:
         """Reconcile a reservation against what the call actually cost:
         credits back the unused portion of the reservation (or debits the
         shortfall, if real cost exceeded the estimate), and records the
         charge in the ledger. Returns the real cost in micro-USD."""
-        actual = cost_of(reservation.model, usage)
+        # Per request when known: a tier judged on the summed loop would bill a
+        # Haiku 5.5 loop of small prompts at its long-context rate.
+        actual = sum(cost_of(reservation.model, c) for c in calls) if calls else cost_of(reservation.model, usage)
         async with self._lock:
             self._remaining += reservation.reserved_micro_usd - actual
             if self._output_remaining is not None:

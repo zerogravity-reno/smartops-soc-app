@@ -633,7 +633,7 @@ class TestBudget:
     async def test_usage_is_translated_from_strands_camel_case_and_settled(self):
         # Ported from the retired test_planner.py: Strands reports usage in
         # Bedrock/Converse camelCase, Budget speaks Anthropic snake_case, and
-        # `_usage_from_accumulated` is the only bridge.
+        # `budget.usage_from` is the only bridge.
         budget = Budget.from_usd(1.0)
         usage = {
             "inputTokens": 1000,
