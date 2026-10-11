@@ -144,7 +144,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | AR2 | Architecture | The webapp has its own Foundation-Sec-8B client beside the engine's `AnalystModel` | Medium | Open (question: is the boto3 Windows socket issue still real?) |
 | AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Open |
 | AR4 | Architecture | Four engine symbols only tests use | Low | Open |
-| AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Open |
+| AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Engine half fixed on `broker-a818-fixes` (`broker.runs_root()`); `run_trace.py`'s copy routed to the webapp owner |
 | AR6 | Architecture | `extract_json` scans braces by hand | Low | Open |
 | AR7 | Architecture | `bench._pinned_skills` only delegates | Low | Open |
 | AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Open |
@@ -1007,6 +1007,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
   - `AnalystModel._bearer_client` already does this for its own client only, through `ScopedEnvTokenProvider`.
   - Its docstring says why the key must not leak into other clients. The patch makes it leak into all of them, including Broker-tier Bedrock clients.
 - **Fix:** delete the patch (~-22 lines) and confirm the analyst still authenticates through `_bearer_client`.
+- **Blocker (found 2026-10-11):** the patch also overrides `_bearer_client`. That client is built through `boto3.Session(...).client(...)`, so the patch re-registers the token provider with `FS8B_API_KEY`. Live sub-analysts therefore authenticate with `FS8B_API_KEY`, not `SMARTOPS_ANALYST_API_KEY`. The two `.env` values differ, and that explains why `scratchpad/replay_endpoint.py` (which never imports `smartops.main`) is rejected. Before deleting the patch, set `SMARTOPS_ANALYST_API_KEY` to the working key (owner action).
 
 **AR4. Four engine symbols only tests use.** *Low. Open.*
 - `TaskInputFile.analyst_tasks()` (`contracts/task_input.py:208`), `Budget.output_tokens_remaining` (`budget.py:680`), `create_replay_subagent_runner` (`replay.py:360`) and the VirusTotal outcome's `is_partial` (`virustotal.py:264`).

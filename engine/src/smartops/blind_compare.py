@@ -87,7 +87,7 @@ from contracts import (
     Scope,
     Stance,
 )
-from smartops.broker import DEFAULT_RUNS_DIR, RUNS_DIR_ENV_VAR
+from smartops.broker import runs_root
 from smartops.errors import NotConfigured
 
 # Private, and imported rather than copied for the same reason as `_newest_run_in`
@@ -227,7 +227,7 @@ def resolve_run_dir(run_id_or_path: Path | str, base_dir: Path | str | None = No
     `replay.load_evidence_from_run` performs for `evidence.json`.
     """
     if base_dir is None:
-        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        base_dir = runs_root()
 
     path = Path(run_id_or_path)
     if not path.is_absolute() and not path.exists():
@@ -1197,12 +1197,10 @@ def write_artifact(report: BlindCompareReport, out: Path) -> tuple[Path, Path]:
     fixture a function of the measurements taken over it.
     """
     resolved = out.resolve()
-    runs_root = Path(
-        os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
-    ).resolve()
-    if resolved == runs_root or runs_root in resolved.parents:
+    root = runs_root().resolve()
+    if resolved == root or root in resolved.parents:
         raise ValueError(
-            f"refusing to write the artifact inside the run fixture tree ({runs_root}); "
+            f"refusing to write the artifact inside the run fixture tree ({root}); "
             "choose an --out outside it"
         )
 

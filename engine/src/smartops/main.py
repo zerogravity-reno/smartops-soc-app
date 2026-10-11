@@ -90,9 +90,8 @@ from contracts import (
     pack_for_analyst,
 )
 from smartops.broker import (
-    DEFAULT_RUNS_DIR,
     OUT_DIR_ENV_VAR,
-    RUNS_DIR_ENV_VAR,
+    runs_root,
     TOOL_BY_FAMILY,
     DEFAULT_BROKER_TURNS,
     BrokerRequest,
@@ -737,8 +736,7 @@ def _resolve_run_dir(task_id: str, run_dir: Path | str | None) -> Path | None:
     """
     if run_dir is not None:
         return Path(run_dir)
-    base = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
-    latest = Path(base) / task_id / "latest.txt"
+    latest = runs_root() / task_id / "latest.txt"
     if not latest.exists():
         return None
     return latest.parent / latest.read_text(encoding="utf-8").strip()
@@ -1013,15 +1011,6 @@ async def _analyse_one(
     return findings
 
 
-def _runs_root() -> Path:
-    """The directory run artifacts are written under.
-
-    Same resolution `_resolve_run_dir` uses, minus the per-task part, because a
-    batch belongs to the whole invocation rather than to any one task.
-    """
-    return Path(os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR)
-
-
 def _persist_payload_batch(
     findings: list[HypothesisFindings],
     batch_id: str | None = None,
@@ -1050,7 +1039,7 @@ def _persist_payload_batch(
     to -- the same trade `_persist_findings` makes, since an artifact must not be
     the thing that fails a completed run.
     """
-    root = _runs_root()
+    root = runs_root()
     if not root.is_dir() and not os.environ.get(OUT_DIR_ENV_VAR, "").strip():
         # Every task's own run dir is created by the broker under this root, so a
         # missing root means nothing was persisted at all and there is no place

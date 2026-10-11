@@ -1186,6 +1186,13 @@ def default_broker_invoker(
 
 RUNS_DIR_ENV_VAR = "SMARTOPS_RUNS_DIR"
 DEFAULT_RUNS_DIR = ".smartops/runs"
+
+
+def runs_root() -> Path:
+    """The directory run artifacts are written under: `$SMARTOPS_RUNS_DIR`, else the default."""
+    return Path(os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR)
+
+
 OUT_DIR_ENV_VAR = "SMARTOPS_OUT_DIR"
 """One round's own folder, set by the webapp: each task is written straight into
 `<out>/<short id>/` and the batch payload beside them, so one investigation is one
@@ -1224,7 +1231,7 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
         _write_run_files(report, run_dir)
         return run_dir
     if base_dir is None:
-        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        base_dir = runs_root()
     case_dir = Path(base_dir) / report.task_id
     stamp = report.created_at.strftime("%Y%m%dT%H%M%S%f")[:-3]
     # Two runs of one case can share a millisecond -- the bench runs them back to

@@ -20,7 +20,7 @@ from typing import Any, get_args
 from strands import tool
 
 from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily, answer_tool_name
-from smartops.broker import DEFAULT_RUNS_DIR, RUNS_DIR_ENV_VAR, SubagentRunner
+from smartops.broker import SubagentRunner, runs_root
 from smartops.budget import Budget, ModelChoice
 from smartops.subagents import (
     DEFAULT_MAX_OUTPUT_TOKENS as _SUBAGENT_OUTPUT_TOKENS,
@@ -130,7 +130,7 @@ def load_evidence_from_run(
     reader and the writer looked in different trees.
     """
     if base_dir is None:
-        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        base_dir = runs_root()
 
     path = Path(run_id_or_path)
     if not path.is_absolute() and not path.exists():
