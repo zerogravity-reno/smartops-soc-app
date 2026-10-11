@@ -637,6 +637,8 @@ class LedgerEntry(BaseModel):
     usage: Usage
     cost_micro_usd: int
     at: datetime
+    calls: int = 1
+    """Model requests behind `usage` (a loop settles once for all of them)."""
 
 
 class Budget:
@@ -776,6 +778,7 @@ class Budget:
                     usage=usage,
                     cost_micro_usd=actual,
                     at=datetime.now(UTC),
+                    calls=len(calls) if calls else 1,
                 )
             )
         return actual
@@ -787,6 +790,20 @@ class Budget:
         totals: dict[str, int] = {}
         for entry in self._ledger:
             totals[entry.role] = totals.get(entry.role, 0) + entry.cost_micro_usd
+        return totals
+
+    def usage_by_role(self) -> dict[str, dict[str, int]]:
+        """Tokens and model requests per role (B30): whether caching hit, and
+        output per request against `OUTPUT_TOKENS_PER_TURN`."""
+        totals: dict[str, dict[str, int]] = {}
+        for entry in self._ledger:
+            t = totals.setdefault(entry.role, dict.fromkeys(
+                ("calls", "input", "output", "cache_read", "cache_write"), 0))
+            t["calls"] += entry.calls
+            t["input"] += entry.usage.input_tokens
+            t["output"] += entry.usage.output_tokens
+            t["cache_read"] += entry.usage.cache_read_input_tokens
+            t["cache_write"] += entry.usage.cache_creation_input_tokens
         return totals
 
     def spend_by_task(self) -> dict[str, int]:

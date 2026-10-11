@@ -135,3 +135,16 @@ class TestPerRequestPricing:
         two_small = asyncio.run(run([Usage(input_tokens=60_000)] * 2))
         one_large = asyncio.run(run([Usage(input_tokens=120_000)]))
         assert (two_small, one_large) == (12_000, 60_000)
+
+
+def test_usage_by_role_counts_tokens_and_requests():
+    """B30: cache reads and output per request were not visible after a run."""
+    async def go():
+        b = Budget.from_usd(10)
+        r = await b.reserve(role="siem", model="claude-sonnet-5-5", task_id="t", max_output_tokens=100)
+        calls = [Usage(input_tokens=10, output_tokens=5, cache_read_input_tokens=90),
+                 Usage(input_tokens=20, output_tokens=7)]
+        await b.settle(r, Usage(input_tokens=30, output_tokens=12, cache_read_input_tokens=90), calls)
+        return b.usage_by_role()
+
+    assert asyncio.run(go()) == {"siem": {"calls": 2, "input": 30, "output": 12, "cache_read": 90, "cache_write": 0}}

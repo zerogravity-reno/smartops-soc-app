@@ -657,6 +657,8 @@ def _print_outcome(outcome, budget: Budget) -> None:
 
     spend = budget.spend_by_role()
     print("\nspend by role (micro-USD):", spend or "(nothing spent)")
+    for role, t in budget.usage_by_role().items():
+        print(f"usage {role}: " + " ".join(f"{k}={v}" for k, v in t.items()))
     print(f"budget remaining: {budget.remaining} micro-USD")
 
 
