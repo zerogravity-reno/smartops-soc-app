@@ -275,8 +275,8 @@ of any repetition. The SHAPE to copy — never the names or the
 values, which are placeholders and are not in your evidence — is: "Account <account>
 logged on from <source address> to <host>, with successes against <host> and failures
 against <other host>". That accounts for every
-row without picking a winner. Never drop a set because it looks uninteresting — say what it
-contains.
+row without picking a winner. Write each group once: never write the same sentence twice.
+Never drop a set because it looks uninteresting — say what it contains.
 
 EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
 `auth_events#1`:
@@ -310,8 +310,8 @@ of any repetition. The SHAPE to copy — never the names or the
 values, which are placeholders and are not in your evidence — is: "Host <host> opened
 connections to several destinations; the repeated ones went to <address> on port
 <port>". That accounts for every
-row without picking a winner. Never drop a set because it looks uninteresting — say what it
-contains.
+row without picking a winner. Write each group once: never write the same sentence twice.
+Never drop a set because it looks uninteresting — say what it contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
@@ -347,9 +347,10 @@ can retype. Group like rows and describe the group — the values involved and t
 of any repetition. The SHAPE to copy — never the names or the
 values, which are placeholders and are not in your evidence — is: "Host <host> ran
 processes under user <account>, started by <parent>; one command line, starting
-<first few words>, repeated". That accounts for every
-row without picking a winner. Never drop a set because it looks uninteresting — say what it
-contains.
+<first few words>, repeated". That shape is for process sets only: say what file,
+registry and script sets wrote, set or ran, and which process did it. That accounts for every
+row without picking a winner. Write each group once: never write the same sentence twice.
+Never drop a set because it looks uninteresting — say what it contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
   processes#1       <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
