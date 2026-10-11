@@ -150,6 +150,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Open |
 | AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Fixed on `broker-a818-fixes`: moved to the engine, which imports both directly |
 | AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Open (frontend, smartops-worker) |
+| AR11 | Architecture | The codebase's file structure: `webapp/` mixes the frontend, the main Analyst, the context pipeline, the Broker handoff and the API server; one model has two configurations; dev tools sit inside the engine package | High | Open: the next session's work (layout to agree first) |
 
 ## Triage logic (Analyst plan and synthesis)
 
@@ -1052,6 +1053,32 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
   - `debug.html` is a second page with its own run and stream calls; nothing links to it from the main UI.
   - UI issues already pile up against it (W1, W9), and each one is fixed in that one script.
 - **Fix:** build the real frontend in `frontend/` against the webapp's `/api/*` contract, then retire `webapp/static`. Until it exists, keep the stopgap vanilla and delete the empty `frontend/` folder so nothing suggests it is started.
+
+**AR11. The codebase's file structure needs work.** *High. Open: the next session puts everything where it belongs.*
+- **Context:** this came up while tracing AR3 (2026-10-11). AR3 is fixed on its own (the `.env` key, then delete the patch), and this is deferred out of that fix.
+- **Evidence:**
+  - **`webapp/` holds five jobs** (checked 2026-10-11):
+    | Job | Where it is now |
+    |---|---|
+    | Frontend | `static/` (`app.js` 1,238 lines, `index.html`, `style.css`, `debug.html` 413) and the `/` and `/debug` routes |
+    | Main Analyst | `prompts/system_prompt.txt`; `services/llm_service.py`; `main.py` `_do_analyst`, `/api/synthesis` and the round loop `_run_investigation` (:639-780); `run_trace.py` `verdict_gate`, `_ref_problem`, `compact_round` and `follow_up_tasks` |
+    | Context pipeline | `main.py` Splunk import, incident queue, detection rules, OpenCTI (`_gql`, `_search_*`) and ESCU; `run_trace.py` `alert_entities`, `notable_event_time`, `notables_spl` and `group_notables`; `services/splunk_mcp.py` |
+    | Broker handoff and audit trail | `main.py` `_run_broker_proc_streaming`; `run_trace.py` `to_task_file`, `broker_runs`, `handshake`, `record`, `trace_id`/`traceparent` and `runs_dir` |
+    | API server | the FastAPI app and run control (`/api/run`, stop/pause/resume/stream) |
+
+    `run_trace.py` covers three of these jobs and `main.py` four. A change to one job (the gate, say) lands in a file shared with the others, and ownership (Analyst owner, smartops-worker, us) can't follow the files.
+  - One model, two configurations. `SMARTOPS_ANALYST_*` (the engine's sub-analysts, `5caf246`) and `FS8B_*` (the webapp Analyst, from the integration release `d113695`) name the same imported-model ARN. They hold different keys, and each has its own client (AR2). The `.env` reason, "kept separate so the two can point at different imports", has never been used.
+  - The webapp imports private engine symbols: `run_trace.py` takes `_FULL_ID_SEARCH_RE` and `_expand_bare_ids` from `subagent_analysts/parse.py`.
+  - Dev tools ship inside the engine package: `bench.py` (1,051 lines), `blind_compare.py` (1,354) and `replay.py` (about 360), about 18% of `engine/src/smartops`.
+  - Very large modules: `main.py` (about 1,450 lines), `broker.py` (about 1,450), `subagent_analysts/analyze.py` (1,312), and `subagents/__init__.py` (1,093), which keeps the whole subagent loop in a package `__init__`.
+  - Split ownership at the root: two manifests (root and `engine/`, see AR9), two launchers (AR8), and an empty `frontend/` (AR10).
+- **Questions for Mohammed:**
+  - the target home of each `webapp/` job above (for example `frontend/`, an Analyst package, a context package, and a thin API server that wires them);
+  - one Foundation-Sec configuration or two;
+  - where dev tools live (`engine/tools/` or a separate package);
+  - whether the engine exposes a public surface the webapp imports from instead of private names;
+  - the target layout for the large modules.
+- **Next session.** Agree the layout first, then move code without changing behaviour (moves only, tests green after each). It touches webapp files, which the Broker-side-only rule normally keeps off limits, so confirm the scope at the start.
 
 **Checked, not issues:**
 - `_estimated_input_tokens` in `broker.py` and `subagents/__init__.py`: the formulas differ (the subagent's caps turns at 8 and adds tool schemas).
