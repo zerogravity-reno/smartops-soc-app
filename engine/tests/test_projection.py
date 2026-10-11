@@ -131,6 +131,23 @@ class TestNothingIsSilentlyDropped:
             assert findings.processes == [], f"EventCode={code} wrongly inferred as processes"
             assert getattr(findings, bucket)[0].row_count == 1, code
 
+    def test_aggregate_rows_split_by_their_own_eventcode_but_pure_counts_stay(self):
+        # a818a3fd T4 (B-3): `stats count min(_time) as first ... by EventCode, Image` rows
+        # have no _time; they are still that event kind's evidence.
+        rows = [
+            {"EventCode": "1", "Image": "powershell.exe", "count": "16", "first": "a", "last": "b"},
+            {"EventCode": "3", "DestinationIp": "192.168.40.211", "count": "3"},
+            {"EventCode": "11", "TargetFilename": "x.txt", "count": "2"},
+            {"EventCode": "4100", "Image": "powershell.exe", "count": "1"},
+            {"EventCode": "1", "count": "4"},
+        ]
+        findings = project_siem([call("index=windows_lab EventCode=11 TargetFilename=*x*", rows)], [], task_id="t")
+        rows_of = lambda b: [r for rs in getattr(findings, b) for r in rs.rows]
+        assert rows_of("processes") == [rows[0]]
+        assert rows_of("connections") == [rows[1]]
+        assert rows_of("script_blocks") == [rows[3]]
+        assert rows_of("file_events") == [rows[2], rows[4]]
+
     def test_sysmon_network_connection_eventcode_3_infers_connections(self):
         findings = project_siem(
             [call("index=botsv3 sourcetype=xmlwineventlog EventCode=3 dest_ip=1.2.3.4", [{"c": 1}])],

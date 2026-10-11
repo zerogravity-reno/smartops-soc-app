@@ -134,7 +134,7 @@ _EVENTCODE_CATEGORIES: dict[int, CimCategory] = {
     22: "dns_resolutions",
     11: "file_events", 15: "file_events", 23: "file_events", 26: "file_events", 29: "file_events",
     12: "registry_events", 13: "registry_events", 14: "registry_events",
-    4104: "script_blocks",
+    4100: "script_blocks", 4103: "script_blocks", 4104: "script_blocks",
     4624: "auth_events", 4625: "auth_events", 4648: "auth_events", 4672: "auth_events",
 }
 
@@ -273,16 +273,24 @@ def _describes_estate(query: str | None) -> bool:
     return _TSTATS.search(q) is not None and _DATAMODEL.search(q) is None
 
 
+# Keys a `stats count by EventCode[, host]` row carries besides the code (an event row has _time): it is an
+# inventory of codes, not evidence about an entity.
+_SUMMARY_KEYS = {"eventcode", "count", "first", "last", "host", "index", "sourcetype"}
+
+
 def _split_by_event_code(rows: list[dict[str, Any]], category: CimCategory | None) -> dict[CimCategory | None, list]:
     """Rows grouped by the category their own `EventCode` names, else `category`.
 
-    Only event rows (with `_time`) are moved: a `stats count by EventCode` row is a
-    count, not an event, and must not complete a step as if it were one.
+    Aggregate rows move too: `stats count min(_time) as first by EventCode, Image` is
+    that event kind's evidence (a818a3fd T4, B-3: EID 1 rows filed as file_events, EID 3
+    as dns_resolutions). Only a pure code count (`stats count by EventCode`) stays with
+    the call's category, so it cannot complete a step as if it were an event.
     """
     groups: dict[CimCategory | None, list] = {}
     for row in rows:
         code = str(row.get("EventCode", "")).strip()
-        own = _EVENTCODE_CATEGORIES.get(int(code)) if "_time" in row and code.isdigit() else None
+        pure_count = all(k.lower() in _SUMMARY_KEYS for k in row)
+        own = _EVENTCODE_CATEGORIES.get(int(code)) if code.isdigit() and not pure_count else None
         groups.setdefault(own or category, []).append(row)
     return groups
 
