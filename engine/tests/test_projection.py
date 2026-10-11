@@ -672,3 +672,38 @@ class TestCallsThatDescribeTheEstateAreNotEvidence:
 
         assert findings.discovery[0].row_count == 50
         assert findings.total_rows() == 1
+
+
+class TestAbRunCategories:
+    """B28/B29, from the K4 A/B runs (8807fafa, 3bf5fce8)."""
+
+    def test_the_labs_firewall_rows_are_connections(self):
+        f = project_siem([call('index=fortigate sourcetype=fortigate_traffic "192.168.40.211"', [{"dstport": "8888"}])],
+                         [], task_id="t")
+        assert f.connections and f.uncategorised == []
+
+    def test_a_tstats_over_raw_indexes_describes_the_estate(self):
+        f = project_siem([call("| tstats count where index=windows_lab host=h by index, sourcetype", [{"count": 2105}])],
+                         [], task_id="t")
+        assert f.discovery and f.uncategorised == []
+
+    def test_a_tstats_over_a_data_model_is_still_evidence(self):
+        f = project_siem([call("| tstats count from datamodel=Endpoint.Processes by Processes.process", [{"count": 1}])],
+                         [], task_id="t")
+        assert f.processes and f.discovery == []
+
+    def test_a_mixed_event_code_call_splits_by_each_rows_code(self):
+        rows = [{"_time": "t1", "EventCode": "1", "Image": "powershell.exe"},
+                {"_time": "t2", "EventCode": "3", "DestinationIp": "192.168.40.211"},
+                {"_time": "t3", "EventCode": "4688"}]
+        f = project_siem([call("index=windows_lab (EventCode=1 OR EventCode=3 OR EventCode=4688)", rows)],
+                         [], task_id="t")
+        assert [r["EventCode"] for r in f.processes[0].rows] == ["1", "4688"]
+        assert f.processes[0].row_count == 2
+        assert [r["EventCode"] for r in f.connections[0].rows] == ["3"]
+        assert f.processes[0].evidence_id == f.connections[0].evidence_id
+
+    def test_count_rows_by_event_code_are_not_moved(self):
+        f = project_siem([call("index=windows_lab EventCode=3 | stats count by EventCode", [{"EventCode": "1", "count": 6}])],
+                         [], task_id="t")
+        assert f.connections and f.processes == []
