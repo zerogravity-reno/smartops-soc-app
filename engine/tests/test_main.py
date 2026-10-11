@@ -423,3 +423,12 @@ class TestTheCliRunsTheAnalystsBlind:
         assert "no overall stance and no disposition" in out
         assert "SUPPORTS" not in out and "REFUTES" not in out
         assert "conf=" not in out
+
+
+def test_round_args_are_the_cli_defaults_plus_overrides():
+    from smartops.main import round_args
+
+    args = round_args(batch_id="r1-L2")
+    assert args.batch_id == "r1-L2" and args.subagent_turns == 25 and args.task_file is None
+    with pytest.raises(TypeError, match="batchid"):
+        round_args(batchid="typo")  # a misspelt knob must not be silently ignored

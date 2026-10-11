@@ -1211,25 +1211,71 @@ async def _run(argv: list[str] | None = None) -> int:
         return await _run_round(args, env_file)
 
 
+async def start(mcp_config: str | None = None) -> None:
+    """Build and warm this process's MCP clients: once per process, before any
+    `run_round` (the CLI per run, the webapp at startup).
+
+    A missing config or an unset ${VAR} credential leaves a family with no server
+    rather than failing -- which is how this runs with no credentials at all. A
+    malformed config raises. Warming resolves every client's tools now, so two
+    concurrent dispatches in one Broker turn cannot race each other's start-up.
+    """
+    load_mcp_servers(mcp_config)
+    await warm_mcp_clients()
+
+
+@dataclass
+class RoundResult:
+    """One round, for an in-process caller: what `_run_round` used to leave only on disk."""
+
+    fetched: list  # (task, hypothesis, outcome) for every task the Broker finished
+    findings: list[HypothesisFindings]
+    payload: Path | None  # the batch `analyst-payload.json`, task-file rounds only
+    failures: int
+
+
 async def _run_round(args: argparse.Namespace, env_file) -> int:
-    # Build MCP clients once, before any dispatch. A missing config or an unset
-    # ${VAR} credential leaves a family with no server rather than failing --
-    # which is how this runs with no credentials at all.
     try:
-        load_mcp_servers(args.mcp_config)
+        await start(args.mcp_config)
     except Exception as exc:
         # A malformed config is a deployment error, distinct from an absent one.
         print(f"error: could not load MCP config: {exc}", file=sys.stderr)
         return 2
-    # Resolve every client's tools now, so two concurrent dispatches in one
-    # Broker turn cannot race each other's connection start-up.
-    await warm_mcp_clients()
     if args.verbose:
         # Which file supplied the settings is the first thing you want when a
         # credential "isn't being picked up".
         print(f"env file:    {env_file or '(none found)'}")
         print(f"mcp servers: {len(mcp_clients())} built")
 
+    try:
+        result = await run_round(_tasks_from_args(args), args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 1 if result.failures else 0
+
+
+def round_args(**overrides) -> argparse.Namespace:
+    """The CLI's defaults as `run_round` settings, for a caller with no argv:
+    `round_args(batch_id="r1-L2")`."""
+    args = _build_parser().parse_args([])
+    for name, value in overrides.items():
+        if not hasattr(args, name):
+            raise TypeError(f"unknown round setting {name!r}")
+        setattr(args, name, value)
+    return args
+
+
+async def run_round(
+    tasks: list[tuple[AnalystTask, str | None]], args: argparse.Namespace | None = None
+) -> RoundResult:
+    """Fetch, analyse and hand over one round of tasks. Call `start()` first.
+
+    `args` carries the knobs (`round_args()` for defaults). A configuration
+    problem -- no usable provider -- raises `ValueError` before anything is spent;
+    a task that fails is counted in `failures` and the others still run.
+    """
+    args = args or round_args()
     # Defaulting to every family dispatched nothing: plan_fetch refuses a plan
     # naming an unconfigured one. Read after load_mcp_servers, which decides that.
     families = (
@@ -1238,12 +1284,6 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
         else [f for f in ALL_FAMILIES if family_is_configured(f)]
     )
 
-    try:
-        tasks = _tasks_from_args(args)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-
     if len(tasks) > 1:
         print(f"tasks:    {len(tasks)} ({', '.join(t.task_id for t, _ in tasks)})")
 
@@ -1251,13 +1291,10 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
     # no provider falls back to the scripted invoker, which is a supported state
     # rather than an error. `--scripted` forces the floor even when credentials
     # exist, for testing the dispatch path without spending anything.
-    try:
-        # One choice per Broker role (K4): the planner, siem and vt can each run their own model.
-        choices = None if args.scripted else model_choices_from_env()
-        choice = choices["broker"] if choices else None
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    # One choice per Broker role (K4): the planner, siem and vt can each run their own
+    # model. A ValueError here reaches the caller as the configuration error it is.
+    choices = None if args.scripted else model_choices_from_env()
+    choice = choices["broker"] if choices else None
     broker_output_tokens = args.broker_output_tokens or (
         loop_output_tokens(choice, DEFAULT_BROKER_TURNS, 16_000) if choice else 16_000
     )
@@ -1274,10 +1311,6 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
             for role_choice in choices.values():
                 role_choice.build()
         except Exception as exc:
-            print(
-                f"error: provider {choice.provider.value!r} is selected but not usable: {exc}",
-                file=sys.stderr,
-            )
             hint = ""
             if os.environ.get(AWS_PROFILE_ENV_VAR):
                 hint = (
@@ -1285,12 +1318,12 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
                     f"{os.environ[AWS_PROFILE_ENV_VAR]} is set and boto3 will use it; "
                     "unset it to fall back to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."
                 )
-            print(
-                f"       set {PROVIDER_ENV_VAR} to another provider, fix its credentials, "
-                f"or pass --scripted to run without a model.{hint}",
-                file=sys.stderr,
-            )
-            return 2
+            # Continuation lines keep their 7-space indent under the CLI's `error: `.
+            raise ValueError(
+                f"provider {choice.provider.value!r} is selected but not usable: {exc}"
+                f"\n       set {PROVIDER_ENV_VAR} to another provider, fix its credentials, "
+                f"or pass --scripted to run without a model.{hint}"
+            ) from exc
         model = choice
         invoke = None  # broker_task builds default_broker_invoker itself
         tier = os.environ.get("SMARTOPS_BROKER_TIERS", "").strip().upper() or "-"
@@ -1426,11 +1459,12 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
     )
     failures += analysis_failures
 
-    # One message per task FILE, not per hypothesis. Only for file input: the
-    # legacy flag path investigates one hand-written task and has no file whose
-    # grouping a batch could represent.
-    if args.task_file and findings:
-        _persist_payload_batch(
+    # One message per task FILE, not per hypothesis: for file input, or a caller
+    # that names the batch (the webapp, in process). The legacy flag path
+    # investigates one hand-written task and has no grouping a batch could represent.
+    payload = None
+    if (args.task_file or args.batch_id) and findings:
+        payload = _persist_payload_batch(
             findings,
             batch_id=args.batch_id,
             # The batch is one message: one budget, water-filled across its tasks.
@@ -1443,7 +1477,7 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
         print(f"spend by task (micro-USD): {budget.spend_by_task() or '(nothing spent)'}")
         print(f"budget remaining: {budget.remaining} micro-USD")
 
-    return 1 if failures else 0
+    return RoundResult(fetched=fetched, findings=findings, payload=payload, failures=failures)
 
 
 def run() -> None:
