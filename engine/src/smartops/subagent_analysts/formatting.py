@@ -120,7 +120,7 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         # password spray render as identical near-blank rows. Both raw Windows
         # spellings appear across BOTS v3 sourcetypes (`Logon_Type` on some,
         # `LogonType` on others); `logon_type` is the CIM-normalised alias.
-        "code": ("EventCode", "signature_id", "event_id"),
+        "event_code": ("EventCode", "signature_id", "event_id"),
         "logon_type": ("Logon_Type", "LogonType", "logon_type"),
         "app": ("app", "sourcetype"),
     },
@@ -157,7 +157,7 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "process": ("Image", "process_path", "process_name", "process"),
         "file": ("TargetFilename", "file_path", "file_name"),
         "action": ("action", "EventType"),
-        "code": ("EventCode", "signature_id", "event_id"),
+        "event_code": ("EventCode", "signature_id", "event_id"),
     },
     "registry_events": {
         "time": ("time", "_time", "timestamp"),
@@ -166,14 +166,14 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "key": ("TargetObject", "registry_path", "registry_key_name"),
         "value": ("Details", "registry_value_data"),
         "action": ("EventType", "action"),
-        "code": ("EventCode", "signature_id", "event_id"),
+        "event_code": ("EventCode", "signature_id", "event_id"),
     },
     "script_blocks": {
         "time": ("time", "_time", "timestamp"),
         "host": ("dest", "host", "Computer", "ComputerName"),
         "path": ("Path", "ScriptName"),
         "script": ("ScriptBlockText", "Message"),
-        "code": ("EventCode", "signature_id", "event_id"),
+        "event_code": ("EventCode", "signature_id", "event_id"),
     },
     "processes": {
         "time": ("time", "_time", "timestamp"),
@@ -199,7 +199,7 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
             "Creator_Process_Name", "creator_process_name", "ParentProcessName",
             "parent_process_name",
         ),
-        "code": ("EventCode", "signature_id", "event_id"),
+        "event_code": ("EventCode", "signature_id", "event_id"),
         "cmdline": (
             "process", "Process_Command_Line", "process_command_line",
             "command_line", "cmd_line", "CommandLine",
@@ -303,7 +303,7 @@ def _format_auth_event(row: dict[str, Any]) -> str:
         f"src={_field(row, 'auth_events', 'src')} "
         f"dest={_field(row, 'auth_events', 'dest')} "
         f"action={_field(row, 'auth_events', 'action')} "
-        f"code={_field(row, 'auth_events', 'code')} "
+        f"event_code={_field(row, 'auth_events', 'event_code')} "
         f"logon_type={_field(row, 'auth_events', 'logon_type')} "
         f"app={_field(row, 'auth_events', 'app')}"
         f"{_count_suffix(row)}"
@@ -360,7 +360,7 @@ def _format_process(row: dict[str, Any]) -> str:
         f"process={_field(row, 'processes', 'process')} "
         # CIM `parent_process` is the parent's command line, so cap it like cmdline.
         f"parent={_truncate(_field(row, 'processes', 'parent'), _CMDLINE_LIMIT)} "
-        f"code={_field(row, 'processes', 'code')} "
+        f"event_code={_field(row, 'processes', 'event_code')} "
         f"cmdline={_truncate(_field(row, 'processes', 'cmdline'), _CMDLINE_LIMIT)}"
         f"{_count_suffix(row)}"
     )
@@ -510,9 +510,9 @@ _SUMMARY_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "dns_resolutions": ("src", "query", "answer", "rtype", "rcode"),
     "connections": ("src", "dest", "dest_port", "proto", "action"),
     "processes": ("host", "user", "process", "parent"),
-    "file_events": ("host", "process", "file", "code"),
-    "registry_events": ("host", "process", "key", "code"),
-    "script_blocks": ("host", "path", "code"),
+    "file_events": ("host", "process", "file", "event_code"),
+    "registry_events": ("host", "process", "key", "event_code"),
+    "script_blocks": ("host", "path", "event_code"),
 }
 
 _TOP_N = 5

@@ -380,6 +380,12 @@ class TestPrompt:
 
         assert "only when your rows hold a value it would look up" in prompt
 
+    def test_siem_is_told_where_a_written_files_hash_lives(self):
+        """B33: three hash questions, and no query asked for Sysmon 15/29."""
+        prompt = subagents._system_prompt_for("siem", turns=14)
+
+        assert "Sysmon 15 (FileCreateStreamHash)" in prompt and "no hash was recorded" in prompt
+
     def test_the_window_is_given_as_epoch_and_readable_utc(self):
         # Epoch because that is what the tools take; readable so a model does not
         # "correct" a window it thinks looks wrong.

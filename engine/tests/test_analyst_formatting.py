@@ -541,3 +541,8 @@ def test_a_logon_type_is_named_by_code_not_left_to_the_model():
     """B11: 3bf5fce8 narrated logon type 5 as "remote interactive"; it is a service logon."""
     assert "logon_type=5 (Service)" in format_row("auth_events", {"EventCode": "4624", "Logon_Type": "5"})
     assert "logon_type=10 (RemoteInteractive)" in format_row("auth_events", {"LogonType": 10})
+
+
+def test_the_event_code_is_labelled_as_one():
+    """B33: `code=1` was narrated as "PowerShell executing with exit code 1"."""
+    assert "event_code=1 " in format_row("processes", {"EventCode": "1", "Image": "powershell.exe"})

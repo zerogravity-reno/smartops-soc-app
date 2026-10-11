@@ -132,7 +132,7 @@ _EVENTCODE_CATEGORIES: dict[int, CimCategory] = {
     1: "processes", 4688: "processes",
     3: "connections", 5156: "connections", 5157: "connections",
     22: "dns_resolutions",
-    11: "file_events", 23: "file_events", 26: "file_events",
+    11: "file_events", 15: "file_events", 23: "file_events", 26: "file_events", 29: "file_events",
     12: "registry_events", 13: "registry_events", 14: "registry_events",
     4104: "script_blocks",
     4624: "auth_events", 4625: "auth_events", 4648: "auth_events", 4672: "auth_events",

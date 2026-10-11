@@ -126,7 +126,7 @@ class TestNothingIsSilentlyDropped:
         assert proc.processes[0].row_count == 1
         assert proc.uncategorised == []
 
-        for code, bucket in ((11, "file_events"), (13, "registry_events"), (4104, "script_blocks"), (15, "uncategorised"), (100, "uncategorised")):
+        for code, bucket in ((11, "file_events"), (13, "registry_events"), (4104, "script_blocks"), (15, "file_events"), (100, "uncategorised")):
             findings = project_siem([call(f"index=botsv3 EventCode={code}", [{"e": code}])], [], task_id="t")
             assert findings.processes == [], f"EventCode={code} wrongly inferred as processes"
             assert getattr(findings, bucket)[0].row_count == 1, code
@@ -707,3 +707,9 @@ class TestAbRunCategories:
         f = project_siem([call("index=windows_lab EventCode=3 | stats count by EventCode", [{"EventCode": "1", "count": 6}])],
                          [], task_id="t")
         assert f.connections and f.processes == []
+
+    def test_a_sysmon_file_hash_event_is_a_file_event(self):
+        """B33: a written file's hash is only in Sysmon 15/29."""
+        f = project_siem([call("index=windows_lab EventCode=15 TargetFilename=*svcupdate*",
+                               [{"_time": "t", "EventCode": "15", "Hash": "SHA256=AB"}])], [], task_id="t")
+        assert f.file_events and f.uncategorised == []
