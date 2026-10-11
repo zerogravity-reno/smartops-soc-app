@@ -283,6 +283,34 @@ class TestGatherFinding:
         assert finding.narrative == "one logon."
         assert not any(", , ," in o for o in finding.observations)
 
+    _LOOP = "Host H ran processes under user U, started by OneDrive.exe; one command line, repeated."
+
+    def _slice(self) -> DomainSlice:
+        return DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+
+    def test_a_repeated_sentence_is_kept_once(self):
+        # a818a3fd T4 endpoint (B-1): one sentence written over and over.
+        model = _SequenceModel([_finding_gen(" ".join([self._LOOP] * 30), "x", "auth_events#1")])
+        finding = gather_finding(model, _scope(), self._slice())
+        assert finding.narrative.count(self._LOOP) == 1
+        assert model.calls == 1
+
+    def test_a_looping_cut_off_reask_names_the_sentence(self):
+        looping = "</think>NARRATIVE: " + " ".join([self._LOOP] * 30)
+        model = _SequenceModel([(looping, "length"), _finding_gen("one logon.", "x", "auth_events#1")])
+        gather_finding(model, _scope(), self._slice())
+        assert f'You wrote "{self._LOOP}" 30 times' in model.prompts[1]
+
+    def test_the_first_cut_off_reply_is_salvaged_when_the_reask_is_not(self):
+        first = _finding_gen(" ".join([self._LOOP] * 5), "x", "auth_events#1") + "\n- and then [auth_ev"
+        model = _SequenceModel([(first, "length"), ("</think>NARRATIVE: " + self._LOOP * 40, "length")])
+        finding = gather_finding(model, _scope(), self._slice())
+        assert finding.citations == ["auth_events#1"]
+        assert finding.narrative.count(self._LOOP) == 1
+
     def test_a_reply_with_no_narrative_triggers_the_reask(self):
         """The narrative is the product, so its absence is a parse failure.
 

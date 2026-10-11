@@ -239,6 +239,39 @@ class _Attempt:
     reasoning_trace: str | None = None
 
 
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+# The first copy of a looped sentence follows its block header ("NARRATIVE: Host …").
+_BLOCK_HEADER = re.compile(r"^\s*(?:</think>)?\s*[A-Z]+:\s*")
+# ponytail: shorter sentences repeat legitimately ("- none" under two blocks), so
+# only longer ones are collapsed; a looping short phrase still gets through.
+_REPEAT_MIN_CHARS = 40
+
+
+def _collapse_repeats(text: str) -> tuple[str, Counter]:
+    """`text` with each long sentence kept only where it first appears, plus the repeats.
+
+    a818a3fd T4 endpoint (B15, B-1): both replies wrote "Host … ran processes under
+    user …, started by OneDrive.exe; one command line, starting powershell.exe,
+    repeated." until the token limit, with the prompt rule against it in place.
+    Lines keep their order, so block headers and their contents stay put.
+    """
+    seen: set[str] = set()
+    repeats: Counter = Counter()
+    lines = []
+    for line in text.split("\n"):
+        kept = []
+        for sentence in _SENTENCE.split(line):
+            key = " ".join(_BLOCK_HEADER.sub("", sentence).split())
+            if len(key) >= _REPEAT_MIN_CHARS and key in seen:
+                repeats[key] += 1
+                continue
+            seen.add(key)
+            kept.append(sentence)
+        if kept:
+            lines.append(" ".join(kept))
+    return "\n".join(lines), repeats
+
+
 def _invoke_with_one_reask(
     model: AnalystModel,
     *,
@@ -310,12 +343,25 @@ def _invoke_with_one_reask(
         # A reply cut off at `max_gen_len` parses as if whole: c7dbf51d's T1 ran
         # one observation into ", , , , had no matching events" until the limit and
         # shipped 2.7k characters of it. Cut off means re-ask, never parse.
+        text, repeats = _collapse_repeats(reply.generation)
+        if repeats:
+            logger.warning("domain=%s | dropped %d repeated sentence(s) from the reply", domain, sum(repeats.values()))
         if reply.stop_reason == "length":
+            # Name the loop, not just the limit: "keep it short" did not stop it (B-1).
+            looped = ""
+            if repeats:
+                sentence, n = repeats.most_common(1)[0]
+                looped = f' You wrote "{sentence}" {n + 1} times; write each sentence once.'
             raise parse_error(
                 "your reply hit the token limit and was cut off. Keep it short: "
-                "list a set of empty results once, and do not repeat citations"
+                "list a set of empty results once, and do not repeat citations." + looped
             )
-        return parse(reply.generation, domain=domain)
+        return parse(text, domain=domain)
+
+    def salvage(reply: AnalystResponse) -> tuple[Any, str]:
+        # The finished lines of a cut-off reply: drop the line the limit cut through.
+        head, _, tail = _collapse_repeats(reply.generation)[0].rstrip().rpartition("\n")
+        return parse(head, domain=domain), tail
 
     try:
         return _Attempt(parse_whole(response), prompt_tokens, generation_tokens)
@@ -348,15 +394,22 @@ def _invoke_with_one_reask(
             if retry.stop_reason != "length":
                 raise
             # Cut off twice (N2, 78cd60ec T1 endpoint): keep what was finished and
-            # drop the line the limit cut through, rather than lose the domain.
-            head, _, tail = retry.generation.rstrip().rpartition("\n")
-            salvaged = parse(head, domain=domain)
-            logger.warning(
-                "domain=%s | re-ask also hit the token limit; kept the finished %s "
-                "and dropped its cut-off last line (%d chars): %r",
-                domain, noun, len(tail), tail[:300],
-            )
-            return _Attempt(salvaged, prompt_tokens, generation_tokens)
+            # drop the line the limit cut through, rather than lose the domain. The
+            # first reply too, when it was cut off: its loop may have ended sooner (B-1).
+            for label, reply in (("re-ask", retry), ("first", response)):
+                if reply.stop_reason != "length":
+                    continue
+                try:
+                    salvaged, tail = salvage(reply)
+                except parse_error:
+                    continue
+                logger.warning(
+                    "domain=%s | re-ask also hit the token limit; kept the finished %s "
+                    "of the %s reply and dropped its cut-off last line (%d chars): %r",
+                    domain, noun, label, len(tail), tail[:300],
+                )
+                return _Attempt(salvaged, prompt_tokens, generation_tokens)
+            raise
     except parse_error as exc:
         # The reason, not just the fact: b3aa0dd2 lost endpoint twice and the log could not say why.
         logger.warning("domain=%s | re-ask still produced no parseable %s: %s", domain, noun, exc)
