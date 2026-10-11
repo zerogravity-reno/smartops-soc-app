@@ -30,6 +30,7 @@ Runs up to `b3aa0dd2` investigated the same Splunk ES notable: *Threat - Custom 
 | `5dc65b8c` | 2026-10-08 | no verdict, 1 round | *Custom Process Discovery*. FP 95 vs BENIGN 88, lead 7 (needs 20); refs `T1:T1`, `T2:T2` (T1, T9, T17) |
 | `c90ca5f9` | 2026-10-09 | no verdict, 2 rounds | First run on `78a2fdc`, replaying `874ab334`'s alert. 3 of 5 tasks dropped at handoff for zero-length windows (B19). Round 2 FALSE_POSITIVE 80 with status REQUIRES_INVESTIGATION (60/80/75); round 3 spent 8,192 tokens thinking on an 11.7k prompt and wrote nothing (T15). Broker $1.01 + $1.56. Observations crossed (11, 14), B18/O5/O6 held |
 | `89674d75` | 2026-10-10 | no verdict, stopped in round 5 | First run on `1f63130` (prompt review), same alert as `874ab334`. Round 2 TRUE_POSITIVE 98/65/78 and round 3 95/60/45 both met the score rule and were refused on refs (T25). Round 4 re-ran round 3's tasks unchanged (W10) and came back 90/82/83 (T26). Round 5 lost the Splunk MCP session after FU1 and hung for 21 min until stopped (B24). Broker $4.02 + $2.70 + $3.47 + ≥$0.55 |
+| `2a71757f` | 2026-10-11 | TRUE_POSITIVE 95/45/25, 1 round | Baseline on PR #6 + `18f7719` (B15), tier A, same alert as `874ab334`. First round today the gate accepted: 5 refs held, 4 of them endpoint. 0 `stop_reason=length`, 0 repeats, 0 re-asks; all 15 domain calls in 44 s. Broker 6m39s, $1.81. Of synthesis's four reasons only the download chain holds: the "encoded commands" decode to `$env:username`, "Atomic Red Team" is a module import of installed test tooling, and the "suspicious hash" is powershell.exe's own, read as svcupdate.dat's (B40). The gate checks refs, not reasoning (Analyst side: T21, T24) |
 
 **Baseline checks on `89674d75`** (the list in `docs/handover-2026-10-10.md`):
 - **Held:**
@@ -98,7 +99,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
 | B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed on `smartops-loop-fix`: budget re-measured, 16,480 → 27,608 characters; replayed on `89674d75`, 0 → 43/51, 59/59, 52/52 observations; live check pending |
-| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | The example sentence was the loop seed; removed in every domain. 6/6 lost slices parse on replay (10-11); live check pending |
+| B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Fixed (`18f7719`): the example sentence was the loop seed, removed in every domain. Held live on `2a71757f` (0 cut-offs, 15/15 domains) |
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel tasks deferred |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
@@ -117,6 +118,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B31 | Broker | siem reports `gaps: vt` on every task with nothing vt could look up | Low | Prompt fixed on `broker-k4-ab-fixes`; live check pending |
 | B32 | Handoff | A refused ref says "step … is ok" for an incomplete step | Low | Fixed on `broker-k4-ab-fixes` |
 | B33 | Broker | Hash questions unanswered: siem never searched Sysmon 15/29, and file_events held non-file rows the narrative called file writes | High | Fixed on `broker-k4-ab-fixes` (siem hint, 15/29 as file events, `event_code=`); svcupdate.dat's hash is not in the lab's data |
+| B39 | Broker | A step's status is its last dispatch's, not its rows': `no_data` beside 5 rows | Medium | Open (B26 at the step level) |
+| B40 | Broker | A `-` placeholder counts as a value, so a hash's file reads "(file not named)" and synthesis pinned powershell.exe's hash on svcupdate.dat | High | Open: one-line fix in `_first` proposed |
+| B41 | Broker | The packer's over-budget warning repeats on every re-measure (7× for one domain) | Low | Open |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -607,6 +611,12 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Done (`prompts.py`, every domain):** the per-group SHAPE sentence is replaced by one shared `_grouping_block`: one or two sentences per kind of set, naming the values its computed summary lists first, never one sentence per value. The three grounding `(e.g. …)` quotes are gone. The block order is unchanged.
 - **Verified through `gather_finding` (production path):** the 6 tasks, all 3 domains: every domain with evidence (15) parsed, no re-ask failed. Two network replies still over-ran (9 repeats collapsed; 29 observations against the 10 limit) but parsed.
 - **Waiting on Mohammed:** a code safety net (a cut-off reply with cited observations and no NARRATIVE keeps the observations); dropping the length re-ask (it repeats itself at temp 0).
+- **Held live (`2a71757f`, tier A, 5 tasks):**
+  - No `stop_reason=length`, no repeated sentence dropped, and no re-ask in any of the 15 domain calls.
+  - The sub-analyst phase took 44 s, against 1m19s–2m14s on the 10-11 baselines.
+  - Every endpoint domain with rows reached the payload, and the gate accepted all 4 endpoint refs.
+  - The narratives describe the OneDrive → PowerShell → `win-agent-2.4.1.bin` download in four tasks.
+  - Still open: narratives carry copied times and counts that the prompt forbids, and T3 calls event codes 4100/4104 "blocked scripts" (B11).
 
 **B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Cache fixed; parallel tasks deferred.*
 - **Evidence:** `25965109` looked up one hash 7 times in one round. Round 2 of `874ab334` took 10.5 minutes, 1–4 minutes per task, one after another.
@@ -824,6 +834,26 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **B38. Pure code-count rows are narrated as events.** *Medium. Open.*
 - **Evidence (`a818a3fd` T3, T4):** `stats count by EventCode` sets (`{EventCode, count}` only) stay `uncategorised`. The narratives say "three uncategorized events with event codes 1, 4100, 4104", and L3 synthesis wrote that the codes "reinforce the idea of malicious activity".
 - **Fix candidates:** file them as `discovery` (an inventory of codes, like B29's index count), or render them as a count line in `facts`. To decide.
+
+**B39. A step's status is its last dispatch's.** *Medium. Open.*
+- **Evidence (`2a71757f` T2, `onedrive_file_registry`):** `rows_retrieved=5`, `completed=true`, `status=no_data`. The first dispatch returned the 5 rows, and the second found none.
+- **Cause:** `broker.evaluate_step` (`broker.py:641`) sets `outcome.status = result.status` on every dispatch, while `rows_retrieved` accumulates. B26 made a single result's status follow its rows; the step-level status was not changed.
+- **Effect:** the persisted `step_outcomes` and the UI say both "found 5" and "no data" for one step.
+- **Fix (proposed):** derive the step's status from its cumulative rows: `ok` when `rows_retrieved > 0`, otherwise the last dispatch's.
+
+**B40. A `-` placeholder counts as a value; a hash lost its file.** *High. Open.*
+- **Evidence (`2a71757f` T1, T3):**
+  - `facts` read `(file not named): SHA256 1C84C863…`.
+  - The rows are Sysmon EID 1 with `Image=…\powershell.exe`, `TargetFilename=-`. It is powershell.exe's own hash; T2's facts print it as `powershell.exe: SHA256 1C84C863…`.
+  - Synthesis wrote "the binary had a SHA256 hash of 1C84C863…" for svcupdate.dat, called it "a suspicious hash", and named it among the verdict's main reasons.
+- **Cause:** `formatting._first` (`formatting.py:61`) returns the first key that is present and non-empty. Since the `fillnull` rule (B25), every empty field is `-`. So `hashes_in`'s `_first(row, "ImageLoaded", "TargetFilename", "Image")` stops at `TargetFilename=-`, before it reaches `Image`.
+- **Class:** `_first` has 10 call sites. Any row where an earlier key holds `-` hides a later key's real value.
+- **Fix (proposed):** treat `-` like empty in `_first`. Test: an EID 1 row with `TargetFilename=-` and `Image=powershell.exe` names powershell.exe.
+- **Analyst side (routed):** synthesis called a hash suspicious with no reputation behind it. No task looked the hash up: T3's Broker had no hash in scope at plan time, so VT wasn't offered, and the gap was reported (T21).
+
+**B41. The packer's over-budget warning repeats.** *Low. Open.*
+- **Evidence (`2a71757f` T2 endpoint):** "evidence over budget, rendered at row_cap=20" logged 7 times for one domain.
+- **Cause:** `fitted_row_cap` re-runs `pack_evidence` to read its row cap, and each run logs. The cost is string formatting only; the noise hides other warnings.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
@@ -1117,6 +1147,15 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
   3. **G2:** record why every REQUIRES_INVESTIGATION was reached.
   4. **G3 / T25:** what a ref to a lost domain should do.
   5. **B38:** where pure code-count rows go.
+
+**Broker, from `2a71757f` (2026-10-11 baseline)** (ours):
+- **Held live:** B15 (`18f7719`), B22 (the hash reached `facts`), B36 (no budget refusal), B14 (observations in every domain).
+- **Next, in order:**
+  1. **B40:** treat `-` as empty in `_first`; it fixes the misattributed hash and every other masked field.
+  2. **B39:** the step's status follows its rows.
+  3. **B15 follow-ups (decide):** the safety net, and dropping the length re-ask.
+  4. **Parallel fetch (decide):** serial fetch was 5m55s of the 6m39s Broker phase.
+  5. **B41:** log once per slice.
 
 
 1. **Rotate the credentials** (S1).

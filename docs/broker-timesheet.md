@@ -10,11 +10,11 @@
 
 | | Hours |
 |---|---|
-| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 44.4 |
-| Of which Broker and sub-analyst work | **≈ 31.0** |
-| Lower bound for the Broker work (15-min cutoff) | ≈ 22.2 |
+| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 46.9 |
+| Of which Broker and sub-analyst work | **≈ 32.8** |
+| Lower bound for the Broker work (15-min cutoff) | ≈ 23.8 |
 
-The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, the 10-11 architecture audit (AR1–AR10), and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
+The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, the 10-11 architecture audit and cleanups (AR1–AR11), G1/G2 coded on the Analyst side and reverted, and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
 
 ## By item
 
@@ -61,7 +61,10 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | B30 | Tokens and requests per role | 0.05 | 10-11 | `4661868` | `a818a3fd` | — |
 | B34–B37, B31 | `a818a3fd` read; aggregate rows by event code, Sysmon network fields, output holds from measurement, coverage from rows, gaps filtered in code | 0.8 | 10-11 | `2ab6bb2`, `67718cd`, `6a8255b`, `0ce24c0`, `8902b52`, `868980f` (PR #6) | `a818a3fd`, re-projection | B34 is B28's second pass; B31's prompt rule failed live |
 | B15 | Code lever: collapse repeated sentences, quote the loop in the re-ask, salvage the first reply | 0.3 | 10-11 | `9190ad4`, `2b4f9ef` (PR #6) | `e8d949af`, `942115f7` | fourth pass; endpoint still lost 6 times |
-| G1–G3, B38 | Evidence-gate bugs and code-count rows registered from the two baselines; handover | 0.4 | 10-11 | (docs) | `e8d949af`, `942115f7` | — |
+| G1–G3, B38 | Evidence-gate bugs and code-count rows registered from the two baselines; where the gates live (Analyst side); handover | 0.7 | 10-11 | (docs) | `e8d949af`, `942115f7` | — |
+| Efficiency plan | Cost and latency per role, wasted calls, 14 ranked items (smartops-worker) | 0.5 | 10-11 late | `docs/efficiency-plan-2026-10-11.md` (untracked) | `e8d949af`, `942115f7` | — |
+| Handoff timing | Analyst ↔ Broker handoff traced; serial fetch is ~70% of a round (942115f7 L3: 5m24s of 6m43s) | 0.15 | 10-11 late | — | `942115f7`, `e8d949af` | — |
+| B15 | A/B of 5 prompt versions on the 6 lost endpoint slices (0/6 → 6/6); the example sentence was the loop seed, removed in every domain; sub-analyst Bedrock key diagnosed | 0.8 | 10-11 late | `18f7719` (PR #6) | replays of `e8d949af`/`942115f7` slices, all 3 domains through `gather_finding` | fifth pass; held offline, live check pending |
 
 ## By session
 
@@ -90,8 +93,10 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | `0ed73387` | 10-10 21:13 → 22:25 | 1.2 / 0.9 | ~85% | 1.0 | 10-10 pm | B24, B27, W10 from the `89674d75` findings |
 | `53985608` | 10-11 09:19 → 10:46 | 1.45 / 0.96 | ~90% | 1.3 | 10-11 pm | push; B14, B15, B25, B26; B20 design; K4 plan |
 | `cd672601` | 10-11 10:48 → 11:56 | 1.14 / 1.14 | ~80% | 0.9 | 10-11 eve | K4 A/B; B28–B33, W11; PR #5; T27 benign-lean write-up (Analyst side) |
-| `d862cc12` | 10-11 10:22 → 12:55 (parallel) | 1.03 / 0.22 | 0% | 0 | — | architecture audit AR1–AR10 (not Broker) |
-| `cf9a7026` | 10-11 11:58 → 13:40 | 1.54 / 1.15 | 100% | 1.5 | 10-11 close | `a818a3fd` read; B34–B37, B15 code lever, PR #6; `e8d949af`/`942115f7` read; gate bugs G1–G3 |
+| `d862cc12` | 10-11 10:22 → 14:42 (parallel) | 1.03 / 0.22 | 0% | 0 | — | architecture audit AR1–AR10 (not Broker) |
+| `cf9a7026` | 10-11 11:58 → 14:41 | 1.81 / 1.42 | 100% | 1.8 | 10-11 close | `a818a3fd` read; B34–B37, B15 code lever, PR #6; `e8d949af`/`942115f7` read; gate bugs G1–G3 and where they live |
+| `38648d29` | 10-11 14:42 → 15:49 (parallel) | 1.11 / 0.84 | ~45% | 0.5 | (this update) | efficiency plan; AR3/AR4/AR5/AR7/AR9 engine half and AR11 (not Broker) |
+| `a1e6792c` | 10-11 14:42 → 15:50 | 1.12 / 1.12 | ~85% | 0.95 | 10-11 late | handoff timing; B15 A/B and `18f7719`; G1/G2 coded and reverted (Analyst side) |
 
 ## What stands out
 
@@ -100,6 +105,6 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 - **Live verification is a large share of every item.** Most "Rework" entries trace to a run where the fix held in tests and not live, so a Broker fix isn't finished until a live run shows it.
 - **B14 and B15 needed a measurement, not another rule.** Both had a fix in place (10-09) that didn't hold on `89674d75`. In both, the cause was a number nobody had checked against a run: the payload's characters per token, and output that grew with the number of sets under a fixed cap.
 - **The `89674d75` trace itself isn't counted:** it isn't in any session on this repo.
-- **B15 is the longest-running open item: four passes** (diagnostics, a narrative rule, a "write each group once" rule, then code). The code collapses exact repeats, but the endpoint loop is near-duplicates, and it still lost the domain 6 times on the 10-11 baselines.
+- **B15 is the longest-running item: five passes** (diagnostics, a narrative rule, a "write each group once" rule, code, then the A/B). Each rule added text around the prompt's own example sentence, which was what the model copied. Replaying the lost slices against prompt versions found it in under an hour; removing the example took 0/6 to 6/6 offline. It waits on a live run.
 - **On the 10-11 baselines the evidence gate, not the evidence, ended every round.** 5 of 6 rounds met the score rule and were refused on refs. Four of those were endpoint domains lost to B15, and one was a cited block the gate misread (G1).
 - **10-09's Broker fixes are only partly verified live:** `c90ca5f9` ran after B14–B18 landed and surfaced B19–B22; B19–B23 wait on the baseline replay of that alert.
