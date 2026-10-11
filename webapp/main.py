@@ -38,10 +38,20 @@ app = FastAPI(title="SmartOps SOC")
 # â”€â”€ Static files & index route â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# The React frontend (frontend/, `npm run build`) when built; the old static page otherwise.
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+HAS_FRONTEND = os.path.isfile(os.path.join(FRONTEND_DIST, "index.html"))
+if HAS_FRONTEND:
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+
+    @app.get("/favicon.svg")
+    def favicon():
+        return FileResponse(os.path.join(FRONTEND_DIST, "favicon.svg"))
+
 # Index route MUST be declared before the static mount so it wins on "/"
 @app.get("/")
 def index():
-    resp = FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    resp = FileResponse(os.path.join(FRONTEND_DIST if HAS_FRONTEND else STATIC_DIR, "index.html"))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
