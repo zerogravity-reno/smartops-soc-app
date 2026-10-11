@@ -10,11 +10,11 @@
 
 | | Hours |
 |---|---|
-| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 39.6 |
-| Of which Broker and sub-analyst work | **≈ 27.7** |
-| Lower bound for the Broker work (15-min cutoff) | ≈ 19.7 |
+| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 44.4 |
+| Of which Broker and sub-analyst work | **≈ 31.0** |
+| Lower bound for the Broker work (15-min cutoff) | ≈ 22.2 |
 
-The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
+The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, the 10-11 architecture audit (AR1–AR10), and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
 
 ## By item
 
@@ -52,10 +52,16 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | P-1…P-8, P-10 | The prompt review's fixes, committed with PR #4 | 0.55 | 10-10 | `1f63130` | `89674d75` | P-10 didn't hold (B26) |
 | B24, B27 | Reconnect a dead MCP session; end and time-box a stuck step; row and cell caps | 0.75 | 10-10 pm | `8d21f8b` | `89674d75` (before) | — |
 | W10 | Don't re-send a follow-up already asked; end the run when nothing is new | 0.25 | 10-10 pm | `ee9958f` | replay of `89674d75` | — |
-| B14 | Budget re-measured (3.76 chars/token, 2 full rounds, compact reserve): 16,480 → 27,608 | 0.15 | 10-11 | (uncommitted) | replay of `89674d75` | second pass: 10-09's `facts` split didn't free enough |
-| B15 | Cause: one paragraph per set under a fixed cap; narrative rule rewritten | 0.1 | 10-11 | (uncommitted) | — | third pass, after 10-09's diagnostics |
-| B26, B25 | Splunk check (`stats … by` drops rows, not `host=`); `fillnull` rule; status from rows; entity rule | 0.1 | 10-11 | (uncommitted) | Splunk queries | the `host=` hypothesis was wrong |
-| B20, K4 | "Can't answer" design; model-tiering plan; issues report | 0.05 | 10-11 | (uncommitted) | — | — |
+| B14 | Budget re-measured (3.76 chars/token, 2 full rounds, compact reserve): 16,480 → 27,608 | 0.4 | 10-11 | `69c7e7a` | replay of `89674d75` | second pass: 10-09's `facts` split didn't free enough |
+| B15 | Cause: one paragraph per set under a fixed cap; narrative rule rewritten | 0.3 | 10-11 | `69c7e7a` | — | third pass, after 10-09's diagnostics |
+| B26, B25 | Splunk check (`stats … by` drops rows, not `host=`); `fillnull` rule; status from rows; entity rule | 0.3 | 10-11 | `69c7e7a` | Splunk queries | the `host=` hypothesis was wrong |
+| B20, K4 | "Can't answer" design; model-tiering plan; issues report | 0.3 | 10-11 | `9b340e8` | — | — |
+| K4 | Anthropic provider with per-role tiers; A/B runs | 0.3 | 10-11 | `47ec269`, `1dcf67e` | `3bf5fce8`, `8807fafa` | — |
+| B28–B33, B11, W11 | Rows by their own event code; estate `tstats` as discovery; gaps rule; refused-ref state; where hashes live; logon type names; one MCP client | 0.55 | 10-11 | `c7aa245`, `3be53b6`, `84c65b8`, `7babf3a`, `b7d458f`, `2c27cf6` | `8807fafa`, `3bf5fce8` replays; Splunk queries | — |
+| B30 | Tokens and requests per role | 0.05 | 10-11 | `4661868` | `a818a3fd` | — |
+| B34–B37, B31 | `a818a3fd` read; aggregate rows by event code, Sysmon network fields, output holds from measurement, coverage from rows, gaps filtered in code | 0.8 | 10-11 | `2ab6bb2`, `67718cd`, `6a8255b`, `0ce24c0`, `8902b52`, `868980f` (PR #6) | `a818a3fd`, re-projection | B34 is B28's second pass; B31's prompt rule failed live |
+| B15 | Code lever: collapse repeated sentences, quote the loop in the re-ask, salvage the first reply | 0.3 | 10-11 | `9190ad4`, `2b4f9ef` (PR #6) | `e8d949af`, `942115f7` | fourth pass; endpoint still lost 6 times |
+| G1–G3, B38 | Evidence-gate bugs and code-count rows registered from the two baselines; handover | 0.4 | 10-11 | (docs) | `e8d949af`, `942115f7` | — |
 
 ## By session
 
@@ -82,7 +88,10 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | `3cede18f` | 10-09 19:34 → 19:45 | 0.1 / 0.1 | 100% | 0.1 | (10-09 report) | commit `276f789`, the 10-09 update |
 | `34fd06cb` | 10-10 13:21 → 15:06 | 0.9 / 0.9 | ~60% | 0.55 | 10-10 | PR #4; prompt fixes `1f63130`; committed the run-control UI (`5a6f88b`, not Broker) |
 | `0ed73387` | 10-10 21:13 → 22:25 | 1.2 / 0.9 | ~85% | 1.0 | 10-10 pm | B24, B27, W10 from the `89674d75` findings |
-| `53985608` | 10-11 09:19 → (in progress) | 0.4 / 0.4 | 100% | 0.4 | (this report) | push; B14, B15, B25, B26; B20 design; K4 plan |
+| `53985608` | 10-11 09:19 → 10:46 | 1.45 / 0.96 | ~90% | 1.3 | 10-11 pm | push; B14, B15, B25, B26; B20 design; K4 plan |
+| `cd672601` | 10-11 10:48 → 11:56 | 1.14 / 1.14 | ~80% | 0.9 | 10-11 eve | K4 A/B; B28–B33, W11; PR #5; T27 benign-lean write-up (Analyst side) |
+| `d862cc12` | 10-11 10:22 → 12:55 (parallel) | 1.03 / 0.22 | 0% | 0 | — | architecture audit AR1–AR10 (not Broker) |
+| `cf9a7026` | 10-11 11:58 → 13:40 | 1.54 / 1.15 | 100% | 1.5 | 10-11 close | `a818a3fd` read; B34–B37, B15 code lever, PR #6; `e8d949af`/`942115f7` read; gate bugs G1–G3 |
 
 ## What stands out
 
@@ -91,4 +100,6 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 - **Live verification is a large share of every item.** Most "Rework" entries trace to a run where the fix held in tests and not live, so a Broker fix isn't finished until a live run shows it.
 - **B14 and B15 needed a measurement, not another rule.** Both had a fix in place (10-09) that didn't hold on `89674d75`. In both, the cause was a number nobody had checked against a run: the payload's characters per token, and output that grew with the number of sets under a fixed cap.
 - **The `89674d75` trace itself isn't counted:** it isn't in any session on this repo.
+- **B15 is the longest-running open item: four passes** (diagnostics, a narrative rule, a "write each group once" rule, then code). The code collapses exact repeats, but the endpoint loop is near-duplicates, and it still lost the domain 6 times on the 10-11 baselines.
+- **On the 10-11 baselines the evidence gate, not the evidence, ended every round.** 5 of 6 rounds met the score rule and were refused on refs. Four of those were endpoint domains lost to B15, and one was a cited block the gate misread (G1).
 - **10-09's Broker fixes are only partly verified live:** `c90ca5f9` ran after B14–B18 landed and surfaced B19–B22; B19–B23 wait on the baseline replay of that alert.

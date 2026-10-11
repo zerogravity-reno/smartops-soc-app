@@ -334,6 +334,11 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - `T2:network` had 4 observations and was refused only because two of T2's siem steps were recorded as incomplete with 0 rows. That was B28: their rows had been filed under other categories. The refusal read "step s1_net is ok" (B32).
   - `3bf5fce8` wrote block ids (`T1:processes#1`, `T3:connections#1`, `T4:file_events#1`), all held, and stopped after one round. Both runs' first evaluations were TP 90, so the gate, not the evidence, decided which took one round.
   - With B28 fixed, `8807fafa` would still have been refused on `T1:file`. Dropping bad refs and keeping the verdict when enough hold would have stopped it after one round.
+- **Recurred in every round of `a818a3fd`, `e8d949af` and `942115f7` (2026-10-11):**
+  - 5 of 6 rounds met the score rule and were refused on refs. In 4 of them the refused ref pointed at an endpoint domain lost to B15 (G3).
+  - In one, the refused refs were cited blocks the gate misread (G1).
+  - The sixth failed on scores, with no reason recorded (G2).
+  - Registered as gate bugs G1–G3 under Webapp integration.
 
 **T26. Synthesis reads gap tasks G1–G3 as hypotheses H1–H3, and copies scores from an evaluation that never ran.** *High. Open (Analyst; W8 compaction contributes).*
 - **Evidence (`89674d75` round 4):** this was the first synthesis with a compacted round (W8).
@@ -580,6 +585,14 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Live check:** no `stop_reason=length` in `broker.log`.
 - **Recurred (`8807fafa` L2, 2026-10-11):** endpoint on T3 (36 file events) and T4 (20 processes) hit 3,072 tokens on both calls, and both domains were lost. Every reply repeats the grouping example's sentence ("Host … ran processes under user …, started by …; one command line, starting …, repeated") for group after group, including for file-event rows. The per-set rule is gone, so the loop is the example being copied, not the set count.
 - **Change waiting (`broker-k4-ab-fixes`, uncommitted):** all three bodies say "write each group once: never write the same sentence twice", and the endpoint body says the shape is for process sets only. It ships after a replay of `8807fafa` L2 T3/T4 endpoint shows no repeat and no `stop_reason=length`. The replay on 2026-10-11 could not run: Bedrock rejected the API key in `.env`.
+- **Recurred live with that prompt (`a818a3fd` L2-T4):** both replies repeated "Host … started by OneDrive.exe; one command line, starting powershell.exe, repeated." to 3,072 tokens, and the domain was lost. The prompt lever failed.
+- **Code lever (`9190ad4`, `broker-a818-fixes`):** each sentence of 40+ characters is kept once before parsing; the re-ask quotes the looped sentence and its count; when both replies are cut off, the first reply's finished lines can be salvaged too. The prompt text was committed beside it (`broker-a818-fixes`).
+- **Live (`e8d949af` tier B, `942115f7` tier A), the dedupe helps but doesn't close it:**
+  - Repeats were dropped in 17 replies (4 to 123 sentences each). Endpoint parsed after a drop on `942115f7` L2-T1 (123 dropped), L2-T2, L3-G1 and L3-G4.
+  - Endpoint was still lost 6 times, both calls at 3,072: `e8d949af` L2-T1, L2-T2 and L3-G1 (every endpoint domain with rows in that run), and `942115f7` L2-T3, L3-G3 and L3-G5.
+  - The loops that survive are near-duplicates: the same shape sentence with a different parent or user per process group, so no two are identical. With 20 rows a set and many distinct parents, the shape template alone fills the 3,072 tokens.
+  - Every lost endpoint domain then refused its round at the gate (G3).
+- **Next lever (to decide):** stop asking the model to enumerate process groups. Code already computes the per-set summaries; the narrative could describe the set in a fixed number of sentences, with the group list carried in `facts`. Alternatives: a per-domain `max_gen_len` for endpoint, or cutting at the first near-duplicate (same sentence with values masked).
 
 **B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Cache fixed; parallel tasks deferred.*
 - **Evidence:** `25965109` looked up one hash 7 times in one round. Round 2 of `874ab334` took 10.5 minutes, 1–4 minutes per task, one after another.
@@ -741,6 +754,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - `Signed`, `Signature` and `SignatureStatus` are `-`.
   - "Is svcupdate.dat signed, by which CA, what is its hash" can't be answered by any connected source (B20).
 - **Fix:** `_gaps_line` now says to name a family only when the rows hold a value it would look up (for vt: a file hash, public IP, domain or URL tied to the question), and otherwise to leave `gaps` empty. `gaps` stays `list[ToolFamily]` in the contract.
+- **Recurred (`a818a3fd` L2-T1):** Haiku named vt on a host-only scope; the only hash in the rows was powershell.exe's own. The prompt rule didn't hold, so code now decides: `investigate()` drops a gap for any family `scope_gap` says the task's scope can't feed (`868980f`, `broker-a818-fixes`). Not seen in `e8d949af` or `942115f7`.
 
 **B32. A refused ref says "step … is ok".** *Low. Fixed on `broker-k4-ab-fixes`.*
 - **Evidence (`8807fafa` round 2):** "T2:network: step s1_net is ok". The step had `completed=False, status=ok`, and `_ref_problem` printed the status.
@@ -763,6 +777,39 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - The siem specialisation says where hashes live: an executed image in Sysmon 1 `Hashes`, a written file only in Sysmon 15/29 `Hash` matched on `TargetFilename`, and "say so" when neither names the file.
   - Sysmon 15/29 rows count as file events.
   - Rows render `event_code=` instead of `code=`, so an event code can't be read as an exit status.
+
+**B34. Aggregate rows skip the per-row event-code split.** *High. Fixed on `broker-a818-fixes` (PR #6).*
+- **Evidence (`a818a3fd`):** B28's split moved only rows with `_time`. Haiku summarises with `stats count min(_time) as first max(_time) as last by EventCode, Image, …`, so its rows have no `_time` and kept the query's category.
+  - L2-T4 and L3-G1: EID 1 rows (powershell.exe under OneDrive.exe, 16 events) were filed as file events, and G1's narrative said "file_events#2 … powershell.exe having event_code 1".
+  - L2-T4 `s3_network`: the EID 3 row powershell.exe → 192.168.40.211:8888 was filed as DNS and rendered "source, query, answer, RCODE not recorded".
+- **Fix (`2ab6bb2`):** a row moves by its own `EventCode` unless it is a pure code count (only `EventCode`, `count`, `first`, `last`, `host`, `index`, `sourcetype`). 4100/4103 are `script_blocks` (the B28 leftover).
+- **Re-projected:** L2-T4's network step goes from 5 to 9 connection rows, the 8888 row included. G1's file step goes from 7 rows to 2 real file events.
+- **Live (`e8d949af`, `942115f7`):** the T3 network narrative states "port 8888 with 6 events".
+
+**B35. Sysmon network fields weren't read.** *High. Fixed on `broker-a818-fixes`.*
+- **Evidence (`a818a3fd` L2-T4):** `_FIELDS["connections"]` and `["dns_resolutions"]` had no Sysmon EID 3/22 spellings, so rows rendered `dest=-`. The network analyst read `count=269` as "269 bytes" and guessed "port 53"; the real port was mDNS 5353.
+- **Fix (`67718cd`):** `DestinationIp`, `DestinationPort`, `SourceIp`, `SourcePort`, `Protocol`, `QueryName` and `QueryResults` are read.
+
+**B36. One task's output-token holds refused its own third step.** *High. Fixed on `broker-a818-fixes`.*
+- **Evidence (`a818a3fd` L3-G1):** `s3_network` came back "siem not attempted: budget exhausted" with $9.96 of $10 left. The 200k output cap per task held the Broker at 11 × 4k = 44k and each siem dispatch at 25 × 2k + 6k = 56k: 44k + 3 × 56k = 212k. The incomplete step then got `G1:endpoint` refused.
+- **Fix (`6a8255b`, `0ce24c0`):** `OUTPUT_TOKENS_PER_TURN` is now low 1k, medium 1k, high 2k. The refusal log names which limit refused the call and the amounts.
+- **Measured, output per model call:**
+
+  | Run | Tier | siem | Broker | vt |
+  |---|---|---|---|---|
+  | `a818a3fd` | B | 747 (Haiku) | 340 (Sonnet) | — |
+  | `e8d949af` | B | 642–898 (Haiku) | 304 (Sonnet) | 274 (Haiku) |
+  | `942115f7` | A | 443–491 (Sonnet) | 537–583 (Opus) | — |
+
+  Every role read from cache (`cache_read` above 0). No "budget exhausted" in either run.
+
+**B37. `covered` was the subagent's own claim.** *Medium. Fixed on `broker-a818-fixes`.*
+- **Evidence (`a818a3fd` L2-T1):** "not covered: script_blocks" beside two `script_blocks` rows the endpoint narrative cites.
+- **Fix (`8902b52`):** every CIM category that code projected rows into counts as covered.
+
+**B38. Pure code-count rows are narrated as events.** *Medium. Open.*
+- **Evidence (`a818a3fd` T3, T4):** `stats count by EventCode` sets (`{EventCode, count}` only) stay `uncategorised`. The narratives say "three uncategorized events with event codes 1, 4100, 4104", and L3 synthesis wrote that the codes "reinforce the idea of malicious activity".
+- **Fix candidates:** file them as `discovery` (an inventory of codes, like B29's index count), or render them as a count line in `facts`. To decide.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
@@ -825,6 +872,28 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 **W11. The webapp opened its own Splunk MCP client.** *Medium. Fixed on `broker-k4-ab-fixes`.*
 - **Evidence:** `webapp/services/splunk_mcp.py` (from `58d39c3`) built a raw `mcp` session with its own URL, token and TLS-skip handling for the alert reads (`webapp/main.py`: events, notables, ESCU rules). It ran beside the backend's `smartops.tools.registry`, which owns `mcp_servers.json`, the TLS rule and dead-session resets.
 - **Fix:** `registry.call_tool(family, name, arguments)` runs one tool call on the family's client, outside any agent: started once, reset if its session died, and raising on a tool error. `splunk_mcp.run_query` now delegates to it. Checked live: two queries in a row on one session.
+
+### Evidence gate (`run_trace.verdict_gate` / `_ref_problem`)
+
+None of the four rounds in `e8d949af` and `942115f7` (2026-10-11) reached VERDICT_REACHED, and the gate decided each one. T25 holds the policy question (should one bad ref block a verdict?). These are defects in the gate as written.
+
+**G1. A block cited inside a multi-id bracket is refused.** *High. Open.*
+- **Evidence (`942115f7` round 2):** BENIGN with H3 90 against H2 60 met the score rule. `T1:processes#1` and `T1:processes#4` were refused as "neither a domain with observations nor a block cited in T1's findings". T1's endpoint observation reads "Multiple executions of OneDrive.exe … [processes#1 processes#4 processes#5]". `T1:processes#5` held only because another observation cites it alone.
+- **Cause:** `_ref_problem` looks for the literal text `[processes#1]` in the narrative and observations. The sub-analysts write several ids in one bracket, and the parser accepts it (`analyze.py`'s run-together id handling).
+- **Fix:** read the ids out of every bracket (split on spaces and commas), or use the domain's citations instead of the text.
+
+**G2. A verdict blocked on its scores records no reason.** *Medium. Open.*
+- **Evidence (`942115f7` round 3):** verdict TRUE_POSITIVE with scores H1 70, H2 90, H3 80. The scores fail the rule (lead 10), so the status is REQUIRES_INVESTIGATION, but `refused_refs` and the gate's gaps are empty. The ref `DNS_resolutions#3:network` (task and block swapped) was never checked or reported.
+- **Cause:** `verdict_gate` checks refs and writes reasons only when the scores pass (the T17 feed noted 2026-10-08).
+- **Fix:** always check refs and always record why the status is REQUIRES_INVESTIGATION: scores (top, lead), a verdict that disagrees with its own top hypothesis, and bad refs.
+
+**G3. A ref to a lost domain refuses the round, and the re-ask loses it again.** *High. Open (with T25 and B15).*
+- **Evidence:**
+  - `e8d949af` round 2: TP 95, lead 90. Refused only on `T1:endpoint`, whose sub-analyst was cut off twice (B15).
+  - T1's question returned as round 3's G1, whose endpoint domain was lost the same way. Round 3 was refused on `G1:endpoint`, and the run ended with no verdict.
+  - `942115f7` round 2: `T3:script_blocks#1` was refused because T3's endpoint was lost.
+- **Effect:** while B15 recurs, any verdict that cites an endpoint domain is refused, and the follow-up repeats the question that loses it.
+- **Fix candidates:** refuse a ref to a domain the payload marks as failed ("produced no parseable finding") with that reason, instead of "neither a domain with observations…", and don't turn it into a follow-up that reruns the same retrieval. Or T25's "keep the verdict when enough refs hold".
 
 ## Cost
 
@@ -998,6 +1067,15 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
   2. **B20:** the "can't answer" design above, once agreed.
   3. **K4:** A/B live runs of the tier presets.
   4. **T25 (Mohammed to decide):** whether one bad ref, or a malformed one, should block a verdict.
+
+**Broker and gate, from `a818a3fd`, `e8d949af`, `942115f7` (2026-10-11 close)** (ours):
+- **Done, PR #6 (`broker-a818-fixes`):** B34–B37, the B31 code filter, the B15 dedupe and re-ask. Live on the two runs: no budget refusal, the 8888 connection reached a narrative, no `gaps: vt`.
+- **Next, in order:**
+  1. **B15:** the endpoint loop still loses the domain (6 times in 2 runs). Decide the next lever (above).
+  2. **G1:** read multi-id brackets in `_ref_problem`. Small, and it alone blocked `942115f7` round 2.
+  3. **G2:** record why every REQUIRES_INVESTIGATION was reached.
+  4. **G3 / T25:** what a ref to a lost domain should do.
+  5. **B38:** where pure code-count rows go.
 
 
 1. **Rotate the credentials** (S1).
