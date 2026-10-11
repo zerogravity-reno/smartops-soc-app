@@ -200,7 +200,7 @@ class TestFactsPromptSteadiesTheReport:
             flat = _flat(facts_system_prompt(domain))
 
             assert "HOW MUCH TO REPORT:" in flat
-            assert "Every set you were given must appear in it." in flat
+            assert "Every set with rows must appear in it" in flat
             assert "Never drop a set because it looks uninteresting" in flat
 
     def test_category_matched_evidence_is_preferred_over_uncategorised(self):

@@ -153,6 +153,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- A `process_id` entity is a PID: Sysmon writes it as decimal `ProcessId`, Windows 4688 as hex `New_Process_ID` (2900 is 0xB54). Search both, scoped to the task's host. PIDs are reused on a host: return `_time` with every PID match and keep same-PID processes at different times apart. When a `process_guid` is in scope, prefer it. Never replace an empty PID search with an unfiltered process listing.\n"
         "- A `process_guid` entity names one process instance: match it on Sysmon `ProcessGuid` (its own events) and `ParentProcessGuid` (its children). The EID 1 row whose `ProcessGuid` matches gives its `ParentImage` and `ParentProcessGuid`. In CIM data models it is `Processes.process_guid` / `Registry.process_guid`.\n"
         "- Data models have no `host`, `Computer`, `CommandLine`, `Image` or `ParentImage` field. Use `dest`, `process`, `process_path` and `parent_process_path`. Grouping or filtering by a field that doesn't exist returns 0 rows, not an error.\n"
+        "- On raw events, `stats … by` drops every event missing ANY by-field: Sysmon 1 and PowerShell 4104 rows carry no `TargetFilename`, so `by EventCode, TargetFilename, Image` returns 0 rows over them. Put `| fillnull value=\"-\" <every by-field>` before `stats … by`.\n"
         "- If `summariesonly=t` returns 0 rows, the data model is usually just not accelerated: run the SAME query with `summariesonly=f`, which searches the raw events through the data model.\n"
         "- Only if `summariesonly=f` also returns 0 rows, query specific sourcetypes directly (`sourcetype=stream:dns`, `sourcetype=stream:tcp`, `sourcetype=XmlWinEventLog EventCode=1`, `sourcetype=WinEventLog EventCode=4688`, `sourcetype=WinEventLog EventCode=4624`).\n"
         "- Sourcetype names differ between deployments. If a raw sourcetype search returns 0 rows, list the sourcetypes that actually hold this host's events (`| tstats count where index=<allowed index> host=<host> by sourcetype`) and retry with the real name before concluding the data is absent.\n"
@@ -767,6 +768,10 @@ async def investigate(
         "citation_ids": [e.id for e in evidence],
         "blocked_queries": [q for g in guards for q in g.blocked],
     }
+    # The rows decide, not the model: 89674d75 L3-G2 said `no_data` over 150 rows (B26).
+    total_rows = getattr(result.findings, "total_rows", None)
+    if result.status == SubtaskStatus.NO_DATA and total_rows and total_rows() > 0:
+        update["status"] = SubtaskStatus.OK
     if watch.refused:
         # The answer covers only what ran before the session died: ERROR, so the
         # Broker sees an incomplete step, not a clean "ok" or "no_data".

@@ -205,3 +205,21 @@ class TestCellCap:
     def test_a_text_only_result_passes_through(self):
         payload = {"status": "success", "content": [{"text": "x" * 20_000}]}
         assert subagents._capped(payload) is payload
+
+
+class TestRowsDecideTheStatus:
+    """B26: 89674d75 L3-G2 reported `no_data` beside 150 returned rows."""
+
+    async def test_no_data_over_returned_rows_becomes_ok(self, monkeypatch):
+        from contracts.findings import ResultSet, SiemFindings
+
+        async def fake(*args, **kwargs):
+            return _Result(SubagentAnswer(status=SubtaskStatus.NO_DATA))
+
+        monkeypatch.setattr(subagents, "_build_agent_and_invoke", fake)
+        monkeypatch.setattr(subagents, "project", lambda *a: SiemFindings(
+            task_id="T1", file_events=[ResultSet(query="q", row_count=150)]))
+
+        result = await investigate(mission("siem"), model=MODEL, budget=Budget.from_usd(1.0), tools=["t"])
+
+        assert result.status == SubtaskStatus.OK

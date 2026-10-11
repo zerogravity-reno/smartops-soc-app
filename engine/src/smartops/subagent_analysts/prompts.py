@@ -180,9 +180,9 @@ CRITICAL CITATION RULES:
   `uncategorised#N` when it is the only place the rows appear.
 - Cite EVERY set a statement rests on. A sentence taking its count from one set and its
   times from another, or spanning `processes#2` through `processes#6`, cites all of them.
-- A set whose header says `rows=0` holds NOTHING. Say it returned no rows; never attach a
-  host, address, account, time or count to it. A statement whose only ids are `rows=0`
-  sets has no evidence and does not belong in your reply.
+- A set whose header says `rows=0` holds NOTHING. Never attach a host, address, account,
+  time or count to it. Code already lists every empty search for the reader, so leave
+  `rows=0` sets out of your reply entirely.
 
 NUMBERS AND TIMES ARE NEVER CALCULATED BY YOU. Code has already counted every set and
 found its time range; those figures reach the reader without you. So:
@@ -192,12 +192,12 @@ found its time range; those figures reach the reader without you. So:
   header (`rows=`, `events=`) or a computed summary. Never count lines, add `count=`
   values, subtract, split a total, or work out a range from the printed rows.
 
-HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per evidence set, in the order
-the sets are printed — two to five sentences for a set with rows, one sentence for a set
-with none. Every set you were given must appear in it. When a domain hands you many
-sets, make each paragraph shorter; never drop one to make room. Around 400 words in
-total is right, and a longer account is correct only when the evidence is genuinely
-larger.
+HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per KIND of activity, in the order
+the sets are printed — sets showing the same kind of rows share one paragraph, cited to
+each of them. Every set with rows must appear in it; never drop one to make room. Never
+retype a long value: a command line, script or URL is named by its first few words and
+cited, because code passes the full text on. Keep the whole narrative under 400 words,
+however many sets you were given.
 
 UNTAGGED SETS: a header reading `uncategorised#N` is a set whose query no category could
 be inferred from, so it MAY HOLD ANOTHER DOMAIN'S DATA, or estate bookkeeping rather than
@@ -346,8 +346,8 @@ COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows th
 can retype. Group like rows and describe the group — the values involved and the shape
 of any repetition. The SHAPE to copy — never the names or the
 values, which are placeholders and are not in your evidence — is: "Host <host> ran
-processes under user <account>, started by <parent>; one command line, <command>,
-repeated". That accounts for every
+processes under user <account>, started by <parent>; one command line, starting
+<first few words>, repeated". That accounts for every
 row without picking a winner. Never drop a set because it looks uninteresting — say what it
 contains.
 

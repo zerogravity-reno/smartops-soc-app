@@ -533,7 +533,7 @@ def synthesis_endpoint(req: SynthesisRequest):
 # â”€â”€ Run queue for SSE debug streaming â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _run_queues: dict[str, Queue] = {}
 
-FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS sizes them
+FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must match
 
 class RunRequest(BaseModel):
     alert_name: str = "Potential Cryptomining Activity Detected"

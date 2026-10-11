@@ -287,8 +287,8 @@ def compact_round(payload: dict, evaluation: dict) -> dict:
     answered, and what the evaluation after it concluded. Narratives and
     summaries are left out; the record is built here, not by a model (W8).
     """
-    # ponytail: 0.9-1.8 kB a round on b3aa0dd2, so 13 compacted rounds (~20 kB) roughly fill
-    # the third share `packing._ANALYST_ROUNDS` leaves; cap per task if a run nears 15 rounds.
+    # ponytail: 0.9-1.8 kB a round on b3aa0dd2; `packing._COMPACT_ROUNDS_RESERVE` covers
+    # ~10 of them, so cap per task if a run nears 15 rounds.
     return {
         "tasks": [
             {"task_id": p.get("task_id"), "question": p.get("hypothesis"),
