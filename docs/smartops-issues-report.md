@@ -2,7 +2,7 @@
 
 **As of:** 2026-10-11 (through run `89674d75`, plus the 10-11 logic pass). **Code:** branch `smartops-loop-fix` (since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
 
-**Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail and security. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
+**Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail, security and architecture. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
 ## Evidence base
 
@@ -140,6 +140,16 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | O6 | Audit | Warnings don't name the task; the packer's overflow warning isn't logged | Low | Fixed on `smartops-loop-fix` |
 | S1 | Security | Live credentials in git history | Critical | Removed from tree; **rotation pending**; new leak in `33ccf52` (C1–C2) |
 | S2 | Security | Splunk Web scraper replaced the official MCP | High | Fixed (C3) |
+| AR1 | Architecture | Six webapp routes and their job store have no caller in the UI | Low | Open |
+| AR2 | Architecture | The webapp has its own Foundation-Sec-8B client beside the engine's `AnalystModel` | Medium | Open (question: is the boto3 Windows socket issue still real?) |
+| AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Open |
+| AR4 | Architecture | Four engine symbols only tests use | Low | Open |
+| AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Open |
+| AR6 | Architecture | `extract_json` scans braces by hand | Low | Open |
+| AR7 | Architecture | `bench._pinned_skills` only delegates | Low | Open |
+| AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Open |
+| AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Open |
+| AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Open (frontend, smartops-worker) |
 
 ## Triage logic (Analyst plan and synthesis)
 
@@ -907,6 +917,63 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Action:** rotate all of them, and have the branch deleted or rewritten.
 
 **S2. A Splunk Web scraper replaced the official MCP server.** *High. Fixed (C3).* `mcp_servers.json` points at the official server again (17 tools, time-bounded queries).
+
+## Architecture
+
+From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` is `docs/analyst-bug-report.md`'s prefix). Dead-code claims were checked by grep over all tracked source outside tests. `subagent_analysts/`, `guards.py` and `contracts/` were not read line by line for shorter forms. About 420 lines and 2 dependencies could go.
+
+**AR1. Six webapp routes have no caller in the UI.** *Low. Open.*
+- **Evidence:** `webapp/static` calls only `/api/run*`, `/api/import-from-splunk`, `/api/incident-queue`, `/api/escu` and `/api/opencti`. Nothing calls these:
+  - `/api/analyst`, `/api/analyst/start`, `/api/analyst/result/{id}` and `/api/synthesis` (`webapp/main.py:378-537`), with `_do_analyst`, `_run_analyst_job`, `_analyst_jobs`, `AnalystRequest` and `SynthesisRequest`.
+  - `/api/list-detection-rules` and `/api/import-from-splunk-by-rule` (`webapp/main.py:272-310`).
+  - The only references are in the untracked `tests/test-integration/` scratch files: saved HTML and drive scripts.
+- **Fix:** delete them (~195 lines).
+
+**AR2. The webapp has its own Foundation-Sec-8B client.** *Medium. Open, one question first.*
+- **Evidence:** `webapp/services/llm_service.py` repeats `subagent_analysts/model.py`'s `AnalystModel`: the prompt template, the `invoke` body, the cold-start retries and the reasoning/answer split, with its own temperature, top_p and `max_gen_len` defaults. Two clients for one model can drift, the same pattern W11 removed for Splunk MCP.
+- **Question:** its header says it calls Bedrock through httpx to get around "boto3 Windows socket issues". Is that still true? If not, the webapp calls `AnalystModel.invoke` (~-100 lines).
+
+**AR3. A global boto3 monkeypatch duplicates `AnalystModel`'s bearer auth.** *Medium. Open.*
+- **Evidence:** `engine/src/smartops/main.py:46-67` (from `d113695`, the integration release) replaces `boto3.Session.client` at import time. Every `bedrock-runtime` client in the process prefers bearer auth and picks up `FS8B_API_KEY`.
+  - `AnalystModel._bearer_client` already does this for its own client only, through `ScopedEnvTokenProvider`.
+  - Its docstring says why the key must not leak into other clients. The patch makes it leak into all of them, including Broker-tier Bedrock clients.
+- **Fix:** delete the patch (~-22 lines) and confirm the analyst still authenticates through `_bearer_client`.
+
+**AR4. Four engine symbols only tests use.** *Low. Open.*
+- `TaskInputFile.analyst_tasks()` (`contracts/task_input.py:208`), `Budget.output_tokens_remaining` (`budget.py:680`), `create_replay_subagent_runner` (`replay.py:360`) and the VirusTotal outcome's `is_partial` (`virustotal.py:264`).
+- **Fix:** delete them and their tests (~-46 lines of source).
+
+**AR5. The runs-root lookup is written out 7 times.** *Low. Open.*
+- **Evidence:** `os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR` at `broker.py:1227`, `main.py:740` and `:1022`, `blind_compare.py:230` and `:1201`, and `replay.py:133`. `webapp/services/run_trace.py:115` hardcodes the variable name and the default.
+- **Fix:** one `runs_root()` in `broker.py`, imported everywhere else.
+
+**AR6. `extract_json` scans braces by hand.** *Low. Open.*
+- **Evidence:** `webapp/services/llm_service.py:101` has a nested depth-counting loop with a bare `except:`.
+- **Fix:** try `json.JSONDecoder().raw_decode(text, i)` at each `{` (~-15 lines). Merge it into AR2's fix if that lands.
+
+**AR7. `bench._pinned_skills` only delegates.** *Low. Open.*
+- **Evidence:** `engine/src/smartops/bench.py:67` wraps `pinned_skills_enabled()` and yields `skills_enabled()`, under a 15-line docstring.
+- **Fix:** use `with pinned_skills_enabled(...)` at the call site.
+
+**AR8. Two launchers disagree.** *Low. Open.*
+- **Evidence:** `start_server.bat` runs uvicorn on port 8001 with a hand-set `PYTHONPATH` and no `uv`. `start.ps1` uses `uv` on port 8013 and parses `.env` itself, which `webapp/main.py` already does with `load_dotenv`.
+- **Fix:** keep `start.ps1` without its `.env` loop; delete `start_server.bat`.
+
+**AR9. Unused root dependencies.** *Low. Open.*
+- **Evidence:** the root `pyproject.toml` declares `mcp` and `botocore`. The webapp imports neither (since W11 its Splunk reads go through `smartops.tools`). The engine gets both through strands and boto3.
+- **Fix:** drop both.
+
+**AR10. There is no frontend.** *Medium. Open (frontend, smartops-worker).*
+- **Evidence:** `frontend/` is an empty, untracked folder (created 2026-08-04, no commits). The only UI is `webapp/static`: `index.html`, `app.js` (1,238 lines), `style.css` and a separate `debug.html` (413 lines), served by FastAPI's `StaticFiles` from `webapp/main.py`.
+  - That UI is a vanilla-JS stopgap: no components, no build, no tests, and one 1,238-line script holding the queue, the import, the run stream and the trace view.
+  - `debug.html` is a second page with its own run and stream calls; nothing links to it from the main UI.
+  - UI issues already pile up against it (W1, W9), and each one is fixed in that one script.
+- **Fix:** build the real frontend in `frontend/` against the webapp's `/api/*` contract, then retire `webapp/static`. Until it exists, keep the stopgap vanilla and delete the empty `frontend/` folder so nothing suggests it is started.
+
+**Checked, not issues:**
+- `_estimated_input_tokens` in `broker.py` and `subagents/__init__.py`: the formulas differ (the subagent's caps turns at 8 and adds tool schemas).
+- The guard classes' `_check` and `_learn` in `guards.py`: each one enforces a different rule.
+- The three `_build_parser` and `_run` functions in `main.py`, `bench.py` and `blind_compare.py`: each belongs to a different CLI entry point.
 
 ## Priorities
 
