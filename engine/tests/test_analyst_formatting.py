@@ -535,3 +535,9 @@ class TestPromptReviewFixes:
         # Splunk matched 4000; 3 came back; all 3 are printed. Code says both numbers.
         rs = ResultSet(query="q", row_count=4000, rows=[{"user": f"u{i}"} for i in range(3)])
         assert "… 3 of 4000 rows shown" in format_result_set("auth_events", rs, index=1)
+
+
+def test_a_logon_type_is_named_by_code_not_left_to_the_model():
+    """B11: 3bf5fce8 narrated logon type 5 as "remote interactive"; it is a service logon."""
+    assert "logon_type=5 (Service)" in format_row("auth_events", {"EventCode": "4624", "Logon_Type": "5"})
+    assert "logon_type=10 (RemoteInteractive)" in format_row("auth_events", {"LogonType": 10})

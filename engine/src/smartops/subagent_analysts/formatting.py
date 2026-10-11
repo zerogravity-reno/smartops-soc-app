@@ -280,9 +280,20 @@ def utc_row(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_LOGON_TYPES = {
+    "2": "Interactive", "3": "Network", "4": "Batch", "5": "Service", "7": "Unlock",
+    "8": "NetworkCleartext", "9": "NewCredentials", "10": "RemoteInteractive", "11": "CachedInteractive",
+}
+"""Windows logon type names, written by code: 3bf5fce8 narrated type 5 as "remote
+interactive" (it is a service logon) when given the bare number (B11)."""
+
+
 def _field(row: dict[str, Any], category: str, name: str, default: str = "-") -> str:
     """Resolve one named field for `category` through `_FIELDS`."""
-    return _first(row, *_FIELDS[category][name], default=default)
+    value = _first(row, *_FIELDS[category][name], default=default)
+    if name == "logon_type" and str(value) in _LOGON_TYPES:
+        return f"{value} ({_LOGON_TYPES[str(value)]})"
+    return value
 
 
 def _format_auth_event(row: dict[str, Any]) -> str:
