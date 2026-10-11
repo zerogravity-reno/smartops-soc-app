@@ -42,7 +42,7 @@ export function Scores({ run }: { run: RunState | null }) {
           <li key={id} className={'score' + (has && i === 0 ? ' top' : '')} data-id={id}>
             <span className="h-id">{id}</span>
             <span className="h-desc" title={h.description || ''}>{h.description || ''}</span>
-            <span className={'h-n' + (has ? '' : ' none')}>{has ? String(scores[id]) : '–'}</span>
+            <span className={'h-n' + (has ? '' : ' none')}>{has ? String(scores[id]) : '-'}</span>
             <span className="h-meta">
               <span className="h-v" style={{ '--c': VERDICT_COLOR[h.verdict || ''] || 'var(--warn)' } as CSSProperties}>{VERDICT_TAG[h.verdict || ''] || h.verdict || ''}</span>
               {d ? <span key={String(scores[id])} className={'h-d flash' + (d > 0 ? ' up' : '')}>{(d > 0 ? '+' : '−') + Math.abs(d)}</span> : null}

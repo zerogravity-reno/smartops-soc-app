@@ -98,7 +98,7 @@ export function buildContract(f: AlertFields, raw: Raw, eventTime: string | null
     rule_intent: {
       intent: 'To be determined by LLM (Rule Intent Interpreter) via semantic comparison of both SPLs.',
       semantic_alignment: 'ALIGNED | NOT_ALIGNED',
-      deployed_spl: deployed_spl || 'Not provided — paste the SPL from Splunk ES here.',
+      deployed_spl: deployed_spl || 'Not provided. Paste the SPL from Splunk ES here.',
       reference_spl,
     },
     escu_context: {
