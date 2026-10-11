@@ -500,10 +500,12 @@ def model_choices_from_env(provider: Provider | None = None) -> dict[str, ModelC
     return choices
 
 
-OUTPUT_TOKENS_PER_TURN = {"low": 1_000, "medium": 2_000, "high": 4_000}
-"""Output one loop turn may take at each effort, thinking included (K4). The loop
-caps were sized for Bedrock Sonnet 4.6, which did not think: siem had ~480 a turn."""
-# ponytail: allowance per effort is an estimate; reset from the smoke run's per-turn usage
+OUTPUT_TOKENS_PER_TURN = {"low": 1_000, "medium": 1_000, "high": 2_000}
+"""Output one loop turn may take at each effort, thinking included (K4). Measured on
+a818a3fd tier B (B30 usage lines): Haiku siem ~750 a turn (45,544 / 61 calls), Sonnet
+broker ~340 (4,082 / 12). At 2,000/4,000 one task's broker plus three siem holds
+(44k + 3 x 56k) overran the 200k per-task ceiling and refused the third step (B-2)."""
+# ponytail: re-measure per tier when the tier presets change
 
 
 def loop_output_tokens(choice: ModelChoice, turns: int, default: int) -> int:

@@ -665,7 +665,13 @@ async def investigate(
         # Budget exhaustion is ERROR, not REJECTED: the domain was workable and
         # would have been attempted. REJECTED is documented as not-retryable and
         # would have an aggregator abandon the domain for the whole case.
-        logger.warning("task_id=%s family=%s | budget cannot cover the call", mission.task_id, family)
+        # Say which limit refused it: a818a3fd G1 (B-2) was refused on output tokens with $9.96 left.
+        logger.warning(
+            "task_id=%s family=%s | budget cannot cover the call: needs %d output tokens "
+            "(%s left); %d micro-USD left",
+            mission.task_id, family, max_output_tokens + _recovery_output_tokens(model),
+            budget.output_tokens_remaining, budget.remaining,
+        )
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
