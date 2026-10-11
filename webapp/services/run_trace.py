@@ -324,7 +324,8 @@ def _ref_problem(ref: str, payloads: list, runs: list) -> tuple[str | None, str 
         if run.get("task_id") in ids:
             for st in run.get("steps", []):
                 if not st.get("completed") or st.get("status") == "rejected":
-                    return question, f"{ref}: step {st.get('step_id')} is {st.get('status') or 'incomplete'}"
+                    state = "rejected" if st.get("status") == "rejected" else "incomplete"
+                    return question, f"{ref}: step {st.get('step_id')} is {state}"
     return None, None
 
 
