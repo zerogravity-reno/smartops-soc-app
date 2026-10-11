@@ -516,9 +516,13 @@ def _gaps_line(family: str) -> str:
     others = [f for f in ALL_FAMILIES if f != family and family_is_configured(f)]
     if not others:
         return ""
+    # B31: on 8807fafa "vt" came back on all 9 tasks with nothing vt could look up
+    # (the only hash in the rows was powershell.exe's own image hash).
     return (
-        f"- gaps: any of these domains that could close a gap you hit: "
-        f"{', '.join(others)}. Advisory only.\n"
+        f"- gaps: any of these domains that could close a gap you hit: {', '.join(others)}. "
+        "Name one only when your rows hold a value it would look up (for vt: a file "
+        "hash, public IP, domain or URL tied to the question); otherwise leave gaps "
+        "empty. Advisory only.\n"
     )
 
 

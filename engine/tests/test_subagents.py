@@ -372,6 +372,14 @@ class TestPrompt:
         assert "edr" not in gaps_line
         assert "ndr" not in gaps_line
 
+    def test_the_gaps_line_asks_for_a_value_the_family_could_look_up(self, monkeypatch):
+        """B31: a bare "vt" on every task, with nothing vt could look up."""
+        monkeypatch.setattr(registry_module, "server_count", lambda f: 1 if f in ("siem", "vt") else 0)
+
+        prompt = subagents._system_prompt_for("siem", turns=14)
+
+        assert "only when your rows hold a value it would look up" in prompt
+
     def test_the_window_is_given_as_epoch_and_readable_utc(self):
         # Epoch because that is what the tools take; readable so a model does not
         # "correct" a window it thinks looks wrong.
