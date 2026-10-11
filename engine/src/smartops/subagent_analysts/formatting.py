@@ -73,7 +73,8 @@ def _first(row: dict[str, Any], *keys: str, default: str = "-") -> str:
         lower.setdefault(str(k).lower().rpartition(".")[2], v)
     for key in keys:
         value = lower.get(key.lower())
-        if value is not None and str(value).strip():
+        # Splunk writes `-` for "no value"; it must not mask a later key (B40).
+        if value is not None and str(value).strip() not in ("", "-"):
             return _sanitise(str(value))
     return default
 

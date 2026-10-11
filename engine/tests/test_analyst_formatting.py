@@ -29,6 +29,12 @@ class TestFieldProjection:
         assert "user=bostoll" in line
         assert "src=-" in line  # absent field kept as a placeholder column
 
+    def test_dash_placeholder_does_not_mask_later_key(self):
+        # B40: `Hashes=-` hid the real `sha256`, so another file's hash got used.
+        from smartops.subagent_analysts.formatting import _first
+        assert _first({"Hashes": "-", "sha256": "ABC"}, "Hashes", "sha256") == "ABC"
+        assert _first({"Hashes": " - "}, "Hashes") == "-"  # all-dash still renders the default
+
     def test_case_insensitive_field_lookup(self):
         line = format_row("auth_events", {"User": "bostoll", "Action": "success"})
         assert "user=bostoll" in line
