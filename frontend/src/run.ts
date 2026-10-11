@@ -1,7 +1,7 @@
 // One investigation's state, driven by actions: the UI's own steps (start, context
 // built, run id) and every SSE event from /api/run/stream. Pure: `at` is passed in.
 import type { Contract } from './contract';
-import { domState, plural, VERDICT_COLOR, VERDICT_TAG, type DomState } from './format';
+import { domState, plural, shortId, VERDICT_COLOR, VERDICT_TAG, type DomState } from './format';
 import type {
   BrokerRun, CtiResult, EscuResult, Handoff, Handshake, Plan, PayloadBatch, StreamEvent, Synthesis, Tokens,
 } from './types';
@@ -23,9 +23,13 @@ export type Item =
   | { kind: 'error'; msg: string };
 
 export interface Stage { status: StageStatus; start?: number; end?: number; sum: string; items: Item[]; open: boolean }
+// What the Broker log says about one tool result while the round is still running.
+export interface LiveResult { family: string; status: string; rows: number; queries: number }
+export type TaskPhase = 'queued' | 'fetching' | 'fetched' | 'failed';
 export interface TaskRow {
   id: string; q: string; steps: string | null; rows: number | null; spend: number; rejected: number;
   dom: Record<string, DomState>; noRun?: boolean;
+  phase: TaskPhase; startedAt?: number; live: LiveResult[];
 }
 export type Mode = 'running' | 'pausing' | 'paused' | 'ended';
 
@@ -105,6 +109,39 @@ export function fail(r: RunState, msg: string, at: number): RunState {
   return add(r, stage, { kind: 'error', msg });
 }
 
+// The Broker CLI's progress markers (smartops/main.py `_run_round`): a task starting, each tool
+// result, a task's spend line, the sub-analysts starting. Everything else stays in the engine log.
+const FETCHING = /^fetching (\d+)\/(\d+): (\S+)/;
+const RESULT = /^\s*\[(\w+)\s*\]\s+(\w+)\s+(.*?)\s*(?:\((\d+) quer(?:y|ies)\))?\s*$/;
+const SPENT = /^this task: (\d+) micro-USD/;
+const ANALYSING = /^analysing (\d+) task\(s\)/;
+
+function brokerLine(r: RunState, line: string, at: number): RunState {
+  const tasks = r.tasks;
+  const active = tasks.find(t => t.phase === 'fetching');
+  const patch = (id: string | undefined, f: (t: TaskRow) => TaskRow) => tasks.map(t => (t.id === id ? f(t) : t));
+  let m: RegExpExecArray | null;
+  if ((m = FETCHING.exec(line))) {
+    const id = m[3];
+    const next = tasks.map(t => t.id === id ? { ...t, phase: 'fetching' as const, startedAt: at } : t.phase === 'fetching' ? { ...t, phase: 'fetched' as const } : t);
+    const q = next.find(t => t.id === id)?.q || '';
+    return { ...r, tasks: next, current: 'broker', now: 'Fetching ' + shortId(id) + ' (' + m[1] + ' of ' + m[2] + '): ' + q };
+  }
+  if (active && (m = RESULT.exec(line))) {
+    // "connections:27 processes:4 discovery:1": discovery is the index probe, not evidence.
+    const rows = [...m[3].matchAll(/(\w+):(\d+)/g)].filter(x => x[1] !== 'discovery').reduce((n, x) => n + Number(x[2]), 0);
+    const res: LiveResult = { family: m[2], status: m[1], rows, queries: Number(m[4] || 0) };
+    return { ...r, tasks: patch(active.id, t => ({ ...t, live: [...t.live, res] })) };
+  }
+  if (active && (m = SPENT.exec(line))) return { ...r, tasks: patch(active.id, t => ({ ...t, phase: 'fetched', spend: Number(m![1]) })) };
+  if (active && /^error: the investigation failed/.test(line)) return { ...r, tasks: patch(active.id, t => ({ ...t, phase: 'failed' })) };
+  if ((m = ANALYSING.exec(line))) {
+    r = setStage({ ...r, tasks: tasks.map(t => (t.phase === 'fetching' ? { ...t, phase: 'fetched' as const } : t)) }, 'findings', at);
+    return setSum(r, 'findings', 'Sub-analysts are describing the evidence for ' + plural(Number(m[1]), 'task'));
+  }
+  return r;
+}
+
 function onEvent(r: RunState, ev: StreamEvent, at: number): RunState {
   const loop = 'loop' in ev ? ev.loop || 1 : 1;
   switch (ev.type) {
@@ -130,16 +167,20 @@ function onEvent(r: RunState, ev: StreamEvent, at: number): RunState {
       r = setStage(r, 'broker', at);
       const tasks = ev.data.tasks || [];
       const lost = (ev.data.dropped || []).filter(d => !d.sent).length;
-      r = { ...r, loops: loop, tasks: tasks.map(t => ({ id: t.task_id, q: t.question, steps: null, rows: null, spend: 0, rejected: 0, dom: {} })) };
+      // A one-task round prints no "fetching 1/1" line, so its task is fetching from the start.
+      const solo = tasks.length === 1;
+      r = { ...r, loops: loop, tasks: tasks.map(t => ({ id: t.task_id, q: t.question, steps: null, rows: null, spend: 0, rejected: 0, dom: {},
+        phase: solo ? 'fetching' as const : 'queued' as const, startedAt: solo ? at : undefined, live: [] })) };
       r = add(r, 'broker', ...loopHeader(loop), { kind: 'handoff', loop, data: ev.data });
-      return setSum(r, 'broker', plural(tasks.length, 'task') + ' sent' + (lost ? ', ' + lost + ' not sent' : '') + ', fetching');
+      r = setSum(r, 'broker', plural(tasks.length, 'task') + ' sent' + (lost ? ', ' + lost + ' not sent' : '') + ', fetching');
+      return solo ? { ...r, now: 'Fetching ' + shortId(tasks[0].task_id) + ': ' + tasks[0].question } : r;
     }
     case 'broker_log': {
-      r = setStage(r, 'broker', at);
+      // The log keeps flowing while the sub-analysts work: never step back from Findings.
+      if (r.current !== 'findings') r = setStage(r, 'broker', at);
       // ponytail: copies the loop's line array per line; fine for a few thousand lines per round.
       r = withBroker(r, loop, b => ({ ...b, lines: [...b.lines, ev.data.line || ''] }));
-      const txt = (ev.data.line || '').trim();
-      return txt ? { ...r, now: txt, current: 'broker' } : r;
+      return brokerLine(r, ev.data.line || '', at);
     }
     case 'broker': {
       const runs = ev.data.runs || [];

@@ -272,7 +272,7 @@ export default function App() {
 
       <aside className="rail" aria-label="Case summary">
         <section className="rail-sec" aria-labelledby="scoresTitle"><h2 id="scoresTitle">Hypotheses</h2><Scores run={run} /></section>
-        <section className="rail-sec" aria-labelledby="tasksTitle"><h2 id="tasksTitle">Tasks</h2><Tasks run={run} /></section>
+        <section className="rail-sec" aria-labelledby="tasksTitle"><h2 id="tasksTitle">Tasks</h2><Tasks run={run} now={now} /></section>
         <section className="rail-sec" aria-labelledby="runTitle"><h2 id="runTitle">Run</h2><Meta run={run} now={now} lastEvent={lastEvent.current} /></section>
       </aside>
     </div>

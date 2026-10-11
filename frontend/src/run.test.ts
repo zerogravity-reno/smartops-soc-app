@@ -53,3 +53,22 @@ test('a plan with no tasks fails the plan stage', () => {
   expect(r.stages.plan.status).toBe('failed');
   expect(r.stages.plan.items[0]).toMatchObject({ kind: 'plan', usable: false });
 });
+
+test('the broker log moves tasks queued -> fetching -> fetched while the round runs', () => {
+  const t2 = { ...task, task_id: 'r-L2-T2', hypothesis_id: 'r-L2-T2', question: 'q2' };
+  const log = (line: string) => ev({ type: 'broker_log', data: { line }, message: '', loop: 2 });
+  const start = [happy[0], happy[1], happy[2], ev({ type: 'handoff', data: { tasks: [task, t2], dropped: [], task_file: 'f' }, message: '', loop: 2 })];
+  let r = run(...start, log('fetching 1/2: r-L2-T1 / r-L2-T1'));
+  expect(r.tasks.map(x => x.phase)).toEqual(['fetching', 'queued']);
+  expect(r.now).toBe('Fetching T1 (1 of 2): q');
+  r = run(...start, log('fetching 1/2: r-L2-T1 / r-L2-T1'),
+    log('  [ok      ] siem  connections:27 processes:4 discovery:1 (6 queries)'),
+    log('  [no_data ] siem  dns_resolutions:0 discovery:1 (3 queries)'),
+    log('this task: 317214 micro-USD'), log('fetching 2/2: r-L2-T2 / r-L2-T2'),
+    log('analysing 2 task(s) concurrently (6 analyst calls in one billing window)'), log('--- r-L2-T1 / r-L2-T1 ---'));
+  expect(r.tasks[0]).toMatchObject({ phase: 'fetched', spend: 317214,
+    live: [{ family: 'siem', status: 'ok', rows: 31, queries: 6 }, { family: 'siem', status: 'no_data', rows: 0, queries: 3 }] });
+  expect(r.tasks[1].phase).toBe('fetched');
+  expect(r.current).toBe('findings');  // later log lines do not pull it back to Evidence
+  expect(r.stages.broker.status).toBe('done');
+});

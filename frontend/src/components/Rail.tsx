@@ -1,6 +1,6 @@
 import { Fragment, useLayoutEffect, useRef, type CSSProperties } from 'react';
 import { explain, secs, shortId, VERDICT_COLOR, VERDICT_TAG } from '../format';
-import type { RunState } from '../run';
+import type { RunState, TaskRow } from '../run';
 import { DomLine } from './Cards';
 
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -63,7 +63,18 @@ function openTask(id: string) {
   el.querySelector('summary')?.focus({ preventScroll: true });
 }
 
-export function Tasks({ run }: { run: RunState | null }) {
+// Before the round's report: what the Broker log has said so far (run.ts `brokerLine`).
+function liveStatus(t: TaskRow, now: number, failed: boolean) {
+  if (t.phase === 'failed') return <span className="tst bad">failed</span>;
+  if (t.phase === 'fetching') return <span className="tst live">fetching {secs(now - (t.startedAt ?? now))}</span>;
+  if (t.phase === 'queued') return <span className={'tst' + (failed ? ' bad' : ' dim')}>{failed ? 'stopped' : 'queued'}</span>;
+  const rows = t.live.reduce((n, x) => n + x.rows, 0);
+  const fams = [...new Set(t.live.map(x => x.family))];
+  const empty = t.live.filter(x => x.status !== 'ok').length;
+  return <span className="tst ok">{rows} rows from {fams.join(', ') || 'no tool'}{empty ? ', ' + empty + ' empty' : ''}</span>;
+}
+
+export function Tasks({ run, now }: { run: RunState | null; now: number }) {
   if (!run?.tasks.length) return <ol className="tasks"><li className="dim">Appear with the plan.</li></ol>;
   return (
     <ol className="tasks">
@@ -71,12 +82,12 @@ export function Tasks({ run }: { run: RunState | null }) {
         const bad = t.noRun || Object.values(t.dom).includes('bad');
         const dom = Object.entries(t.dom);
         return (
-          <li key={t.id}>
+          <li key={t.id} className={t.phase === 'fetching' && t.steps == null ? 'active' : undefined}>
             <button type="button" title={t.q} onClick={() => openTask(t.id)}>
               <span className="tid">{shortId(t.id)}</span>
               <span className="tq">{t.q}</span>
               {t.steps == null
-                ? <span className={'tst' + (run.failed ? ' bad' : '')}>{run.failed ? 'stopped' : 'fetching'}</span>
+                ? liveStatus(t, now, !!run.failed)
                 : <span className={'tst ' + (bad ? 'bad' : t.rejected ? 'warn' : 'ok')}>{t.steps} steps, {t.rows} rows</span>}
               {dom.length || t.rejected ? <span className="tdom">
                 {dom.length ? <DomLine pairs={dom} /> : null}{t.rejected ? (dom.length ? '; ' : '') + t.rejected + ' step rejected' : ''}
