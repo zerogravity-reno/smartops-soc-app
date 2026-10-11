@@ -58,6 +58,15 @@ def test_a_cited_task_with_a_rejected_step_blocks_the_verdict():
     assert out["evidence_gaps"] == ["What set the RunOnce value?"]
 
 
+def test_the_refusal_names_the_steps_state_not_its_status():
+    # 8807fafa: "T2:network: step s1_net is ok" for a step with completed=False.
+    runs = [{"task_id": "r-L2-T3", "steps": [{"step_id": "s1_net", "completed": False, "status": "ok"}]}]
+    out = verdict_gate({"hypothesis_scores": {"H1": 90, "H2": 40}, "evidence_refs": ["T3:endpoint"]},
+                       PLAN, PAYLOADS, runs)
+    assert out["refused_refs"] == ["T3:endpoint: step s1_net is incomplete"]
+    assert gate(["T2:registry_events#2"])["refused_refs"] == ["T2:registry_events#2: step vt is rejected"]
+
+
 def test_gaps_become_follow_ups_when_synthesis_sent_none():
     sent = [{"entity": [{"type": "host", "value": "h"}], "time_window": {"start": "2026-10-06T00:00:00Z", "end": "2026-10-06T01:00:00Z"}}]
     tasks = follow_up_tasks([], sent, ["Who logged on?", "", 3])

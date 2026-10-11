@@ -353,9 +353,9 @@ contains.
 
 EVIDENCE YOU RECEIVE — under headers like these:
   processes#1       <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
-  file_events#1     <timestamp> host=<> process=<> file=<path> action=<> code=<>
-  registry_events#1 <timestamp> host=<> process=<> key=<> value=<> action=<> code=<>
-  script_blocks#1   <timestamp> host=<> path=<> script=<text> code=<>
+  file_events#1     <timestamp> host=<> process=<> file=<path> action=<> event_code=<>
+  registry_events#1 <timestamp> host=<> process=<> key=<> value=<> action=<> event_code=<>
+  script_blocks#1   <timestamp> host=<> path=<> script=<text> event_code=<>
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
 {_ROWS_BLOCK}
 

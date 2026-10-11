@@ -45,7 +45,15 @@ from contracts import (
     make_answer_model,
 )
 from smartops.broker import BUDGET_REFUSAL_ERROR, SubagentRunner, enrich_mission
-from smartops.budget import Budget, ModelChoice, Usage
+from smartops.budget import (
+    OUTPUT_TOKENS_PER_TURN,
+    Budget,
+    ModelChoice,
+    Usage,
+    call_usages,
+    loop_output_tokens,
+    usage_from,
+)
 from smartops.domains import ALL_FAMILIES, DOMAINS, scope_gap
 from smartops.subagent_analysts.formatting import to_utc
 from smartops.guards import (
@@ -94,6 +102,11 @@ retrieval: it restates evidence already collected as the family answer model, so
 it needs room for `queries_run` and an assessment and nothing else. It is also
 what `investigate()` adds to its reservation, so the budget covers the worst case
 up front rather than discovering it at settle time."""
+
+
+def _recovery_output_tokens(model: ModelChoice) -> int:
+    """`RECOVERY_OUTPUT_TOKENS` plus one turn of thinking at the model's effort (K4)."""
+    return RECOVERY_OUTPUT_TOKENS + OUTPUT_TOKENS_PER_TURN.get(model.effort or "", 0)
 
 MISSION_TIMEOUT_SECONDS = 900
 """Wall clock for one mission, recovery call included (B24).
@@ -158,6 +171,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- Only if `summariesonly=f` also returns 0 rows, query specific sourcetypes directly (`sourcetype=stream:dns`, `sourcetype=stream:tcp`, `sourcetype=XmlWinEventLog EventCode=1`, `sourcetype=WinEventLog EventCode=4688`, `sourcetype=WinEventLog EventCode=4624`).\n"
         "- Sourcetype names differ between deployments. If a raw sourcetype search returns 0 rows, list the sourcetypes that actually hold this host's events (`| tstats count where index=<allowed index> host=<host> by sourcetype`) and retry with the real name before concluding the data is absent.\n"
         "- When grouping process events, always include the parent's path (`Processes.parent_process_path`, or `ParentImage` on raw Sysmon) beside its name: two binaries can share a name and differ only by path.\n"
+        "- A file's hash: an executed image's is in Sysmon 1 `Hashes` (that row's `Image`, not a file it wrote); a written file's only in Sysmon 15 (FileCreateStreamHash) or 29 (FileExecutableDetected) `Hash`, matched on `TargetFilename`. When neither names the file, say so: no hash was recorded.\n"
         "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
         "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events, Endpoint Filesystem or Sysmon 11/23/26 -> file_events, Endpoint Registry or Sysmon 12/13/14 -> registry_events, PowerShell 4104 -> script_blocks).\n"
         "- BATCH YOUR FIRST TURN. Issue every query you can derive up front as parallel tool calls in turn 1: resolution, traffic, process and authentication queries do not depend on one another. Reserve later turns for queries that need a value from an earlier result, such as an IP you resolved or a sourcetype you discovered.\n"
@@ -503,9 +517,13 @@ def _gaps_line(family: str) -> str:
     others = [f for f in ALL_FAMILIES if f != family and family_is_configured(f)]
     if not others:
         return ""
+    # B31: on 8807fafa "vt" came back on all 9 tasks with nothing vt could look up
+    # (the only hash in the rows was powershell.exe's own image hash).
     return (
-        f"- gaps: any of these domains that could close a gap you hit: "
-        f"{', '.join(others)}. Advisory only.\n"
+        f"- gaps: any of these domains that could close a gap you hit: {', '.join(others)}. "
+        "Name one only when your rows hold a value it would look up (for vt: a file "
+        "hash, public IP, domain or URL tied to the question); otherwise leave gaps "
+        "empty. Advisory only.\n"
     )
 
 
@@ -616,7 +634,7 @@ async def investigate(
     budget: Budget,
     tools: list,
     turns: int = DEFAULT_TURNS,
-    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    max_output_tokens: int | None = None,
 ) -> SubtaskResult:
     """Run one mission through a real model loop over `tools`.
 
@@ -626,6 +644,8 @@ async def investigate(
     """
     family = mission.tool_family
     prompt = _prompt_for(mission)
+    if max_output_tokens is None:
+        max_output_tokens = loop_output_tokens(model, turns, DEFAULT_MAX_OUTPUT_TOKENS)
 
     reservation = await budget.reserve(
         role=family,
@@ -636,7 +656,7 @@ async def investigate(
         # spent regardless of what was reserved. Over-reserving is corrected at
         # settle; under-reserving is how the shared budget goes negative and
         # starts refusing families that had nothing to do with it.
-        max_output_tokens=max_output_tokens + RECOVERY_OUTPUT_TOKENS,
+        max_output_tokens=max_output_tokens + _recovery_output_tokens(model),
         estimated_input_tokens=_estimated_input_tokens(
             prompt, turns=turns, tool_count=len(tools)
         ),
@@ -700,7 +720,8 @@ async def investigate(
     # Mirror the settled charge onto the current span. We are still inside the
     # Broker's tool-invocation span here, so cost shows up inline in the trace
     # rather than only in the Budget ledger.
-    record_cost(reservation, await budget.settle(reservation, _usage_of(result)))
+    record_cost(reservation, await budget.settle(
+        reservation, _usage_of(result), calls=call_usages(getattr(result, "metrics", None))))
 
     collected_at = datetime.now(UTC)
     evidence = collector.evidence(mission.task_id, family, collected_at)
@@ -924,7 +945,7 @@ async def _build_agent_and_invoke(
     try:
         recovered = await agent.invoke_async(
             _REPORT_WHAT_YOU_HAVE,
-            limits=Limits(turns=1, output_tokens=min(RECOVERY_OUTPUT_TOKENS, max_output_tokens)),
+            limits=Limits(turns=1, output_tokens=min(_recovery_output_tokens(model), max_output_tokens)),
         )
     except Exception as exc:
         # This bonus call rides on an already-billed first call: `result` (and
@@ -968,29 +989,25 @@ async def _build_agent_and_invoke(
 
 
 def _usage_of(result: Any) -> Usage:
-    """Strands' camelCase `accumulated_usage` in this codebase's snake_case
-    `Usage`. Mirrors `broker._usage_from_accumulated`."""
-    accumulated = getattr(getattr(result, "metrics", None), "accumulated_usage", {}) or {}
-    return Usage(
-        input_tokens=accumulated.get("inputTokens", 0),
-        output_tokens=accumulated.get("outputTokens", 0),
-        cache_creation_input_tokens=accumulated.get("cacheWriteInputTokens", 0),
-        cache_read_input_tokens=accumulated.get("cacheReadInputTokens", 0),
-    )
+    """The loop's accumulated usage. Per-request usage is `budget.call_usages`."""
+    return usage_from(getattr(getattr(result, "metrics", None), "accumulated_usage", {}) or {})
 
 
 def domain_runner(
     *,
-    model: ModelChoice,
+    model: ModelChoice | dict[str, ModelChoice],
     budget: Budget,
     turns: int = DEFAULT_TURNS,
-    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    max_output_tokens: int | None = None,
 ) -> SubagentRunner:
     """A `SubagentRunner` that really executes missions.
 
     Drop-in for `broker._stub_subagent`: same signature, same rejection
     semantics, but a family with tools gets a model loop instead of a report of
     how many tools went unused.
+
+    `model` is one choice for every family, or one per family (K4 tiers); a
+    family missing from the map runs on the siem model.
     """
 
     async def run(mission: SubagentMission) -> SubtaskResult:
@@ -1058,7 +1075,7 @@ def domain_runner(
 
         return await investigate(
             mission,
-            model=model,
+            model=(model.get(family) or model["siem"]) if isinstance(model, dict) else model,
             budget=budget,
             tools=tools,
             turns=turns,

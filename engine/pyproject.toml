@@ -15,7 +15,8 @@ dependencies = [
     # [openai] is for DeepSeek, not OpenAI: DeepSeek is OpenAI-API-compatible,
     # so it is reached via OpenAIModel with base_url overridden. Without this
     # extra, `bedrock` is the only importable model provider.
-    "strands-agents[otel,openai]==1.51.0",
+    # [anthropic] is the Anthropic API provider for the Broker's tiers (K4).
+    "strands-agents[otel,openai,anthropic]==1.51.0",
     "opentelemetry-api>=1.20",
     # Direct, not transitive: VirusTotal lookups need an async HTTP client, and
     # a blocking one would serialize the Broker's concurrent dispatch. httpx

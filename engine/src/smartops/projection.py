@@ -123,6 +123,27 @@ def _has_eventcode(q: str, code: int) -> bool:
     return re.search(rf"eventcode={code}(?![0-9])", q) is not None
 
 
+# Windows Security and Sysmon event codes to the category one such event is. One
+# table for both readers: `_infer_cim_category` (what a query asks for) and
+# `_split_by_event_code` (what each returned row is). On 8807fafa a query asking
+# for `EventCode=1 OR 3 OR 4688` was filed whole under connections, so the step
+# that wanted its process rows counted 0 (B28).
+_EVENTCODE_CATEGORIES: dict[int, CimCategory] = {
+    1: "processes", 4688: "processes",
+    3: "connections", 5156: "connections", 5157: "connections",
+    22: "dns_resolutions",
+    11: "file_events", 15: "file_events", 23: "file_events", 26: "file_events", 29: "file_events",
+    12: "registry_events", 13: "registry_events", 14: "registry_events",
+    4104: "script_blocks",
+    4624: "auth_events", 4625: "auth_events", 4648: "auth_events", 4672: "auth_events",
+}
+
+
+def _names_code_of(q: str, category: CimCategory) -> bool:
+    """Whether `q` names any event code that `category`'s events carry."""
+    return any(_has_eventcode(q, c) for c, cat in _EVENTCODE_CATEGORIES.items() if cat == category)
+
+
 _DATAMODEL = re.compile(r"\bdatamodel\s*=\s*[\"']?(\w+(?:\.\w+)?)")
 
 # Data model (or `Model.Dataset`) to category. Only the datasets a category
@@ -157,11 +178,11 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
     # 0b. Before processes: a Sysmon file or registry query often also names
     # `parentimage`/`image`, and 4104 rows are not process starts. On 148b0e69
     # these rows went `uncategorised` and synthesis said "no file writes".
-    if any(_has_eventcode(q, c) for c in (11, 23, 26)) or "targetfilename" in q:
+    if _names_code_of(q, "file_events") or "targetfilename" in q:
         return "file_events"
-    if any(_has_eventcode(q, c) for c in (12, 13, 14)) or "targetobject" in q:
+    if _names_code_of(q, "registry_events") or "targetobject" in q:
         return "registry_events"
-    if _has_eventcode(q, 4104) or "scriptblocktext" in q:
+    if _names_code_of(q, "script_blocks") or "scriptblocktext" in q:
         return "script_blocks"
 
     # 1. DNS Resolution (Network Resolution)
@@ -169,7 +190,7 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
         "stream:dns" in q
         or "tag=dns" in q
         or "tag::eventtype=dns" in q
-        or _has_eventcode(q, 22)  # Sysmon: DNS query
+        or _names_code_of(q, "dns_resolutions")  # Sysmon 22: DNS query
         or "dns_resolvers" in q
         or "dns_resolution" in q
     ):
@@ -184,17 +205,16 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
         or "cisco:ios" in q
         or "pan:traffic" in q
         or "symantec:ep:traffic" in q
-        or _has_eventcode(q, 3)  # Sysmon: network connection
-        or _has_eventcode(q, 5156)  # WFP: allowed connection
-        or _has_eventcode(q, 5157)  # WFP: blocked connection
+        or "fortigate_traffic" in q  # the lab's firewall (B28)
+        or "index=fortigate" in q
+        or _names_code_of(q, "connections")  # Sysmon 3, WFP 5156/5157
         or "listeningports" in q
     ):
         return "connections"
 
     # 3. Endpoint Processes
     if (
-        _has_eventcode(q, 4688)  # Windows Security: process create
-        or _has_eventcode(q, 1)  # Sysmon: process create
+        _names_code_of(q, "processes")  # Security 4688, Sysmon 1
         or "perfmonmk:process" in q
         or "symantec:ep:behavior" in q
         or "new_process_name" in q
@@ -207,10 +227,7 @@ def _infer_cim_category(query: str | None) -> CimCategory | None:
 
     # 4. Authentication
     if (
-        _has_eventcode(q, 4624)  # successful logon
-        or _has_eventcode(q, 4625)  # failed logon
-        or _has_eventcode(q, 4648)  # explicit-credential logon
-        or _has_eventcode(q, 4672)  # special privileges assigned
+        _names_code_of(q, "auth_events")  # 4624/4625 logon, 4648 explicit creds, 4672 privileges
         or "tag=authentication" in q
         or "unix:useraccounts" in q
         or "unix:sshdconfig" in q
@@ -236,6 +253,38 @@ def _is_search(query: str | None) -> bool:
     SPL.
     """
     return bool(query) and _LOOKS_LIKE_SEARCH.search(query) is not None
+
+
+_TSTATS = re.compile(r"\|\s*tstats\b")
+
+
+def _describes_estate(query: str | None) -> bool:
+    """A call that says what Splunk holds rather than what happened.
+
+    No search at all, or a `tstats` over raw indexes (no data model): the siem
+    prompt's first query, `| tstats count … by index, sourcetype`, returns event
+    counts per index. Filed as evidence, every narrative reported "2105 Windows
+    event log entries with no timestamp", and on 89674d75 synthesis read that as
+    "high-volume uncategorized events showing suspicious activity" (B29).
+    """
+    if not _is_search(query):
+        return True
+    q = query.lower()
+    return _TSTATS.search(q) is not None and _DATAMODEL.search(q) is None
+
+
+def _split_by_event_code(rows: list[dict[str, Any]], category: CimCategory | None) -> dict[CimCategory | None, list]:
+    """Rows grouped by the category their own `EventCode` names, else `category`.
+
+    Only event rows (with `_time`) are moved: a `stats count by EventCode` row is a
+    count, not an event, and must not complete a step as if it were one.
+    """
+    groups: dict[CimCategory | None, list] = {}
+    for row in rows:
+        code = str(row.get("EventCode", "")).strip()
+        own = _EVENTCODE_CATEGORIES.get(int(code)) if "_time" in row and code.isdigit() else None
+        groups.setdefault(own or category, []).append(row)
+    return groups
 
 
 def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) -> SiemFindings:
@@ -272,9 +321,9 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
         # rows -- which is how a delivered narrative came to describe Splunk's
         # `_internal` index and hosts outside the scope. See
         # `SiemFindings.discovery`.
-        if not _is_search(call.query):
+        if _describes_estate(call.query):
             logger.info(
-                "tool=%s | no search in this call's input, filing as discovery "
+                "tool=%s | no evidence search in this call's input, filing as discovery "
                 "(describes the estate, not evidence about the hypothesis)",
                 call.tool,
             )
@@ -317,7 +366,14 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
                 (call.query or "")[:200],
             )
 
-        if category in _CIM_BUCKETS:
+        groups = _split_by_event_code(rows, category)
+        if len(groups) > 1 or next(iter(groups), category) != category:
+            # One call, several kinds of event: one set per kind, all pointing at
+            # the same evidence id, since they came from the same call (B28).
+            for kind, part in groups.items():
+                piece = result_set.model_copy(update={"rows": part, "row_count": len(part)})
+                buckets[kind if kind in _CIM_BUCKETS else "uncategorised"].append(piece)
+        elif category in _CIM_BUCKETS:
             buckets[category].append(result_set)
         else:
             # A search whose shape `_infer_cim_category` does not recognise. The
