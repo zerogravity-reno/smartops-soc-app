@@ -123,6 +123,22 @@ class TestEnricherIsNotAShortCircuit:
 
         assert result.gaps == ["siem"]
 
+    @pytest.mark.parametrize("kinds, kept", [(("host",), []), (("host", "file_hash"), ["vt"])])
+    async def test_a_family_the_scope_cannot_feed_is_dropped_from_gaps(self, monkeypatch, kinds, kept):
+        # a818a3fd T1 (B-7): siem named vt on a host-only scope, where vt has nothing to look up.
+        monkeypatch.setattr(registry_module, "server_count", lambda f: 1)
+        monkeypatch.setattr(subagents, "tools_for", _async_returning(["splunk_run_query"]))
+        monkeypatch.setattr(
+            subagents,
+            "_build_agent_and_invoke",
+            _async_returning(_Result(SubagentAnswer(status=SubtaskStatus.OK, gaps=["vt"]))),
+        )
+        run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))
+
+        result = await run(mission("siem", kinds=kinds))
+
+        assert result.gaps == kept
+
     async def test_the_entity_gate_still_applies_to_vt(self):
         # A model does not make an unqueryable observable queryable.
         run = domain_runner(model=MODEL, budget=Budget.from_usd(1.0))

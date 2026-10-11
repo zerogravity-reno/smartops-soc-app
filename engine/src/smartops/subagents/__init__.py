@@ -777,9 +777,11 @@ async def investigate(
     # findings. Per-claim citation needs the ids in the prompt; that is a
     # deliberate next step, not an oversight.
     # The prompt only names configured families, but the model can still emit any
-    # `ToolFamily`; an unconnected one must not reach the Broker as advice.
+    # `ToolFamily`; an unconnected one must not reach the Broker as advice. Nor one
+    # this scope gives nothing to query: a818a3fd T1 siem named vt on a host-only
+    # scope, which the Broker cannot dispatch (B-7, B31 again).
     answer = answer.model_copy(
-        update={"gaps": [f for f in answer.gaps if family_is_configured(f)]}
+        update={"gaps": [f for f in answer.gaps if family_is_configured(f) and scope_gap(f, mission.scope) is None]}
     )
     result = SubtaskResult.from_answer(
         task_id=mission.task_id,
