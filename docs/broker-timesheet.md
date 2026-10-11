@@ -1,4 +1,4 @@
-# Tool Broker fixes: timesheet (2026-09-29 → 2026-10-09)
+# Tool Broker fixes: timesheet (2026-09-29 → 2026-10-11)
 
 **What this measures.** Time spent in Claude Code sessions on this repo, read from the session transcripts' message timestamps (local time, +03:00). A session's *active* time sums the gaps between consecutive messages and leaves out any gap longer than a cutoff:
 - **45-min cutoff (used for the totals):** counts waits on live runs and reviews, which often go 20–40 minutes without a message.
@@ -10,9 +10,9 @@
 
 | | Hours |
 |---|---|
-| All sessions on this repo, 09-29 → 10-09 (45-min cutoff, UI worker session excluded) | 37.1 |
-| Of which Broker and sub-analyst work | **≈ 25.7** |
-| Lower bound for the Broker work (15-min cutoff) | ≈ 18 |
+| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 39.6 |
+| Of which Broker and sub-analyst work | **≈ 27.7** |
+| Lower bound for the Broker work (15-min cutoff) | ≈ 19.7 |
 
 The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
 
@@ -49,6 +49,13 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | B19, B21, B22 | Task windows widen before the window check; private-address facts; file-hash facts | 0.4 | 10-09 eve | `276f789` | — (baseline replay pending) | B22's premise was wrong (no hashes in the context); reworked as hashes from the rows |
 | B23 | One UTC standard: `utc_row` for every row time, siem asks for stored times, run-time check | 0.7 | 10-09 pm, 10-09 eve | `276f789` | — (baseline replay pending) | — |
 | Prompt review | Every live Broker-side prompt read as rendered; findings P-1…P-10 | 0.2 | 10-09 eve | (handover) | — | — |
+| P-1…P-8, P-10 | The prompt review's fixes, committed with PR #4 | 0.55 | 10-10 | `1f63130` | `89674d75` | P-10 didn't hold (B26) |
+| B24, B27 | Reconnect a dead MCP session; end and time-box a stuck step; row and cell caps | 0.75 | 10-10 pm | `8d21f8b` | `89674d75` (before) | — |
+| W10 | Don't re-send a follow-up already asked; end the run when nothing is new | 0.25 | 10-10 pm | `ee9958f` | replay of `89674d75` | — |
+| B14 | Budget re-measured (3.76 chars/token, 2 full rounds, compact reserve): 16,480 → 27,608 | 0.15 | 10-11 | (uncommitted) | replay of `89674d75` | second pass: 10-09's `facts` split didn't free enough |
+| B15 | Cause: one paragraph per set under a fixed cap; narrative rule rewritten | 0.1 | 10-11 | (uncommitted) | — | third pass, after 10-09's diagnostics |
+| B26, B25 | Splunk check (`stats … by` drops rows, not `host=`); `fillnull` rule; status from rows; entity rule | 0.1 | 10-11 | (uncommitted) | Splunk queries | the `host=` hypothesis was wrong |
+| B20, K4 | "Can't answer" design; model-tiering plan; issues report | 0.05 | 10-11 | (uncommitted) | — | — |
 
 ## By session
 
@@ -72,11 +79,16 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | `ecb4bbce` | 10-08 08:57 → 10-09 10:45 | 3.1 / 2.2 | ~65% | 2.0 | 10-09 | F6–F8, `process_guid`, 5 live runs, `874ab334` trace; webapp windows/queue |
 | `c522b714` | 10-09 10:45 → 15:47 | 2.9 / 1.6 | ~85% | 2.5 | 10-09 pm | B14–B18, O5, O6, issues report; `c90ca5f9` trace; time standard design |
 | `2e19eb2d` | 10-09 15:47 → 19:34 | 0.7 / 0.4 | ~95% | 0.65 | 10-09 eve | B19, B21–B23; Analyst-owner list; prompt review |
-| `3cede18f` | 10-09 19:34 → 19:45 | 0.1 / 0.1 | 100% | 0.1 | (this report) | commit `276f789`, this update |
+| `3cede18f` | 10-09 19:34 → 19:45 | 0.1 / 0.1 | 100% | 0.1 | (10-09 report) | commit `276f789`, the 10-09 update |
+| `34fd06cb` | 10-10 13:21 → 15:06 | 0.9 / 0.9 | ~60% | 0.55 | 10-10 | PR #4; prompt fixes `1f63130`; committed the run-control UI (`5a6f88b`, not Broker) |
+| `0ed73387` | 10-10 21:13 → 22:25 | 1.2 / 0.9 | ~85% | 1.0 | 10-10 pm | B24, B27, W10 from the `89674d75` findings |
+| `53985608` | 10-11 09:19 → (in progress) | 0.4 / 0.4 | 100% | 0.4 | (this report) | push; B14, B15, B25, B26; B20 design; K4 plan |
 
 ## What stands out
 
 - **B1 (the parent path) is the largest item at about 3 h**, including two prompt attempts that were reverted. The delivery side is done; the Analyst still doesn't read the path (T4, T13).
 - **B10 (encoded PowerShell) needed about 2.4 h over three designs**, two of which failed live. Each redesign came from a live run, not a test.
 - **Live verification is a large share of every item.** Most "Rework" entries trace to a run where the fix held in tests and not live, so a Broker fix isn't finished until a live run shows it.
+- **B14 and B15 needed a measurement, not another rule.** Both had a fix in place (10-09) that didn't hold on `89674d75`. In both, the cause was a number nobody had checked against a run: the payload's characters per token, and output that grew with the number of sets under a fixed cap.
+- **The `89674d75` trace itself isn't counted:** it isn't in any session on this repo.
 - **10-09's Broker fixes are only partly verified live:** `c90ca5f9` ran after B14–B18 landed and surfaced B19–B22; B19–B23 wait on the baseline replay of that alert.
