@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -561,6 +563,36 @@ def family_is_configured(family: ToolFamily) -> bool:
     would withhold the one family that needs no server.
     """
     return bool(DOMAINS[family].native_tools) or server_count(family) > 0
+
+
+_call_lock = threading.Lock()
+
+
+def call_tool(family: ToolFamily, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """One tool call on `family`'s first server, outside any agent.
+
+    For the webapp's alert reads, which used to open their own MCP session with
+    their own URL, token and TLS handling (`webapp/services/splunk_mcp.py`). Same
+    config, TLS rule and dead-session reset as the Broker's calls. Returns the
+    tool's `structuredContent`; raises on a tool error rather than returning it.
+    """
+    # ponytail: one call at a time per process; the webapp's reads are a handful per alert
+    with _call_lock:
+        if not _clients_by_family:
+            load_mcp_servers()
+        clients = _clients_by_family.get(family) or []
+        if not clients:
+            raise RuntimeError(f"no MCP server configured for {family}")
+        client = clients[0]
+        if _session_died(client):
+            _reset(client)
+        if not client._is_session_active():
+            client.start()
+        result = client.call_tool_sync(tool_use_id=f"direct-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
+    if result.get("status") == "error":
+        text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+        raise RuntimeError(text or f"{name} failed")
+    return result.get("structuredContent") or {}
 
 
 def mcp_clients() -> list[MCPClient]:
