@@ -2513,6 +2513,22 @@ class TestAFailedSubagentIsNotANegativeFinding:
         assert outcome.rows_retrieved == 0
         assert outcome.confirmed_empty is True
 
+    def test_an_empty_redispatch_does_not_turn_a_step_with_rows_into_no_data(self):
+        # B39, 2a71757f T2: rows_retrieved=5 beside status=no_data.
+        step = FetchStep(step_id="siem-1", family="siem", objective="Find the file")
+        rows = [{"_time": "t", "host": "h"}] * 5
+        found = SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(file_events=[ResultSet(query="q", row_count=5, rows=rows)]),
+            queries_run=[QueryRun(query="q")],
+        )
+        empty = SubtaskResult(task_id="t1:siem:tu-2", status=SubtaskStatus.NO_DATA)
+
+        outcome = evaluate_step(step, empty, prior=evaluate_step(step, found))
+
+        assert (outcome.rows_retrieved, outcome.status) == (5, SubtaskStatus.OK)
+
     def test_a_redispatch_that_finds_rows_clears_a_stale_confirmed_empty(self):
         # `outcome.confirmed_empty` used to be OR'd with its own history, so once
         # one dispatch came back empty it stayed True forever -- even across a

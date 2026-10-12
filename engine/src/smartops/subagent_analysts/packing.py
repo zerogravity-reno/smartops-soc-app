@@ -441,32 +441,41 @@ def pack_evidence(
     if not slice_.has_evidence():
         return "(no evidence was retrieved for this domain)", ids, False, _ROW_CAP_LADDER[0]
 
+    text, row_cap = _fit(slice_, token_budget)
+    if row_cap == 0:
+        logger.warning(
+            "domain=%s | evidence exceeds budget even at header-only; sending headers",
+            slice_.domain,
+        )
+    elif row_cap != _ROW_CAP_LADDER[0]:
+        logger.warning(
+            "domain=%s | evidence over budget, rendered at row_cap=%d", slice_.domain, row_cap
+        )
+    return text, ids, row_cap != _ROW_CAP_LADDER[0], row_cap
+
+
+def _fit(slice_: DomainSlice, token_budget: int) -> tuple[str, int]:
+    """The first rung of `_ROW_CAP_LADDER` that fits, else header-only (row cap 0).
+
+    Silent, so `fitted_row_cap` can re-measure without repeating
+    `pack_evidence`'s warning (B41: 7 copies for one domain on 2a71757f).
+    """
     for row_cap in _ROW_CAP_LADDER:
         text = _render(slice_, row_cap)
         if estimate_tokens(text) <= token_budget:
-            truncated = row_cap != _ROW_CAP_LADDER[0]
-            if truncated:
-                logger.warning(
-                    "domain=%s | evidence over budget, rendered at row_cap=%d",
-                    slice_.domain,
-                    row_cap,
-                )
-            return text, ids, truncated, row_cap
-
-    logger.warning(
-        "domain=%s | evidence exceeds budget even at header-only; sending headers",
-        slice_.domain,
-    )
-    return _render(slice_, 0), ids, True, 0
+            return text, row_cap
+    return _render(slice_, 0), 0
 
 
 def fitted_row_cap(slice_: DomainSlice, *, token_budget: int = _PACK_TOKEN_BUDGET) -> int:
     """The row cap `pack_evidence` settles on for this slice.
 
-    A reading of `pack_evidence` rather than its own walk of `_ROW_CAP_LADDER`,
+    Shares `_fit` with `pack_evidence` rather than walking `_ROW_CAP_LADDER` again,
     for the same reason `valid_citation_ids` is a reading of `blocks()`: a second
     copy of the ladder would rot the first time one changed. It re-renders to
     measure, which is string formatting over at most a few dozen blocks against a
     call that is about to spend a model inference -- not a cost worth a cache.
     """
-    return pack_evidence(slice_, token_budget=token_budget)[3]
+    if not slice_.has_evidence():
+        return _ROW_CAP_LADDER[0]
+    return _fit(slice_, token_budget)[1]

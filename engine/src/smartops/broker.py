@@ -638,7 +638,9 @@ def evaluate_step(
         completed = outcome.rows_retrieved >= max(1, step.completion.min_rows)
 
     outcome.completed = completed
-    outcome.status = result.status
+    # Status follows the cumulative rows, as a single result's does (B26): a
+    # second empty dispatch must not turn a step that found rows into `no_data` (B39).
+    outcome.status = SubtaskStatus.OK if outcome.rows_retrieved > 0 else result.status
     outcome.reason = result.reason
     outcome.evaluated = True
     # R3: a step this dispatch never actually attempted because the shared Budget
