@@ -163,7 +163,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | S2 | Security | Splunk Web scraper replaced the official MCP | High | Fixed (C3) |
 | AR1 | Architecture | Six webapp routes and their job store have no caller in the UI | Low | Fixed (AR11, `5fd9757`): the six routes and their job store deleted |
 | AR2 | Architecture | The webapp has its own Foundation-Sec-8B client beside the engine's `AnalystModel` | Medium | Fixed (AR11, `b64307b`): the Analyst uses the engine's `AnalystModel`; `llm_service` deleted. Read timeout 600 s kept (`af01d36`) |
-| AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Open: `FS8B_MODEL_ARN` gone, but the patch still reads `FS8B_API_KEY` and the in-process Analyst relies on it; delete once `SMARTOPS_ANALYST_API_KEY` holds the working key |
+| AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Fixed (`7d6fb77`): patch deleted; the Analyst authenticates with `SMARTOPS_ANALYST_API_KEY` on its own client (verified with and without `smartops.main`; a bogus key is rejected) |
 | AR4 | Architecture | Four engine symbols only tests use | Low | Fixed on `broker-a818-fixes`: three deleted; `output_tokens_remaining` is live (`subagents/__init__.py:673`), kept |
 | AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Fixed: `run_trace.py` is gone; the Analyst and telemetry use `broker.runs_root()` |
 | AR6 | Architecture | `extract_json` scans braces by hand | Low | Open |
@@ -1109,7 +1109,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 - **Evidence:** `webapp/services/llm_service.py` repeats `subagent_analysts/model.py`'s `AnalystModel`: the prompt template, the `invoke` body, the cold-start retries and the reasoning/answer split, with its own temperature, top_p and `max_gen_len` defaults. Two clients for one model can drift, the same pattern W11 removed for Splunk MCP.
 - **Question:** its header says it calls Bedrock through httpx to get around "boto3 Windows socket issues". Is that still true? If not, the webapp calls `AnalystModel.invoke` (~-100 lines).
 
-**AR3. A global boto3 monkeypatch duplicates `AnalystModel`'s bearer auth.** *Medium. Open.*
+**AR3. A global boto3 monkeypatch duplicates `AnalystModel`'s bearer auth.** *Medium. Fixed (`7d6fb77`).*
 - **Evidence:** `engine/src/smartops/main.py:46-67` (from `d113695`, the integration release) replaces `boto3.Session.client` at import time. Every `bedrock-runtime` client in the process prefers bearer auth and picks up `FS8B_API_KEY`.
   - `AnalystModel._bearer_client` already does this for its own client only, through `ScopedEnvTokenProvider`.
   - Its docstring says why the key must not leak into other clients. The patch makes it leak into all of them, including Broker-tier Bedrock clients.
@@ -1216,7 +1216,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
 | Broker | 39 | 2 | 2 | No Broker work left. B2, B6 wait on the Analyst; B16 (parallel fetch) and B20's scoping are decisions or Analyst side |
-| Architecture / integration | 12 | 0 | 2 | AR3 (owner action), AR6 |
+| Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
 | Triage (Analyst) | 1 | 2 | 24 | T2–T27 |
 | Gate (Analyst) | 0 | 0 | 3 | G1–G3 |
 | Context | 2 | 0 | 3 | P2, P4, P5: out of our scope |
@@ -1233,7 +1233,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
   - B42's `maxLength: 60`.
   - AR13's `not_searched` field.
   - G1–G3, T8 (`16386362` reasoned from the silence), T15 (cut off while listing refs `T1` … `T51`), and the rest of T*.
-- **Owner action:** AR3, set `SMARTOPS_ANALYST_API_KEY` and delete the boto3 patch; S1, confirm the `33ccf52` keys were rotated.
+- **Owner action:** delete `FS8B_API_KEY` from your local `.env` (nothing reads it since AR3); S1, confirm the `33ccf52` keys were rotated.
 
 **For the Analyst owner, from 2026-10-09** (the Broker side of each is done or not needed):
 - **B20 / B6:** follow-ups name the task they follow (or carry their own entity and window), so the handoff can scope them.
