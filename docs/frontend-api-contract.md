@@ -1,6 +1,6 @@
-# SmartOps webapp API: frontend contract
+# SmartOps API: frontend contract
 
-The real frontend (`frontend/`, AR10) replaces `webapp/static` and talks only to these routes. The backend is moving from a Broker subprocess to an in-process call (AR11), and **none of this changes** with that move. Source: `webapp/main.py`, `webapp/services/run_trace.py`, `engine/contracts/src/contracts/reasoning.py` (as of `ae21243`).
+The frontend (`frontend/`, AR10) talks only to these routes, served by `smartops.main:app`. The Analyst now calls the Broker in process (AR11) and **none of this changed** with that move. Source: `engine/src/smartops/main.py` (routes), `analyst.py` (run events), `context.py`, `engine/contracts/src/contracts/reasoning.py`.
 
 Conventions:
 - JSON in and out. Most failures come back as **HTTP 200 with `{"status": "error", "message": str}`**, so check `status`, not the HTTP code. The exceptions are the run-control routes, which return a real 404.
@@ -29,14 +29,6 @@ One notable (index 0 = newest), plus its deployed detection SPL. `rule_name` opt
   "rule_name", "urgency", "src", "dest", "user", "file_hash", "domain", "mitre", "sig": str,  // "" when absent
   "deployed_spl": str, "raw_event_data": { ...every Splunk field } }
 ```
-`GET /api/import-from-splunk-by-rule?rule_name=` is the same response for that rule's newest notable.
-
-### `GET /api/list-detection-rules?q=`
-```jsonc
-{ "status": "ok", "total": int, "rules": [ { "name", "label", "app": str, "enabled": bool,
-  "severity": int, "mitre": [str] } ] }   // enabled first, then by label
-```
-
 ## 2. Enrichment (building the context contract)
 
 ### `POST /api/escu` `{ "rule_name": str }`
@@ -83,7 +75,4 @@ Every event: `{ "type": str, "data": object, "message": str, ...extras }`. `loop
 **AnalystPayloadBatch:** `{ schema_version, batch_id, created_at, payloads: [ { task_id, run_id, hypothesis_id, hypothesis /* the task's question */, findings: [ { domain: "identity"|"network"|"endpoint"|..., narrative: str, observations: [str], summaries: [str], facts: [str] } ] } ] }`. `evidence_refs` cite `<task_id>:<domain>`, or `<task_id>:<block id>` where a block id appears as `[id]` in a narrative or observation. `<task_id>` may be the full id or its short `T1` tail.
 
 ### Run control
-`POST /api/run/{run_id}/stop | /pause | /resume` → `{"status": "ok"}`, or **HTTP 404** once the run has finished. Pause and stop take effect at the next stage boundary, because a model call already in flight can't be interrupted. Stop also kills a running Broker at once.
-
-## 4. Legacy (don't build on these)
-`POST /api/analyst`, `/api/analyst/start` + `GET /api/analyst/result/{job_id}`, `POST /api/synthesis`: the old one-shot plan and synthesis calls. `/api/run` covers both. `GET /debug` is the old debug page.
+`POST /api/run/{run_id}/stop | /pause | /resume` → `{"status": "ok"}`, or **HTTP 404** once the run has finished. Pause and stop take effect at the next stage boundary, because a model call already in flight can't be interrupted. Stop also cancels a running Broker round at once.

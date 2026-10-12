@@ -1,5 +1,5 @@
 // The context contract /api/run receives, built from the alert fields, the imported
-// Splunk row, and the ESCU + OpenCTI answers. Data logic unchanged from webapp/static/app.js.
+// Splunk row, and the ESCU + OpenCTI answers. Data logic as in the retired webapp/static/app.js.
 import type { CtiResult, EscuResult } from './types';
 
 export interface AlertFields {

@@ -12,25 +12,24 @@ An investigation pipeline for Splunk ES notable events. It builds the alert's co
 Splunk ES notable  (Import from Mission Control, via the official Splunk MCP server)
         │
         ▼
-Context pipeline      webapp/static/app.js + webapp/main.py
+Context pipeline      frontend/ + smartops/context.py
   seed → ESCU match → OpenCTI lookup → context contract
         │
         ▼
-Analyst               Foundation-Sec-8B, webapp/main.py _run_investigation
+Analyst               Foundation-Sec-8B, smartops/analyst.py investigate()
   plan: hypotheses H1..H3 + tasks {task_id, question, entity, time_window}
-        │  run_trace.to_task_file()  →  .smartops/runs/<run_id>/tasks-L<n>.json
+        │  to_task_file() → broker.run_round(), in process
         ▼
-Tool Broker           python -m smartops.main --task-file … --batch-id <run_id>-L<n>
+Tool Broker           smartops/broker.py run_round()
   per task: plan_fetch → siem / vt subagents → identity / network / endpoint sub-analysts
-        │  writes .smartops/runs/<run_id>-L<n>/analyst-payload.json
+        │  returns the payload (RoundResult); also written to runs/<run_id>/L<n>/
         ▼
 Analyst synthesis     scores the hypotheses → verdict, or follow-up tasks → next loop
 ```
 
-Everything for one investigation is joined by the webapp's `run_id`:
-- `.smartops/runs/<run_id>/investigation.jsonl` has one line per step: `analyst_plan`, `broker` (task file, exit code, handshake, per-task run dirs), `synthesis`.
-- `.smartops/runs/<run_id>/broker-L<n>.log` has the engine's output for each loop.
-- `.smartops/runs/<run_id>-L<n>-T<k>/<stamp>/` has each task's `report.json`, `evidence.json` and `findings.json`.
+Everything for one investigation is joined by its `run_id`, under `.smartops/runs/<run_id>/` (the record; nothing reads it back):
+- `investigation.jsonl` has one line per step: `analyst_plan`, `broker` (tasks, handshake, per-task run dirs), `synthesis`.
+- `L<n>/` holds each round: `tasks.json`, `broker.log` (the Broker's output), `analyst-payload.json`, and one `T<k>/` per task with `report.json`, `evidence.json` and `findings.json`.
 
 The UI shows the run as five stages (Context, Plan, Evidence, Findings, Synthesis), each card tagged Analyst or Tool Broker, with a handshake stamp per loop (`sent → fetched → returned`).
 
@@ -39,32 +38,27 @@ The UI shows the run as five stages (Context, Plan, Evidence, Findings, Synthesi
 ## Project structure
 
 ```
-webapp/                      FastAPI app and UI
-  main.py                    endpoints, the investigation loop, Broker subprocess
-  prompts/system_prompt.txt  Analyst prompt (plan and synthesis)
-  services/
-    llm_service.py           Foundation-Sec-8B client (Bedrock)
-    run_trace.py             task-file conversion, handshake, investigation.jsonl
-    splunk_mcp.py            official Splunk MCP client (alert import)
-  static/                    index.html, app.js (the UI)
-engine/                      Tool Broker package (smartops)
+engine/                      the backend (package smartops)
   src/smartops/
-    main.py                  CLI: python -m smartops.main
-    broker.py                Broker agent: plan_fetch and family dispatch
+    main.py                  the entry point: API server (smartops.main:app) and CLI
+    analyst.py               Analyst agent: plan, Broker rounds, synthesis, verdict gate
+    broker.py                Tool Broker agent: plan_fetch, family dispatch, run_round
+    context.py               alert context: Splunk queue and import, ESCU, OpenCTI
+    prompts/                 Analyst system prompt (plan and synthesis)
     subagents/               siem / vt investigation subagents
-    subagent_analysts/       identity / network / endpoint sub-analysts
+    subagent_analysts/       identity / network / endpoint sub-analysts, Foundation-Sec client
+    telemetry.py             spans, the investigation record, per-round output
     guards.py                scope, time-window and tstats guards
     budget.py                cost ceiling and model setup
   contracts/                 shared Pydantic models and JSON schemas (task-input.v1, …)
   tests/                     engine test suite
-tests/                       webapp tests
+frontend/                    React UI (npm run build; served at /)
+tests/                       Analyst and server tests
 mcp_servers.json             MCP server config (official Splunk MCP)
 docs/
-  analyst-bug-report.md      open Analyst and integration bugs
-  handover-2026-09-30.md     latest handover
   examples/                  sample task files for the Broker CLI
   corpus/bm25_corpus.json    ESCU detection corpus
-start.ps1                    load .env, uv sync, start the server
+start.ps1                    uv sync, build the frontend, start the server
 ```
 
 ---
@@ -83,7 +77,7 @@ start.ps1                    load .env, uv sync, start the server
 ```powershell
 git clone https://github.com/zerogravity-reno/smartops-soc-app.git
 cd smartops-soc-app
-uv sync                      # installs webapp + engine + contracts + dev tools into .venv
+uv sync                      # installs the backend + contracts + dev tools into .venv
 Copy-Item .env.example .env  # then fill in .env (see below)
 ```
 
@@ -92,15 +86,12 @@ Copy-Item .env.example .env  # then fill in .env (see below)
 ### Environment variables (`.env`)
 
 The env file is `.env` in the repo root (copy [`.env.example`](.env.example), which holds placeholders only).
-- The web app loads `<repo root>/.env` when `webapp/main.py` starts, and passes its environment on to the Broker subprocess.
-- The Broker CLI (`python -m smartops.main`) searches upward from the working directory for a `.env`. `--verbose` prints which file it loaded.
+- The server and the Broker CLI (`python -m smartops.main`) both search upward from the working directory for a `.env`, the server once at startup. `--verbose` prints which file the CLI loaded.
 - A variable already set in your shell wins over the file (`override=False`).
-- `start.ps1` also loads `.env` before starting the server.
 
 | Variable | Used by | Required | Default | What it is |
 |---|---|---|---|---|
-| `FS8B_MODEL_ARN` | Analyst | yes | none | ARN of the imported Foundation-Sec-8B model, e.g. `arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>`. The Analyst takes its region from this ARN. |
-| `FS8B_API_KEY` | Analyst and Broker | yes | none | Bedrock API key, e.g. `ABSK...`. The Broker also uses it as its Bedrock bearer token. |
+| `FS8B_API_KEY` | every Bedrock client | yes, until AR3 | none | Bedrock API key, e.g. `ABSK...`, applied to every Bedrock client by a patch in `smartops/main.py` (AR3: goes once `SMARTOPS_ANALYST_API_KEY` holds the working key). |
 | `AWS_REGION` | both | yes for Broker on Bedrock | `us-east-1` for the Analyst; the Broker also accepts `AWS_DEFAULT_REGION` and refuses to start with neither | Bedrock region; keep it the same as the model ARN's |
 | `AWS_BEDROCK_MODEL_ID` | Broker | yes, to use a model | none | Claude Sonnet inference profile, e.g. `us.anthropic.claude-sonnet-4-6`. Find yours with `aws bedrock list-inference-profiles --region <region>`. |
 | `SMARTOPS_LLM_PROVIDER` | Broker | no | blank | `bedrock`, `deepseek` or `none`. `none` turns the Broker model off even if credentials are set. Blank means detect: Bedrock if `AWS_BEDROCK_MODEL_ID` is set, else DeepSeek if `DEEPSEEK_API_KEY` is set, else no model (scripted dispatch). Any other value is an error. |
@@ -116,8 +107,8 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 | `VT_API_KEY` | Broker | no | none | VirusTotal API key. Without it the vt family reports the missing key. |
 | `OPENCTI_URL` | context pipeline | no | `http://localhost:8080/graphql` | OpenCTI GraphQL endpoint, e.g. `http://<opencti-host>:8080/graphql` |
 | `OPENCTI_TOKEN` | context pipeline | no | blank | OpenCTI token |
-| `SMARTOPS_RUNS_DIR` | webapp and Broker | no | `.smartops/runs` | Where run folders are written (relative to the repo root for the webapp) |
-| `SMARTOPS_ANALYST_MODEL_ARN` | Broker sub-analysts | no | none | Imported Foundation-Sec model used by the identity, network and endpoint sub-analysts. Empty skips that step. |
+| `SMARTOPS_RUNS_DIR` | Analyst and Broker | no | `.smartops/runs` | Where run folders are written (relative to the working directory) |
+| `SMARTOPS_ANALYST_MODEL_ARN` | Analyst and sub-analysts | yes for the Analyst | none | Imported Foundation-Sec model: the Analyst, and the identity, network and endpoint sub-analysts. Empty skips the sub-analysts. |
 | `SMARTOPS_ANALYST_API_KEY` | Broker sub-analysts | no | falls back to the standard AWS credential chain | `ABSK...` bearer token, or `ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]` |
 | `SMARTOPS_ANALYST_TEMPERATURE`, `SMARTOPS_ANALYST_TOP_P` | Broker sub-analysts | no | `0.3`, `0.95` | Generation settings (defaults per `.env.example`) |
 | `SMARTOPS_ANALYST_MAX_GEN_LEN` | Broker sub-analysts | no | `3072` | Max generated tokens; values above the default are clamped |
@@ -129,7 +120,7 @@ Not fully explained here: `SMARTOPS_ANALYST_CMU_COUNT` and `SMARTOPS_ANALYST_CMU
 Copy-paste template (placeholders only; fill in your own values):
 
 ```
-FS8B_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
+SMARTOPS_ANALYST_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
 FS8B_API_KEY=<your-bedrock-api-key>
 AWS_REGION=us-east-1
 AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
@@ -143,7 +134,6 @@ OPENCTI_URL=http://<opencti-host>:8080/graphql
 OPENCTI_TOKEN=<your-opencti-token>
 # optional
 # SMARTOPS_RUNS_DIR=.smartops/runs
-# SMARTOPS_ANALYST_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
 # SMARTOPS_ANALYST_API_KEY=<your-bedrock-api-key>
 ```
 
@@ -157,13 +147,13 @@ OPENCTI_TOKEN=<your-opencti-token>
 .\start.ps1
 ```
 
-This loads `.env`, runs `uv sync` and starts the server with auto-reload on http://localhost:8001. To start it without the sync and reload:
+This runs `uv sync`, builds the frontend and starts the server with auto-reload on http://localhost:8013. To start it without the sync, build and reload:
 
 ```powershell
-uv run uvicorn webapp.main:app --port 8001
+uv run uvicorn smartops.main:app --port 8013
 ```
 
-`start_server.bat` also works, but it uses whatever `python` is on your PATH, so run it from an activated `.venv`.
+The Broker's MCP clients are built and warmed once, at startup; an unreachable Splunk makes startup wait out three connection attempts.
 
 **In the browser:**
 1. Pick an alert in the **Incident queue** on the left (the latest 10 notables from Splunk ES). Its facts (host, user, event time, command line, parent, hash) show at the top; **Edit fields** opens the form, which you can also fill by hand (the rule name is required).

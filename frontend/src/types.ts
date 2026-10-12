@@ -1,4 +1,4 @@
-// The webapp's API, as written down in docs/frontend-api-contract.md.
+// The backend's API, as written down in docs/frontend-api-contract.md.
 // Model-written fields are optional everywhere: the model is asked for them, not bound to them.
 
 export type Urgency = 'informational' | 'low' | 'medium' | 'high' | 'critical' | '';
