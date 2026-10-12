@@ -1287,13 +1287,17 @@ source = { editable = "engine" }
 dependencies = [
     { name = "boto3" },
     { name = "botocore" },
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "rank-bm25" },
+    { name = "requests" },
     { name = "smartops-contracts" },
     { name = "strands-agents", extra = ["anthropic", "openai", "otel"] },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
@@ -1306,13 +1310,17 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "botocore", specifier = ">=1.34" },
+    { name = "fastapi", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "requests", specifier = ">=2.32" },
     { name = "smartops-contracts", editable = "engine/contracts" },
     { name = "strands-agents", extras = ["otel", "openai", "anthropic"], specifier = "==1.51.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
 ]
 
 [package.metadata.requires-dev]
@@ -1345,16 +1353,7 @@ name = "smartops-soc"
 version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "boto3" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "rank-bm25" },
-    { name = "requests" },
     { name = "smartops-backend" },
-    { name = "smartops-contracts" },
-    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
@@ -1364,18 +1363,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "boto3", specifier = ">=1.34" },
-    { name = "fastapi", specifier = ">=0.111" },
-    { name = "httpx" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "rank-bm25", specifier = ">=0.2.2" },
-    { name = "requests", specifier = ">=2.32" },
-    { name = "smartops-backend", editable = "engine" },
-    { name = "smartops-contracts", editable = "engine/contracts" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
-]
+requires-dist = [{ name = "smartops-backend", editable = "engine" }]
 
 [package.metadata.requires-dev]
 dev = [

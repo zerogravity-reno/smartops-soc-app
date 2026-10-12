@@ -1,8 +1,9 @@
-"""CLI entry point: runs the Task Broker over one or more investigative tasks.
+"""The backend's one entry point: the API server (`app`, served by uvicorn) and the
+CLI (`run`), which runs the Task Broker over one or more investigative tasks.
 
-This is the first thing in the repo that runs end to end. It is deliberately
-thin -- argument parsing, a `Budget`, and printing -- because everything
-interesting belongs in `smartops.broker`.
+Both are deliberately thin. The Analyst is `smartops.analyst`, the Tool Broker
+`smartops.broker`, the alert context `smartops.context`; the frontend is
+`frontend/`, served from its build at `/`.
 
 **Two ways a task arrives, one execution path.** `--task-file` reads the JSON
 contract the Analyst side produces (`contracts.TaskInputFile`, one entry per
@@ -37,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -85,6 +87,7 @@ from smartops.broker import (
     start,
 )
 from smartops.domains import ALL_FAMILIES
+from smartops import telemetry
 from smartops.telemetry import configure_telemetry, round_span
 from smartops.tools.registry import mcp_clients
 
@@ -587,6 +590,220 @@ async def _run_round(args: argparse.Namespace, env_file) -> int:
         return 2
     return 1 if result.failures else 0
 
+
+
+# ── The API server: uvicorn smartops.main:app ────────────────────────────────
+from contextlib import asynccontextmanager  # noqa: E402
+from queue import Empty, Queue  # noqa: E402
+import threading  # noqa: E402
+import uuid  # noqa: E402
+
+from fastapi import FastAPI, Response  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+from smartops import analyst, context  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # Once per server, not per round: settings, logging, and the Broker's MCP
+    # clients, built and warmed here.
+    _load_env_file()
+    telemetry.route_output()
+    configure_logging()
+    _neutralise_aws_profile()
+    configure_telemetry()
+    await start(str(REPO / "mcp_servers.json"))
+    yield
+
+
+app = FastAPI(title="SmartOps SOC", lifespan=lifespan)
+
+# The React frontend (frontend/, `npm run build`).
+FRONTEND_DIST = REPO / "frontend" / "dist"
+if (FRONTEND_DIST / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+
+@app.get("/favicon.svg")
+def favicon():
+    return FileResponse(FRONTEND_DIST / "favicon.svg")
+
+
+@app.get("/")
+def index():
+    if not (FRONTEND_DIST / "index.html").is_file():
+        return JSONResponse({"status": "error", "message": "frontend not built: npm run build in frontend/"}, 404)
+    resp = FileResponse(FRONTEND_DIST / "index.html")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+# ── Alert context (smartops.context) ─────────────────────────────────────────
+class ESCURequest(BaseModel):
+    rule_name: str
+
+
+class OpenCTIRequest(BaseModel):
+    observables: list[str]
+
+
+@app.get("/api/import-from-splunk")
+def import_from_splunk(index: int = 0, rule_name: str = None):
+    return context.import_notable(index, rule_name)
+
+
+@app.get("/api/incident-queue")
+def get_incident_queue():
+    return context.incident_queue()
+
+
+@app.post("/api/opencti")
+def opencti_endpoint(req: OpenCTIRequest):
+    return context.opencti(req.observables)
+
+
+@app.post("/api/escu")
+def escu_endpoint(req: ESCURequest):
+    return context.escu(req.rule_name)
+
+
+# ── Runs: one investigation per run, streamed over SSE ───────────────────────
+_run_queues: dict[str, Queue] = {}
+
+
+class RunRequest(BaseModel):
+    alert_name: str = "Potential Cryptomining Activity Detected"
+    host: str = "BSTOLL-L"
+    domain: str = "coinhive.com"
+    event_time: str = "2018-08-20T12:00:00Z"
+    max_loops: int = 15  # headroom to finish; older rounds are compacted (analyst.FULL_ROUNDS)
+    context_contract: dict = None
+
+
+@app.post("/api/run")
+def start_run(req: RunRequest):
+    run_id = str(uuid.uuid4())[:8]
+    q: Queue = Queue()
+    _run_queues[run_id] = q
+    go = threading.Event()
+    go.set()
+    _run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "cancel": None}
+    threading.Thread(target=_run_investigation, args=(run_id, req, q), daemon=True).start()
+    return {"run_id": run_id}
+
+
+# Run control: stop, pause, resume. Pause and stop land at the next stage boundary
+# (_checkpoint): a model call in flight cannot be interrupted. Stop also cancels a
+# running broker round at once.
+_run_ctrl: dict[str, dict] = {}
+
+
+def _checkpoint(run_id: str, q: Queue) -> None:
+    c = _run_ctrl.get(run_id)
+    if not c:
+        return
+    if not c["go"].is_set():
+        analyst.emit(q, "paused", {}, message="Paused at a stage boundary")
+        while not c["go"].wait(0.5):
+            if c["stop"].is_set():
+                break
+        if not c["stop"].is_set():
+            analyst.emit(q, "resumed", {}, message="Resumed")
+    if c["stop"].is_set():
+        raise analyst.RunStopped()
+
+
+def _ctrl_or_404(run_id: str):
+    c = _run_ctrl.get(run_id)
+    if not c:
+        return None, Response(status_code=404, content='{"status":"error","message":"run not found or finished"}',
+                              media_type="application/json")
+    return c, None
+
+
+@app.post("/api/run/{run_id}/stop")
+def stop_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["stop"].set()
+    c["go"].set()  # a paused run wakes up only to stop
+    if c.get("cancel"):
+        c["cancel"]()
+    return {"status": "ok"}
+
+
+@app.post("/api/run/{run_id}/pause")
+def pause_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["go"].clear()
+    return {"status": "ok"}
+
+
+@app.post("/api/run/{run_id}/resume")
+def resume_run(run_id: str):
+    c, err = _ctrl_or_404(run_id)
+    if err:
+        return err
+    c["go"].set()
+    return {"status": "ok"}
+
+
+@app.get("/api/run/stream/{run_id}")
+def stream_run(run_id: str):
+    q = _run_queues.get(run_id)
+    if not q:
+        return {"error": "run not found"}
+    def event_gen():
+        while True:
+            try:
+                item = q.get(timeout=300)
+                yield f"data: {json.dumps(item)}\n\n"
+                if item.get("type") in ("done", "error", "stopped"):
+                    break
+            except Empty:
+                # Silence is not failure: a cold model or a long broker round can go
+                # minutes without an event. The worker always ends with done/error.
+                yield ": keepalive\n\n"
+    return StreamingResponse(event_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _run_investigation(run_id: str, req: RunRequest, q: Queue):
+    try:
+        if req.context_contract:
+            alert_context = req.context_contract
+        else:
+            alert_context = {
+                "normalized_seed": {
+                    "alert_name": req.alert_name,
+                    "event_time": req.event_time,
+                    "severity": "high",
+                    "entities": {"host": req.host, "domain": req.domain}
+                },
+                "escu_context": {
+                    "rule_name": req.alert_name,
+                    "deployed_spl": f"index=network sourcetype=stream:dns query={req.domain}",
+                    "reference_spl": f"index=network sourcetype=stream:dns (query={req.domain} OR query=*mining*)",
+                    "mitre": "T1496"
+                },
+                "goal": f"Investigate {req.domain} activity on host {req.host}"
+            }
+
+        analyst.investigate(run_id, alert_context, req.max_loops, q,
+                            lambda: _checkpoint(run_id, q), _run_ctrl.get(run_id) or {})
+    finally:
+        _run_queues.pop(run_id, None)
+        _run_ctrl.pop(run_id, None)
 
 
 def run() -> None:

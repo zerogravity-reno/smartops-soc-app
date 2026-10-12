@@ -1,15 +1,9 @@
-import os
 import threading
 from queue import Queue
 
 import pytest
 
-# webapp.main runs load_dotenv at import; restore the environment so the real .env
-# (e.g. the Bedrock token) never leaks into other tests in the same session.
-_env = dict(os.environ)
-from webapp import main  # noqa: E402
-os.environ.clear()
-os.environ.update(_env)
+from smartops import main
 
 
 def _ctrl(run_id):

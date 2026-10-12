@@ -223,24 +223,20 @@ def notable_event_time(ev: dict) -> str:
 
 
 # ── OpenCTI ───────────────────────────────────────────────────────────────────
-OPENCTI_URL   = os.environ.get("OPENCTI_URL",   "http://localhost:8080/graphql")
-OPENCTI_TOKEN = os.environ.get("OPENCTI_TOKEN",  "")
-OPENCTI_HEADERS = {
-    "Authorization": f"Bearer {OPENCTI_TOKEN}",
-    "Content-Type":  "application/json",
-}
-
-# Seconds per OpenCTI request. A server that accepts and never answers made each
-# observable wait out a 10s read, one after another, before the run could start.
-OPENCTI_TIMEOUT = float(os.environ.get("OPENCTI_TIMEOUT", "5"))
+def _opencti_url() -> str:
+    return os.environ.get("OPENCTI_URL", "http://localhost:8080/graphql")
 
 
 def _gql(query: str, variables: dict = {}):
-    """Execute a GraphQL query against OpenCTI."""
+    """Execute a GraphQL query against OpenCTI. Settings are read per call: the server
+    loads `.env` at startup, after this module is imported."""
+    headers = {"Authorization": f"Bearer {os.environ.get('OPENCTI_TOKEN', '')}", "Content-Type": "application/json"}
+    # Seconds per OpenCTI request. A server that accepts and never answers made each
+    # observable wait out a 10s read, one after another, before the run could start.
+    timeout = float(os.environ.get("OPENCTI_TIMEOUT", "5"))
     try:
         resp = _http_requests.post(
-            OPENCTI_URL, headers=OPENCTI_HEADERS,
-            json={"query": query, "variables": variables}, timeout=OPENCTI_TIMEOUT)
+            _opencti_url(), headers=headers, json={"query": query, "variables": variables}, timeout=timeout)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
@@ -294,7 +290,7 @@ def opencti(observables: list[str]) -> dict:
     # One probe first: unreachable OpenCTI costs one timeout, not one per observable.
     probe = _gql("{ about { version } }")
     if "error" in probe:
-        return {"status": "unavailable", "source": f"OpenCTI ({OPENCTI_URL})", "message": probe["error"],
+        return {"status": "unavailable", "source": f"OpenCTI ({_opencti_url()})", "message": probe["error"],
                 "total_observables": len(observables), "results": {}}
     results = {}
     for obs in observables:
@@ -310,7 +306,7 @@ def opencti(observables: list[str]) -> dict:
         results[obs] = r
         if "error" in r or "error" in r.get("observable_result", {}):
             break  # it went down mid-request: the rest would each wait out a timeout
-    return {"status": "success", "source": f"OpenCTI Live API ({OPENCTI_URL})",
+    return {"status": "success", "source": f"OpenCTI Live API ({_opencti_url()})",
             "total_observables": len(observables), "results": results}
 
 

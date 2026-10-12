@@ -37,6 +37,12 @@ dependencies = [
     # analyst client imports `botocore`; both used to be declared by the root.
     "botocore>=1.34",
     "mcp",
+    # The API server (`uvicorn smartops.main:app`) and the alert context it serves:
+    # ESCU reference rules by BM25, OpenCTI over HTTP.
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "rank-bm25>=0.2.2",
+    "requests>=2.32",
 ]
 
 [project.scripts]
