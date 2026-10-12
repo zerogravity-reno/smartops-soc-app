@@ -1294,6 +1294,7 @@ def _retrieval_summary(
 
     return RetrievalSummary(
         gaps=_domain_gaps(report, scope, slices),
+        unanswerable=list(report.plan.unanswerable) if report.plan else [],
         dispatched=list(report.dispatched),
         steps=[
             StepSummary(

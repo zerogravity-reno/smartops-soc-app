@@ -147,6 +147,20 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
         # B1 (2026-10-05): the computed summaries cross too; the narrative can drop rows.
         assert payload.findings[0].summaries == ["~ connections#4 — computed over all 6 rows:"]
 
+    def test_unanswerable_questions_cross_as_code_worded_lines_even_over_budget(self):
+        # B20: the plan's "no connected source holds this" reaches the Analyst untrimmed.
+        from contracts import FetchPlan, RetrievalSummary, Unanswerable
+
+        asked = Unanswerable(question="Is this host patched?", reason="patch management")
+        findings = self._findings().model_copy(update={"retrieval": RetrievalSummary(unanswerable=[asked])})
+
+        payload = findings.for_analyst(max_chars=1)
+
+        assert payload.unanswerable == ["No connected source holds this: Is this host patched? (patch management)"]
+        assert FetchPlan(rationale="r", unanswerable=[asked]).steps == []
+        with pytest.raises(ValidationError):
+            FetchPlan(rationale="r")
+
     def test_max_chars_drops_trailing_summaries_and_says_so(self):
         record = self._findings()
         record.findings[0].summaries = [f"~ connections#{i} " + "x" * 400 for i in range(10)]

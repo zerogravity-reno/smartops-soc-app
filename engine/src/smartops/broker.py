@@ -58,6 +58,7 @@ from contracts import (
     SubtaskStatus,
     TaskClassification,
     ToolFamily,
+    Unanswerable,
 )
 from smartops.budget import Budget, ModelChoice, call_usages, usage_from
 from smartops.domains import DOMAINS, DomainSpec, describe, scope_gap
@@ -163,6 +164,14 @@ Available specialists and when to use them are described in each tool's own desc
 Dispatch a specialist only when its domain is needed to answer the goal. A specialist that
 is not offered cannot query anything in this scope. If a specialist
 reports gaps that another domain could close, you may dispatch that domain as well.
+
+QUESTIONS NO SOURCE CAN ANSWER:
+A question that needs a source or an observable no offered specialist holds goes in
+`plan_fetch`'s `unanswerable`, with the source it would need as the reason. Do NOT plan
+substitute searches for it. Nothing offered holds: asset inventory or CMDB records, patch
+management, change or maintenance records, forensic disk or memory images, or the data of
+any product whose tool is not offered to you. A plan whose every question is unanswerable
+has no steps: record it and dispatch nothing.
 
 Your role is solely fetch dispatch:
 - Request evidence retrieval from domain specialists to gather facts into the required schema.
@@ -829,7 +838,12 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     description="Author a bounded fetch plan decomposing the goal into specific data retrieval steps before dispatching domain missions.",
     context=True,
 )
-async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolContext) -> str:
+async def plan_fetch(
+    steps: list[FetchStep],
+    rationale: str,
+    tool_context: ToolContext,
+    unanswerable: list[Unanswerable] | None = None,
+) -> str:
     """Author a fetch plan decomposing the goal into bounded retrieval steps.
 
     Calling this a second time **re-plans**: the new plan replaces the old one and
@@ -846,8 +860,11 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     i.e. the report would under-count exactly the spend the caps exist to bound.
 
     Args:
-        steps: The list of fetch steps to execute.
+        steps: The list of fetch steps to execute. May be empty when every
+            question is in `unanswerable`.
         rationale: Explanation of why these steps were chosen.
+        unanswerable: Questions no connected source can answer, each with the
+            source or observable it would need. Stated here, never searched for.
     """
     req: BrokerRequest = tool_context.invocation_state["smartops"]
 
@@ -857,7 +874,7 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     # reading the framework's generic tool-input error: only one of those tells it
     # what to change. Nothing is recorded, so any plan already in place survives.
     try:
-        plan = FetchPlan(steps=steps, rationale=rationale)
+        plan = FetchPlan(steps=steps, rationale=rationale, unanswerable=unanswerable or [])
     except ValidationError as exc:
         detail = "; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors())
         logger.warning(
@@ -951,6 +968,11 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     # unusable from the model's side.
     # `plan.steps` for the same reason as the loop above: the `steps` argument
     # holds the model's raw dicts, not `FetchStep`s.
+    if not plan.steps:
+        return (
+            f"Fetch plan recorded: nothing to fetch, {len(plan.unanswerable)} question(s) "
+            "recorded as unanswerable. Dispatch nothing; finish now."
+        )
     minted = "; ".join(f"{s.step_id} ({s.family}): {s.objective}" for s in plan.steps)
     replaced = (
         " This replaced the previous plan: any step id you re-listed kept the dispatches "

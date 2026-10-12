@@ -1309,6 +1309,22 @@ class TestFetchPlanAndReport:
         assert request.plan.steps[0].step_id == "step-1"
         assert "step-1" in request.step_outcomes
 
+    async def test_a_plan_of_only_unanswerable_questions_records_and_plans_nothing(self):
+        # B20, 89674d75 T1: "asset inventory" was fetched as SIEM searches.
+        from smartops.broker import plan_fetch
+
+        from contracts import Unanswerable
+
+        request = BrokerRequest(task=make_task())
+        context = FakeToolContext(tool_use={"toolUseId": "tu-plan"}, invocation_state={"smartops": request})
+        asked = Unanswerable(question="Is 192.168.40.211 a sanctioned distribution point?", reason="asset inventory")
+
+        res = await plan_fetch(steps=[], rationale="r", tool_context=context, unanswerable=[asked])
+
+        assert "Dispatch nothing" in res
+        assert request.plan.unanswerable == [asked]
+        assert request.step_outcomes == {}
+
     async def test_broker_outcome_carries_report_and_persists_artifacts(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         outcome = await broker_task(

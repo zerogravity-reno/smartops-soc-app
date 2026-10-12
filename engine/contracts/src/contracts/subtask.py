@@ -701,11 +701,30 @@ class FetchStep(BaseModel):
     )
 
 
+class Unanswerable(BaseModel):
+    """A question no connected source can answer, stated instead of fetched (B20).
+
+    On 89674d75 "asset inventory", "CrowdStrike telemetry" and "forensics tools"
+    questions were each run as Splunk searches, and the substitute rows came back
+    as if they answered them.
+    """
+
+    question: str = Field(min_length=1)
+    reason: str = Field(min_length=1, description="The source or observable it would need.")
+
+
 class FetchPlan(BaseModel):
     """The Broker's explicit fetch plan, authored via `plan_fetch` before dispatch."""
 
-    steps: list[FetchStep] = Field(min_length=1)
+    steps: list[FetchStep] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
+    unanswerable: list[Unanswerable] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _plans_something(self) -> Self:
+        if not self.steps and not self.unanswerable:
+            raise ValueError("a fetch plan needs at least one step or one unanswerable question")
+        return self
 
     @model_validator(mode="after")
     def _step_ids_are_unique(self) -> Self:

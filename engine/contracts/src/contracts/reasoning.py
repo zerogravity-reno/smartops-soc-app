@@ -21,7 +21,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from contracts.findings import CimCategory
-from contracts.subtask import ToolFamily
+from contracts.subtask import ToolFamily, Unanswerable
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +536,10 @@ class RetrievalSummary(BaseModel):
             "every family was dispatched, which `dispatched` answers."
         ),
     )
+    unanswerable: list[Unanswerable] = Field(
+        default_factory=list,
+        description="Questions the Broker's plan stated no connected source can answer (B20).",
+    )
 
 
 class HypothesisFindings(BaseModel):
@@ -758,6 +762,13 @@ class AnalystPayload(BaseModel):
     hypothesis_id: str
     hypothesis: str | None = None
     findings: list[DomainNarrative] = Field(default_factory=list)
+    unanswerable: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Code-worded, one per question the Broker's plan said no connected source "
+            "holds (B20). Never trimmed for size: it is the answer to that question."
+        ),
+    )
     # NOTE: `RetrievalSummary.gaps` deliberately does NOT cross this boundary
     # yet -- whether it should is an open question for the producing team, see
     # docs/open-questions-for-team.md (2026-09-02). Until that is settled the
@@ -812,6 +823,10 @@ def pack_for_analyst(
             run_id=h.run_id,
             hypothesis_id=h.hypothesis_id,
             hypothesis=h.hypothesis,
+            unanswerable=[
+                f"No connected source holds this: {u.question} ({u.reason})"
+                for u in (h.retrieval.unanswerable if h.retrieval else [])
+            ],
             findings=[
                 DomainNarrative(domain=f.domain, narrative=f.narrative,
                                 observations=list(f.observations), facts=list(f.facts))
