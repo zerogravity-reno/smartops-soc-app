@@ -94,7 +94,6 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 
 | Variable | Used by | Required | Default | What it is |
 |---|---|---|---|---|
-| `FS8B_API_KEY` | every Bedrock client | yes, until AR3 | none | Bedrock API key, e.g. `ABSK...`, applied to every Bedrock client by a patch in `smartops/main.py` (AR3: goes once `SMARTOPS_ANALYST_API_KEY` holds the working key). |
 | `AWS_REGION` | both | yes for Broker on Bedrock | `us-east-1` for the Analyst; the Broker also accepts `AWS_DEFAULT_REGION` and refuses to start with neither | Bedrock region; keep it the same as the model ARN's |
 | `AWS_BEDROCK_MODEL_ID` | Broker | yes, to use a model | none | Claude Sonnet inference profile, e.g. `us.anthropic.claude-sonnet-4-6`. Find yours with `aws bedrock list-inference-profiles --region <region>`. |
 | `SMARTOPS_LLM_PROVIDER` | Broker | no | blank | `bedrock`, `deepseek` or `none`. `none` turns the Broker model off even if credentials are set. Blank means detect: Bedrock if `AWS_BEDROCK_MODEL_ID` is set, else DeepSeek if `DEEPSEEK_API_KEY` is set, else no model (scripted dispatch). Any other value is an error. |
@@ -112,7 +111,7 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 | `OPENCTI_TOKEN` | context pipeline | no | blank | OpenCTI token |
 | `SMARTOPS_RUNS_DIR` | Analyst and Broker | no | `.smartops/runs` | Where run folders are written (relative to the working directory) |
 | `SMARTOPS_ANALYST_MODEL_ARN` | Analyst and sub-analysts | yes for the Analyst | none | Imported Foundation-Sec model: the Analyst, and the identity, network and endpoint sub-analysts. Empty skips the sub-analysts. |
-| `SMARTOPS_ANALYST_API_KEY` | Broker sub-analysts | no | falls back to the standard AWS credential chain | `ABSK...` bearer token, or `ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]` |
+| `SMARTOPS_ANALYST_API_KEY` | Analyst and sub-analysts | yes for the Analyst | falls back to the standard AWS credential chain | `ABSK...` bearer token, or `ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]`. Scoped to the Analyst model's own client, never the Broker's (AR3). |
 | `SMARTOPS_ANALYST_TEMPERATURE`, `SMARTOPS_ANALYST_TOP_P` | Broker sub-analysts | no | `0.3`, `0.95` | Generation settings (defaults per `.env.example`) |
 | `SMARTOPS_ANALYST_MAX_GEN_LEN` | Broker sub-analysts | no | `3072` | Max generated tokens; values above the default are clamped |
 | `SMARTOPS_SKILLS_ENABLED` | Broker | no | off | `true` enables the reference skill pack for siem (same as `--skills`) |
@@ -124,7 +123,7 @@ Copy-paste template (placeholders only; fill in your own values):
 
 ```
 SMARTOPS_ANALYST_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
-FS8B_API_KEY=<your-bedrock-api-key>
+SMARTOPS_ANALYST_API_KEY=<your-bedrock-api-key>
 AWS_REGION=us-east-1
 AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
 SMARTOPS_LLM_PROVIDER=bedrock
@@ -137,7 +136,6 @@ OPENCTI_URL=http://<opencti-host>:8080/graphql
 OPENCTI_TOKEN=<your-opencti-token>
 # optional
 # SMARTOPS_RUNS_DIR=.smartops/runs
-# SMARTOPS_ANALYST_API_KEY=<your-bedrock-api-key>
 ```
 
 ---

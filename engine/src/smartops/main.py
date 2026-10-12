@@ -43,28 +43,6 @@ import logging
 import os
 import sys
 
-# --- Boto3 Monkeypatch for custom FS8B_API_KEY bearer token ---
-import boto3
-from botocore.tokens import ScopedEnvTokenProvider
-from botocore.config import Config
-
-_orig_client = boto3.Session.client
-def _patched_client(self, service_name, *args, **kwargs):
-    if service_name == "bedrock-runtime":
-        if "config" not in kwargs or kwargs["config"] is None:
-            kwargs["config"] = Config(auth_scheme_preference="httpBearerAuth")
-        else:
-            kwargs["config"] = kwargs["config"].merge(Config(auth_scheme_preference="httpBearerAuth"))
-        api_key = os.environ.get("FS8B_API_KEY", "")
-        if api_key:
-            self._session.register_component(
-                "token_provider",
-                ScopedEnvTokenProvider(self._session, environ={"AWS_BEARER_TOKEN_BEDROCK": api_key}),
-            )
-    return _orig_client(self, service_name, *args, **kwargs)
-
-boto3.Session.client = _patched_client
-# -------------------------------------------------------------
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import get_args
