@@ -47,12 +47,14 @@ engine/                      the backend (package smartops)
     prompts/                 Analyst system prompt (plan and synthesis)
     subagents/               siem / vt investigation subagents
     subagent_analysts/       identity / network / endpoint sub-analysts, Foundation-Sec client
+    tools/                   MCP client registry (Splunk, VirusTotal): the only place MCP clients are built
     telemetry.py             spans, the investigation record, per-round output
     guards.py                scope, time-window and tstats guards
     budget.py                cost ceiling and model setup
   contracts/                 shared Pydantic models and JSON schemas (task-input.v1, …)
   tests/                     engine test suite
-frontend/                    React UI (npm run build; served at /)
+frontend/                    React + TypeScript UI (built by start.ps1; served at /)
+  e2e/                       Playwright browser checks, API mocked
 tests/                       Analyst and server tests
 mcp_servers.json             MCP server config (official Splunk MCP)
 docs/
@@ -67,7 +69,8 @@ start.ps1                    uv sync, build the frontend, start the server
 
 **Prerequisites**
 - Windows with PowerShell, or any OS with a POSIX shell.
-- Python 3.13 (the engine requires it) and [uv](https://docs.astral.sh/uv/).
+- Python 3.13, pinned in `.python-version` and `pyproject.toml` (`>=3.13,<3.14`), and [uv](https://docs.astral.sh/uv/), which fetches that Python if it is missing.
+- Node.js with npm, to build the frontend.
 - AWS Bedrock access to the imported Foundation-Sec-8B model and to Claude Sonnet.
 - A Splunk ES instance with the official Splunk MCP server app, plus a token for it.
 - A VirusTotal API key. OpenCTI is optional.
@@ -98,7 +101,7 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 | `SMARTOPS_MODEL_ID` | Broker | no | none | Model id override for any provider; wins over `AWS_BEDROCK_MODEL_ID`. |
 | `SMARTOPS_PRICING_KEY` | Broker | no | inferred from the model id | Pricing entry for the budget. Set only if the model family can't be read from its id. |
 | `DEEPSEEK_API_KEY` | Broker | no | none | Selects DeepSeek when no Bedrock model id is set. `.env.example` notes that selecting DeepSeek currently fails at startup (no pricing entry yet). |
-| `AWS_PROFILE` | Broker | no | none | Standard AWS profile. The Broker drops it when explicit credentials make it irrelevant; see `_drop_irrelevant_profile` area in `engine/src/smartops/main.py`. |
+| `AWS_PROFILE` | Broker | no | none | Standard AWS profile; boto3 uses it when set. If the Broker model then fails to build, the error says to unset it to fall back to `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (`engine/src/smartops/broker.py`). |
 | `SPLUNK_MCP_URL` | import and Broker | yes | none | Official Splunk MCP endpoint, e.g. `https://<host>:8089/services/mcp` |
 | `SPLUNK_TOKEN` | import and Broker | yes | none | Splunk token for the MCP server |
 | `SMARTOPS_MCP_TLS_NO_VERIFY` | import and Broker | no | blank (verify TLS) | `splunk` to accept a self-signed :8089 certificate |
@@ -147,13 +150,15 @@ OPENCTI_TOKEN=<your-opencti-token>
 .\start.ps1
 ```
 
-This runs `uv sync`, builds the frontend and starts the server with auto-reload on http://localhost:8013. To start it without the sync, build and reload:
+This runs `uv sync`, builds the frontend (`npm install`, `npm run build` in `frontend/`) and starts the server on http://localhost:8013 with `--reload`. `main.py` is the one entry point: the FastAPI app and the Broker CLI. The Analyst and the Broker run in that process; there is no second launcher and no Broker subprocess.
+
+**`--reload` restarts the server on any `.py` change, and a restart kills a live run** (runs are held in memory; the browser reports the lost stream). Don't edit Python while an investigation is running, or start without reload:
 
 ```powershell
 uv run uvicorn smartops.main:app --port 8013
 ```
 
-The Broker's MCP clients are built and warmed once, at startup; an unreachable Splunk makes startup wait out three connection attempts.
+The Broker's MCP clients are built and warmed at startup, and warmed again at the start of every round, so a Splunk client that failed once is retried rather than staying failed. A healthy client returns its cached tools. An unreachable Splunk makes startup wait out three connection attempts.
 
 **In the browser:**
 1. Pick an alert in the **Incident queue** on the left (the latest 10 notables from Splunk ES). Its facts (host, user, event time, command line, parent, hash) show at the top; **Edit fields** opens the form, which you can also fill by hand (the rule name is required).
@@ -179,10 +184,15 @@ A live investigation costs real money. On 2026-09-30, one Broker loop over 6 tas
 ### Tests
 
 ```powershell
-uv run pytest -q
+uv run pytest -q              # engine/contracts/tests, engine/tests, tests (pyproject testpaths)
+
+cd frontend
+npm test                      # vitest: the run reducer and formatting
+npm run e2e                   # Playwright: the console against a mocked API, both colour modes, axe WCAG AA
+npm run build                 # tsc --noEmit, then vite build
 ```
 
-The suite needs no network and makes no model calls.
+None of these needs a network or makes model calls. Type-check the frontend through `npm run build`, not a separate `tsc` call.
 
 **Live end-to-end run** (real calls, costs money): starts the server on :8001, drives the UI with Playwright through one notable (`tests/test-integration/scripts/notable.json`), and stops the server.
 
