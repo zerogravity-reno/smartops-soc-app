@@ -1,6 +1,6 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-12 (through run `c8dd42cf`; Broker rows re-checked on `aab8e000`, `204888fd`, `75984491`, `c8dd42cf`). **Code:** branch `broker-a818-fixes` (PR #6; before it `smartops-loop-fix`, since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
+**As of:** 2026-10-12 eve (through run `16386362`; Broker rows re-checked on `aab8e000`, `204888fd`, `75984491`, `c8dd42cf`). **Code:** branch `broker-a818-fixes` (PR #6; before it `smartops-loop-fix`, since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail, security and architecture. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
@@ -33,9 +33,9 @@ Runs up to `b3aa0dd2` investigated the same Splunk ES notable: *Threat - Custom 
 | `2a71757f` | 2026-10-11 | TRUE_POSITIVE 95/45/25, 1 round | Baseline on PR #6 + `18f7719` (B15), tier A, same alert as `874ab334`. First round today the gate accepted: 5 refs held, 4 of them endpoint. 0 `stop_reason=length`, 0 repeats, 0 re-asks; all 15 domain calls in 44 s. Broker 6m39s, $1.81. Of synthesis's four reasons only the download chain holds: the "encoded commands" decode to `$env:username`, "Atomic Red Team" is a module import of installed test tooling, and the "suspicious hash" is powershell.exe's own, read as svcupdate.dat's (B40). The gate checks refs, not reasoning (Analyst side: T21, T24) |
 | `aab8e000` | 2026-10-12 | TRUE_POSITIVE 90/25/10, 2 rounds | First live check of AR11 round 2 (in-process, no MCP warm-up). B42's unanswerable reasons all short. Round 1 TP 95 refused on `T1:file`. Synthesis read the private-address footer as a VirusTotal judgement (B43). Broker $0.87 + $0.32 |
 | `204888fd` | 2026-10-12 | REQUIRES_INVESTIGATION, 2 rounds | Round 2 TP 98/25/18 refused on refs written `FU2:FU2`. B43 again ("VirusTotal cannot provide information about them"). FU3's file step repeated its first search and ended incomplete (B44). Broker $0.97 + $0.63 |
-| `75984491` | 2026-10-12 | stopped in round 2 | Splunk's MCP client returned no tools, so every siem step was rejected (AR11 integration: no per-round warm-up, fixed `7901a43`). Broker $0.17 |
+| `75984491` | 2026-10-12 | stopped in round 2 | Splunk's MCP client returned no tools, so every siem step was rejected (AR12). Broker $0.17 |
 | `c8dd42cf` | 2026-10-12 | REQUIRES_INVESTIGATION, 2 rounds | Leaned FALSE_POSITIVE: 65/88/75, then 55/95/65. Round 2 met the score rule and was refused on refs, one of them `L3-G1:endpoint: step siem_file_events is incomplete` (B44). Broker $0.52 + $0.53 |
-| `16386362` | 2026-10-12 | no verdict, 3 rounds | Same no-tools failure in all 3 rounds: 0 siem queries. The payload showed empty domains with no reason, and round 4's synthesis was cut off (T15) while writing BENIGN 95 from the silence. Fixed `7901a43` |
+| `16386362` | 2026-10-12 | no verdict, 3 rounds | Same no-tools failure in all 3 rounds: 0 siem queries. The payload showed empty domains with no reason, and round 4's synthesis was cut off (T15) while writing BENIGN 95 from the silence. Fixed: AR12, AR13, AR14 |
 
 **Baseline checks on `89674d75`** (the list in `docs/handover-2026-10-10.md`):
 - **Held:**
@@ -134,7 +134,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B42 | Broker | An unanswerable reason written as prose came back as findings | Medium | Fixed on `broker-a818-fixes` (`4759d2b`): `reason` capped at 60 characters; held live on `aab8e000` |
 | B43 | Broker | The private-address footer names VirusTotal, and synthesis reads it as a VirusTotal judgement | Medium | Open: rewording framed, waiting on Mohammed |
 | B44 | Broker | A `file_events` step's first siem dispatch searches the file name as a keyword, gets only process and script-block rows, and stops; the step costs a second dispatch or ends incomplete | High | Open: framed below |
-| B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Open |
+| B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Open (AR11 integration: one `asyncio.Runner` per round) |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -172,6 +172,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Fixed on `broker-a818-fixes`: moved to the engine, which imports both directly |
 | AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Fixed: React + TS frontend in `frontend/` (smartops-worker); `webapp/static` deleted with AR11 |
 | AR11 | Architecture | The codebase's file structure: `webapp/` mixes the frontend, the main Analyst, the context pipeline, the Broker handoff and the API server; one model has two configurations; dev tools sit inside the engine package | High | Fixed (`12c34e3`..`4ff806c`, merged 2026-10-12): `analyst.py`, `broker.py`, `context.py`, `main.py` (CLI + API); `webapp/` gone; Broker round in process; Python pinned to 3.13. Live on `79c024e8`; round 2 warm-up still unexercised |
+| AR12 | Architecture | AR11 integration: the Splunk client is warmed once per server, and one failed handshake leaves it returning no tools for the server's life, while the incident queue still works | High | Fixed (`7901a43`, `0b15cdf`): warm every round, and reset a sticky failure at dispatch |
+| AR13 | Architecture | A source that could not be searched reaches the Analyst as empty domains, which synthesis reads as "nothing found" | High | Fixed (`ef1bde8`): `AnalystPayload.not_searched` |
+| AR14 | Architecture | A round in which no source could be searched does not end the run; it loops | Medium | Fixed (`ef1bde8`): `run_round` raises when an unreachable source left the round with no rows |
 
 ## Triage logic (Analyst plan and synthesis)
 
@@ -1171,12 +1174,65 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 - The guard classes' `_check` and `_learn` in `guards.py`: each one enforces a different rule.
 - The three `_build_parser` and `_run` functions in `main.py`, `bench.py` and `blind_compare.py`: each belongs to a different CLI entry point.
 
+**AR12. The Splunk client stays failed after one bad handshake.** *High. Fixed (`7901a43`, `0b15cdf`). An AR11 integration regression.*
+- **Evidence:** `75984491` (both rounds) and `16386362` (all 3 rounds). Every siem step was rejected with "no tools resolved for siem: 1 MCP server(s) configured but returning no tools", and 0 queries ran. The incident queue loaded notables from the same Splunk throughout.
+- **Cause:**
+  - Before AR11, every round was a fresh subprocess whose CLI called `start()`, which warms the clients with 3 retries. In process, `start()` runs once, at server start.
+  - Strands' `load_tools()` returns `[]` while `_connection_failed` is set (`mcp_client.py:402`), and only `stop()` clears that flag. So one failed handshake, at boot or after a `--reload`, left the Broker with no siem.
+  - `registry.call_tool()`, which the queue uses, calls `start()` directly. It reconnected the same client, so Splunk looked healthy.
+  - B24's reset (`_session_died`) covers a session that started and later died, not one that never connected.
+- **Fix:**
+  - `run_round` calls `warm_mcp_clients()` every round. A healthy client returns its cached tools.
+  - `_load_tools_off_loop` resets a client whose `_connection_failed` is set before loading, as it already did for a dead session.
+  - A server that stays down costs one more attempt per dispatch.
+
+**AR13. A source that could not be searched reaches the Analyst as empty domains.** *High. Fixed (`ef1bde8`).*
+- **Evidence (`16386362`):**
+  - The Broker recorded `DomainGap(siem, no_tools_resolved, unanswered_domains=[identity, network, endpoint])` in `findings.json`. `AnalystPayload` didn't carry `gaps`, so each task arrived as three empty domains.
+  - Round 2 synthesis leaned BENIGN "given the lack of malicious indicators". Round 4 was writing BENIGN 95, VERDICT_REACHED, "all attempts to identify svcupdate.dat failed to yield malicious indicators", when it was cut off (T15).
+- **Fix:**
+  - `AnalystPayload.not_searched` has one line per gap that left domains empty, worded by code from the closed `DomainGap.reason` set, never from the refusal text: "Not searched: siem could not be reached (no tools resolved). The identity, network, endpoint findings of this task are empty because nothing was searched, not because nothing was found."
+  - The line is never trimmed for size.
+  - A gap that another source covered (a missing `edr` whose endpoint slice SIEM filled) stays off the wire.
+- **Replayed:** on `16386362`, the line lands on the tasks that dispatched siem (T2, T4, T5, FU1, FU2, FU4, FU6). The healthy run `c8dd42cf` gets none.
+- **Analyst owner:** the payload gained a field. It isn't in the published schemas.
+
+**AR14. A round in which nothing could be searched does not end the run.** *Medium. Fixed (`ef1bde8`).*
+- **Evidence (`16386362`):** three rounds and about $1 of Broker spend went on planning searches against an unreachable source, and each synthesis asked for more of the same.
+- **Fix:**
+  - `run_round` raises "nothing was searched this round: siem could not be reached" when an unreachable source left the whole round with no rows.
+  - The Analyst already ends a run on a Broker exception, with the record kept.
+  - A round where another source returned rows goes on, and AR13 states what's missing.
+- **Replayed:** `16386362` would have stopped in round 2.
+
 ## Priorities
 
-**Broker, current (2026-10-12).** The lists below this one are history.
-- **Open, in order:** B44 (file steps), B43 (footer wording, waiting on Mohammed), B11 (narratives judge and misread), B45 (loop-closed noise).
-- **Decisions:** B16 parallel fetch; the B15 safety net.
-- **Analyst side, no Broker work left:** B2, B6, G1–G3.
+**Where things stand (2026-10-12 eve).** The lists below this one are history.
+
+| Area | Fixed | Partly | Open | Open items |
+|---|---|---|---|---|
+| Broker | 34 | 3 | 6 | Real: B44, B43, B11, B45. Analyst side: B2, B6 |
+| Architecture / integration | 12 | 0 | 2 | AR3 (owner action), AR6 |
+| Triage (Analyst) | 1 | 2 | 24 | T2–T27 |
+| Gate (Analyst) | 0 | 0 | 3 | G1–G3 |
+| Context | 1 | 0 | 4 | P2–P5 |
+| Webapp | 7 | 1 | 3 | W1, W7, W9 |
+| Cost, audit, security, handoff | 14 | 0 | 0 | None |
+
+- **Broker, next in order:**
+  - B44: file steps never search file events. Framed: the mission states the categories the step is judged on, and the digest names what's missing.
+  - B43: footer wording, waiting on Mohammed.
+  - B11: narratives judge and misread.
+  - B45: loop-closed noise, AR11 integration.
+- **Live checks pending:**
+  - AR12–AR14 on the next run.
+  - B24's reconnect, which is still unexercised.
+- **Decisions (Mohammed):** B16 parallel fetch; the B15 safety net; T25 (one bad ref blocks a verdict); T20; P1's raw time fields.
+- **Analyst owner, routed:**
+  - B42's `maxLength: 60`.
+  - AR13's `not_searched` field.
+  - G1–G3, T8 (`16386362` reasoned from the silence), T15 (cut off while listing refs `T1` … `T51`), and the rest of T*.
+- **Owner action:** AR3, set `SMARTOPS_ANALYST_API_KEY` and delete the boto3 patch; S1, confirm the `33ccf52` keys were rotated.
 
 **For the Analyst owner, from 2026-10-09** (the Broker side of each is done or not needed):
 - **B20 / B6:** follow-ups name the task they follow (or carry their own entity and window), so the handoff can scope them.
