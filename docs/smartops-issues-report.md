@@ -94,7 +94,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
-| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked (B10c: decoded in the loop that sees it; verified live `dce405e5`); decoded block crowds out summaries (open) |
+| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked (B10c: decoded in the loop that sees it; verified live `dce405e5`); decoded block capped at 8 lines, rarest parent first (`ENCODED_LINE_CAP`) |
 | B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Open; logon type now named by code (`broker-k4-ab-fixes`) |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
@@ -104,7 +104,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
 | B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; held on `89674d75` |
-| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | Open: scoping is Analyst-side; "can't answer" design proposed 10-11, for agreement |
+| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" fixed on `broker-a818-fixes` (`plan_fetch` `unanswerable`), live check pending; scoping is Analyst-side |
 | B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
 | B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
@@ -118,9 +118,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B31 | Broker | siem reports `gaps: vt` on every task with nothing vt could look up | Low | Prompt fixed on `broker-k4-ab-fixes`; live check pending |
 | B32 | Handoff | A refused ref says "step … is ok" for an incomplete step | Low | Fixed on `broker-k4-ab-fixes` |
 | B33 | Broker | Hash questions unanswered: siem never searched Sysmon 15/29, and file_events held non-file rows the narrative called file writes | High | Fixed on `broker-k4-ab-fixes` (siem hint, 15/29 as file events, `event_code=`); svcupdate.dat's hash is not in the lab's data |
-| B39 | Broker | A step's status is its last dispatch's, not its rows': `no_data` beside 5 rows | Medium | Open (B26 at the step level) |
-| B40 | Broker | A `-` placeholder counts as a value, so a hash's file reads "(file not named)" and synthesis pinned powershell.exe's hash on svcupdate.dat | High | Open: one-line fix in `_first` proposed |
-| B41 | Broker | The packer's over-budget warning repeats on every re-measure (7× for one domain) | Low | Open |
+| B39 | Broker | A step's status is its last dispatch's, not its rows': `no_data` beside 5 rows | Medium | Fixed on `broker-a818-fixes`: status follows cumulative rows; live check pending |
+| B40 | Broker | A `-` placeholder counts as a value, so a hash's file reads "(file not named)" and synthesis pinned powershell.exe's hash on svcupdate.dat | High | Fixed on `broker-a818-fixes`: `_first` skips `-`; live check pending |
+| B41 | Broker | The packer's over-budget warning repeats on every re-measure (7× for one domain) | Low | Fixed on `broker-a818-fixes`: `fitted_row_cap` measures silently |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -652,6 +652,12 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - `unanswerable` items cross to the Analyst as gaps, worded "no connected source holds …", with no SIEM substitution.
   - A task that is entirely unanswerable dispatches nothing and costs only the planning call.
   - On `89674d75` this would have caught T1 (asset inventory), T4 (CrowdStrike), G1 (threat intel on a private IP), FU2 (maintenance procedures) and FU3 (forensics tools).
+- **Done (agreed 10-11), `broker-a818-fixes`:**
+  - `FetchPlan.unanswerable: [Unanswerable{question, reason}]`. A plan may have no steps when it has unanswerable questions, and then dispatches nothing.
+  - The Broker prompt has a "QUESTIONS NO SOURCE CAN ANSWER" block. It names no unconfigured family (B7): a product the Broker has no tool for is covered as "any product whose tool is not offered to you".
+  - The plan's items go to `RetrievalSummary.unanswerable` (findings.json) and `AnalystPayload.unanswerable`, as lines worded by code: `No connected source holds this: <question> (<reason>)`. The size budget never trims them.
+  - **Webapp half (routed):** the latest round's payload JSON reaches synthesis unchanged (`webapp/main.py:738`). `run_trace.compact_round` may drop the field for earlier rounds.
+  - **Held live (`451334ad`):** T2 and G1 each recorded "present right now" and "current ACLs" as unanswerable, and the lines reached the payload. Still open (Analyst side): L2 synthesis re-queued the same question as gap G1, spending $0.31 for the same answer.
 
 **B21. A private address isn't stated as one.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`c90ca5f9` round 2):** synthesis called `192.168.40.211` "external". It's RFC 1918. Since B18 VirusTotal no longer reports on it, and nothing else says what it is.
@@ -831,17 +837,17 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Evidence (`a818a3fd` L2-T1):** "not covered: script_blocks" beside two `script_blocks` rows the endpoint narrative cites.
 - **Fix (`8902b52`):** every CIM category that code projected rows into counts as covered.
 
-**B38. Pure code-count rows are narrated as events.** *Medium. Open.*
+**B38. Pure code-count rows are narrated as events.** *Medium. Fixed on `broker-a818-fixes`.*
 - **Evidence (`a818a3fd` T3, T4):** `stats count by EventCode` sets (`{EventCode, count}` only) stay `uncategorised`. The narratives say "three uncategorized events with event codes 1, 4100, 4104", and L3 synthesis wrote that the codes "reinforce the idea of malicious activity".
-- **Fix candidates:** file them as `discovery` (an inventory of codes, like B29's index count), or render them as a count line in `facts`. To decide.
+- **Fix (Mohammed, 10-11):** a call whose rows are all `{EventCode, count…}` is filed as `discovery` (`projection.project_siem`), like B29's index count: no slice, no step completion.
 
-**B39. A step's status is its last dispatch's.** *Medium. Open.*
+**B39. A step's status is its last dispatch's.** *Medium. Fixed on `broker-a818-fixes`.*
 - **Evidence (`2a71757f` T2, `onedrive_file_registry`):** `rows_retrieved=5`, `completed=true`, `status=no_data`. The first dispatch returned the 5 rows, and the second found none.
 - **Cause:** `broker.evaluate_step` (`broker.py:641`) sets `outcome.status = result.status` on every dispatch, while `rows_retrieved` accumulates. B26 made a single result's status follow its rows; the step-level status was not changed.
 - **Effect:** the persisted `step_outcomes` and the UI say both "found 5" and "no data" for one step.
 - **Fix (proposed):** derive the step's status from its cumulative rows: `ok` when `rows_retrieved > 0`, otherwise the last dispatch's.
 
-**B40. A `-` placeholder counts as a value; a hash lost its file.** *High. Open.*
+**B40. A `-` placeholder counts as a value; a hash lost its file.** *High. Fixed on `broker-a818-fixes`.*
 - **Evidence (`2a71757f` T1, T3):**
   - `facts` read `(file not named): SHA256 1C84C863…`.
   - The rows are Sysmon EID 1 with `Image=…\powershell.exe`, `TargetFilename=-`. It is powershell.exe's own hash; T2's facts print it as `powershell.exe: SHA256 1C84C863…`.
@@ -851,7 +857,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Fix (proposed):** treat `-` like empty in `_first`. Test: an EID 1 row with `TargetFilename=-` and `Image=powershell.exe` names powershell.exe.
 - **Analyst side (routed):** synthesis called a hash suspicious with no reputation behind it. No task looked the hash up: T3's Broker had no hash in scope at plan time, so VT wasn't offered, and the gap was reported (T21).
 
-**B41. The packer's over-budget warning repeats.** *Low. Open.*
+**B41. The packer's over-budget warning repeats.** *Low. Fixed on `broker-a818-fixes`.*
 - **Evidence (`2a71757f` T2 endpoint):** "evidence over budget, rendered at row_cap=20" logged 7 times for one domain.
 - **Cause:** `fitted_row_cap` re-runs `pack_evidence` to read its row cap, and each run logs. The cost is string formatting only; the noise hides other warnings.
 
