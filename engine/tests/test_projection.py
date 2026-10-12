@@ -704,6 +704,13 @@ class TestAbRunCategories:
                          [], task_id="t")
         assert f.discovery and f.uncategorised == []
 
+    def test_a_call_of_only_event_code_counts_is_discovery(self):
+        # B38, a818a3fd T3/T4: narrated as "three uncategorized events with event codes".
+        rows = [{"EventCode": "4104", "count": "30"}, {"EventCode": "1", "count": "12"}]
+        f = project_siem([call("index=windows_lab host=h | stats count by EventCode", rows)], [], task_id="t")
+        assert f.discovery[0].rows == rows
+        assert f.uncategorised == [] and f.script_blocks == [] and f.processes == []
+
     def test_a_tstats_over_a_data_model_is_still_evidence(self):
         f = project_siem([call("| tstats count from datamodel=Endpoint.Processes by Processes.process", [{"count": 1}])],
                          [], task_id="t")
@@ -720,10 +727,10 @@ class TestAbRunCategories:
         assert [r["EventCode"] for r in f.connections[0].rows] == ["3"]
         assert f.processes[0].evidence_id == f.connections[0].evidence_id
 
-    def test_count_rows_by_event_code_are_not_moved(self):
+    def test_count_rows_by_event_code_are_not_moved_into_an_event_category(self):
         f = project_siem([call("index=windows_lab EventCode=3 | stats count by EventCode", [{"EventCode": "1", "count": 6}])],
                          [], task_id="t")
-        assert f.connections and f.processes == []
+        assert f.discovery and f.processes == [] and f.connections == []  # B38
 
     def test_a_sysmon_file_hash_event_is_a_file_event(self):
         """B33: a written file's hash is only in Sysmon 15/29."""

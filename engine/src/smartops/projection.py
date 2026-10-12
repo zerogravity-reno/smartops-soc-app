@@ -278,18 +278,23 @@ def _describes_estate(query: str | None) -> bool:
 _SUMMARY_KEYS = {"eventcode", "count", "first", "last", "host", "index", "sourcetype"}
 
 
+def _is_code_count(row: dict[str, Any]) -> bool:
+    return all(k.lower() in _SUMMARY_KEYS for k in row)
+
+
 def _split_by_event_code(rows: list[dict[str, Any]], category: CimCategory | None) -> dict[CimCategory | None, list]:
     """Rows grouped by the category their own `EventCode` names, else `category`.
 
     Aggregate rows move too: `stats count min(_time) as first by EventCode, Image` is
     that event kind's evidence (a818a3fd T4, B-3: EID 1 rows filed as file_events, EID 3
-    as dns_resolutions). Only a pure code count (`stats count by EventCode`) stays with
-    the call's category, so it cannot complete a step as if it were an event.
+    as dns_resolutions). A pure code count (`stats count by EventCode`) mixed in with
+    event rows stays with the call's category; a call of nothing but code counts never
+    gets here, `project_siem` files it as discovery (B38).
     """
     groups: dict[CimCategory | None, list] = {}
     for row in rows:
         code = str(row.get("EventCode", "")).strip()
-        pure_count = all(k.lower() in _SUMMARY_KEYS for k in row)
+        pure_count = _is_code_count(row)
         own = _EVENTCODE_CATEGORIES.get(int(code)) if code.isdigit() and not pure_count else None
         groups.setdefault(own or category, []).append(row)
     return groups
@@ -335,6 +340,13 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
                 "(describes the estate, not evidence about the hypothesis)",
                 call.tool,
             )
+            buckets["discovery"].append(result_set)
+            continue
+
+        # Nothing but `{EventCode, count}` rows: an inventory of what was logged, not
+        # events. Filed as evidence, narratives called them "three uncategorized
+        # events" and synthesis read malice into the codes (a818a3fd, B38).
+        if rows and all(_is_code_count(r) and any(k.lower() == "eventcode" for k in r) for r in rows):
             buckets["discovery"].append(result_set)
             continue
 
