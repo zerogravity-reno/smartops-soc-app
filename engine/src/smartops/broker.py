@@ -798,11 +798,15 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
             f"{', '.join(others) or 'none -- it is the only ' + family + ' step planned'}."
         )
 
+    # B44: the step is judged on its categories, so siem is told them. Without this a
+    # file step's keyword search returned only process rows and stopped (every file
+    # step on 10-12), and the step needed a second dispatch or ended incomplete.
+    wanted = step.completion.categories
     mission = SubagentMission(
         task_id=f"{req.task.task_id}:{family}:{ctx.tool_use['toolUseId']}",
         hypothesis_id=req.task.hypothesis_id,
         tool_family=family,
-        goal=question,
+        goal=question + (f"\n\nThis step is complete only with rows in: {', '.join(wanted)}." if wanted else ""),
         scope=req.task.scope,
     )
 
@@ -828,12 +832,18 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     # to step 2 the moment step 1 flipped complete, and a dispatch matching no
     # planned step at all still landed somewhere. Per-step completion is a
     # headline A/B metric; it must be measured off the binding, not a heuristic.
-    req.step_outcomes[step.step_id] = evaluate_step(
+    outcome = req.step_outcomes[step.step_id] = evaluate_step(
         step, result, prior=req.step_outcomes.get(step.step_id)
     )
 
     record_result_status(result)
-    return _digest(result)
+    digest = _digest(result)
+    if not outcome.completed and wanted:
+        # B44: so a re-dispatch asks for what is missing instead of repeating the question.
+        got = {name for name, n in _finding_counts(result.findings) if n}
+        missing = [c for c in wanted if c not in got]
+        digest += f" | step {step.step_id} incomplete: no {', '.join(missing or wanted)} rows"
+    return digest
 
 
 @tool(

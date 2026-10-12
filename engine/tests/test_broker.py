@@ -2985,3 +2985,32 @@ class TestNothingSearched:
     def test_an_empty_round_with_every_source_up_is_not_a_failure(self):
         assert broker_module._nothing_searched(self._findings(0, None)) == []
         assert broker_module._nothing_searched(self._findings(0, "not_configured")) == []
+
+
+class TestAStepIsAskedForItsCategories:
+    """B44: every file step on 10-12 got only process rows from a keyword search,
+    then needed a second dispatch or ended incomplete."""
+
+    async def test_siem_is_told_the_categories_and_the_broker_what_is_missing(self):
+        step = FetchStep(step_id="file_write", family="siem", objective="file writes",
+                         completion=CompletionRule(categories=["file_events"]))
+        request = BrokerRequest(task=make_task())
+        with_plan(request, step)
+        goals = []
+
+        def process_rows_only(mission):
+            goals.append(mission.goal)
+            return SubtaskResult(
+                task_id=mission.task_id, status=SubtaskStatus.OK,
+                findings=SiemFindings(processes=[ResultSet(query="q", row_count=2, rows=[{"p": "a"}, {"p": "b"}])]),
+                queries_run=[QueryRun(query="q")],
+            )
+
+        request.run_subagent = runner_returning(process_rows_only)
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="was svcupdate.dat written?", step_id="file_write",
+            tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
+        )
+
+        assert goals == ["was svcupdate.dat written?\n\nThis step is complete only with rows in: file_events."]
+        assert digest.endswith("| step file_write incomplete: no file_events rows")
