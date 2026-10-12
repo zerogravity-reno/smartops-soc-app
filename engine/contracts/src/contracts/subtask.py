@@ -710,7 +710,17 @@ class Unanswerable(BaseModel):
     """
 
     question: str = Field(min_length=1)
-    reason: str = Field(min_length=1, description="The source or observable it would need.")
+    # Capped: on 79c024e8 a prose reason ("…VirusTotal. Neither is offered. SIEM
+    # telemetry at best records signer subject…") came back as findings. A noun
+    # phrase has no room to describe what other tools hold.
+    reason: str = Field(
+        min_length=1,
+        max_length=60,
+        description=(
+            "A short noun phrase naming only the missing source or observable, e.g. "
+            "'asset inventory', 'file hash'. Never what other tools hold or the data shows."
+        ),
+    )
 
 
 class FetchPlan(BaseModel):

@@ -168,8 +168,10 @@ reports gaps that another domain could close, you may dispatch that domain as we
 
 QUESTIONS NO SOURCE CAN ANSWER:
 A question that needs a source or an observable no offered specialist holds goes in
-`plan_fetch`'s `unanswerable`, with the source it would need as the reason. Do NOT plan
-substitute searches for it. Nothing offered holds: asset inventory or CMDB records, patch
+`plan_fetch`'s `unanswerable`, with a reason of a few words naming only what is missing:
+the source (`asset inventory`) or, when an offered specialist could answer once it had an
+observable, that observable (`file hash`). The reason is not evidence: never describe what
+other tools hold or what the data shows. Do NOT plan substitute searches for it. Nothing offered holds: asset inventory or CMDB records, patch
 management, change or maintenance records, forensic disk or memory images, or the data of
 any product whose tool is not offered to you. A plan whose every question is unanswerable
 has no steps: record it and dispatch nothing.
@@ -864,8 +866,9 @@ async def plan_fetch(
         steps: The list of fetch steps to execute. May be empty when every
             question is in `unanswerable`.
         rationale: Explanation of why these steps were chosen.
-        unanswerable: Questions no connected source can answer, each with the
-            source or observable it would need. Stated here, never searched for.
+        unanswerable: Questions no connected source can answer, each with a
+            few-word reason naming only the missing source or observable
+            ('asset inventory', 'file hash'). Stated here, never searched for.
     """
     req: BrokerRequest = tool_context.invocation_state["smartops"]
 

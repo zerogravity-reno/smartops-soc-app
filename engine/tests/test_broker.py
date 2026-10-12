@@ -1325,6 +1325,19 @@ class TestFetchPlanAndReport:
         assert request.plan.unanswerable == [asked]
         assert request.step_outcomes == {}
 
+    def test_an_unanswerable_reason_is_a_short_phrase_not_prose(self):
+        # 79c024e8 T2: a prose reason about VirusTotal became fake findings.
+        from pydantic import ValidationError
+
+        from contracts import Unanswerable
+
+        Unanswerable(question="q", reason="file hash")
+        with pytest.raises(ValidationError, match="at most 60"):
+            Unanswerable(
+                question="q",
+                reason="a file-reputation service such as VirusTotal. Neither is offered.",
+            )
+
     async def test_broker_outcome_carries_report_and_persists_artifacts(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         outcome = await broker_task(

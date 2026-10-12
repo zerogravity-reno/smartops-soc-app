@@ -323,7 +323,8 @@
           "type": "string"
         },
         "reason": {
-          "description": "The source or observable it would need.",
+          "description": "A short noun phrase naming only the missing source or observable, e.g. 'asset inventory', 'file hash'. Never what other tools hold or the data shows.",
+          "maxLength": 60,
           "minLength": 1,
           "title": "Reason",
           "type": "string"
