@@ -64,4 +64,7 @@ export type StreamEvent =
   | { type: 'synthesis'; data: Synthesis; message: string; loop: number; reasoning?: string; tokens?: Tokens }
   | { type: 'verdict'; data: Synthesis; message: string }
   | { type: 'paused' | 'resumed' | 'done' | 'stopped'; data?: object; message: string }
-  | { type: 'error'; data?: object; message: string; trace?: unknown };
+  | { type: 'error'; data?: object; message: string; trace?: unknown; cut_off?: CutOff };
+
+// An Analyst call that used its whole max_gen_len (stop_reason=length): a model failure, not a verdict (T15).
+export interface CutOff { stage: 'planning' | 'synthesis'; loop: number; max_gen_len: number; prompt_tokens: number }

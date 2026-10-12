@@ -388,11 +388,21 @@ def emit(q, event_type: str, data: dict, **extra):
     q.put({"type": event_type, "data": data, "message": extra.get("message",""), **{k:v for k,v in extra.items() if k != "message"}})
 
 
+class CutOff(Exception):
+    """An Analyst call that hit its `max_gen_len` (stop_reason=length): its JSON, if
+    any, is unfinished, so it is a model failure, not an answer to parse (T15)."""
+
+    def __init__(self, stage: str, max_gen_len: int, result: dict):
+        super().__init__(f"{stage} was cut off at {max_gen_len:,} tokens (stop_reason=length)")
+        self.stage, self.max_gen_len, self.result = stage, max_gen_len, result
+
+
 _model = None
 
 
-def _ask(system: str, user: str) -> dict:
-    """One Analyst call on the engine's Foundation-Sec client, split at `</think>`."""
+def _ask(system: str, user: str, stage: str) -> dict:
+    """One Analyst call on the engine's Foundation-Sec client, split at `</think>`.
+    Raises `CutOff` when the model ran out of tokens."""
     global _model
     if _model is None:
         # The Analyst's own sampling, not the sub-analysts' SMARTOPS_ANALYST_* settings.
@@ -401,8 +411,11 @@ def _ask(system: str, user: str) -> dict:
     reasoning, think, answer = r.generation.partition("</think>")
     if not think:
         reasoning, answer = "", r.generation
-    return {"reasoning": reasoning.strip(), "answer": answer.strip(), "prompt_tokens": r.prompt_tokens,
-            "generation_tokens": r.generation_tokens, "stop_reason": r.stop_reason}
+    result = {"reasoning": reasoning.strip(), "answer": answer.strip(), "think_closed": bool(think),
+              "prompt_tokens": r.prompt_tokens, "generation_tokens": r.generation_tokens, "stop_reason": r.stop_reason}
+    if r.stop_reason == "length":
+        raise CutOff(stage, _model.max_gen_len, result)
+    return result
 
 
 def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint, ctrl: dict) -> None:
@@ -422,7 +435,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
         clean_context = {k: v for k, v in alert_context.items() if k not in _STRIP_KEYS}
         user_msg = "[ALERT CONTEXT]\n" + json.dumps(clean_context, indent=2)
         checkpoint()
-        r1 = _ask(system_prompt, user_msg)
+        r1 = _ask(system_prompt, user_msg, "planning")
         plan = extract_json(r1["answer"]) or {}
         plan["reasoning"] = r1["reasoning"]
         tokens1 = {"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]}
@@ -491,7 +504,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 slim = {k:v for k,v in all_findings[round_label].items() if k != "_raw_intel_dump"}
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
             checkpoint()
-            rN = _ask(system_prompt,"\n\n".join(sections))
+            rN = _ask(system_prompt, "\n\n".join(sections), "synthesis")
             raw_synth = extract_json(rN["answer"]) or {}
             synth = evaluations[f"Round {loop_num}"] = verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
             emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
@@ -520,6 +533,12 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
 
         q.put({"type": "done", "message": "Investigation complete"})
 
+    except CutOff as cut:
+        # The full generation goes on the record: what the model looped on (T15).
+        telemetry.record(run_id, "cut_off", at_loop, stage=cut.stage, max_gen_len=cut.max_gen_len, **cut.result)
+        q.put({"type": "error", "message": f"Loop {at_loop} {cut}",
+               "cut_off": {"stage": cut.stage, "loop": at_loop, "max_gen_len": cut.max_gen_len,
+                           "prompt_tokens": cut.result["prompt_tokens"]}})
     except RunStopped:
         telemetry.record(run_id, "stopped", at_loop)
         q.put({"type": "stopped", "message": "Stopped by the analyst"})

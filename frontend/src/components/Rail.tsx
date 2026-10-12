@@ -129,7 +129,7 @@ export function Verdict({ run }: { run: RunState | null }) {
   if (!run) return null;
   if (!v && run.failed) return (
     <section className="verdict landed" aria-live="polite">
-      <div className="v-main"><div className="v-label">Run failed</div><div className="v-conf">{run.failed}</div>
+      <div className="v-main"><div className="v-label">{run.cutOff ? 'Analyst model cut off' : 'Run failed'}</div><div className="v-conf">{run.failed}</div>
         <div className="v-sum">{explain(run.failed, run.id)}</div></div>
     </section>
   );

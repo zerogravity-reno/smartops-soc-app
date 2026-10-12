@@ -43,12 +43,13 @@ export function domState(f: { narrative?: string }): DomState {
 
 // What an error means and where to look. First match wins; order is specific to general.
 const ERRORS: [RegExp, string][] = [
+  [/was cut off at [\d,]+ tokens/i, 'The Analyst model spent its whole output allowance before it finished (stop_reason=length), usually by thinking in a loop, so there was no answer to read. This is the model failing, not an unsure verdict. The full generation is in the run\'s investigation.jsonl, step cut_off.'],
   [/no task could be converted/i, 'The Analyst handed the Tool Broker nothing it can search: no plan came back, or every task was dropped (an entity type the broker does not know, or a time window whose start is not before its end). The Plan and Evidence stages say which.'],
   [/broker timed out/i, 'The Tool Broker ran for more than 30 minutes and was stopped. Usually a slow Splunk search or a model stuck retrying. The engine log in the Evidence stage shows where it was.'],
   [/broker exited 2\b/i, 'The Tool Broker refused to start, so nothing was fetched: a configuration problem (MCP config, a task file it rejected, or model credentials). The quoted error line names it; fix .env and run again.'],
   [/broker exited/i, 'The Tool Broker crashed part-way through. The quoted lines and the end of the engine log show the exception.'],
   [/no analyst payload/i, 'The Tool Broker fetched evidence but the sub-analysts wrote no findings. Check SMARTOPS_ANALYST_MODEL_ARN and SMARTOPS_ANALYST_API_KEY in .env, and the end of the engine log.'],
-  [/FS8B_MODEL_ARN|FS8B_API_KEY/, 'The Analyst model is not configured. Set FS8B_MODEL_ARN and FS8B_API_KEY in .env and restart the server.'],
+  [/SMARTOPS_ANALYST_MODEL_ARN|FS8B_API_KEY/, 'The Analyst model is not configured. Set SMARTOPS_ANALYST_MODEL_ARN (and FS8B_API_KEY until AR3) in .env and restart the server.'],
   [/Bedrock (unreachable|call failed|failed)|HTTP (401|403)/i, 'The call to the Analyst model on Bedrock failed: network, an expired or wrong API key, or the imported model not reachable in that region.'],
   [/\/api\/(escu|opencti)/i, 'Building the context failed before the pipeline started (ESCU match or OpenCTI lookup). Check the server console.'],
   [/\/api\/run\b|run id/i, 'The server would not start a run. Check the server console.'],

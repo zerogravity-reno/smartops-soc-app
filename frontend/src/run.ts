@@ -3,7 +3,7 @@
 import type { Contract } from './contract';
 import { domState, plural, shortId, VERDICT_COLOR, VERDICT_TAG, type DomState } from './format';
 import type {
-  BrokerRun, CtiResult, EscuResult, Handoff, Handshake, Plan, PayloadBatch, StreamEvent, Synthesis, Tokens,
+  BrokerRun, CtiResult, CutOff, EscuResult, Handoff, Handshake, Plan, PayloadBatch, StreamEvent, Synthesis, Tokens,
 } from './types';
 
 export const STAGES = ['context', 'plan', 'broker', 'findings', 'synthesis'] as const;
@@ -40,7 +40,7 @@ export interface RunState {
   spend: number; tokIn: number; tokOut: number; loops: number;
   prevScores: Record<string, number | string>; curScores: Record<string, number | string>;
   verdict?: { data: Synthesis; why: string; decided: boolean };
-  failed?: string; stopped?: boolean;
+  failed?: string; stopped?: boolean; cutOff?: CutOff;
 }
 
 export type Action =
@@ -255,7 +255,7 @@ function onEvent(r: RunState, ev: StreamEvent, at: number): RunState {
     case 'error': {
       // A broker card still running stops saying so. The error event has no `loop`, so match by state.
       const items = r.stages.broker.items.map(x => (x.kind === 'broker' && x.state === 'Running' ? { ...x, state: 'Failed' as const } : x));
-      r = { ...r, stages: { ...r.stages, broker: { ...r.stages.broker, items } } };
+      r = { ...r, stages: { ...r.stages, broker: { ...r.stages.broker, items } }, cutOff: ev.cut_off };
       return fail(r, ev.message || 'The pipeline stopped with an error.', at);
     }
     default: return r;
@@ -303,6 +303,7 @@ export function outcomeTag(r: RunState): { tag: string; color: string } | null {
     return { tag: r.verdict.decided ? VERDICT_TAG[v] || v : 'NO VERDICT', color };
   }
   if (r.stopped) return { tag: 'STOPPED', color: 'var(--faint)' };
+  if (r.cutOff) return { tag: 'CUT OFF', color: 'var(--bad)' };
   if (r.failed) return { tag: 'FAILED', color: 'var(--faint)' };
   return null;
 }

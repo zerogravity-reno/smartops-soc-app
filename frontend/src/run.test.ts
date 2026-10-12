@@ -72,3 +72,13 @@ test('the broker log moves tasks queued -> fetching -> fetched while the round r
   expect(r.current).toBe('findings');  // later log lines do not pull it back to Evidence
   expect(r.stages.broker.status).toBe('done');
 });
+
+test('a cut-off synthesis is a model failure, named as such, not a verdict', () => {
+  const cut = { stage: 'synthesis' as const, loop: 2, max_gen_len: 8192, prompt_tokens: 6877 };
+  const r = run(...happy.slice(0, -2), ev({ type: 'synthesis', data: {}, message: '', loop: 2 }),
+    ev({ type: 'error', message: 'Loop 2 synthesis was cut off at 8,192 tokens (stop_reason=length)', cut_off: cut }));
+  expect(r.verdict).toBeUndefined();
+  expect(r.cutOff).toEqual(cut);
+  expect(r.stages.synthesis.status).toBe('failed');
+  expect(outcomeTag(r)).toEqual({ tag: 'CUT OFF', color: 'var(--bad)' });
+});
