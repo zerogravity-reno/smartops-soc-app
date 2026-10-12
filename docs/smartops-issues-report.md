@@ -33,8 +33,9 @@ Runs up to `b3aa0dd2` investigated the same Splunk ES notable: *Threat - Custom 
 | `2a71757f` | 2026-10-11 | TRUE_POSITIVE 95/45/25, 1 round | Baseline on PR #6 + `18f7719` (B15), tier A, same alert as `874ab334`. First round today the gate accepted: 5 refs held, 4 of them endpoint. 0 `stop_reason=length`, 0 repeats, 0 re-asks; all 15 domain calls in 44 s. Broker 6m39s, $1.81. Of synthesis's four reasons only the download chain holds: the "encoded commands" decode to `$env:username`, "Atomic Red Team" is a module import of installed test tooling, and the "suspicious hash" is powershell.exe's own, read as svcupdate.dat's (B40). The gate checks refs, not reasoning (Analyst side: T21, T24) |
 | `aab8e000` | 2026-10-12 | TRUE_POSITIVE 90/25/10, 2 rounds | First live check of AR11 round 2 (in-process, no MCP warm-up). B42's unanswerable reasons all short. Round 1 TP 95 refused on `T1:file`. Synthesis read the private-address footer as a VirusTotal judgement (B43). Broker $0.87 + $0.32 |
 | `204888fd` | 2026-10-12 | REQUIRES_INVESTIGATION, 2 rounds | Round 2 TP 98/25/18 refused on refs written `FU2:FU2`. B43 again ("VirusTotal cannot provide information about them"). FU3's file step repeated its first search and ended incomplete (B44). Broker $0.97 + $0.63 |
-| `75984491` | 2026-10-12 | stopped in round 2 | 35/40/30 after round 1. Broker $0.17 |
+| `75984491` | 2026-10-12 | stopped in round 2 | Splunk's MCP client returned no tools, so every siem step was rejected (AR11 integration: no per-round warm-up, fixed `7901a43`). Broker $0.17 |
 | `c8dd42cf` | 2026-10-12 | REQUIRES_INVESTIGATION, 2 rounds | Leaned FALSE_POSITIVE: 65/88/75, then 55/95/65. Round 2 met the score rule and was refused on refs, one of them `L3-G1:endpoint: step siem_file_events is incomplete` (B44). Broker $0.52 + $0.53 |
+| `16386362` | 2026-10-12 | no verdict, 3 rounds | Same no-tools failure in all 3 rounds: 0 siem queries. The payload showed empty domains with no reason, and round 4's synthesis was cut off (T15) while writing BENIGN 95 from the silence. Fixed `7901a43` |
 
 **Baseline checks on `89674d75`** (the list in `docs/handover-2026-10-10.md`):
 - **Held:**
