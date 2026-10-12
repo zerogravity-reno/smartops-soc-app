@@ -1,4 +1,4 @@
-# Tool Broker fixes: timesheet (2026-09-29 → 2026-10-11)
+# Tool Broker fixes: timesheet (2026-09-29 → 2026-10-12)
 
 **What this measures.** Time spent in Claude Code sessions on this repo, read from the session transcripts' message timestamps (local time, +03:00). A session's *active* time sums the gaps between consecutive messages and leaves out any gap longer than a cutoff:
 - **45-min cutoff (used for the totals):** counts waits on live runs and reviews, which often go 20–40 minutes without a message.
@@ -10,11 +10,11 @@
 
 | | Hours |
 |---|---|
-| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 46.9 |
-| Of which Broker and sub-analyst work | **≈ 32.8** |
-| Lower bound for the Broker work (15-min cutoff) | ≈ 23.8 |
+| All sessions on this repo, 09-29 → 10-12 (45-min cutoff, frontend sessions excluded) | 60.2 |
+| Of which Broker and sub-analyst work | **≈ 40.5** |
+| Lower bound for the Broker work (15-min cutoff) | ≈ 29.4 |
 
-The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, the 10-11 architecture audit and cleanups (AR1–AR11), G1/G2 coded on the Analyst side and reverted, and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
+The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, the 10-11 architecture audit and cleanups (AR1–AR11), G1/G2 coded on the Analyst side and reverted, and the handovers themselves. The frontend sessions (`4ca714f1` 1.7 h; `dd4e13fc` 0.8 h and `1365d3c2` 0.7 h on 10-12) are left out. On 10-12 the AR11 merge (`b58e3307`, `4ef63fc4`) is counted in the total but not as Broker work; Asana tracking of the Broker subtasks is counted as Broker work.
 
 ## By item
 
@@ -64,7 +64,13 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | G1–G3, B38 | Evidence-gate bugs and code-count rows registered from the two baselines; where the gates live (Analyst side); handover | 0.7 | 10-11 | (docs) | `e8d949af`, `942115f7` | — |
 | Efficiency plan | Cost and latency per role, wasted calls, 14 ranked items (smartops-worker) | 0.5 | 10-11 late | `docs/efficiency-plan-2026-10-11.md` (untracked) | `e8d949af`, `942115f7` | — |
 | Handoff timing | Analyst ↔ Broker handoff traced; serial fetch is ~70% of a round (942115f7 L3: 5m24s of 6m43s) | 0.15 | 10-11 late | — | `942115f7`, `e8d949af` | — |
-| B15 | A/B of 5 prompt versions on the 6 lost endpoint slices (0/6 → 6/6); the example sentence was the loop seed, removed in every domain; sub-analyst Bedrock key diagnosed | 0.8 | 10-11 late | `18f7719` (PR #6) | replays of `e8d949af`/`942115f7` slices, all 3 domains through `gather_finding` | fifth pass; held offline, live check pending |
+| B15 | A/B of 5 prompt versions on the 6 lost endpoint slices (0/6 → 6/6); the example sentence was the loop seed, removed in every domain; sub-analyst Bedrock key diagnosed | 1.35 | 10-11 late | `18f7719` (PR #6) | replays of `e8d949af`/`942115f7` slices, all 3 domains through `gather_finding` | fifth pass; held offline, live check pending |
+| B39, B40, B41 | `2a71757f` baseline read; `-` placeholder in `_first`; step status from rows; row-cap warning once | 1.2 | 10-11 night | `d259509`, `c052186` | `2a71757f` | — |
+| B20, B38, B39, B41 | "Can't answer" recorded, not searched; code-count calls as discovery; cumulative step rows | 1.7 | 10-12 | `01877a9`, `20c83b9`, `e8b0ffb` | `451334ad`, `ea38cb13` | B39 second pass |
+| 10-12 run reads | `aab8e000`, `204888fd`, `c8dd42cf`: B42–B45 and G1–G3 registered | 0.7 | 10-12 pm, eve | `9a8a118` | `aab8e000`, `204888fd`, `c8dd42cf` | — |
+| B42–B45, B11, B16 | Short unanswerable reasons; footer without VirusTotal; categories in the siem mission; client cleanup per round; `events=`; parallel fetch | 1.35 | 10-12 close | `4759d2b`, `ad5afe6`, `5b75365`, `28ca7f7`, `0430974`, `cfab611` | `ae7d41b0`, `b7359eab` | — |
+| Asana tracking | One subtask per B bug; status, stage and comments kept in line with the report | 1.75 | 10-12 | — | — | — |
+| `b7359eab` check | B11, B16, B44, B45 held; B43, B24 not exercised; B46 and B47 registered | 0.5 | 10-12 close | (docs) | `b7359eab` | — |
 
 ## By session
 
@@ -96,7 +102,16 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | `d862cc12` | 10-11 10:22 → 14:42 (parallel) | 1.03 / 0.22 | 0% | 0 | — | architecture audit AR1–AR10 (not Broker) |
 | `cf9a7026` | 10-11 11:58 → 14:41 | 1.81 / 1.42 | 100% | 1.8 | 10-11 close | `a818a3fd` read; B34–B37, B15 code lever, PR #6; `e8d949af`/`942115f7` read; gate bugs G1–G3 and where they live |
 | `38648d29` | 10-11 14:42 → 15:49 (parallel) | 1.11 / 0.84 | ~45% | 0.5 | (this update) | efficiency plan; AR3/AR4/AR5/AR7/AR9 engine half and AR11 (not Broker) |
-| `a1e6792c` | 10-11 14:42 → 15:50 | 1.12 / 1.12 | ~85% | 0.95 | 10-11 late | handoff timing; B15 A/B and `18f7719`; G1/G2 coded and reverted (Analyst side) |
+| `a1e6792c` | 10-11 14:42 → 16:30 | 1.79 / 1.23 | ~85% | 1.5 | 10-11 late | handoff timing; B15 A/B and `18f7719`; G1/G2 coded and reverted (Analyst side) |
+| `1fb79bee` | 10-11 16:50 → 20:39 | 1.31 / 0.58 | ~90% | 1.2 | 10-11 night | `2a71757f` baseline; B39–B41 |
+| `b58e3307` | 10-11 16:09 → 22:05 (parallel) | 2.51 / 1.36 | 0% | 0 | 10-11 worker | webapp decoupling, AR11 plan, frontend port (not Broker) |
+| `91116a66` | 10-11 20:55 → 10-12 13:20 | 2.26 / 1.39 | ~75% | 1.7 | 10-12 | B20, B38, B39, B41; `451334ad`, `ea38cb13` |
+| `4ef63fc4` | 10-12 11:09 → 12:55 (parallel) | 1.77 / 1.49 | 0% | 0 | 10-12 worker | AR11 merge (not Broker) |
+| `9d96eb0d` | 10-12 11:48 → 16:58 (parallel) | 1.50 / 1.17 | 100% | 1.5 | — | smartops-worker2: Asana Broker subtasks |
+| `3f408d18` | 10-12 13:24 → 15:35 | 0.78 / 0.78 | ~90% | 0.7 | 10-12 pm, eve | `aab8e000`, `204888fd`, `c8dd42cf` reads; B42–B45 registered |
+| `e76476ac` | 10-12 15:35 → 17:22 | 1.78 / 1.78 | ~75% | 1.35 | 10-12 close | B42–B45, B11, B16; AR12–AR14, AR3, W9/P3 (not Broker) |
+| `6a307d3d` | 10-12 17:23 → 17:37 | 0.24 / 0.24 | 100% | 0.25 | — | Asana update from the close brief |
+| `75bc991e` | 10-12 17:23 → 17:55 | 0.5 / 0.5 | 100% | 0.5 | (this update) | `b7359eab` check; B46, B47; report, Asana, timesheet |
 
 ## What stands out
 
