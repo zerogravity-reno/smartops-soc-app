@@ -15,7 +15,7 @@ from contracts import TaskInputFile
 from smartops import telemetry
 from smartops.broker import round_dir as broker_round_dir, runs_root
 from smartops.context import _instant, alert_entities
-from smartops.main import round_args, run_round
+from smartops.broker import round_args, run_round
 from smartops.subagent_analysts.model import AnalystModel
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "analyst_system_prompt.txt"

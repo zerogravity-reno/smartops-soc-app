@@ -1428,7 +1428,7 @@ class TestFetchPlanAndReport:
         and stamps the same join key -- so it is retargeted rather than dropped.
         """
         from contracts import HypothesisFindings
-        from smartops.main import _persist_findings
+        from smartops.broker import _persist_findings
 
         run_a = tmp_path / "run_a"
         run_b = tmp_path / "run_b"

@@ -35,7 +35,7 @@ from smartops.bench import (
     run,
     run_interleaved_benchmark,
 )
-from smartops.main import _PLACEHOLDER_MODEL
+from smartops.broker import _PLACEHOLDER_MODEL
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
 
 from contracts import (

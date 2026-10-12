@@ -46,7 +46,7 @@ from contracts import AnalystDomain, AnalystTask, Entity, Scope, SubtaskResult, 
 from smartops.broker import broker_task
 from smartops.budget import Budget, ModelChoice, model_choice_from_env
 from smartops.domains import spec_for
-from smartops.main import _PLACEHOLDER_MODEL, _scripted_invoker
+from smartops.broker import _PLACEHOLDER_MODEL, _scripted_invoker
 from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
 from smartops.subagents import domain_runner
 from smartops.tools.registry import load_mcp_servers, warm_mcp_clients

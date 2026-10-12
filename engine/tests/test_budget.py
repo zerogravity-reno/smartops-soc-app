@@ -253,7 +253,7 @@ class TestPerTaskOutputAllowance:
         # a818a3fd G1 (B-2): the third siem step was refused with $9.96 left.
         from smartops.broker import DEFAULT_BROKER_TURNS
         from smartops.budget import loop_output_tokens
-        from smartops.main import DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK
+        from smartops.broker import DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK
         from smartops.subagents import _recovery_output_tokens
 
         broker = ModelChoice(model_id="m", pricing_key="claude-haiku-4-5", effort="high")

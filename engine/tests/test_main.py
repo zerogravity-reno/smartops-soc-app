@@ -246,7 +246,7 @@ class TestResultLineRendersEveryFindingsShape:
 
     def test_verdicts_render_as_a_count_rather_than_crashing(self):
         from contracts.findings import VtFindings, VtVerdict
-        from smartops.main import _result_line
+        from smartops.broker import _result_line
 
         from contracts import SubtaskResult, SubtaskStatus
 
@@ -272,7 +272,7 @@ class TestResultLineRendersEveryFindingsShape:
 
     def test_row_bearing_findings_still_sum_their_rows(self):
         from contracts.findings import ResultSet, SiemFindings
-        from smartops.main import _result_line
+        from smartops.broker import _result_line
 
         from contracts import SubtaskResult, SubtaskStatus
 
@@ -342,6 +342,7 @@ class TestTheCliRunsTheAnalystsBlind:
         self, tmp_path, monkeypatch, capsys
     ):
         from smartops.subagent_analysts.model import AnalystResponse
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         seen: list[tuple[str, str]] = []
@@ -366,9 +367,9 @@ class TestTheCliRunsTheAnalystsBlind:
             return outcome
 
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(main_mod, "broker_task", fake_broker_task)
-        monkeypatch.setattr(main_mod, "analyst_model_from_env", lambda: Recording())
-        monkeypatch.setattr(main_mod, "load_mcp_servers", lambda *a, **k: None)
+        monkeypatch.setattr(broker_mod, "broker_task", fake_broker_task)
+        monkeypatch.setattr(broker_mod, "analyst_model_from_env", lambda: Recording())
+        monkeypatch.setattr(broker_mod, "load_mcp_servers", lambda *a, **k: None)
 
         rc = await main_mod._run([
             "--goal", "what happened",
@@ -389,6 +390,7 @@ class TestTheCliRunsTheAnalystsBlind:
     ):
         """No verdict is printed because none is ours to make."""
         from smartops.subagent_analysts.model import AnalystResponse
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         class Stub:
@@ -408,9 +410,9 @@ class TestTheCliRunsTheAnalystsBlind:
             return outcome
 
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(main_mod, "broker_task", fake_broker_task)
-        monkeypatch.setattr(main_mod, "analyst_model_from_env", lambda: Stub())
-        monkeypatch.setattr(main_mod, "load_mcp_servers", lambda *a, **k: None)
+        monkeypatch.setattr(broker_mod, "broker_task", fake_broker_task)
+        monkeypatch.setattr(broker_mod, "analyst_model_from_env", lambda: Stub())
+        monkeypatch.setattr(broker_mod, "load_mcp_servers", lambda *a, **k: None)
 
         await main_mod._run([
             "--goal", "what happened", "--entity", "user:bostoll",
@@ -426,7 +428,7 @@ class TestTheCliRunsTheAnalystsBlind:
 
 
 def test_round_args_are_the_cli_defaults_plus_overrides():
-    from smartops.main import round_args
+    from smartops.broker import round_args
 
     args = round_args(batch_id="r1-L2")
     assert args.batch_id == "r1-L2" and args.subagent_turns == 25 and args.task_file is None
