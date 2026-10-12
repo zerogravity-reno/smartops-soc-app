@@ -105,7 +105,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
 | B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed on `smartops-loop-fix`: budget re-measured, 16,480 → 27,608 characters; replayed on `89674d75`, 0 → 43/51, 59/59, 52/52 observations; live check pending |
 | B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Fixed (`18f7719`): the example sentence was the loop seed, removed in every domain. Held live on `2a71757f` (0 cut-offs, 15/15 domains) |
-| B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Cache fixed on `smartops-loop-fix`; parallel fetch is a decision (Mohammed) |
+| B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Fixed: cache on `smartops-loop-fix`; tasks fetch in parallel, at most 3 at a time (`cfab611`); live check pending |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
 | B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; held on `89674d75` |
@@ -639,9 +639,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - The narratives describe the OneDrive → PowerShell → `win-agent-2.4.1.bin` download in four tasks.
   - Still open: narratives carry copied times and counts that the prompt forbids, and T3 calls event codes 4100/4104 "blocked scripts" (B11).
 
-**B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Cache fixed; parallel tasks deferred.*
+**B16. VirusTotal re-queries the same indicator in every task; tasks run in sequence.** *Medium. Fixed (`cfab611`); live check pending.*
 - **Evidence:** `25965109` looked up one hash 7 times in one round. Round 2 of `874ab334` took 10.5 minutes, 1–4 minutes per task, one after another.
 - **Fix:** `virustotal._lookup` caches answers per process (one round); errors aren't cached, so a rate limit is retried. Running tasks in parallel stays deferred (`main.py` phase A, Splunk quotas) until a live run measures the headroom.
+- **Parallel fetch (`cfab611`, Mohammed's call 2026-10-12):** `FETCH_CONCURRENCY = 3`. On `ae7d41b0` serial fetch was 176 s of a 213 s Broker phase. The lab search head allows 16 concurrent searches (6 + 1 per CPU x 10), the MCP account is admin (quota 50), and a task runs up to ~3 siem steps at once, so 3 tasks peak near 9. Each task's log lines are buffered and written whole, in task order.
 
 **B17. A PID sent inside the process name.** *Low. Fixed on `smartops-loop-fix`.* `process=powershell.exe (PID 12345)` crossed as one value; `to_task_file` now sends `process=powershell.exe` and `process_id=12345`. `12345` also looks like an Analyst placeholder.
 
@@ -1215,7 +1216,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 39 | 2 | 2 | No Broker work left. B2, B6 wait on the Analyst; B16 (parallel fetch) and B20's scoping are decisions or Analyst side |
+| Broker | 40 | 1 | 2 | No Broker work left. B2, B6 and B20's scoping wait on the Analyst's follow-ups |
 | Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
 | Triage (Analyst) | 1 | 2 | 24 | T2–T27 |
 | Gate (Analyst) | 0 | 0 | 3 | G1–G3 |
@@ -1224,9 +1225,9 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 | Frontend | 1 | 0 | 0 | W9 fixed with P3 |
 | Cost, audit, security, handoff | 14 | 0 | 0 | None |
 
-- **Broker:** every Broker bug is fixed (B43, B44, B45 and B11 on 2026-10-12). B16 parallel fetch is a decision; B2, B6 and B20's scoping wait on the Analyst's follow-ups.
+- **Broker:** every Broker bug is fixed (B43, B44, B45, B11 and B16 on 2026-10-12). B2, B6 and B20's scoping wait on the Analyst's follow-ups.
 - **Live checks pending:**
-  - AR12–AR14, B44 and B45 on the next run.
+  - AR12, B44, B45 and AR3 held on `ae7d41b0`. Still pending: B16 (parallel fetch), B24 and AR13/AR14 (need an outage).
   - B24's reconnect, which is still unexercised.
 - **Decisions (Mohammed):** B16 parallel fetch; the B15 safety net; T25 (one bad ref blocks a verdict); T20; P1's raw time fields.
 - **Analyst owner, routed:**
