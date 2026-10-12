@@ -8,12 +8,13 @@ here by code (`verdict_gate`), not taken from the model.
 import asyncio
 import json
 import re
+from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from contracts import TaskInputFile
 from smartops import telemetry
-from smartops.broker import round_dir as broker_round_dir, runs_root
+from smartops.broker import load_run_artifacts, round_dir as broker_round_dir, runs_root
 from smartops.context import _instant, alert_entities
 from smartops.broker import round_args, run_round
 from smartops.subagent_analysts.model import AnalystModel
@@ -554,7 +555,7 @@ def _broker_round(tasks: list, run_id: str, loop_num: int, q, ctrl: dict,
     """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
 
     In process: `run_round` on this run's thread, on a loop of its own so Stop
-    can cancel it. The Broker's progress lines go to the round's `broker.log` and
+    can cancel it (`ctrl["cancel"]`). The Broker's progress lines go to the round's `broker.log` and
     the UI's log panel. The link says where everything for this round lives; it
     has an `error` key when there is nothing to judge.
     """
@@ -578,34 +579,56 @@ def _broker_round(tasks: list, run_id: str, loop_num: int, q, ctrl: dict,
     tasks_in = [(t.to_analyst_task(), t.question) for t in TaskInputFile.model_validate(task_file).tasks]
 
     async def one_round():
+        loop, me = asyncio.get_running_loop(), asyncio.current_task()
+
+        def cancel() -> None:  # the stop endpoint, on another thread
+            try:
+                loop.call_soon_threadsafe(me.cancel)
+            except RuntimeError:
+                pass  # the round already ended and its loop is closed
+
+        ctrl["cancel"] = cancel
         round_dir_token = broker_round_dir.set(round_dir)
         try:
+            if ctrl.get("stop") is not None and ctrl["stop"].is_set():
+                raise asyncio.CancelledError  # Stop landed before the cancel was armed
             with telemetry.round_span(batch_id, telemetry.traceparent(run_id, loop_num)):
                 return await asyncio.wait_for(run_round(tasks_in, round_args(batch_id=batch_id)), BROKER_TIMEOUT_S)
         finally:
+            ctrl["cancel"] = None
             broker_round_dir.reset(round_dir_token)
 
-    loop = asyncio.new_event_loop()
     with log_path.open("w", encoding="utf-8", buffering=1) as log:  # line-buffered: live on disk (O3)
         def line(text: str) -> None:
-            log.write(text + "\n")
+            try:
+                log.write(text + "\n")
+            except ValueError:
+                return  # the round is over: a worker thread still printing after Stop
             emit(q, "broker_log", {"line": text}, loop=loop_num)
 
+        def failed(error: str) -> tuple[dict, dict]:
+            line(f"error: {error}")  # in the log, as the CLI's `error:` line was
+            # The audit still gets whatever the Broker recorded before it failed.
+            fetched = [(None, None, SimpleNamespace(report=load_run_artifacts(p.parent), run_dir=p.parent))
+                       for p in round_dir.glob("*/report.json")]
+            runs = broker_runs(task_ids, fetched)
+            return {}, {**link, "log": str(log_path), "broker_runs": runs,
+                        "handshake": handshake(task_ids, runs, None), "error": error}
+
         with telemetry.print_to(line):
-            round_task = loop.create_task(one_round())
-            ctrl["cancel"] = lambda: loop.call_soon_threadsafe(round_task.cancel)  # the stop endpoint
             try:
-                result = loop.run_until_complete(round_task)
+                # asyncio.run's teardown: pending tasks cancelled, and the to_thread
+                # workers (sub-analyst calls) finish before the log closes.
+                with asyncio.Runner() as runner:
+                    result = runner.run(one_round())
             except asyncio.CancelledError:
                 raise RunStopped()  # cancelled on purpose: not a broker failure
             except TimeoutError:
-                return {}, {**link, "log": str(log_path),
-                            "error": f"broker timed out after {BROKER_TIMEOUT_S // 60} minutes, see {log_path}"}
+                return failed(f"broker timed out after {BROKER_TIMEOUT_S // 60} minutes, see {log_path}")
             except Exception as exc:
-                return {}, {**link, "log": str(log_path), "error": f"broker failed: {exc} (log: {log_path})"}
-            finally:
-                ctrl["cancel"] = None
-                loop.close()
+                return failed(f"broker failed: {exc} (log: {log_path})")
+    if ctrl.get("stop") is not None and ctrl["stop"].is_set():
+        raise RunStopped()  # Stop landed as the round finished
     link["log"] = str(log_path)
 
     link["broker_runs"] = broker_runs(task_ids, result.fetched)

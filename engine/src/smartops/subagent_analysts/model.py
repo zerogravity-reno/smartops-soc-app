@@ -121,6 +121,12 @@ threads from re-colliding on each retry.
 """
 
 
+_TIMEOUTS = {"connect_timeout": 15, "read_timeout": 600}
+"""Seconds. botocore's default read is 60, and a full 8,192-token Analyst synthesis
+took ~72 s on ea38cb13: it would time out and be retried, and billed, up to 3 times.
+600 is what the webapp's own client allowed."""
+
+
 def _botocore_config() -> Any:
     """`Config(retries=_RETRY_CONFIG)`, imported lazily.
 
@@ -129,7 +135,7 @@ def _botocore_config() -> Any:
     """
     from botocore.config import Config
 
-    return Config(retries=_RETRY_CONFIG)
+    return Config(retries=_RETRY_CONFIG, **_TIMEOUTS)
 
 
 # Single source of truth for the template, and it must match the model's own
@@ -307,6 +313,7 @@ class AnalystModel:
             config=Config(
                 auth_scheme_preference="httpBearerAuth",
                 retries=_RETRY_CONFIG,
+                **_TIMEOUTS,
             ),
         )
 
