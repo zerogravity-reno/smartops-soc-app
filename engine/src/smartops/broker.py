@@ -1538,8 +1538,8 @@ reserve per step, so 10.0 clears it with headroom. A ceiling is not a bill:
 reservations settle to actual, measured ~1.27x lower.
 
 **Multiplied by the task count**, because a `Budget` is one cumulative pot and a
-task file holds several investigations. Fetch runs sequentially so only one task
-ever *holds* at a time, but each one settles into the same pot -- so a 3-task
+task file holds several investigations. Up to `FETCH_CONCURRENCY` tasks *hold* at
+once (3 x ~$7.67 fits any pot of 3+ tasks at $10 each), and each settles into the same pot -- so a 3-task
 file against a flat $10 would exhaust it partway through the second
 investigation, and a budget refusal reads as a data gap (that is what
 `StepOutcome.refused_for_budget` exists to disambiguate) rather than as the cost
@@ -1548,6 +1548,11 @@ whole-run ceiling, on the grounds that someone naming a number means it.
 """
 
 DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK = 200_000
+
+FETCH_CONCURRENCY = 3
+"""Tasks fetched at once in a round (B16). See PHASE A in `_round` for the sizing."""
+# ponytail: sized on the lab search head (16 concurrent searches); a production
+# Splunk with a non-admin account needs its own number.
 """Default hard ceiling on total output tokens, **per task**.
 
 Orthogonal to `--budget-usd`. The USD hold is sized from an optimistic input
@@ -2319,24 +2324,18 @@ async def _round(
         import contextlib
         skills_ctx = contextlib.nullcontext()
 
-    # PHASE A -- fetch, one task at a time.
+    # PHASE A -- fetch, up to FETCH_CONCURRENCY tasks at a time (B16).
     #
-    # Sequential on purpose. A single investigation already issues several
-    # concurrent Splunk searches (a realistic plan is 3 siem steps plus one each
-    # edr/vt/ndr, per `DEFAULT_BUDGET_USD_PER_TASK`), and Strands runs a turn's
-    # tool calls concurrently by default. Running the Brokers one at a time keeps
-    # the peak at what a single run already does rather than multiplying it by
-    # the task count against Splunk's per-user search quotas -- where a queued or
-    # rejected search returns as a subagent `error`/`no_data` and reads as a data
-    # gap rather than as the capacity problem it is. The model tier says the same
-    # thing: the subagents' `max_attempts=2` was chosen because "concurrent
-    # subagents would stampede in lockstep", sized for ONE investigation's
-    # concurrency.
+    # Serial fetch was 176 s of ae7d41b0's 213 s Broker phase (five tasks, 10-51 s
+    # each). The ceiling is Splunk's concurrent-search limit, not the account's
+    # quota: the lab's MCP account is admin (srchJobsQuota 50), and the search head
+    # allows 6 + 1 per CPU x 10 cores = 16, shared with ES's scheduled searches. A
+    # task runs up to ~3 siem steps at once, so 3 tasks peak near 9 searches.
+    # A queued or rejected search returns as `error`/`no_data` and reads as a data
+    # gap, so stay under the limit rather than at it.
     #
-    # Nothing about this is expensive to revisit -- the loop below becomes
-    # `asyncio.gather` over the same awaitables -- but it should be revisited on
-    # measurements from a live run, not on the assumption that Splunk has the
-    # headroom.
+    # Each task's printed lines are buffered and written out whole, in task order,
+    # so the round's log reads as it did when fetch was serial.
     fetched: list[tuple[AnalystTask, str | None, object]] = []
     failures = 0
     with skills_ctx:
@@ -2350,7 +2349,17 @@ async def _round(
             else None
         )
 
-        for position, (task, hypothesis) in enumerate(tasks, start=1):
+        from smartops.telemetry import print_to
+
+        gate = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+        async def fetch(position: int, task: AnalystTask, hypothesis: str | None):
+            lines: list[str] = []
+            async with gate:
+                with print_to(lines.append):
+                    return lines, await _fetch_one(position, task, hypothesis)
+
+        async def _fetch_one(position: int, task: AnalystTask, hypothesis: str | None):
             if len(tasks) > 1:
                 print(f"\n{'=' * 70}")
                 print(f"fetching {position}/{len(tasks)}: {task.task_id} / {task.hypothesis_id}")
@@ -2378,8 +2387,7 @@ async def _round(
                 )
                 logging.getLogger(__name__).debug("broker_task failed", exc_info=True)
                 print(f"spend by role (micro-USD): {budget.spend_by_role() or '(nothing spent)'}")
-                failures += 1
-                continue
+                return None
 
             print(f"task:     {task.task_id}")
             print(f"goal:     {task.goal}")
@@ -2394,10 +2402,21 @@ async def _round(
             _print_outcome(outcome, budget)
             if len(tasks) > 1:
                 # `_print_outcome`'s ledger lines are a running total across every
-                # task so far, which inside one task's block reads as this task's
-                # own spend.
+                # task finished so far, which inside one task's block reads as this
+                # task's own spend.
                 print(f"this task: {budget.spend_for_task(task.task_id)} micro-USD")
-            fetched.append((task, hypothesis, outcome))
+            return task, hypothesis, outcome
+
+        done = await asyncio.gather(
+            *(fetch(position, task, hypothesis) for position, (task, hypothesis) in enumerate(tasks, start=1))
+        )
+        for lines, item in done:
+            for line in lines:
+                print(line)
+            if item is None:
+                failures += 1
+            else:
+                fetched.append(item)
 
     analysis_failures, findings = await _analyse_all(
         fetched, analyst_model=analyst_model, task_count=len(tasks)

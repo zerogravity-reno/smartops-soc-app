@@ -437,18 +437,18 @@ class TestTheRunShapeOverSeveralTasks:
             assert (findings.task_id, findings.hypothesis_id) == (task_id, hypothesis_id)
             assert (payload.task_id, payload.hypothesis_id) == (task_id, hypothesis_id)
 
-    async def test_fetch_is_sequential_and_in_file_order(self, tmp_path, monkeypatch):
-        """Sequential is the whole point: a single investigation already issues
-        several concurrent Splunk searches, and multiplying that by the task
-        count risks queued or rejected searches that read as data gaps."""
+    async def test_fetch_overlaps_up_to_the_cap_and_keeps_file_order(self, tmp_path, monkeypatch):
+        """B16: tasks fetch in parallel, but never more than FETCH_CONCURRENCY at
+        once -- each already issues several concurrent Splunk searches, and past
+        the search head's limit a queued search reads as a data gap."""
         import smartops.broker as broker_mod
         import smartops.main as main_mod
 
+        monkeypatch.setattr(broker_mod, "FETCH_CONCURRENCY", 2)
         path = write_task_file(tmp_path, self.THREE)
 
         async def yield_control():
-            # Gives the loop a chance to interleave if anything ever gathers
-            # these -- without it a sequential-looking result proves nothing.
+            # Lets the loop interleave; without it nothing could ever overlap.
             await asyncio.sleep(0)
 
         order, overlap = self._patch(
@@ -457,8 +457,8 @@ class TestTheRunShapeOverSeveralTasks:
 
         await main_mod._run(["--task-file", str(path), "--families", "siem"])
 
-        assert order == ["T1", "T2", "T3"], "tasks must be fetched in file order"
-        assert overlap["max"] == 1, "two Brokers must never be in flight at once"
+        assert order == ["T1", "T2", "T3"], "tasks must start in file order"
+        assert overlap["max"] == 2, "fetch must overlap, and never past the cap"
 
     async def test_every_analyst_call_runs_in_one_concurrent_burst(
         self, tmp_path, monkeypatch
