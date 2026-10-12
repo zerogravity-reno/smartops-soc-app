@@ -2960,3 +2960,28 @@ class TestOneFolderPerRound:
         assert first.run_dir == tmp_path / "874ab334" / "L2" / "T1"
         assert (first.run_dir / "report.json").is_file() and (first.run_dir / "evidence.json").is_file()
         assert again.run_dir.name == "874ab334-L2-T1"  # a clash takes the full id, never overwrites
+
+
+class TestNothingSearched:
+    """16386362: siem unreachable for three rounds; a round with no rows because a
+    source was down ends the run, one with rows elsewhere goes on."""
+
+    def _findings(self, rows: int, gap: str | None):
+        from contracts import DomainGap, HypothesisFindings, RetrievalSummary, StepSummary
+
+        gaps = [DomainGap(family="siem", reason=gap, served_domains=["endpoint"],
+                          unanswered_domains=["endpoint"])] if gap else []
+        steps = [StepSummary(step_id="s1", family="vt", objective="o", completed=bool(rows),
+                             evaluated=True, confirmed_empty=False, rows_retrieved=rows)]
+        return [HypothesisFindings(task_id="T1", hypothesis_id="T1",
+                                   retrieval=RetrievalSummary(gaps=gaps, steps=steps))]
+
+    def test_an_unreachable_source_and_no_rows_ends_the_round(self):
+        assert broker_module._nothing_searched(self._findings(0, "no_tools_resolved")) == ["siem"]
+
+    def test_rows_from_another_source_keep_the_round_going(self):
+        assert broker_module._nothing_searched(self._findings(3, "no_tools_resolved")) == []
+
+    def test_an_empty_round_with_every_source_up_is_not_a_failure(self):
+        assert broker_module._nothing_searched(self._findings(0, None)) == []
+        assert broker_module._nothing_searched(self._findings(0, "not_configured")) == []

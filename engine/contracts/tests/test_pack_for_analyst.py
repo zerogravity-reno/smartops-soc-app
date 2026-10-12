@@ -13,7 +13,7 @@ def _task(task_id, narrative, summaries):
 def test_a_long_narrative_task_still_gets_summaries_and_the_batch_fits():
     small = _task("t1", "short.", ["~ small#1 " + "x" * 80])
     big = _task("t2", "y" * 3000, [f"~ processes#{i} " + "z" * 300 for i in range(1, 6)])
-    budget = 4200
+    budget = 4260  # sized so one 300-char summary fits; +60 for the empty not_searched lists
 
     payloads = pack_for_analyst([small, big], budget)
 

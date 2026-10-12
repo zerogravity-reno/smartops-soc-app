@@ -2146,6 +2146,20 @@ async def start(mcp_config: str | None = None) -> None:
     await warm_mcp_clients()
 
 
+def _nothing_searched(findings: list[HypothesisFindings]) -> list[str]:
+    """The unreachable families, when they left the whole round with no rows; else [].
+
+    16386362 ran three rounds with siem unreachable: every step rejected, and the
+    Analyst kept asking. A round that retrieved nothing because a source was down
+    ends the run instead. One that got rows elsewhere goes on, saying what is
+    missing (`AnalystPayload.not_searched`).
+    """
+    retrievals = [h.retrieval for h in findings if h.retrieval]
+    if any(s.rows_retrieved for r in retrievals for s in r.steps):
+        return []
+    return sorted({g.family for r in retrievals for g in r.gaps if g.reason == "no_tools_resolved"})
+
+
 @dataclass
 class RoundResult:
     """One round, for an in-process caller: what `_run_round` used to leave only on disk."""
@@ -2366,6 +2380,11 @@ async def run_round(
         fetched, analyst_model=analyst_model, task_count=len(tasks)
     )
     failures += analysis_failures
+    unreachable = _nothing_searched(findings)
+    if unreachable:
+        raise RuntimeError(
+            f"nothing was searched this round: {', '.join(unreachable)} could not be reached (no tools resolved)"
+        )
 
     # One message per task FILE, not per hypothesis: for file input, or a caller
     # that names the batch (the Analyst, in process). The legacy flag path
