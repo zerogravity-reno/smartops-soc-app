@@ -71,7 +71,7 @@ class StickyFailureClient:
     def __init__(self, tools, *, failures: int):
         self._tools = tools
         self._remaining_failures = failures
-        self._failed = False
+        self._connection_failed = False
         self._loaded = None
         self.load_calls = 0
         self.handshakes = 0
@@ -80,21 +80,21 @@ class StickyFailureClient:
 
     async def load_tools(self):
         self.load_calls += 1
-        if self._failed:
+        if self._connection_failed:
             return []
         if self._loaded is not None:
             return self._loaded
         self.handshakes += 1
         if self._remaining_failures > 0:
             self._remaining_failures -= 1
-            self._failed = True
+            self._connection_failed = True
             return []
         self._loaded = self._tools
         return self._loaded
 
     def stop(self, exc_type=None, exc_val=None, exc_tb=None):
         self.stops += 1
-        self._failed = False
+        self._connection_failed = False
         self.consumers = set()
 
     def add_consumer(self, consumer_id, **kwargs):
@@ -333,7 +333,8 @@ class TestConcurrentResolutionDoesNotRaceTheConnection:
         await warm_mcp_clients()
 
         assert await tools_for("siem") == []
-        assert client.handshakes == registry_module.WARM_ATTEMPTS, "retries must be bounded"
+        # Warm-up retries are bounded; each later dispatch tries once more (sticky-flag reset).
+        assert client.handshakes == registry_module.WARM_ATTEMPTS + 1, "retries must be bounded"
 
     async def test_resolving_nothing_after_every_attempt_is_logged_at_warning(
         self, monkeypatch, caplog
@@ -354,6 +355,16 @@ class TestConcurrentResolutionDoesNotRaceTheConnection:
         assert warnings, "a client resolving no tools must warn"
         assert any("NO tools" in r.getMessage() for r in warnings)
 
+    async def test_a_sticky_failure_is_retried_at_dispatch(self, monkeypatch):
+        # 16386362: one failed handshake left _connection_failed set; Splunk was up
+        # (the queue reconnected through call_tool) but load_tools() kept returning [].
+        client = StickyFailureClient(tools=["splunk_run_query"], failures=1)
+        _install_clients(monkeypatch, siem=[client])
+        assert await client.load_tools() == []  # the one failed handshake
+
+        assert await tools_for("siem") == ["splunk_run_query"]
+        assert client.stops == 1
+
     async def test_a_client_dead_at_boot_recovers_at_the_next_round(self, monkeypatch):
         # 16386362: Splunk failed every boot attempt, and in-process rounds never
         # retried it, so three rounds ran with no SIEM. run_round warms again.
@@ -361,8 +372,7 @@ class TestConcurrentResolutionDoesNotRaceTheConnection:
 
         client = StickyFailureClient(tools=["splunk_run_query"], failures=registry_module.WARM_ATTEMPTS)
         _install_clients(monkeypatch, siem=[client])
-        await warm_mcp_clients()  # server boot
-        assert await tools_for("siem") == []
+        await warm_mcp_clients()  # server boot: every attempt fails
 
         with pytest.raises(AttributeError):  # args carry no model settings: stops right after the warm-up
             await broker.run_round([], SimpleNamespace(families=None))

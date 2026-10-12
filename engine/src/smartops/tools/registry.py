@@ -679,4 +679,9 @@ async def _load_tools_off_loop(client: MCPClient) -> Sequence[Any]:
         if _session_died(client):
             logger.warning("an MCP client's session ended mid-run; reconnecting it")
             await asyncio.to_thread(_reset, client)
+        elif getattr(client, "_connection_failed", False):
+            # Sticky until stop(): load_tools() returns [] without trying, even when
+            # call_tool() has since reconnected the same client (16386362's queue worked).
+            logger.warning("an MCP client's earlier connection failure is sticky; retrying it")
+            await asyncio.to_thread(_reset, client)
         return await asyncio.to_thread(asyncio.run, client.load_tools())
