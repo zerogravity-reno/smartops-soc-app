@@ -45,20 +45,21 @@ export function buildContract(f: AlertFields, raw: Raw, eventTime: string | null
     rule_title: rule_name || 'Unknown Alert', severity_level: 'High',
     src: src_ip || '0.0.0.0', dest_host: dest || 'Unknown', user_name: user || 'N/A',
     proc_name: 'unknown.exe', proc_cmd: signature || 'N/A', file_hash: hash || 'N/A', domain_query: domain || 'N/A',
-    index: 'win_sysmon', sourcetype: 'XmlWinEventLog:Microsoft-Windows-Sysmon/Operational',
     _raw_spl: deployed_spl || undefined,
   };
 
   // The alert's own time, in UTC. It was the browser's "now", which sent run cecd266a
   // searching 3 hours after a +03:00 alert; then the notable's _time, which sent run
-  // 600721d3 74 minutes late. The import resolves it from firstTime.
-  const d = new Date(eventTime || ([] as unknown[]).concat(raw._time)[0] as string || NaN);
+  // 600721d3 74 minutes late. The import resolves it from firstTime; unresolved stays
+  // unset, never the notable time (W9).
+  const d = new Date(eventTime || NaN);
   const normalized_seed = clean({
     event_id: 'evt-' + Math.floor(Math.random() * 1000000),
     event_time: isNaN(d.getTime()) ? null : d.toISOString(),
     ingest_time: new Date().toISOString(),
     detection: { name: rule_name || null, severity: 'high' },
-    source_context: { siem: 'Splunk ES', index: 'win_sysmon', sourcetype: 'XmlWinEventLog' },
+    // No index: 'win_sysmon' never existed (P3); the Broker finds the host's indexes itself.
+    source_context: { siem: 'Splunk ES' },
     entities: { hostname: dest || null, user: user || null, src_ip: src_ip || null },
     process: {
       process_name: raw.process_name || signature || null, process_path: raw.process_path || null, process_id: raw.process_id || null,
