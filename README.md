@@ -205,21 +205,19 @@ The UI log and screenshots land in `tests/test-integration/scripts/rep1*`, and t
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/` | web UI |
-| `GET` | `/debug` | debug page |
-| `GET` | `/api/import-from-splunk` | newest notable event from Splunk ES, with its rule's SPL |
+| `GET` | `/api/incident-queue` | notables for the queue |
+| `GET` | `/api/import-from-splunk` | one notable event from Splunk ES, with its rule's SPL |
 | `POST` | `/api/escu` | match a rule name against the ESCU corpus |
 | `POST` | `/api/opencti` | OpenCTI lookup for the alert's observables |
-| `POST` | `/api/analyst/start` | start the Analyst plan (async) |
-| `GET` | `/api/analyst/result/{job_id}` | poll for the plan |
-| `POST` | `/api/analyst` | Analyst plan, synchronous (older path) |
-| `POST` | `/api/synthesis` | one synthesis call (older path) |
-| `POST` | `/api/run` | start the full investigation; returns `run_id` |
-| `GET` | `/api/run/stream/{run_id}` | investigation events (SSE) |
+| `POST` | `/api/run` | start the full investigation (plan, rounds, synthesis); returns `run_id` |
+| `POST` | `/api/run/{run_id}/stop` | stop a run |
+| `POST` | `/api/run/{run_id}/pause` | pause a run |
+| `POST` | `/api/run/{run_id}/resume` | resume a paused run |
+| `GET` | `/api/run/stream/{run_id}` | investigation events (SSE); resumes after `Last-Event-ID` |
 
 ---
 
 ## Status
 
-- Open bugs: [`docs/analyst-bug-report.md`](docs/analyst-bug-report.md). It has two sections: Analyst, and the integration release.
-- Latest handover: [`docs/handover-2026-09-30.md`](docs/handover-2026-09-30.md).
-- The secrets committed in the 2026-09-20 integration release are still in git history and must be rotated (bug report, C1–C2).
+- Open bugs: [`docs/smartops-issues-report.md`](docs/smartops-issues-report.md); "Where things stand" under Priorities is the current summary.
+- The secrets committed in the 2026-09-20 integration release were rotated on 2026-10-12 (S1); confirm the `33ccf52` keys were included.

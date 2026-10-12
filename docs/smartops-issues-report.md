@@ -87,7 +87,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T27 | Triage | The first evaluation leans non-malicious: H2/H3 restate the telemetry, H1 claims what telemetry can't show | High | Open (Analyst planning + scoring) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning (decision pending) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
-| P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4) |
+| P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4); now `frontend/src/contract.ts:48` (smartops-worker) |
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
 | P5 | Context | ESCU matcher scores rule names only | Medium | Open (C5) |
 | B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`, narrative names on this branch); live re-run pending |
@@ -135,15 +135,15 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B43 | Broker | The private-address footer names VirusTotal, and synthesis reads it as a VirusTotal judgement | Medium | Open: rewording framed, waiting on Mohammed |
 | B44 | Broker | A `file_events` step's first siem dispatch searches the file name as a keyword, gets only process and script-block rows, and stops; the step costs a second dispatch or ends incomplete | High | Open: framed below |
 | B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Open (AR11 integration: one `asyncio.Runner` per round) |
-| W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
+| W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
 | W4 | Webapp | Hardcoded siem stub ran outside every guard | High | Fixed in `58d39c3` |
 | W5 | Webapp | Demo alert pre-filled in the form | Medium | Fixed in `58d39c3` |
 | W6 | Webapp | Model and log text inserted into `innerHTML` unescaped | Medium | Fixed in `58d39c3` |
-| W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Open |
+| W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Removed with W1: one plan, one prompt |
 | W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Fixed on `smartops-loop-fix` (option a); live run pending |
-| W9 | Webapp | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (frontend, smartops-worker) |
+| W9 | Frontend | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (smartops-worker): `frontend/src/contract.ts:55` |
 | W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Repeat filter on `smartops-loop-fix`; gap wording open (Analyst) |
 | W11 | Webapp | The webapp opened its own Splunk MCP client beside the backend's | Medium | Fixed on `broker-k4-ab-fixes`: `smartops.tools.registry.call_tool` |
 | G1 | Gate | A block cited inside a multi-id bracket is refused | High | Open (Analyst: `verdict_gate` lives in `analyst.py`) |
@@ -918,7 +918,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 ## Webapp integration
 
-**W1. Two different plans per investigation, and the UI shows the one that isn't executed.** *High. Open.*
+**W1. Two different plans per investigation, and the UI shows the one that isn't executed.** *High. Removed: `/api/analyst/start` was deleted with AR1 and `webapp/` with AR11; `/api/run` plans once.*
 - **Evidence:**
   - *Process Event & Build Context* calls `/api/analyst/start` (`_do_analyst`, with an inline prompt), and its plan is shown in section 5.
   - *Run Full Investigation* then calls `/api/run`, which plans again from scratch with `prompts/system_prompt.txt` (`webapp/main.py:537`) and executes that plan.
@@ -938,13 +938,13 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 **W6. Unescaped model and log text in `innerHTML`.** *Medium. Fixed in `58d39c3`.* Alert and log text is attacker-influenced; it is now escaped.
 
-**W7. The two planning prompts disagree.** *Medium. Open.*
+**W7. The two planning prompts disagree.** *Medium. Removed with W1.*
 - **Evidence:**
   - The section-5 prompt allows entity kinds `host|ip|user` and anchors windows ±1 h on `event_time` (`webapp/main.py:339`, `:352`).
   - The loop prompt allows `host|ip|user|domain` and, since `58d39c3`, anchors on `normalized_seed.event_time` in UTC.
 - **Fix:** resolved by W1 (one plan, one prompt).
 
-**W8. `max_loops` is 15, but the synthesis prompt only has room for 3 rounds.** *High. Open.*
+**W8. `max_loops` is 15, but the synthesis prompt only has room for 3 rounds.** *High. Fixed on `smartops-loop-fix` (option a); live run pending.*
 - **Why 15:** headroom, not a target. `b3aa0dd2` hit max loops at 3 with T1's parent-process question still unanswered, so 3 was too few for the loop to finish.
 - **Strands' compaction doesn't cover it.** `SummarizingConversationManager` manages a Strands `Agent`'s own message history. The main Analyst calls Bedrock directly (`call_llm`, httpx), and each synthesis is one message rebuilt from every round, so nothing compacts the rounds.
 - **Problem:** `webapp/main.py` re-sends every earlier round's payload on each synthesis call. The Broker's per-round budget (`HANDOFF_CHAR_BUDGET`, 16,480 characters) is sized so that 3 rounds plus the plan plus 8,192 output tokens fit the 32,768-token window (`packing._ANALYST_ROUNDS = 3`). `b3aa0dd2`'s synthesis prompts grew 7,406 → 12,009 → 13,934 tokens over three rounds. At that rate the prompt passes ~24k, where the output no longer fits, in about round 6, and Bedrock rejects or truncates the call.
@@ -969,7 +969,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - Replayed on `89674d75`, round 3's three follow-ups are all dropped. The run would have ended after round 3 instead of re-running it.
 
 **W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Open (frontend, smartops-worker).*
-- **Evidence:** `webapp/static/app.js:260` takes `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.
+- **Still present after AR11:** `frontend/src/contract.ts:55` does the same.
+- **Evidence:** `webapp/static/app.js:260` took `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.
 - **Fix (frontend):** no fallback; show "event time unresolved".
 
 **W11. The webapp opened its own Splunk MCP client.** *Medium. Fixed on `broker-k4-ab-fixes`.*
@@ -1216,7 +1217,8 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 | Triage (Analyst) | 1 | 2 | 24 | T2–T27 |
 | Gate (Analyst) | 0 | 0 | 3 | G1–G3 |
 | Context | 1 | 0 | 4 | P2–P5 |
-| Webapp | 7 | 1 | 3 | W1, W7, W9 |
+| Webapp | 9 | 1 | 0 | W1 and W7 removed with AR1/AR11 |
+| Frontend (smartops-worker) | 0 | 0 | 1 | W9; P3's index also lives there now |
 | Cost, audit, security, handoff | 14 | 0 | 0 | None |
 
 - **Broker, next in order:**
