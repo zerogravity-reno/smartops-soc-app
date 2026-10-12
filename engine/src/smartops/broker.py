@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import gc
 import json
 import logging
 import os
@@ -2202,6 +2203,18 @@ async def run_round(
     problem -- no usable provider -- raises `ValueError` before anything is spent;
     a task that fails is counted in `failures` and the others still run.
     """
+    try:
+        return await _round(tasks, args)
+    finally:
+        # B45: each round runs in its own event loop. An anthropic client collected
+        # later closes its connections on the next round's loop ("Event loop is
+        # closed"); collected here, it closes them on its own loop.
+        gc.collect()
+
+
+async def _round(
+    tasks: list[tuple[AnalystTask, str | None]], args: argparse.Namespace | None
+) -> RoundResult:
     args = args or round_args()
     # Every round, not only at start(): in the server a client that failed once stays
     # failed (the flag is sticky until stop()), and on 16386362 every siem step of
