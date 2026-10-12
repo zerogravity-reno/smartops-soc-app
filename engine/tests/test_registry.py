@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import json
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -352,6 +353,21 @@ class TestConcurrentResolutionDoesNotRaceTheConnection:
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings, "a client resolving no tools must warn"
         assert any("NO tools" in r.getMessage() for r in warnings)
+
+    async def test_a_client_dead_at_boot_recovers_at_the_next_round(self, monkeypatch):
+        # 16386362: Splunk failed every boot attempt, and in-process rounds never
+        # retried it, so three rounds ran with no SIEM. run_round warms again.
+        from smartops import broker
+
+        client = StickyFailureClient(tools=["splunk_run_query"], failures=registry_module.WARM_ATTEMPTS)
+        _install_clients(monkeypatch, siem=[client])
+        await warm_mcp_clients()  # server boot
+        assert await tools_for("siem") == []
+
+        with pytest.raises(AttributeError):  # args carry no model settings: stops right after the warm-up
+            await broker.run_round([], SimpleNamespace(families=None))
+
+        assert await tools_for("siem") == ["splunk_run_query"]
 
     async def test_a_healthy_client_is_not_stopped_or_retried(self, monkeypatch):
         """The common path must be untouched: one connection, no reset."""

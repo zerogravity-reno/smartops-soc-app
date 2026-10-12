@@ -2179,6 +2179,11 @@ async def run_round(
     a task that fails is counted in `failures` and the others still run.
     """
     args = args or round_args()
+    # Every round, not only at start(): in the server a client that failed once stays
+    # failed (the flag is sticky until stop()), and on 16386362 every siem step of
+    # three rounds was rejected for "no tools". The per-round subprocess used to give
+    # each round this retry. A healthy client returns its cached tools at no cost.
+    await warm_mcp_clients()
     # Defaulting to every family dispatched nothing: plan_fetch refuses a plan
     # naming an unconfigured one. Read after load_mcp_servers, which decides that.
     families = (
