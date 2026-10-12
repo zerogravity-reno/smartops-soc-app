@@ -87,7 +87,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T27 | Triage | The first evaluation leans non-malicious: H2/H3 restate the telemetry, H1 claims what telemetry can't show | High | Open (Analyst planning + scoring) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning (decision pending) |
 | P2 | Context | Seed drops the command line and parent path | High | Open |
-| P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Open (C4); now `frontend/src/contract.ts:48` (smartops-worker) |
+| P3 | Context | Hardcoded non-existent index `win_sysmon` | Medium | Fixed (`3978b9f`): `win_sysmon` removed from `frontend/src/contract.ts` |
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
 | P5 | Context | ESCU matcher scores rule names only | Medium | Open (C5) |
 | B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`, narrative names on this branch); live re-run pending |
@@ -99,8 +99,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
-| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Reworked (B10c: decoded in the loop that sees it; verified live `dce405e5`); decoded block capped at 8 lines, rarest parent first (`ENCODED_LINE_CAP`) |
-| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Open; logon type now named by code (`broker-k4-ab-fixes`) |
+| B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Fixed (B10c, verified live on `dce405e5`; decoded block capped at 8 lines, `ENCODED_LINE_CAP`) |
+| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Fixed (`0430974`): grouped rows render `events=`, not `count=`; judging words 2 in 29 domains on 10-12. The "child of itself" parent misread is a known 8B limit |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
 | B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed on `smartops-loop-fix`: budget re-measured, 16,480 → 27,608 characters; replayed on `89674d75`, 0 → 43/51, 59/59, 52/52 observations; live check pending |
@@ -132,9 +132,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B40 | Broker | A `-` placeholder counts as a value, so a hash's file reads "(file not named)" and synthesis pinned powershell.exe's hash on svcupdate.dat | High | Fixed on `broker-a818-fixes`: `_first` skips `-` (`d259509`); held live on `451334ad` |
 | B41 | Broker | The packer's over-budget warning repeats on every re-measure (7× for one domain) | Low | Fixed on `broker-a818-fixes`: `fitted_row_cap` measures silently |
 | B42 | Broker | An unanswerable reason written as prose came back as findings | Medium | Fixed on `broker-a818-fixes` (`4759d2b`): `reason` capped at 60 characters; held live on `aab8e000` |
-| B43 | Broker | The private-address footer names VirusTotal, and synthesis reads it as a VirusTotal judgement | Medium | Open: rewording framed, waiting on Mohammed |
-| B44 | Broker | A `file_events` step's first siem dispatch searches the file name as a keyword, gets only process and script-block rows, and stops; the step costs a second dispatch or ends incomplete | High | Open: framed below |
-| B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Open (AR11 integration: one `asyncio.Runner` per round) |
+| B43 | Broker | The private-address footer names VirusTotal, and synthesis reads it as a VirusTotal judgement | Medium | Fixed (`ad5afe6`): header reads "(not internet-routable)" |
+| B44 | Broker | A `file_events` step's first siem dispatch searches the file name as a keyword, gets only process and script-block rows, and stops; the step costs a second dispatch or ends incomplete | High | Fixed (`5b75365`): the mission names the step's categories; an incomplete step's digest names the missing ones |
+| B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Fixed (`28ca7f7`): `run_round` collects its clients before its loop closes |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -143,7 +143,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | W6 | Webapp | Model and log text inserted into `innerHTML` unescaped | Medium | Fixed in `58d39c3` |
 | W7 | Webapp | Planning prompts disagree (entity schema, window rule) | Medium | Removed with W1: one plan, one prompt |
 | W8 | Webapp | Long runs outgrow the window: every round is re-sent, nothing compacts them | High | Fixed on `smartops-loop-fix` (option a); live run pending |
-| W9 | Frontend | The browser falls back to the notable time when the event time didn't resolve | Medium | Open (smartops-worker): `frontend/src/contract.ts:55` |
+| W9 | Frontend | The browser falls back to the notable time when the event time didn't resolve | Medium | Fixed (`3978b9f`): an unresolved event time stays unset |
 | W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Repeat filter on `smartops-loop-fix`; gap wording open (Analyst) |
 | W11 | Webapp | The webapp opened its own Splunk MCP client beside the backend's | Medium | Fixed on `broker-k4-ab-fixes`: `smartops.tools.registry.call_tool` |
 | G1 | Gate | A block cited inside a multi-id bracket is refused | High | Open (Analyst: `verdict_gate` lives in `analyst.py`) |
@@ -435,7 +435,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Impact:** a direct cause of T4.
 - **Fix:** map `process`, `process_name` and `parent_process` into `normalized_seed.process`, and add the parent image as an entity.
 
-**P3. Hardcoded non-existent index.** *Medium. Open (C4).*
+**P3. Hardcoded non-existent index.** *Medium. Fixed (`3978b9f`).*
 - **Evidence:** `source_context.index` is `"win_sysmon"` (`webapp/static/app.js:81` and `:104`). The data is in `windows_lab`.
 
 **P4. OpenCTI lookups use the wrong types.** *Medium. Open.*
@@ -524,7 +524,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Open: the decoded block crowds out the summaries.** The T4 endpoint narrative was 12,957 characters, 11,313 of them `enc#` lines, mostly Ansible WinRM wrappers and forwarder config edits. Narratives always cross (B9a), so every domain in the batch was cut to 1 summary (4–8 omitted each), and the payload overran its budget (B9). Candidates: move the `enc#` lines into the droppable summaries tier, or cap the block (e.g. rarest parent first, N lines, "… M more in findings.json").
 - **Not handled:** 6 commands decode to a second `-EncodedCommand` (the Ansible exec wrapper under `cmd.exe`). Splunk cut their command lines at about 2k characters, so the inner command is incomplete.
 
-**B11. Sub-analyst narratives judge and misread fields.** *Medium. Open.*
+**B11. Sub-analyst narratives judge and misread fields.** *Medium. Fixed (`0430974`).*
 - **Evidence (`dce405e5`):**
   - **Judging:** T1 endpoint: two PowerShell processes "contained suspicious commands involving $uri = 'http://192.168.40.211/update/'". "Suspicious" is the Analyst's call; the sub-analyst's job is to translate.
   - **Field misread:** T2 network: "splunkd.exe processes connecting to two endpoints (C:\Users\Administrator\Desktop\splunkd.exe and C:\Users\Public\splunkd.exe)". Those are the processes' image paths, not connection endpoints.
@@ -533,6 +533,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Impact:** synthesis repeated T1's "suspicious" as "clearly malicious" (T7's pattern, one layer down), and its "T1 shows malicious PowerShell commands" rests on ES detection records, not on telemetry.
 - **Fix:** to be decided. Prompt rules have failed on the 8B sub-analysts before (B1b, B1c), so a code-side check is the likelier lever: flag verdict words in a narrative, and compare the numbers a narrative states against the set's computed summary.
 - **Logon type (`3bf5fce8`, 2026-10-11):** "five successful remote interactive logons … logon type 5 (remote interactive)". Type 5 is a service logon. Fixed on `broker-k4-ab-fixes`: `formatting._field` writes `logon_type=5 (Service)` from the Windows table, so the model quotes a name it was given.
+- **Fixed (`0430974`, 2026-10-12):** judging is nearly gone after B15's prompt rewrite (2 hedging words in 29 domains on `aab8e000`, `204888fd`, `c8dd42cf`, `2a71757f`). What remained was field misreads, and the clearest class was the aggregate count: "269 bytes" (B35) and "1,633 allowed actions" (`c8dd42cf` T3 network). `_count_suffix` now renders `events=N`, matching the set header's `events=`, and the two prompt lines describing grouped rows follow. Left as a known 8B limit: `aab8e000` T2 read PowerShell spawned by PowerShell as "child processes of themselves".
 
 **B12. A sub-analyst cut off twice loses its whole domain.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`78cd60ec`):** T1 endpoint's first reply and its re-ask both hit `max_gen_len`, and the payload carried "endpoint analyst produced no parseable finding after a re-ask" in place of the domain's narrative. The narrative itself had been written.
@@ -890,7 +891,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - The published schema gains `maxLength: 60`.
 - **Held live (`aab8e000`):** all 5 reasons are short phrases, and none became findings.
 
-**B43. The private-address footer names VirusTotal.** *Medium. Open (rewording waiting on Mohammed).*
+**B43. The private-address footer names VirusTotal.** *Medium. Fixed (`ad5afe6`).*
 - **Evidence:** `ADDRESSES_FOOTER` (`contracts/reasoning.py:785`) reads "Private addresses in these rows and this task (VirusTotal holds no reputation for them):". VirusTotal wasn't dispatched in either run below.
   - `aab8e000` round 1: "VirusTotal has no reputation for this IP … suggests 192.168.40.211 is not an officially recognized update server".
   - `204888fd` round 1: "VirusTotal cannot provide information about them. This suggests they are likely internal infrastructure".
@@ -898,7 +899,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Proposed:** "Private addresses in these rows and this task (not internet-routable):".
 - `tools/native/virustotal.py:187`'s skipped-lookup detail reaches the Analyst only when vt is actually asked about a private IP, so it can keep its wording.
 
-**B44. A `file_events` step's first siem dispatch never searches file events.** *High. Open.*
+**B44. A `file_events` step's first siem dispatch never searches file events.** *High. Fixed (`5b75365`).*
 - **Evidence (every file step in the 4 runs of 10-12):** the first dispatch searched `"svcupdate.dat"` as a keyword and got Sysmon 1 and 4104 rows, because the name appears in command lines. B28's per-row split files those as processes and script blocks, so the step reads 0 `file_events`.
   - `aab8e000` T1 and G1, `204888fd` T2, and `c8dd42cf` T2 and G2: the re-dispatch searched EID 11/15/23/26/29, found none, and the step closed as confirmed empty. That's one wasted dispatch each time.
   - `204888fd` FU3 and `c8dd42cf` G1: the re-dispatch repeated the keyword search, and the step ended incomplete. On `c8dd42cf` round 2, that incomplete step was one of the reasons the gate refused the verdict.
@@ -908,11 +909,13 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Fix candidates (to agree):**
   - The mission states, written by code, the categories the step is judged on.
   - The digest names the step's state and its missing categories (`step file_write incomplete: no file_events`).
+- **Fixed (`5b75365`):** the mission goal ends with "This step is complete only with rows in: <categories>.", written by code; an incomplete step's digest ends "step <id> incomplete: no <categories> rows". Live check pending.
 
-**B45. "Event loop is closed" tracebacks from round 2 on.** *Low. Open.*
+**B45. "Event loop is closed" tracebacks from round 2 on.** *Low. Fixed (`28ca7f7`).*
 - **Evidence:** `75984491` L3 (1) and `c8dd42cf` L3 (3). `AsyncClient.aclose()` raises `RuntimeError('Event loop is closed')`, logged as "Task exception was never retrieved". It never appears in L2.
 - **Likely cause:** AR11 runs each round under its own `asyncio.Runner`. httpx clients created in round 1's loop are collected during round 2, after that loop has closed.
 - Not yet traced to the client that owns them. No failed call was seen.
+- **Fixed (`28ca7f7`):** the client is `anthropic.AsyncAnthropic` inside Strands' `AnthropicModel`. Its `__del__` schedules `aclose()` on whatever loop is running, so one collected during the next round closes old connections on the wrong loop. `run_round` now ends with `gc.collect()` inside its own loop. Reproduced against a local server: 2 tracebacks before, 0 after.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
@@ -968,7 +971,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - With nothing new, the run ends: "No new follow-up tasks (none given, or all already asked)".
   - Replayed on `89674d75`, round 3's three follow-ups are all dropped. The run would have ended after round 3 instead of re-running it.
 
-**W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Open (frontend, smartops-worker).*
+**W9. The browser falls back to the notable time when the event time didn't resolve.** *Medium. Fixed (`3978b9f`).*
 - **Still present after AR11:** `frontend/src/contract.ts:55` does the same.
 - **Evidence:** `webapp/static/app.js:260` took `event_time` from the import, else `raw._time`, the notable time (8.5 min after the event on c90ca5f9). Silent.
 - **Fix (frontend):** no fallback; show "event time unresolved".
@@ -1212,22 +1215,18 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 34 | 3 | 6 | Real: B44, B43, B11, B45. Analyst side: B2, B6 |
+| Broker | 39 | 2 | 2 | No Broker work left. B2, B6 wait on the Analyst; B16 (parallel fetch) and B20's scoping are decisions or Analyst side |
 | Architecture / integration | 12 | 0 | 2 | AR3 (owner action), AR6 |
 | Triage (Analyst) | 1 | 2 | 24 | T2–T27 |
 | Gate (Analyst) | 0 | 0 | 3 | G1–G3 |
-| Context | 1 | 0 | 4 | P2–P5 |
+| Context | 2 | 0 | 3 | P2, P4, P5: out of our scope |
 | Webapp | 9 | 1 | 0 | W1 and W7 removed with AR1/AR11 |
-| Frontend (smartops-worker) | 0 | 0 | 1 | W9; P3's index also lives there now |
+| Frontend | 1 | 0 | 0 | W9 fixed with P3 |
 | Cost, audit, security, handoff | 14 | 0 | 0 | None |
 
-- **Broker, next in order:**
-  - B44: file steps never search file events. Framed: the mission states the categories the step is judged on, and the digest names what's missing.
-  - B43: footer wording, waiting on Mohammed.
-  - B11: narratives judge and misread.
-  - B45: loop-closed noise, AR11 integration.
+- **Broker:** every Broker bug is fixed (B43, B44, B45 and B11 on 2026-10-12). B16 parallel fetch is a decision; B2, B6 and B20's scoping wait on the Analyst's follow-ups.
 - **Live checks pending:**
-  - AR12–AR14 on the next run.
+  - AR12–AR14, B44 and B45 on the next run.
   - B24's reconnect, which is still unexercised.
 - **Decisions (Mohammed):** B16 parallel fetch; the B15 safety net; T25 (one bad ref blocks a verdict); T20; P1's raw time fields.
 - **Analyst owner, routed:**
