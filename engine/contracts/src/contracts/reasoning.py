@@ -804,7 +804,8 @@ ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
 COMMANDS_FOOTER = "Interpreter and LOLBin command lines in these rows, rarest first:"
 NO_ROWS_FOOTER = "Searches that returned no rows:"
 HASHES_FOOTER = "File hashes in these rows, rarest first:"
-ADDRESSES_FOOTER = "Private addresses in these rows and this task (VirusTotal holds no reputation for them):"
+# Not "VirusTotal holds no reputation": aab8e000 and 204888fd read that aside as a VirusTotal result (B43).
+ADDRESSES_FOOTER = "Private addresses in these rows and this task (not internet-routable):"
 _FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
 # Least needed first: an empty search is a count; a command line is in report.json.
 # Names, decoded text, hashes and addresses are what a narrative cannot recover, so they always cross.
