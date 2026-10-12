@@ -15,7 +15,7 @@ os.environ.update(_env)
 def _ctrl(run_id):
     go = threading.Event()
     go.set()
-    main._run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "proc": None}
+    main._run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "cancel": None}
     return main._run_ctrl[run_id]
 
 
@@ -48,3 +48,12 @@ def test_resume_continues_a_paused_run():
 
 def test_control_on_unknown_run_is_404():
     assert main.stop_run("nope").status_code == 404
+
+
+def test_stop_cancels_a_running_broker_round():
+    c = _ctrl("t-cancel")
+    cancelled = []
+    c["cancel"] = lambda: cancelled.append(True)
+    main.stop_run("t-cancel")
+    assert cancelled == [True] and c["stop"].is_set()
+    main._run_ctrl.pop("t-cancel")

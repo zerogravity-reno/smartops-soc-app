@@ -35,11 +35,13 @@ Our spans carry the judgement and the token counts, never the reasoning trace.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
+import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from contextlib import contextmanager
 from typing import Any
@@ -85,21 +87,17 @@ def configure_telemetry(*, console: bool = False) -> None:
         _configured = True
 
 
-TRACEPARENT_ENV_VAR = "TRACEPARENT"
-
-
 @contextmanager
-def round_span(batch_id: str | None) -> Iterator[trace.Span]:
-    """One CLI invocation -- a Broker round -- as one span, under the webapp's trace.
+def round_span(batch_id: str | None, traceparent: str | None = None) -> Iterator[trace.Span]:
+    """One Broker round as one span, under the investigation's trace.
 
-    The webapp passes a W3C `traceparent` in `TRACEPARENT`, one trace per
-    investigation. Every `investigation_span` and `analysis_span` of the round
-    opens inside this one, so the whole investigation is one trace. On 874ab334
-    it was 9: each task was its own root (O5). Without the variable this is a
-    plain root, which still joins a round's tasks.
+    The Analyst passes a W3C `traceparent`, one trace per investigation. Every
+    `investigation_span` and `analysis_span` of the round opens inside this one,
+    so the whole investigation is one trace. On 874ab334 it was 9: each task was
+    its own root (O5). Without one this is a plain root, which still joins a
+    round's tasks.
     """
-    carrier = {"traceparent": os.environ.get(TRACEPARENT_ENV_VAR, "").strip()}
-    parent = propagate.extract(carrier) if carrier["traceparent"] else None
+    parent = propagate.extract({"traceparent": traceparent}) if traceparent else None
     attributes = {"batch_id": batch_id} if batch_id else {}
     with trace.get_tracer(TRACER_NAME).start_as_current_span(
         "smartops.round", context=parent, attributes=attributes
@@ -337,3 +335,64 @@ def record(run_id: str, step: str, loop: int, **data) -> None:
     line = {"at": datetime.now(UTC).isoformat(), "step": step, "loop": loop, "trace_id": trace_id(run_id), **data}
     with (target / "investigation.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(line, default=str) + "\n")
+
+
+# ── Engine progress, routed per round ─────────────────────────────────────────
+# The engine reports progress with `print` (the CLI's console). In the server, a
+# round's lines go to its own sink instead: the run's log and its event stream.
+_print_sink: contextvars.ContextVar[Any] = contextvars.ContextVar("smartops_print_sink", default=None)
+
+
+class _Routed:
+    """sys.stdout/stderr: to the current round's sink when one is set, else the real stream."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def write(self, text: str) -> int:
+        sink = _print_sink.get()
+        return sink.write(text) if sink is not None else self._real.write(text)
+
+    def flush(self) -> None:
+        if _print_sink.get() is None:
+            self._real.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _LineSink:
+    def __init__(self, on_line: Callable[[str], None]):
+        self.on_line, self.buf, self.lock = on_line, "", threading.Lock()
+
+    def write(self, text: str) -> int:
+        # ponytail: a line is whole only within one thread; to_thread workers printing at
+        # once could interleave mid-line. The engine prints from the round's coroutine.
+        with self.lock:
+            *lines, self.buf = (self.buf + text).split("\n")
+        for line in lines:
+            self.on_line(line)
+        return len(text)
+
+
+def route_output() -> None:
+    """Install the routing streams, once per process, before logging is configured
+    (its handlers keep the stream object they were given)."""
+    for name in ("stdout", "stderr"):
+        if not isinstance(getattr(sys, name), _Routed):
+            setattr(sys, name, _Routed(getattr(sys, name)))
+
+
+@contextmanager
+def print_to(on_line: Callable[[str], None]) -> Iterator[None]:
+    """Every line printed or logged in this context (and the tasks and threads it
+    starts) goes to `on_line` instead of the console."""
+    route_output()
+    sink = _LineSink(on_line)
+    token = _print_sink.set(sink)
+    try:
+        yield
+    finally:
+        _print_sink.reset(token)
+        if sink.buf:
+            on_line(sink.buf)

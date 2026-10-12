@@ -90,7 +90,7 @@ from contracts import (
     pack_for_analyst,
 )
 from smartops.broker import (
-    OUT_DIR_ENV_VAR,
+    round_dir,
     runs_root,
     TOOL_BY_FAMILY,
     DEFAULT_BROKER_TURNS,
@@ -1015,7 +1015,7 @@ def _persist_payload_batch(
     findings: list[HypothesisFindings],
     batch_id: str | None = None,
     max_chars: int | None = None,
-) -> Path | None:
+) -> AnalystPayloadBatch | None:
     """Write one `analyst-payload.json` carrying every hypothesis in the file.
 
     **The unit of handover is the task file, not the hypothesis.** A file arrives
@@ -1035,12 +1035,13 @@ def _persist_payload_batch(
     record, joined by `run_id`, and it is what lets a reader of one run directory
     see what that investigation produced. This is the message.
 
-    Returns the path written, or `None` when there is no runs directory to write
+    Returns the batch written, or `None` when there is no runs directory to write
     to -- the same trade `_persist_findings` makes, since an artifact must not be
     the thing that fails a completed run.
     """
     root = runs_root()
-    if not root.is_dir() and not os.environ.get(OUT_DIR_ENV_VAR, "").strip():
+    out = round_dir.get()
+    if not root.is_dir() and not out:
         # Every task's own run dir is created by the broker under this root, so a
         # missing root means nothing was persisted at all and there is no place
         # this belongs. Silent for the same reason `_resolve_run_dir` is.
@@ -1051,8 +1052,7 @@ def _persist_payload_batch(
         batch_id=batch_id or f"batch-{datetime.now(UTC):%Y%m%dT%H%M%S}",
         payloads=pack_for_analyst(findings, max_chars),
     )
-    # Beside the tasks in the round's own folder when the webapp names one (O5).
-    out = os.environ.get(OUT_DIR_ENV_VAR, "").strip()
+    # Beside the tasks in the round's own folder when the Analyst names one (O5).
     target = Path(out) if out else root / batch.batch_id
     target.mkdir(parents=True, exist_ok=True)
     path = target / "analyst-payload.json"
@@ -1062,7 +1062,7 @@ def _persist_payload_batch(
         f"\nanalyst payload: {len(batch.payloads)} hypothes"
         f"{'is' if len(batch.payloads) == 1 else 'es'} in one message -> {path}"
     )
-    return path
+    return batch
 
 
 async def _analyse_all(
@@ -1191,18 +1191,7 @@ async def _run(argv: list[str] | None = None) -> int:
     # Before anything reads os.environ.
     env_file = _load_env_file()
 
-    logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.ERROR,
-        format="%(levelname)s %(name)s: %(task)s%(message)s",
-    )
-    for handler in logging.getLogger().handlers:
-        handler.addFilter(_name_the_task)
-    if not args.verbose:
-        # The analyst gates log every sentence, figure and domain they drop as a
-        # warning; at ERROR the run's log never showed what the Analyst lost (N3).
-        # `contracts` too: its packer's over-budget warning was invisible (O6).
-        logging.getLogger("smartops.subagent_analysts").setLevel(logging.WARNING)
-        logging.getLogger("contracts").setLevel(logging.WARNING)
+    configure_logging(args.verbose)
     # After logging is configured, so its warning is visible, and after the .env
     # load, so credentials from the file count as explicit.
     _neutralise_aws_profile()
@@ -1211,9 +1200,25 @@ async def _run(argv: list[str] | None = None) -> int:
         return await _run_round(args, env_file)
 
 
+def configure_logging(verbose: bool = False) -> None:
+    """The engine's log format and levels, for the CLI and the server alike."""
+    logging.basicConfig(
+        level=logging.INFO if verbose else logging.ERROR,
+        format="%(levelname)s %(name)s: %(task)s%(message)s",
+    )
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_name_the_task)
+    if not verbose:
+        # The analyst gates log every sentence, figure and domain they drop as a
+        # warning; at ERROR the run's log never showed what the Analyst lost (N3).
+        # `contracts` too: its packer's over-budget warning was invisible (O6).
+        logging.getLogger("smartops.subagent_analysts").setLevel(logging.WARNING)
+        logging.getLogger("contracts").setLevel(logging.WARNING)
+
+
 async def start(mcp_config: str | None = None) -> None:
     """Build and warm this process's MCP clients: once per process, before any
-    `run_round` (the CLI per run, the webapp at startup).
+    `run_round` (the CLI per run, the server at startup).
 
     A missing config or an unset ${VAR} credential leaves a family with no server
     rather than failing -- which is how this runs with no credentials at all. A
@@ -1230,7 +1235,7 @@ class RoundResult:
 
     fetched: list  # (task, hypothesis, outcome) for every task the Broker finished
     findings: list[HypothesisFindings]
-    payload: Path | None  # the batch `analyst-payload.json`, task-file rounds only
+    payload: AnalystPayloadBatch | None  # the batch handed to the Analyst, task-file rounds only
     failures: int
 
 
@@ -1460,7 +1465,7 @@ async def run_round(
     failures += analysis_failures
 
     # One message per task FILE, not per hypothesis: for file input, or a caller
-    # that names the batch (the webapp, in process). The legacy flag path
+    # that names the batch (the Analyst, in process). The legacy flag path
     # investigates one hand-written task and has no grouping a batch could represent.
     payload = None
     if (args.task_file or args.batch_id) and findings:

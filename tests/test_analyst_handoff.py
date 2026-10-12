@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 import json
+from types import SimpleNamespace
 
 from contracts import TaskInputFile
 
@@ -81,18 +82,20 @@ def test_record_appends_and_reports_resolve_in_the_round_folder(tmp_path, monkey
         "results": [{"task_id": "run1-L2-T1:siem:tu1", "status": "ok", "reason": None, "error": None, "gaps": ["edr"],
                      "queries_run": [{"query": "index=windows_lab x"}], "blocked_queries": ["index=* y"]}],
     }
-    # One run folder (O5): run1/L2/T1/report.json, found by the task id it names.
-    (tmp_path / "T1").mkdir()
-    (tmp_path / "T1" / "report.json").write_text(json.dumps({**report, "task_id": "run1-L2-T1", "trace_id": "b" * 32}))
+    # The round's outcome, found by the task id its report names.
+    dumped = {**report, "task_id": "run1-L2-T1"}
+    outcome = SimpleNamespace(run_dir=tmp_path / "T1",
+                              report=SimpleNamespace(task_id="run1-L2-T1", model_dump=lambda mode: dumped))
+    fetched = [(None, "q", outcome)]
 
-    [run] = analyst.broker_runs(["run1-L2-T1"], tmp_path)
+    [run] = analyst.broker_runs(["run1-L2-T1"], fetched)
     assert run["trace_id"] == "b" * 32 and run["run_dir"].endswith("T1")
     assert [(s["step_id"], s["completed"], s["rows_retrieved"]) for s in run["steps"]] == [("s1", True, 12), ("s2", None, None)]
     assert (run["classification"], run["plan_repairs"], run["spend_micro_usd"]) == (
         "only SIEM telemetry was needed", ["dropped an unconfigured family"], 487647)
     assert run["results"] == [{"family": "siem", "status": "ok", "reason": None, "error": None, "gaps": ["edr"],
                                "queries": ["index=windows_lab x"], "blocked": ["index=* y"]}]
-    assert analyst.broker_runs(["missing"], tmp_path) == [{"task_id": "missing", "run_dir": None}]
+    assert analyst.broker_runs(["missing"], fetched) == [{"task_id": "missing", "run_dir": None}]
 
 
 def test_file_and_command_entities_reach_the_broker_but_a_data_source_does_not():

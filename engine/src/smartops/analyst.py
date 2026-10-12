@@ -304,26 +304,26 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     return out
 
 
-def broker_runs(task_ids: list[str], round_dir: Path) -> list[dict]:
-    """What the Tool Broker did for each task, read from its `report.json` in the
-    run's own `L<n>/` folder (O5), found by the `task_id` the report names.
+def broker_runs(task_ids: list[str], fetched: list) -> list[dict]:
+    """What the Tool Broker did for each task, from the round's outcomes
+    (`RoundResult.fetched`, by the `task_id` each report names).
 
     The fetch plan with each step's outcome, and every dispatch with the queries it
     ran and any the guards blocked -- the Broker's side of the loop, in the shape
     the UI renders. `run_dir` is None for a task the broker never recorded.
     """
-    by_task = {json.loads(p.read_text(encoding="utf-8")).get("task_id"): p for p in round_dir.glob("*/report.json")}
+    by_task = {o.report.task_id: o for _, _, o in fetched if o.report is not None}
     runs = []
     for task_id in task_ids:
-        report_path = by_task.get(task_id)
-        if report_path is None:
+        outcome = by_task.get(task_id)
+        if outcome is None:
             runs.append({"task_id": task_id, "run_dir": None})
             continue
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report = outcome.report.model_dump(mode="json")  # what `report.json` holds
         outcomes = {o["step"]["step_id"]: o for o in report.get("step_outcomes", [])}
         runs.append({
             "task_id": task_id,
-            "run_dir": str(report_path.parent),
+            "run_dir": str(outcome.run_dir),
             "trace_id": report.get("trace_id"),
             "plan_rationale": (report.get("plan") or {}).get("rationale"),
             # What the CLI prints beside the plan: why these families, guard repairs, spend.

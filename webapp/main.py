@@ -3,15 +3,13 @@ main.py - SmartOps SOC Unified Web Application
 FastAPI server wiring the Web UI to the SmartOps Engine (Broker + Subagents)
 using Foundation-Sec-8B-Reasoning on AWS Bedrock (invoke_model, NOT Converse).
 """
-import copy
+import asyncio
 import json
 import os
-import re
-import subprocess
 import sys
 import threading
 import uuid
-from datetime import UTC, datetime, timedelta
+from contextlib import asynccontextmanager
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -31,11 +29,29 @@ load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 from webapp.services.llm_service import call_llm
 from smartops import analyst, context, telemetry
-from smartops.broker import runs_root
+from contracts import TaskInputFile
+from smartops.broker import round_dir as broker_round_dir, runs_root
+from smartops.main import _neutralise_aws_profile, configure_logging, round_args, run_round, start
+from smartops.telemetry import configure_telemetry
 from smartops.analyst import FULL_ROUNDS, extract_json
 
 
-app = FastAPI(title="SmartOps SOC")
+BROKER_TIMEOUT_S = 1800
+REPO = Path(__file__).parent.parent
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # Once per server, not per round: the Broker's MCP clients are built and warmed here.
+    telemetry.route_output()
+    configure_logging()
+    _neutralise_aws_profile()
+    configure_telemetry()
+    await start(str(REPO / "mcp_servers.json"))
+    yield
+
+
+app = FastAPI(title="SmartOps SOC", lifespan=lifespan)
 
 # â”€â”€ Static files & index route â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -113,13 +129,13 @@ def start_run(req: RunRequest):
     _run_queues[run_id] = q
     go = threading.Event()
     go.set()
-    _run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "proc": None}
+    _run_ctrl[run_id] = {"stop": threading.Event(), "go": go, "cancel": None}
     threading.Thread(target=_run_investigation, args=(run_id, req, q), daemon=True).start()
     return {"run_id": run_id}
 
 # ── Run control: stop, pause, resume ─────────────────────────────────────────
 # Pause and stop land at the next stage boundary (_checkpoint): a model call in
-# flight cannot be interrupted. Stop also kills a running broker at once.
+# flight cannot be interrupted. Stop also cancels a running broker round at once.
 _run_ctrl: dict[str, dict] = {}
 
 class RunStopped(Exception):
@@ -153,8 +169,8 @@ def stop_run(run_id: str):
         return err
     c["stop"].set()
     c["go"].set()  # a paused run wakes up only to stop
-    if c["proc"] is not None and c["proc"].poll() is None:
-        c["proc"].kill()
+    if c.get("cancel"):
+        c["cancel"]()
     return {"status": "ok"}
 
 @app.post("/api/run/{run_id}/pause")
@@ -251,7 +267,7 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
             _checkpoint(run_id, q)
             # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
             # its own event, so the UI shows the handshake rather than a JSON dump.
-            findings, link = _run_broker_proc_streaming(
+            findings, link = _run_broker_round(
                 tasks, run_id, loop_num, q, context.alert_entities(alert_context),
                 (alert_context.get("normalized_seed") or {}).get("event_time"))
             telemetry.record(run_id, "broker", loop_num, **link)
@@ -336,15 +352,14 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
         _run_ctrl.pop(run_id, None)
 
 
-def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue,
-                               alert_scope: list | None = None, event_time: str | None = None) -> tuple[dict, dict]:
+def _run_broker_round(tasks: list, run_id: str, loop_num: int, q: Queue,
+                      alert_scope: list | None = None, event_time: str | None = None) -> tuple[dict, dict]:
     """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
 
-    The tasks go as a `task-input.v1` file (`--task-file`), and what comes back is
-    the batch `analyst-payload.json` the sub-analysts wrote -- read from the batch
-    id this call named, never from "the newest run on disk". The link says where
-    everything for this round lives; it has an `error` key when there is nothing
-    to judge.
+    In process: `run_round` on this run's thread, on a loop of its own so Stop
+    can cancel it. The Broker's progress lines go to the round's `broker.log` and
+    the UI's log panel. The link says where everything for this round lives; it
+    has an `error` key when there is nothing to judge.
     """
     # One folder per investigation (O5): runs/<run_id>/L<n>/ holds the round's task
     # file, Broker log, payload and one folder per task.
@@ -352,7 +367,7 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     round_dir.mkdir(parents=True, exist_ok=True)
     task_file, dropped = analyst.to_task_file(tasks, run_id, loop_num, alert_scope, event_time)
     task_path = round_dir / "tasks.json"
-    task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")
+    task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")  # the record, not the handoff
     task_ids = [t["task_id"] for t in task_file["tasks"]]
     link = {"task_file": str(task_path), "task_ids": task_ids, "tasks": task_file["tasks"], "dropped": dropped}
     # The Analyst -> Broker half of the handshake: exactly what was sent, and what was not.
@@ -361,70 +376,48 @@ def _run_broker_proc_streaming(tasks: list, run_id: str, loop_num: int, q: Queue
     if not task_ids:
         return {}, {**link, "error": "no task could be converted for the broker"}
 
-    repo = Path(__file__).parent.parent
     batch_id = f"{run_id}-L{loop_num}"
     log_path = round_dir / "broker.log"
-    env = {
-        **os.environ,
-        # contracts lives beside the engine, not inside engine/src.
-        "PYTHONPATH": os.pathsep.join([str(repo / "engine" / "src"), str(repo / "engine" / "contracts" / "src")]),
-        "PYTHONIOENCODING": "utf-8",
-        # Piped stdout is block-buffered; without this the "live" log arrives at exit.
-        "PYTHONUNBUFFERED": "1",
-        "SMARTOPS_OUT_DIR": str(round_dir),
-        # Every span of this round joins the run's one trace (O5).
-        "TRACEPARENT": telemetry.traceparent(run_id, loop_num),
-    }
-    cmd = [sys.executable, "-m", "smartops.main",
-           "--task-file", str(task_path),
-           "--batch-id", batch_id,
-           "--mcp-config", str(repo / "mcp_servers.json")]
-    # Streamed line by line: it fills the UI's log panel, and it keeps the SSE
-    # queue alive -- a silent 30-minute subprocess tripped the stream's 300 s
-    # timeout and the UI reported a failure while the broker was still working.
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            encoding="utf-8", errors="replace", env=env, cwd=str(repo))
+    tasks_in = [(t.to_analyst_task(), t.question) for t in TaskInputFile.model_validate(task_file).tasks]
+
+    async def one_round():
+        round_dir_token = broker_round_dir.set(round_dir)
+        try:
+            with telemetry.round_span(batch_id, telemetry.traceparent(run_id, loop_num)):
+                return await asyncio.wait_for(run_round(tasks_in, round_args(batch_id=batch_id)), BROKER_TIMEOUT_S)
+        finally:
+            broker_round_dir.reset(round_dir_token)
+
     ctrl = _run_ctrl.get(run_id) or {}
-    ctrl["proc"] = proc  # the stop endpoint kills it
-    timed_out = threading.Event()
-    cli_errors: list[str] = []
-    prev_was_error = False
+    loop = asyncio.new_event_loop()
+    with log_path.open("w", encoding="utf-8", buffering=1) as log:  # line-buffered: live on disk (O3)
+        def line(text: str) -> None:
+            log.write(text + "\n")
+            _emit(q, "broker_log", {"line": text}, loop=loop_num)
 
-    def _kill():
-        timed_out.set()
-        proc.kill()
+        with telemetry.print_to(line):
+            round_task = loop.create_task(one_round())
+            ctrl["cancel"] = lambda: loop.call_soon_threadsafe(round_task.cancel)  # the stop endpoint
+            try:
+                result = loop.run_until_complete(round_task)
+            except asyncio.CancelledError:
+                raise RunStopped()  # cancelled on purpose: not a broker failure
+            except TimeoutError:
+                return {}, {**link, "log": str(log_path),
+                            "error": f"broker timed out after {BROKER_TIMEOUT_S // 60} minutes, see {log_path}"}
+            except Exception as exc:
+                return {}, {**link, "log": str(log_path), "error": f"broker failed: {exc} (log: {log_path})"}
+            finally:
+                ctrl["cancel"] = None
+                loop.close()
+    link["log"] = str(log_path)
 
-    killer = threading.Timer(1800, _kill)
-    killer.start()
-    try:
-        with log_path.open("w", encoding="utf-8", buffering=1) as log:  # line-buffered: live on disk (O3)
-            log.write(f"$ {' '.join(cmd)}\n\n")
-            for line in proc.stdout:
-                log.write(line)
-                # The CLI's own `error:` lines and their 7-space continuations (main.py return-2 paths).
-                if line.startswith("error:") or (cli_errors and re.match(r" {7}\S", line) and prev_was_error):
-                    cli_errors.append(line.strip())
-                prev_was_error = bool(cli_errors) and cli_errors[-1] == line.strip()
-                _emit(q, "broker_log", {"line": line.rstrip()}, loop=loop_num)
-        returncode = proc.wait()
-    finally:
-        killer.cancel()
-        ctrl["proc"] = None
-    if ctrl.get("stop") and ctrl["stop"].is_set():
-        raise RunStopped()  # killed on purpose: not a broker failure
-    link.update(exit_code=returncode, log=str(log_path))
-
-    link["broker_runs"] = analyst.broker_runs(task_ids, round_dir)
-    payload_path = round_dir / "analyst-payload.json"
-    link["payload"] = str(payload_path)
-    payload = json.loads(payload_path.read_text(encoding="utf-8")) if payload_path.is_file() else None
+    link["broker_runs"] = analyst.broker_runs(task_ids, result.fetched)
+    payload = result.payload.model_dump(mode="json") if result.payload else None
+    link["payload"] = str(round_dir / "analyst-payload.json")
     link["handshake"] = analyst.handshake(task_ids, link["broker_runs"], payload)
-    if timed_out.is_set():
-        return {}, {**link, "error": f"broker timed out after 30 minutes, see {log_path}"}
-    if returncode != 0:
-        said = " ".join(cli_errors[-4:]) or "no error line printed"
-        return {}, {**link, "error": f"broker exited {returncode}: {said} (log: {log_path})"}
+    if result.failures:
+        return {}, {**link, "error": f"broker: {result.failures} task(s) failed (log: {log_path})"}
     if payload is None:
         return {}, {**link, "error": f"broker wrote no analyst payload (analyst model configured?), see {log_path}"}
     return payload, link
-

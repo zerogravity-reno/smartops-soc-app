@@ -28,6 +28,7 @@ ladder are live; tests still inject a fake `BrokerInvoker` of the same shape.
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import logging
@@ -1217,8 +1218,8 @@ def runs_root() -> Path:
     return Path(os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR)
 
 
-OUT_DIR_ENV_VAR = "SMARTOPS_OUT_DIR"
-"""One round's own folder, set by the webapp: each task is written straight into
+round_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar("smartops_round_dir", default=None)
+"""One round's own folder, set by the Analyst: each task is written straight into
 `<out>/<short id>/` and the batch payload beside them, so one investigation is one
 folder tree, not 12 siblings under the runs root (O5)."""
 
@@ -1242,7 +1243,7 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
     happened to start in, which is how a test suite came to leave 179 artifact
     directories in the repository.
     """
-    out = os.environ.get(OUT_DIR_ENV_VAR, "").strip()
+    out = round_dir.get()
     if out and base_dir is None:
         # `874ab334-L2-T1` -> `T1`: the round folder already names the run and loop.
         # The full id on a clash, never an overwrite.
