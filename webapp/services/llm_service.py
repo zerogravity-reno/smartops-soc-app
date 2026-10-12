@@ -97,35 +97,3 @@ def call_llm(system_prompt, user_message, *, temperature=DEFAULT_TEMPERATURE,
         "generation_tokens": out.get("generation_token_count", 0),
         "stop_reason": out.get("stop_reason", "unknown"),
     }
-
-def extract_json(text):
-    import re as _re, json as _json
-    cleaned = _re.sub(r"^```json\s*", "", text.strip())
-    cleaned = _re.sub(r"\s*```$", "", cleaned)
-    try:
-        return _json.loads(cleaned)
-    except _json.JSONDecodeError:
-        pass
-    first, last = text.find("{"), text.rfind("}")
-    if first != -1 and last > first:
-        try:
-            return _json.loads(text[first:last + 1])
-        except _json.JSONDecodeError:
-            pass
-    i = first if first != -1 else 0
-    while i < len(text):
-        if text[i] == "{":
-            depth, start = 0, i
-            for j in range(i, len(text)):
-                if text[j] == "{": depth += 1
-                elif text[j] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            obj = _json.loads(text[start:j+1])
-                            if any(k in obj for k in ("hypotheses","verdict","hypothesis_scores","model_reasoning","status","tasks")):
-                                return obj
-                        except: pass
-                        i = j; break
-        i += 1
-    return None

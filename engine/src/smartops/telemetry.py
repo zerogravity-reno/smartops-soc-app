@@ -35,9 +35,12 @@ Our spans carry the judgement and the token counts, never the reasoning trace.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from contextlib import contextmanager
 from typing import Any
 
@@ -312,3 +315,25 @@ def record_result_status(result: SubtaskResult) -> None:
         span.set_status(Status(StatusCode.ERROR, description=result.error))
     else:
         span.set_attribute("subtask.status", result.status.value)
+
+
+# ── The investigation record: runs/<run_id>/investigation.jsonl ──────────────
+def trace_id(run_id: str) -> str:
+    """The run's one W3C trace id (O5), derived so every caller agrees without state.
+    874ab334 was 9 traces: one per Broker task, none for the Analyst's calls."""
+    return hashlib.sha256(run_id.encode()).hexdigest()[:32]
+
+
+def traceparent(run_id: str, loop: int) -> str:
+    """The parent a Broker round's spans hang from: one per round, all in the run's trace."""
+    return f"00-{trace_id(run_id)}-{hashlib.sha256(f'{run_id}-L{loop}'.encode()).hexdigest()[:16]}-01"
+
+
+def record(run_id: str, step: str, loop: int, **data) -> None:
+    from smartops.broker import runs_root  # broker imports this module
+
+    target = runs_root() / run_id
+    target.mkdir(parents=True, exist_ok=True)
+    line = {"at": datetime.now(UTC).isoformat(), "step": step, "loop": loop, "trace_id": trace_id(run_id), **data}
+    with (target / "investigation.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(line, default=str) + "\n")

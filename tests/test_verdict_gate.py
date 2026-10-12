@@ -1,4 +1,4 @@
-from webapp.services.run_trace import follow_up_tasks, verdict_gate
+from smartops.analyst import follow_up_tasks, verdict_gate
 
 PLAN = {"hypotheses": [{"id": "H1", "verdict": "TRUE_POSITIVE"}, {"id": "H2", "verdict": "BENIGN"}]}
 PAYLOADS = [
@@ -83,7 +83,7 @@ def test_handoff_budget_leaves_the_analyst_its_generation():
 
 
 def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():
-    from webapp.services.run_trace import compact_round
+    from smartops.analyst import compact_round
     rec = compact_round({"payloads": PAYLOADS}, {"hypothesis_scores": {"H1": 60}, "evidence_refs": ["T3:endpoint"],
                                                  "evidence_gaps": [], "verdict_reasoning": "long prose"})
     assert rec["tasks"][1] == {"task_id": "r-L2-T3", "question": "Who logged on?",

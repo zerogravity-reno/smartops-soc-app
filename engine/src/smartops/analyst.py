@@ -1,19 +1,58 @@
-"""One investigation, end to end, under the webapp's run_id.
+"""The Analyst agent: plans an investigation from the alert's context, hands its
+tasks to the Tool Broker, and evaluates what comes back until a verdict holds.
 
-The main Analyst and the Tool Broker run in different processes. Everything that
-joins them is written here: the task file the Analyst's plan became, the broker
-runs it produced (with their trace ids), the payload that went back, and every
-Analyst output -- one `investigation.jsonl` per run.
+The system prompt is `prompts/analyst_system_prompt.txt`. The verdict is gated
+here by code (`verdict_gate`), not taken from the model.
 """
 
-import hashlib
 import json
-import os
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+from smartops.context import _instant
+
+PROMPT_PATH = Path(__file__).parent / "prompts" / "analyst_system_prompt.txt"
+
+FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must match
+
+
+def load_system_prompt() -> str:
+    return PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def extract_json(text):
+    import re as _re, json as _json
+    cleaned = _re.sub(r"^```json\s*", "", text.strip())
+    cleaned = _re.sub(r"\s*```$", "", cleaned)
+    try:
+        return _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        pass
+    first, last = text.find("{"), text.rfind("}")
+    if first != -1 and last > first:
+        try:
+            return _json.loads(text[first:last + 1])
+        except _json.JSONDecodeError:
+            pass
+    i = first if first != -1 else 0
+    while i < len(text):
+        if text[i] == "{":
+            depth, start = 0, i
+            for j in range(i, len(text)):
+                if text[j] == "{": depth += 1
+                elif text[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            obj = _json.loads(text[start:j+1])
+                            if any(k in obj for k in ("hypotheses","verdict","hypothesis_scores","model_reasoning","status","tasks")):
+                                return obj
+                        except: pass
+                        i = j; break
+        i += 1
+    return None
+
 
 # The Analyst's entity vocabulary -> the engine's `EntityKind`. Anything absent
 # (e.g. "environment") has no engine kind and is dropped, and the drop is recorded.
@@ -29,110 +68,6 @@ _KIND = {
     "file_path": "file_name", "path": "file_name", "process_path": "file_name",
     "command": "command_line", "command_line": "command_line", "commandline": "command_line", "cmdline": "command_line",
 }
-
-
-def _sha256(value) -> str | None:
-    """The SHA256 out of Sysmon's `MD5=…,SHA256=…,IMPHASH=…`, or a bare one."""
-    m = re.search(r"\b([0-9A-Fa-f]{64})\b", str(value or ""))
-    return m.group(1) if m else None
-
-
-def alert_entities(context: dict) -> list[dict]:
-    """The alert's host, user, source IP, file hash and Sysmon process GUID as
-    engine entities: the scope for a task that only says "search the logs"."""
-    seed = (context or {}).get("normalized_seed") or {}
-    ent = seed.get("entities") or {}
-    guid = next((d.get("process_guid") for d in (seed.get("process"), seed.get("finding"))
-                 if isinstance(d, dict) and d.get("process_guid")), None)
-    picks = [("host", ent.get("hostname") or ent.get("host")), ("user", ent.get("user")), ("ip", ent.get("src_ip")),
-             ("file_hash", _sha256((seed.get("file") or {}).get("sha256"))), ("process_guid", guid)]
-    return [{"type": kind, "value": str(value).strip()} for kind, value in picks if value and str(value).strip()]
-
-
-def _instant(value) -> datetime | None:
-    """A timezone-aware ISO 8601 instant, or None for anything else (placeholders, naive times)."""
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else None
-
-
-def notable_event_time(ev: dict) -> str:
-    """When the alert's event happened, in UTC. A notable's `_time` is when ES ran the
-    search, often an hour after the event. ESCU's `firstTime` is the event, written
-    without an offset in the search head's zone, the same zone `_time` is rendered in."""
-    def one(key):
-        v = ev.get(key)
-        return (v[0] if isinstance(v, list) and v else v) or ""
-
-    t, first = _instant(one("_time")), str(one("firstTime")).strip()
-    try:
-        if first.replace(".", "", 1).isdigit():
-            return datetime.fromtimestamp(float(first), UTC).isoformat()
-        if first and t:
-            # ponytail: assumes firstTime shares _time's offset; true while ES and the saved search use one zone
-            return datetime.fromisoformat(first).replace(tzinfo=t.tzinfo).astimezone(UTC).isoformat()
-    except ValueError:
-        pass
-    return t.astimezone(UTC).isoformat() if t else str(one("_time"))
-
-
-def notables_spl(rule_pattern: str | None = None) -> str:
-    """The one base search the queue and the import share, newest first, one row
-    per event. ESCU rules run every 5 minutes over a 60-minute span with no
-    throttle, so each event was raised 12 times (2026-10-08). The queue and
-    `?index=` must read the same list, or an index names a different row.
-    `rule_pattern` is already SPL-escaped by the caller."""
-    rule = f' (search_name="{rule_pattern}" OR source="{rule_pattern}")' if rule_pattern else ""
-    return f"search index=notable{rule} | dedup search_name dest firstTime keepempty=true | sort -_time"
-
-
-_URGENCY = ("informational", "low", "medium", "high", "critical")
-
-
-def group_notables(rows: list[dict]) -> list[dict]:
-    """Queue rows, newest first, folded by rule and host: repeats of one rule on one
-    host filled the queue. Groups keep first-seen order, so each sits where its
-    newest instance would; every row keeps its `index` for the import."""
-    rank = lambda u: _URGENCY.index(u) if u in _URGENCY else -1
-    groups: dict[tuple, dict] = {}
-    for row in rows:
-        g = groups.setdefault((row.get("rule_name"), row.get("dest")), {
-            "rule_name": row.get("rule_name"), "dest": row.get("dest"), "time": row.get("time"),
-            "urgency": "", "users": [], "srcs": [], "events": []})
-        g["events"].append(row)
-        if rank(str(row.get("urgency", "")).lower()) > rank(g["urgency"]):
-            g["urgency"] = str(row["urgency"]).lower()
-        for key, field in (("users", "user"), ("srcs", "src")):
-            if row.get(field) and row[field] not in g[key]:
-                g[key].append(row[field])
-    return [{**g, "count": len(g["events"])} for g in groups.values()]
-
-
-def runs_dir() -> Path:
-    # Same resolution the engine uses, anchored at the repo because the engine runs there.
-    return REPO / (os.environ.get("SMARTOPS_RUNS_DIR", "").strip() or ".smartops/runs")
-
-
-def trace_id(run_id: str) -> str:
-    """The run's one W3C trace id (O5), derived so every caller agrees without state.
-    874ab334 was 9 traces: one per Broker task, none for the Analyst's calls."""
-    return hashlib.sha256(run_id.encode()).hexdigest()[:32]
-
-
-def traceparent(run_id: str, loop: int) -> str:
-    """The parent a Broker round's spans hang from: one per round, all in the run's trace."""
-    return f"00-{trace_id(run_id)}-{hashlib.sha256(f'{run_id}-L{loop}'.encode()).hexdigest()[:16]}-01"
-
-
-def record(run_id: str, step: str, loop: int, **data) -> None:
-    target = runs_dir() / run_id
-    target.mkdir(parents=True, exist_ok=True)
-    line = {"at": datetime.now(UTC).isoformat(), "step": step, "loop": loop, "trace_id": trace_id(run_id), **data}
-    with (target / "investigation.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(line, default=str) + "\n")
-
 
 _EVENT_MARGIN = timedelta(hours=1)
 
