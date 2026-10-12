@@ -2,7 +2,7 @@
 name = "smartops-soc"
 version = "1.0.0"
 description = "SmartOps SOC: backend (engine/) and frontend (frontend/)"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     # The backend (API server, Analyst, Tool Broker) and its contracts; both are workspace members.
     "smartops-backend",

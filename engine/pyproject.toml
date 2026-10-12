@@ -2,7 +2,7 @@
 name = "smartops-backend"
 version = "0.1.0"
 description = "SmartOps SOC triage/IR engine: budget, subagents, aggregator"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "smartops-contracts",
     "pydantic>=2.9",
