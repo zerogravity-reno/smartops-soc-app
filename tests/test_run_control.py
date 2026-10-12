@@ -30,7 +30,7 @@ def test_stop_releases_a_paused_run():
     c, q = _ctrl("t-pause"), Queue()
     c["go"].clear()
     threading.Timer(0.3, lambda: main.stop_run("t-pause")).start()
-    with pytest.raises(main.RunStopped):
+    with pytest.raises(main.analyst.RunStopped):
         main._checkpoint("t-pause", q)
     assert q.get_nowait()["type"] == "paused"
     assert q.empty()  # stopped, so no "resumed"

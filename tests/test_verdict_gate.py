@@ -76,10 +76,9 @@ def test_gaps_become_follow_ups_when_synthesis_sent_none():
 
 def test_handoff_budget_leaves_the_analyst_its_generation():
     from smartops.subagent_analysts import packing
-    from webapp.services import llm_service
-    assert packing._ANALYST_GENERATION_RESERVE == llm_service.DEFAULT_MAX_GEN_LEN
-    from webapp.main import FULL_ROUNDS
-    assert packing._ANALYST_ROUNDS == FULL_ROUNDS
+    from smartops import analyst
+    assert packing._ANALYST_GENERATION_RESERVE == analyst.MAX_GEN_LEN
+    assert packing._ANALYST_ROUNDS == analyst.FULL_ROUNDS
 
 
 def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():

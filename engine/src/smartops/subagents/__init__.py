@@ -112,7 +112,7 @@ MISSION_TIMEOUT_SECONDS = 900
 """Wall clock for one mission, recovery call included (B24).
 
 Missions take one to two minutes; this leaves room for a slow Splunk and still
-ends a stuck call well inside the webapp's 1,800 s kill of the whole round, so
+ends a stuck call well inside the Analyst's 1,800 s timeout on the whole round, so
 one hung step costs that step, not the round."""
 
 CELL_CHAR_CAP = 8192

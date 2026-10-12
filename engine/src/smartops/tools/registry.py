@@ -571,12 +571,12 @@ _call_lock = threading.Lock()
 def call_tool(family: ToolFamily, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """One tool call on `family`'s first server, outside any agent.
 
-    For the webapp's alert reads, which used to open their own MCP session with
-    their own URL, token and TLS handling (`webapp/services/splunk_mcp.py`). Same
+    For the alert context reads (`smartops.context`), which used to open their own MCP session with
+    their own URL, token and TLS handling. Same
     config, TLS rule and dead-session reset as the Broker's calls. Returns the
     tool's `structuredContent`; raises on a tool error rather than returning it.
     """
-    # ponytail: one call at a time per process; the webapp's reads are a handful per alert
+    # ponytail: one call at a time per process; the context reads are a handful per alert
     with _call_lock:
         if not _clients_by_family:
             load_mcp_servers()

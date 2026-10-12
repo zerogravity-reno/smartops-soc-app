@@ -3,7 +3,6 @@ main.py - SmartOps SOC Unified Web Application
 FastAPI server wiring the Web UI to the SmartOps Engine (Broker + Subagents)
 using Foundation-Sec-8B-Reasoning on AWS Bedrock (invoke_model, NOT Converse).
 """
-import asyncio
 import json
 import os
 import sys
@@ -27,16 +26,11 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
-from webapp.services.llm_service import call_llm
 from smartops import analyst, context, telemetry
-from contracts import TaskInputFile
-from smartops.broker import round_dir as broker_round_dir, runs_root
-from smartops.main import _neutralise_aws_profile, configure_logging, round_args, run_round, start
+from smartops.main import _neutralise_aws_profile, configure_logging, start
 from smartops.telemetry import configure_telemetry
-from smartops.analyst import FULL_ROUNDS, extract_json
 
 
-BROKER_TIMEOUT_S = 1800
 REPO = Path(__file__).parent.parent
 
 
@@ -115,7 +109,7 @@ class RunRequest(BaseModel):
     host: str = "BSTOLL-L"
     domain: str = "coinhive.com"
     event_time: str = "2018-08-20T12:00:00Z"
-    max_loops: int = 15  # headroom to finish; older rounds are compacted (FULL_ROUNDS)
+    max_loops: int = 15  # headroom to finish; older rounds are compacted (analyst.FULL_ROUNDS)
     context_contract: dict = None
 
 @app.get("/debug")
@@ -138,22 +132,19 @@ def start_run(req: RunRequest):
 # flight cannot be interrupted. Stop also cancels a running broker round at once.
 _run_ctrl: dict[str, dict] = {}
 
-class RunStopped(Exception):
-    pass
-
 def _checkpoint(run_id: str, q: Queue) -> None:
     c = _run_ctrl.get(run_id)
     if not c:
         return
     if not c["go"].is_set():
-        _emit(q, "paused", {}, message="Paused at a stage boundary")
+        analyst.emit(q, "paused", {}, message="Paused at a stage boundary")
         while not c["go"].wait(0.5):
             if c["stop"].is_set():
                 break
         if not c["stop"].is_set():
-            _emit(q, "resumed", {}, message="Resumed")
+            analyst.emit(q, "resumed", {}, message="Resumed")
     if c["stop"].is_set():
-        raise RunStopped()
+        raise analyst.RunStopped()
 
 def _ctrl_or_404(run_id: str):
     c = _run_ctrl.get(run_id)
@@ -208,14 +199,8 @@ def stream_run(run_id: str):
     return StreamingResponse(event_gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-def _emit(q: Queue, event_type: str, data: dict, **extra):
-    q.put({"type": event_type, "data": data, "message": extra.get("message",""), **{k:v for k,v in extra.items() if k != "message"}})
-
 def _run_investigation(run_id: str, req: RunRequest, q: Queue):
-    system_prompt = analyst.load_system_prompt()
-    at_loop = 1  # where a stop landed, for the run record
     try:
-        # â”€â”€ Build alert context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if req.context_contract:
             alert_context = req.context_contract
         else:
@@ -235,189 +220,8 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 "goal": f"Investigate {req.domain} activity on host {req.host}"
             }
 
-        # â”€â”€ LOOP 1: Analyst â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        _emit(q, "analyst", {}, message="Loop 1 â€” Analyst planning...")
-        # Strip prior analyst/synthesis keys so the model starts in planning mode.
-        _STRIP_KEYS = {"planning_template", "analyst_plan", "synthesis",
-                       "verdict", "status", "hypothesis_scores",
-                       "verdict_confidence", "verdict_reasoning", "evidence_gaps"}
-        clean_context = {k: v for k, v in alert_context.items() if k not in _STRIP_KEYS}
-        user_msg = "[ALERT CONTEXT]\n" + json.dumps(clean_context, indent=2)
-        _checkpoint(run_id, q)
-        r1 = call_llm(system_prompt, user_msg)
-        plan = extract_json(r1["answer"]) or {}
-        plan["reasoning"] = r1["reasoning"]
-        tokens1 = {"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]}
-        _emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
-        telemetry.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1, context=clean_context)
-
-        # â”€â”€ LOOPS 2..N: Broker + Synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        tasks = plan.get("tasks", [])
-        # A verdict already in Loop 1 (the context was unambiguous) skips the broker.
-        if not tasks and plan.get("status") == "VERDICT_REACHED":
-            _emit(q, "verdict", plan, message="VERDICT (direct): " + str(plan.get("verdict", "?")))
-            q.put({"type": "done", "message": "Investigation complete"})
-            return
-        all_findings = {}
-        all_runs = []  # every round's broker runs, for the verdict gate's step check
-        evaluations = {}  # round label -> the gated synthesis that read it
-        asked = []  # every task sent so far, so a repeat round is not sent (W10)
-        for loop_num in range(2, req.max_loops + 2):
-            at_loop = loop_num
-            _checkpoint(run_id, q)
-            # Handoff -> broker log -> broker steps -> sub-analyst payload: each stage is
-            # its own event, so the UI shows the handshake rather than a JSON dump.
-            findings, link = _run_broker_round(
-                tasks, run_id, loop_num, q, context.alert_entities(alert_context),
-                (alert_context.get("normalized_seed") or {}).get("event_time"))
-            telemetry.record(run_id, "broker", loop_num, **link)
-            if "broker_runs" in link:
-                _emit(q, "broker", {"runs": link["broker_runs"], "handshake": link["handshake"]},
-                      loop=loop_num, message=f"Loop {loop_num}: Broker complete")
-            if link.get("error"):
-                # Never fall back to another run's artifacts: that is how eleven
-                # loops were once judged on an unrelated alert's evidence.
-                q.put({"type": "error", "message": f"Loop {loop_num} broker failed: {link['error']}", "trace": link})
-                return
-            all_findings[f"Round {loop_num}"] = findings
-            all_runs += link.get("broker_runs", [])
-            _emit(q, "payload", findings, loop=loop_num, message=f"Loop {loop_num}: sub-analyst findings returned to the Analyst")
-
-            # Synthesis â€” build accumulated findings sections
-            _emit(q, "synthesis", {}, loop=loop_num, message=f"Loop {loop_num} â€” Synthesis evaluating...")
-            # The plan as context only, and the mode stated: with the whole plan the
-            # model sometimes answered with another plan instead of an evaluation.
-            plan_slim = {"hypotheses": plan.get("hypotheses", []), "tasks": tasks[:6],
-                         "semantic_alignment": plan.get("semantic_alignment", "")}
-            hyp_ids = [h.get("id", "") for h in plan_slim["hypotheses"]] or ["H1", "H2", "H3"]
-            eval_header = (
-                "YOU ARE NOW IN EVALUATION MODE.\n"
-                f"The investigation has {len(hyp_ids)} hypotheses with IDs: {', '.join(hyp_ids)}.\n"
-                "Output ONLY the EVALUATION JSON schema. Required fields:\n"
-                "  hypothesis_scores: {" + ", ".join(f'"{h}": <0-100>' for h in hyp_ids) + "}\n"
-                "  verdict: one of TRUE_POSITIVE / FALSE_POSITIVE / BENIGN / REQUIRES_INVESTIGATION\n"
-                "  verdict_reasoning: string explanation\n"
-                "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
-                "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
-                "Do NOT output planning JSON (hypotheses list, tasks list).\n"
-                "---\n"
-            )
-            sections = [eval_header + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]
-            # The last FULL_ROUNDS in full; older ones as a short record (W8): re-sending
-            # every round outgrew the 32k window by round ~6. The gate still checks all rounds.
-            labels = list(all_findings)
-            for round_label in labels[:-FULL_ROUNDS]:
-                record = analyst.compact_round(all_findings[round_label], evaluations.get(round_label, {}))
-                sections.append(f"[EARLIER ROUND - {round_label}, summarised]\n{json.dumps(record, indent=2)}")
-            for round_label in labels[-FULL_ROUNDS:]:
-                slim = {k:v for k,v in all_findings[round_label].items() if k != "_raw_intel_dump"}
-                sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
-            _checkpoint(run_id, q)
-            rN = call_llm(system_prompt,"\n\n".join(sections))
-            raw_synth = extract_json(rN["answer"]) or {}
-            synth = evaluations[f"Round {loop_num}"] = analyst.verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
-            _emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
-                  tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
-                  message=f"Loop {loop_num} â€” Synthesis complete: {synth.get('status','?')}")
-            telemetry.record(run_id, "synthesis", loop_num, output=synth, model_status=raw_synth.get("status"),
-                             reasoning=rN["reasoning"],
-                             tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]})
-
-            status  = synth.get("status", "")
-            verdict = synth.get("verdict", "")
-
-            if status == "VERDICT_REACHED":
-                _emit(q, "verdict", synth, message=f"VERDICT: {verdict}")
-                break
-            if loop_num == req.max_loops + 1:
-                _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"}, message="Max loops reached")
-                break
-            asked += link["tasks"]
-            tasks = analyst.follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"],
-                                              synth.get("evidence_gaps"), asked)
-            if not tasks:
-                _emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"},
-                      message="No new follow-up tasks (none given, or all already asked)")
-                break
-
-        q.put({"type": "done", "message": "Investigation complete"})
-
-    except RunStopped:
-        telemetry.record(run_id, "stopped", at_loop)
-        q.put({"type": "stopped", "message": "Stopped by the analyst"})
-    except Exception as exc:
-        q.put({"type": "error", "message": str(exc)})
+        analyst.investigate(run_id, alert_context, req.max_loops, q,
+                            lambda: _checkpoint(run_id, q), _run_ctrl.get(run_id) or {})
     finally:
         _run_queues.pop(run_id, None)
         _run_ctrl.pop(run_id, None)
-
-
-def _run_broker_round(tasks: list, run_id: str, loop_num: int, q: Queue,
-                      alert_scope: list | None = None, event_time: str | None = None) -> tuple[dict, dict]:
-    """Send the Analyst's tasks to the Tool Broker; return (payload, trace link).
-
-    In process: `run_round` on this run's thread, on a loop of its own so Stop
-    can cancel it. The Broker's progress lines go to the round's `broker.log` and
-    the UI's log panel. The link says where everything for this round lives; it
-    has an `error` key when there is nothing to judge.
-    """
-    # One folder per investigation (O5): runs/<run_id>/L<n>/ holds the round's task
-    # file, Broker log, payload and one folder per task.
-    round_dir = runs_root().resolve() / run_id / f"L{loop_num}"
-    round_dir.mkdir(parents=True, exist_ok=True)
-    task_file, dropped = analyst.to_task_file(tasks, run_id, loop_num, alert_scope, event_time)
-    task_path = round_dir / "tasks.json"
-    task_path.write_text(json.dumps(task_file, indent=2), encoding="utf-8")  # the record, not the handoff
-    task_ids = [t["task_id"] for t in task_file["tasks"]]
-    link = {"task_file": str(task_path), "task_ids": task_ids, "tasks": task_file["tasks"], "dropped": dropped}
-    # The Analyst -> Broker half of the handshake: exactly what was sent, and what was not.
-    _emit(q, "handoff", {"tasks": task_file["tasks"], "dropped": dropped, "task_file": str(task_path)},
-          loop=loop_num, message=f"Loop {loop_num}: {len(task_ids)} task(s) handed to the Broker")
-    if not task_ids:
-        return {}, {**link, "error": "no task could be converted for the broker"}
-
-    batch_id = f"{run_id}-L{loop_num}"
-    log_path = round_dir / "broker.log"
-    tasks_in = [(t.to_analyst_task(), t.question) for t in TaskInputFile.model_validate(task_file).tasks]
-
-    async def one_round():
-        round_dir_token = broker_round_dir.set(round_dir)
-        try:
-            with telemetry.round_span(batch_id, telemetry.traceparent(run_id, loop_num)):
-                return await asyncio.wait_for(run_round(tasks_in, round_args(batch_id=batch_id)), BROKER_TIMEOUT_S)
-        finally:
-            broker_round_dir.reset(round_dir_token)
-
-    ctrl = _run_ctrl.get(run_id) or {}
-    loop = asyncio.new_event_loop()
-    with log_path.open("w", encoding="utf-8", buffering=1) as log:  # line-buffered: live on disk (O3)
-        def line(text: str) -> None:
-            log.write(text + "\n")
-            _emit(q, "broker_log", {"line": text}, loop=loop_num)
-
-        with telemetry.print_to(line):
-            round_task = loop.create_task(one_round())
-            ctrl["cancel"] = lambda: loop.call_soon_threadsafe(round_task.cancel)  # the stop endpoint
-            try:
-                result = loop.run_until_complete(round_task)
-            except asyncio.CancelledError:
-                raise RunStopped()  # cancelled on purpose: not a broker failure
-            except TimeoutError:
-                return {}, {**link, "log": str(log_path),
-                            "error": f"broker timed out after {BROKER_TIMEOUT_S // 60} minutes, see {log_path}"}
-            except Exception as exc:
-                return {}, {**link, "log": str(log_path), "error": f"broker failed: {exc} (log: {log_path})"}
-            finally:
-                ctrl["cancel"] = None
-                loop.close()
-    link["log"] = str(log_path)
-
-    link["broker_runs"] = analyst.broker_runs(task_ids, result.fetched)
-    payload = result.payload.model_dump(mode="json") if result.payload else None
-    link["payload"] = str(round_dir / "analyst-payload.json")
-    link["handshake"] = analyst.handshake(task_ids, link["broker_runs"], payload)
-    if result.failures:
-        return {}, {**link, "error": f"broker: {result.failures} task(s) failed (log: {log_path})"}
-    if payload is None:
-        return {}, {**link, "error": f"broker wrote no analyst payload (analyst model configured?), see {log_path}"}
-    return payload, link

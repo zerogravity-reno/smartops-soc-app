@@ -242,14 +242,14 @@ happened to both say 20,000)."""
 
 # The way back has a budget too. The Analyst Agent is the same model with the same
 # window, and every synthesis call re-reads the last FULL_ROUNDS rounds in full and
-# the older ones as `run_trace.compact_round` records (`webapp/main.py`, W8).
+# the older ones as `analyst.compact_round` records (W8).
 _ANALYST_PROMPT_RESERVE = 4_300
 """Webapp system prompt + investigation plan, in tokens. Measured on 072fd610:
 the round-2 synthesis call was 8,195 prompt tokens, of which the 6.3k-char system
 prompt and the 10.4k-char plan were ~4.2k. 89674d75's were ~2.3k; plans vary."""
 
 _ANALYST_ROUNDS = 2
-"""Rounds synthesis reads in full: `webapp/main.py` FULL_ROUNDS."""
+"""Rounds synthesis reads in full: `analyst.FULL_ROUNDS`."""
 
 _COMPACT_ROUNDS_RESERVE = 4_000
 """Tokens for the compacted older rounds: 0.9-1.8 kB each (b3aa0dd2), so about 10."""
@@ -259,7 +259,7 @@ _HANDOFF_CHARS_PER_TOKEN = 3.5
 round 3's synthesis prompt grew 4,789 tokens for round 3's 17,985 characters."""
 
 _ANALYST_GENERATION_RESERVE = 8_192
-"""The Analyst's own `max_gen_len` (`webapp/services/llm_service.DEFAULT_MAX_GEN_LEN`),
+"""The Analyst's own `max_gen_len` (`analyst.MAX_GEN_LEN`),
 not the sub-analysts' `_GENERATION_RESERVE`: at 4,096 its synthesis thinking ran
 out before the JSON on 78cd60ec (T15). `tests/test_verdict_gate.py` holds the two equal."""
 
