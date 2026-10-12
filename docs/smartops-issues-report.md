@@ -67,7 +67,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T12 | Triage | Wrong reference rule; contradictory alignment judgements | Medium | Open (A7, C5) |
 | T13 | Triage | Analyst ignores the parent path even when the narrative spells it out | High | Open |
 | T14 | Triage | Synthesis reads tasks that never ran and cites them as findings | High | Open |
-| T15 | Triage | Synthesis can spend its output budget before writing the verdict JSON | High | Open (Analyst); output limit raised to 8,192 |
+| T15 | Triage | Synthesis can spend its output budget before writing the verdict JSON | High | Partly fixed (`4aac5a6`): a `length` stop now ends the run as a model failure and saves the whole generation; the runaway thinking itself is open |
 | T16 | Triage | Unanswered follow-ups closed as "no gaps" | High | Open |
 | T17 | Triage | REQUIRES_INVESTIGATION with gaps but no follow-up tasks ends the run | High | Worked around in code (gaps become follow-ups); recurred in 4 of 5 runs on 2026-10-08 when scores are close or low, or the JSON is unparsed; prompt and gate open |
 | T18 | Triage | Task windows reach weeks back; follow-ups inherit the widest, so old activity is narrated beside the alert | High | Open (Analyst planning + loop follow-ups) |
@@ -104,7 +104,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
 | B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; held on `89674d75` |
-| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" fixed on `broker-a818-fixes` (`plan_fetch` `unanswerable`), live check pending; scoping is Analyst-side |
+| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" fixed on `broker-a818-fixes` (`plan_fetch` `unanswerable`, `01877a9`); held live on `451334ad` and `ea38cb13`; scoping is Analyst-side |
 | B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
 | B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
@@ -118,8 +118,13 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B31 | Broker | siem reports `gaps: vt` on every task with nothing vt could look up | Low | Prompt fixed on `broker-k4-ab-fixes`; live check pending |
 | B32 | Handoff | A refused ref says "step … is ok" for an incomplete step | Low | Fixed on `broker-k4-ab-fixes` |
 | B33 | Broker | Hash questions unanswered: siem never searched Sysmon 15/29, and file_events held non-file rows the narrative called file writes | High | Fixed on `broker-k4-ab-fixes` (siem hint, 15/29 as file events, `event_code=`); svcupdate.dat's hash is not in the lab's data |
-| B39 | Broker | A step's status is its last dispatch's, not its rows': `no_data` beside 5 rows | Medium | Fixed on `broker-a818-fixes`: status follows cumulative rows; live check pending |
-| B40 | Broker | A `-` placeholder counts as a value, so a hash's file reads "(file not named)" and synthesis pinned powershell.exe's hash on svcupdate.dat | High | Fixed on `broker-a818-fixes`: `_first` skips `-`; live check pending |
+| B34 | Broker | Aggregate rows skip the per-row event-code split | High | Fixed on `broker-a818-fixes` |
+| B35 | Broker | Sysmon network fields weren't read | High | Fixed on `broker-a818-fixes` |
+| B36 | Broker | One task's output-token holds refused its own third step | High | Fixed on `broker-a818-fixes` |
+| B37 | Broker | `covered` was the subagent's own claim | Medium | Fixed on `broker-a818-fixes` |
+| B38 | Broker | Pure code-count rows are narrated as events | Medium | Fixed on `broker-a818-fixes` (`20c83b9`): a call of only EventCode counts is discovery |
+| B39 | Broker | A step's status is its last dispatch's, not its rows': `no_data` beside 5 rows | Medium | Fixed on `broker-a818-fixes`: status follows cumulative rows (`e8b0ffb`); held live on `451334ad` |
+| B40 | Broker | A `-` placeholder counts as a value, so a hash's file reads "(file not named)" and synthesis pinned powershell.exe's hash on svcupdate.dat | High | Fixed on `broker-a818-fixes`: `_first` skips `-` (`d259509`); held live on `451334ad` |
 | B41 | Broker | The packer's over-budget warning repeats on every re-measure (7× for one domain) | Low | Fixed on `broker-a818-fixes`: `fitted_row_cap` measures silently |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Open |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
@@ -135,26 +140,26 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
-| K4 | Cost | One model for every Broker call: the planner, each fetch subagent and each recovery call | Medium | Built: Anthropic API provider, per-role tiers A/B, per-request pricing; first A/B run 2026-10-11 (`3bf5fce8`, `8807fafa`) |
+| K4 | Cost | One model for every Broker call: the planner, each fetch subagent and each recovery call | Medium | Fixed: Anthropic API provider, per-role tiers A/B, per-request pricing; A/B runs 2026-10-11 (`3bf5fce8`, `8807fafa`); tier A in use on `451334ad` ($1.33 Broker) and `ea38cb13` (Mohammed closed it 2026-10-12) |
 | O1 | Audit | Context contract not saved with the run | Medium | Fixed (`c85eb93`) |
 | O2 | Audit | Dispatch-to-step link not recorded | Low | Fixed on this branch |
 | O3 | Audit | Broker log written only at the end of a loop | Low | Fixed (`c85eb93`) |
 | O4 | Audit | Sub-analyst gate drops never reached the run's Broker log | Low | Fixed on `smartops-loop-fix` |
 | O5 | Audit | One investigation is 9 traces in 12 folders | Medium | Fixed on `smartops-loop-fix` (one folder, one trace id); Analyst calls have no spans |
 | O6 | Audit | Warnings don't name the task; the packer's overflow warning isn't logged | Low | Fixed on `smartops-loop-fix` |
-| S1 | Security | Live credentials in git history | Critical | Removed from tree; **rotation pending**; new leak in `33ccf52` (C1–C2) |
+| S1 | Security | Live credentials in git history | Critical | Removed from tree; rotated (Mohammed, 2026-10-12); `33ccf52` (C1–C2) keys: confirm they were in that rotation |
 | S2 | Security | Splunk Web scraper replaced the official MCP | High | Fixed (C3) |
-| AR1 | Architecture | Six webapp routes and their job store have no caller in the UI | Low | Open |
-| AR2 | Architecture | The webapp has its own Foundation-Sec-8B client beside the engine's `AnalystModel` | Medium | Open (question: is the boto3 Windows socket issue still real?) |
-| AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Open |
+| AR1 | Architecture | Six webapp routes and their job store have no caller in the UI | Low | Fixed (AR11, `5fd9757`): the six routes and their job store deleted |
+| AR2 | Architecture | The webapp has its own Foundation-Sec-8B client beside the engine's `AnalystModel` | Medium | Fixed (AR11, `b64307b`): the Analyst uses the engine's `AnalystModel`; `llm_service` deleted. Read timeout 600 s kept (`af01d36`) |
+| AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Open: `FS8B_MODEL_ARN` gone, but the patch still reads `FS8B_API_KEY` and the in-process Analyst relies on it; delete once `SMARTOPS_ANALYST_API_KEY` holds the working key |
 | AR4 | Architecture | Four engine symbols only tests use | Low | Fixed on `broker-a818-fixes`: three deleted; `output_tokens_remaining` is live (`subagents/__init__.py:673`), kept |
-| AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Engine half fixed on `broker-a818-fixes` (`broker.runs_root()`); `run_trace.py`'s copy routed to the webapp owner |
+| AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Fixed: `run_trace.py` is gone; the Analyst and telemetry use `broker.runs_root()` |
 | AR6 | Architecture | `extract_json` scans braces by hand | Low | Open |
 | AR7 | Architecture | `bench._pinned_skills` only delegates | Low | Fixed on `broker-a818-fixes` |
-| AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Open |
+| AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Fixed (AR11): `start_server.bat` deleted; `start.ps1` runs `smartops.main:app` on :8013, `.env` loaded once by the server |
 | AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Fixed on `broker-a818-fixes`: moved to the engine, which imports both directly |
-| AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Open (frontend, smartops-worker) |
-| AR11 | Architecture | The codebase's file structure: `webapp/` mixes the frontend, the main Analyst, the context pipeline, the Broker handoff and the API server; one model has two configurations; dev tools sit inside the engine package | High | Open: the next session's work (layout to agree first) |
+| AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Fixed: React + TS frontend in `frontend/` (smartops-worker); `webapp/static` deleted with AR11 |
+| AR11 | Architecture | The codebase's file structure: `webapp/` mixes the frontend, the main Analyst, the context pipeline, the Broker handoff and the API server; one model has two configurations; dev tools sit inside the engine package | High | Fixed (`12c34e3`..`4ff806c`, merged 2026-10-12): `analyst.py`, `broker.py`, `context.py`, `main.py` (CLI + API); `webapp/` gone; Broker round in process; Python pinned to 3.13. Live on `79c024e8`; round 2 warm-up still unexercised |
 
 ## Triage logic (Analyst plan and synthesis)
 
@@ -957,7 +962,7 @@ None of the four rounds in `e8d949af` and `942115f7` (2026-10-11) reached VERDIC
 
 **K3. 19 loops on empty input.** *Medium. Fixed.* SOC3 spent 18 synthesis calls re-reading the same stale findings. W2 removed the stale input, `max_loops` was 3 (15 since 2026-10-08, W8), and the T1 gate stops a confident verdict that cites no evidence. The teammate branch's `max_loops` 9999 was not ported.
 
-**K4. One model for every Broker call.** *Medium. Built on `smartops-loop-fix` (2026-10-11); A/B live runs pending.*
+**K4. One model for every Broker call.** *Medium. Fixed on `smartops-loop-fix` (2026-10-11); tier A held on `451334ad` and `ea38cb13`. Re-measure the holds when a tier preset changes.*
 - **Before:** the Broker planner, both fetch subagents (siem, vt) and every recovery call ran on one `ModelChoice`, Sonnet 4.6 on Bedrock (`AWS_BEDROCK_MODEL_ID`).
 - **Done: the Broker on the Anthropic API, with one model per role.**
   - `Provider.ANTHROPIC` uses Strands' `AnthropicModel`, through the `strands-agents[anthropic]` extra (anthropic SDK 0.125.0).
@@ -1029,7 +1034,7 @@ None of the four rounds in `e8d949af` and `942115f7` (2026-10-11) reached VERDIC
 
 ## Security
 
-**S1. Live credentials are in git history.** *Critical. Removed from the tree; rotation pending (C1–C2).*
+**S1. Live credentials are in git history.** *Critical. Removed from the tree; rotated (Mohammed, 2026-10-12). Confirm the `33ccf52` keys (C1–C2) were in that rotation.*
 - **What:** the Bedrock API key, the VirusTotal key, the Splunk JWT and password, and the OpenCTI token. `.env.example` held the real OpenCTI token.
 - **Where:** pushed on `origin/main`, `origin/integration` and `origin/feature/task-broker-input`. `58d39c3` removes them from the tree, not from history.
 - **New (2026-10-05):** `origin/updated-analyst-agent` (`33ccf52`) commits a `.env` with the AWS access and secret keys, the FS8B key, the Splunk token and the VT key, plus a hardcoded OpenCTI token and a Splunk user and password as code defaults. It was ported by hand, not merged, so none of it is on `post-analyst-update-integration`.
