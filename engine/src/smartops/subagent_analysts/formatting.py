@@ -84,7 +84,11 @@ def _truncate(value: str, limit: int) -> str:
 
 
 def _count_suffix(row: dict[str, Any]) -> str:
-    """` count=N` when the row is an aggregate, otherwise nothing.
+    """` events=N` when the row is an aggregate, otherwise nothing.
+
+    Rendered as `events=`, not `count=`: a bare count was read as "269 bytes"
+    (a818a3fd, B35) and "1,633 allowed actions" (c8dd42cf, B11). `events=` says
+    what is counted, and matches the set header's own `events=`.
 
     `| stats count by ...` is the dominant triage SPL shape -- `count` appears
     on 1,260 of 1,887 `processes` rows and 138 `auth_events` rows across the
@@ -96,7 +100,7 @@ def _count_suffix(row: dict[str, Any]) -> str:
     row would spend budget saying nothing.
     """
     value = _first(row, *_COUNT_FIELD, default="")
-    return f" count={value}" if value not in ("", "-") else ""
+    return f" events={value}" if value not in ("", "-") else ""
 
 
 # Per-category field candidates, named once and read by two consumers: the row

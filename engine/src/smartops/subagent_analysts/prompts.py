@@ -189,7 +189,7 @@ found its time range; those figures reach the reader without you. So:
 - NARRATIVE carries no numbers and no times at all. Say what happened and who and what
   was involved; leave how many and when to the code.
 - An OBSERVATION may carry a number or a time only by copying it exactly as printed in a
-  header (`rows=`, `events=`) or a computed summary. Never count lines, add `count=`
+  header (`rows=`, `events=`) or a computed summary. Never count lines, add a row's `events=`
   values, subtract, split a total, or work out a range from the printed rows.
 
 HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per KIND of activity, in the order
@@ -244,7 +244,7 @@ it means, never suggest what it could be.
 _ROWS_BLOCK = """\
 Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
 one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
+`events=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
 Take a set's time range only from its computed summary, never from the rows.
 
 A header may say rows=0 — the query ran and found nothing.

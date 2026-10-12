@@ -889,13 +889,11 @@ class TestThePromptsDescribeTheRowsThatActuallyArrive:
         return block[: block.index("GROUNDING RULES")]
 
     def test_every_body_documents_the_grouped_row_shape(self):
-        # Asserting on the whole body would pass against the unedited prompt:
-        # the shared footer already says "never add the `count=` values up
-        # yourself". The grouped shape has to appear where the row shapes are
-        # documented, beside the raw one.
+        # The grouped shape (a row ending in `events=<n>`) has to appear where
+        # the row shapes are documented, beside the raw one.
         for domain in ("identity", "network", "endpoint"):
             block = self._evidence_block(domain)
-            assert "count=" in block, (
+            assert "events=" in block, (
                 f"{domain} prompt documents no grouped row shape, only the raw one"
             )
             assert "stats count by" in _flat(block)

@@ -158,7 +158,8 @@ class TestRealSplunkFieldNames:
             "auth_events",
             {"Account_Name": "BSTOLL-L$", "Logon_Type": "5", "count": "164"},
         )
-        assert "count=164" in line
+        # Rendered as events=, so the quantity can't be read as bytes or actions (B35, B11).
+        assert "events=164" in line and "count=" not in line
 
     def test_connection_renders_both_byte_directions(self):
         # Both fields co-occur on real rows. Rendering only one direction
