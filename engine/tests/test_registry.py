@@ -698,8 +698,8 @@ class TestCallTool:
     """The webapp's direct reads go through the backend's client, not a second one."""
 
     class _Client:
-        def __init__(self, result):
-            self.result, self.started, self.calls = result, 0, []
+        def __init__(self, result, failures=0):
+            self.result, self.failures, self.started, self.calls = result, failures, 0, []
 
         def _is_session_active(self):
             return self.started > 0
@@ -707,8 +707,14 @@ class TestCallTool:
         def start(self):
             self.started += 1
 
+        def stop(self, *_):
+            self.started = 0
+
         def call_tool_sync(self, tool_use_id, name, arguments):
             self.calls.append((name, arguments))
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("session dropped")
             return self.result
 
     def test_starts_once_and_returns_structured_content(self, monkeypatch):
@@ -717,6 +723,13 @@ class TestCallTool:
 
         assert registry_module.call_tool("siem", "splunk_run_query", {"query": "q"}) == {"results": [{"n": 1}]}
         registry_module.call_tool("siem", "splunk_run_query", {"query": "q"})
+        assert client.started == 1 and len(client.calls) == 2
+
+    def test_reconnects_once_after_a_direct_call_fails(self, monkeypatch):
+        client = self._Client({"status": "success", "content": [], "structuredContent": {"results": [{"n": 1}]}}, failures=1)
+        _install_clients(monkeypatch, siem=[client])
+
+        assert registry_module.call_tool("siem", "splunk_run_query", {"query": "q"}) == {"results": [{"n": 1}]}
         assert client.started == 1 and len(client.calls) == 2
 
     def test_a_tool_error_raises(self, monkeypatch):

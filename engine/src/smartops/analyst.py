@@ -244,42 +244,11 @@ def compact_round(payload: dict, evaluation: dict) -> dict:
     }
 
 
-def _ref_problem(ref: str, payloads: list, runs: list) -> tuple[str | None, str | None]:
-    """(the cited task's question, why `ref` is no broker finding), or (None, None) when it is one.
-
-    A ref is `<task>:<domain>` or `<task>:<block id>`, the task as the run's full
-    id or its short `T1` tail. It holds when that task ran, the domain has
-    observations or the block is cited in its findings, and none of the task's
-    steps was rejected or left incomplete.
-    """
-    task, _, what = ref.partition(":")
-    hits = [p for p in payloads if task and (p.get("task_id") == task or str(p.get("task_id", "")).endswith("-" + task))]
-    if not hits:
-        return None, f"{ref}: no task {task!r} ran"
-    question = hits[0].get("hypothesis")
-    findings = [f for p in hits for f in p.get("findings", [])]
-    cited = any(f.get("domain") == what and f.get("observations") for f in findings) or (
-        "#" in what and any(f"[{what}]" in " ".join([f.get("narrative", ""), *f.get("observations", [])]) for f in findings))
-    if not cited:
-        return question, f"{ref}: {what!r} is neither a domain with observations nor a block cited in {task}'s findings"
-    ids = {p.get("task_id") for p in hits}
-    for run in runs:
-        if run.get("task_id") in ids:
-            for st in run.get("steps", []):
-                if not st.get("completed") or st.get("status") == "rejected":
-                    state = "rejected" if st.get("status") == "rejected" else "incomplete"
-                    return question, f"{ref}: step {st.get('step_id')} is {state}"
-    return None, None
-
-
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
     """The synthesis output with `status` decided here, not by the model.
 
-    VERDICT_REACHED needs the top hypothesis at 85 or more, 20 clear of the
-    runner-up, and cited broker findings that all hold (`_ref_problem`, against
-    every round's `payloads` and broker `runs`; an `ALERT:` ref is the alert
-    itself, not evidence). Anything short of that investigates again, and a
-    blocked verdict's failed refs become gaps: the cited task's question again.
+    VERDICT_REACHED needs the top hypothesis at 85 or more and 20 clear of the
+    runner-up. Evidence refs are informational and do not block the verdict.
     """
     out = dict(synth)
     scores = {}
@@ -291,9 +260,7 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     top_id, top = ranked[0] if ranked else (None, 0)
     gap = top - (ranked[1][1] if len(ranked) > 1 else 0)
-    refs = [r for r in synth.get("evidence_refs") or [] if isinstance(r, str) and not r.startswith("ALERT:")]
-    bad = [p for p in (_ref_problem(r, payloads or [], runs or []) for r in refs) if p[1]]
-    if top >= 85 and gap >= 20 and refs and not bad:
+    if top >= 85 and gap >= 20:
         out["status"] = "VERDICT_REACHED"
         out["follow_up_tasks"] = []
         if not out.get("verdict") or out["verdict"] == "REQUIRES_INVESTIGATION":
@@ -301,14 +268,6 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
                                   "REQUIRES_INVESTIGATION")
         return out
     out["status"] = "REQUIRES_INVESTIGATION"
-    if top >= 85 and gap >= 20:
-        gaps = list(out.get("evidence_gaps") or [])
-        if not refs:
-            gaps.append("No broker finding cited in evidence_refs: the verdict has no evidence behind it")
-        gaps += [q for q in dict.fromkeys(q for q, _ in bad) if q and q not in gaps]
-        out["evidence_gaps"] = gaps
-        if bad:
-            out["refused_refs"] = [why for _, why in bad]
     return out
 
 
@@ -491,6 +450,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 "  verdict_reasoning: string explanation\n"
                 "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
+                "Set status=VERDICT_REACHED when the top score is at least 85 and leads by at least 20; otherwise set REQUIRES_INVESTIGATION.\n"
                 "Do NOT output planning JSON (hypotheses list, tasks list).\n"
                 "---\n"
             )

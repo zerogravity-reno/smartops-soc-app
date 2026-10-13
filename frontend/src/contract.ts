@@ -9,10 +9,26 @@ export interface AlertFields {
 
 type Raw = Record<string, any>;
 
+export function relevantStories(ruleName: string, stories: unknown): string[] {
+  const all = Array.isArray(stories) ? stories.filter((story): story is string => typeof story === 'string') : [];
+  if (!all.length) return [];
+  const rule = ruleName.toLowerCase();
+  const serverExploit = [/CVE-\d+/i, /vulnerabilit/i, /SharePoint/i, /Exchange/i, /SolarWinds/i, /WSUS/i, /IIS Module/i];
+  let candidates = all.filter(story =>
+    (rule.includes('sharepoint') || rule.includes('exchange') || rule.includes('solarwinds') || rule.includes('wsus'))
+      || !serverExploit.some(pattern => pattern.test(story)));
+  if (!candidates.length) candidates = all.slice(0, 3);
+  const ignored = new Set(['the', 'and', 'for', 'with', 'used', 'rule', 'threat', 'sama', 'escu', 'endpoint', 'process', 'windows']);
+  const tokens = (rule.match(/[a-z0-9]+/g) || []).filter(token => token.length > 2 && !ignored.has(token));
+  return candidates.sort((a, b) =>
+    tokens.reduce((score, token) => score + (b.toLowerCase().includes(token) ? 5 : 0) - (a.toLowerCase().includes(token) ? 5 : 0), 0)
+  ).slice(0, 3);
+}
+
 // The values worth asking OpenCTI about (non-empty only).
 export function observables(f: AlertFields, raw: Raw): string[] {
   const mitre = raw['annotations.mitre_attack'] ? String(raw['annotations.mitre_attack']).split(';') : [];
-  const story = raw['annotations.analytic_story'] ? String(raw['annotations.analytic_story']).split(';') : [];
+  const story = relevantStories(f.rule_name, raw['annotations.analytic_story'] ? String(raw['annotations.analytic_story']).split(';') : []);
   return [f.src_ip, f.hash, f.domain, raw.url || raw.uri || '', raw.email || raw.recipient || raw.sender || '',
     raw.file_name || raw.process_name || raw.app || '', ...mitre, ...story].filter(v => v && v.length > 0);
 }
@@ -38,7 +54,7 @@ export function buildContract(f: AlertFields, raw: Raw, eventTime: string | null
   const email = raw.email || raw.recipient || raw.sender || '';
   const file_name = raw.file_name || raw.process_name || raw.app || '';
   const splunk_mitre = raw['annotations.mitre_attack'] ? String(raw['annotations.mitre_attack']).split(';') : [];
-  const splunk_story = raw['annotations.analytic_story'] ? String(raw['annotations.analytic_story']).split(';') : [];
+  const splunk_story = relevantStories(rule_name, raw['annotations.analytic_story'] ? String(raw['annotations.analytic_story']).split(';') : []);
 
   const raw_event = Object.keys(raw).length > 0 ? { ...raw } : {
     orig_time: Math.floor(Date.now() / 1000).toString(),
@@ -86,7 +102,7 @@ export function buildContract(f: AlertFields, raw: Raw, eventTime: string | null
     full_metadata = match;
     if (match.data) {
       mitre_techniques = match.data.mitre_attack_id || match.data.mitre || [];
-      analytic_story = match.data.analytic_story || [];
+      analytic_story = relevantStories(rule_name, match.data.analytic_story || []);
       reference_spl = match.data.spl || match.data.search || 'SPL missing in ESCU definition';
       data_sources = match.data.data_source || [];
       known_false_positives = match.data.known_false_positives || [];
