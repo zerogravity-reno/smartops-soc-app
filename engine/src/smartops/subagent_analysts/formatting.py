@@ -27,6 +27,7 @@ from contracts import CimCategory, ResultSet, VtVerdict
 # hundreds of characters; the reasoning signal is in its head (the binary and its
 # first arguments), and an un-truncated one would blow the row budget on one row.
 _CMDLINE_LIMIT = 200
+_EMPTY_FIELD = re.compile(r"\s+[A-Za-z_][\w.]*=-(?=\s|$)")
 
 
 def _sanitise(value: str) -> str:
@@ -73,7 +74,8 @@ def _first(row: dict[str, Any], *keys: str, default: str = "-") -> str:
         lower.setdefault(str(k).lower().rpartition(".")[2], v)
     for key in keys:
         value = lower.get(key.lower())
-        if value is not None and str(value).strip():
+        # Splunk writes `-` for "no value"; it must not mask a later key (B40).
+        if value is not None and str(value).strip() not in ("", "-"):
             return _sanitise(str(value))
     return default
 
@@ -83,7 +85,11 @@ def _truncate(value: str, limit: int) -> str:
 
 
 def _count_suffix(row: dict[str, Any]) -> str:
-    """` count=N` when the row is an aggregate, otherwise nothing.
+    """` events=N` when the row is an aggregate, otherwise nothing.
+
+    Rendered as `events=`, not `count=`: a bare count was read as "269 bytes"
+    (a818a3fd, B35) and "1,633 allowed actions" (c8dd42cf, B11). `events=` says
+    what is counted, and matches the set header's own `events=`.
 
     `| stats count by ...` is the dominant triage SPL shape -- `count` appears
     on 1,260 of 1,887 `processes` rows and 138 `auth_events` rows across the
@@ -95,7 +101,7 @@ def _count_suffix(row: dict[str, Any]) -> str:
     row would spend budget saying nothing.
     """
     value = _first(row, *_COUNT_FIELD, default="")
-    return f" count={value}" if value not in ("", "-") else ""
+    return f" events={value}" if value not in ("", "-") else ""
 
 
 # Per-category field candidates, named once and read by two consumers: the row
@@ -131,18 +137,19 @@ _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         # spellings -- the literal braces are part of the JSON key, so a
         # candidate list naming only `query` misses every Stream DNS row (66 of
         # them across the saved runs).
-        "query": ("query", "query{}", "domain", "name", "name{}"),
-        "answer": ("answer", "answer{}", "answers", "ip", "dest_ip"),
+        "query": ("query", "query{}", "domain", "name", "name{}", "QueryName"),
+        "answer": ("answer", "answer{}", "answers", "ip", "dest_ip", "QueryResults"),
         "rtype": ("record_type", "query_type", "type"),
         "rcode": ("reply_code", "response_code", "rcode"),
     },
     "connections": {
         "time": ("time", "_time", "timestamp"),
-        "src": ("src", "src_ip"),
-        "src_port": ("src_port",),
-        "dest": ("dest", "dest_ip"),
-        "dest_port": ("dest_port",),
-        "proto": ("transport", "protocol", "proto"),
+        # Sysmon EID 3/22 spellings last (a818a3fd T4, B-4: rows rendered `dest=-`).
+        "src": ("src", "src_ip", "SourceIp"),
+        "src_port": ("src_port", "SourcePort"),
+        "dest": ("dest", "dest_ip", "DestinationIp"),
+        "dest_port": ("dest_port", "DestinationPort"),
+        "proto": ("transport", "protocol", "proto", "Protocol"),
         "bytes_in": ("bytes_in",),
         "bytes_out": ("bytes_out",),
         "bytes": ("bytes",),
@@ -443,6 +450,11 @@ def _projection_is_empty(line: str) -> bool:
     return True
 
 
+def _omit_empty_fields(line: str) -> str:
+    """Do not present Splunk's missing-value marker as telemetry (B47)."""
+    return _EMPTY_FIELD.sub("", line)
+
+
 def format_row(category: str, row: dict[str, Any]) -> str:
     """One line for one row, using the projector for its CIM category.
 
@@ -461,7 +473,7 @@ def format_row(category: str, row: dict[str, Any]) -> str:
     formatter = _FORMATTERS.get(category)
     if formatter is None:
         return _format_generic(row)
-    line = formatter(row)
+    line = _omit_empty_fields(formatter(row))
     return _format_generic(row) if _projection_is_empty(line) else line
 
 

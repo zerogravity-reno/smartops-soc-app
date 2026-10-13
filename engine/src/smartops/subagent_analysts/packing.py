@@ -242,14 +242,14 @@ happened to both say 20,000)."""
 
 # The way back has a budget too. The Analyst Agent is the same model with the same
 # window, and every synthesis call re-reads the last FULL_ROUNDS rounds in full and
-# the older ones as `run_trace.compact_round` records (`webapp/main.py`, W8).
+# the older ones as `analyst.compact_round` records (W8).
 _ANALYST_PROMPT_RESERVE = 4_300
 """Webapp system prompt + investigation plan, in tokens. Measured on 072fd610:
 the round-2 synthesis call was 8,195 prompt tokens, of which the 6.3k-char system
 prompt and the 10.4k-char plan were ~4.2k. 89674d75's were ~2.3k; plans vary."""
 
 _ANALYST_ROUNDS = 2
-"""Rounds synthesis reads in full: `webapp/main.py` FULL_ROUNDS."""
+"""Rounds synthesis reads in full: `analyst.FULL_ROUNDS`."""
 
 _COMPACT_ROUNDS_RESERVE = 4_000
 """Tokens for the compacted older rounds: 0.9-1.8 kB each (b3aa0dd2), so about 10."""
@@ -258,8 +258,8 @@ _HANDOFF_CHARS_PER_TOKEN = 3.5
 """The payload JSON, not raw rows (`_CHARS_PER_TOKEN`). Measured 3.76 on 89674d75:
 round 3's synthesis prompt grew 4,789 tokens for round 3's 17,985 characters."""
 
-_ANALYST_GENERATION_RESERVE = 8_192
-"""The Analyst's own `max_gen_len` (`webapp/services/llm_service.DEFAULT_MAX_GEN_LEN`),
+_ANALYST_GENERATION_RESERVE = 16_384
+"""The Analyst's own `max_gen_len` (`analyst.MAX_GEN_LEN`),
 not the sub-analysts' `_GENERATION_RESERVE`: at 4,096 its synthesis thinking ran
 out before the JSON on 78cd60ec (T15). `tests/test_verdict_gate.py` holds the two equal."""
 
@@ -270,8 +270,7 @@ HANDOFF_CHAR_BUDGET = int(
     * _HANDOFF_CHARS_PER_TOKEN
 )
 """Characters one round's whole payload batch may take, split across its tasks by
-the caller. 27,608: on 89674d75 the old 16,480 (a third share at 2.5 chars/token)
-sent 0 observations in every round while synthesis peaked at 13.5k of 24.5k tokens (B14)."""
+the caller."""
 
 
 @dataclass(frozen=True)
@@ -441,32 +440,41 @@ def pack_evidence(
     if not slice_.has_evidence():
         return "(no evidence was retrieved for this domain)", ids, False, _ROW_CAP_LADDER[0]
 
+    text, row_cap = _fit(slice_, token_budget)
+    if row_cap == 0:
+        logger.warning(
+            "domain=%s | evidence exceeds budget even at header-only; sending headers",
+            slice_.domain,
+        )
+    elif row_cap != _ROW_CAP_LADDER[0]:
+        logger.warning(
+            "domain=%s | evidence over budget, rendered at row_cap=%d", slice_.domain, row_cap
+        )
+    return text, ids, row_cap != _ROW_CAP_LADDER[0], row_cap
+
+
+def _fit(slice_: DomainSlice, token_budget: int) -> tuple[str, int]:
+    """The first rung of `_ROW_CAP_LADDER` that fits, else header-only (row cap 0).
+
+    Silent, so `fitted_row_cap` can re-measure without repeating
+    `pack_evidence`'s warning (B41: 7 copies for one domain on 2a71757f).
+    """
     for row_cap in _ROW_CAP_LADDER:
         text = _render(slice_, row_cap)
         if estimate_tokens(text) <= token_budget:
-            truncated = row_cap != _ROW_CAP_LADDER[0]
-            if truncated:
-                logger.warning(
-                    "domain=%s | evidence over budget, rendered at row_cap=%d",
-                    slice_.domain,
-                    row_cap,
-                )
-            return text, ids, truncated, row_cap
-
-    logger.warning(
-        "domain=%s | evidence exceeds budget even at header-only; sending headers",
-        slice_.domain,
-    )
-    return _render(slice_, 0), ids, True, 0
+            return text, row_cap
+    return _render(slice_, 0), 0
 
 
 def fitted_row_cap(slice_: DomainSlice, *, token_budget: int = _PACK_TOKEN_BUDGET) -> int:
     """The row cap `pack_evidence` settles on for this slice.
 
-    A reading of `pack_evidence` rather than its own walk of `_ROW_CAP_LADDER`,
+    Shares `_fit` with `pack_evidence` rather than walking `_ROW_CAP_LADDER` again,
     for the same reason `valid_citation_ids` is a reading of `blocks()`: a second
     copy of the ladder would rot the first time one changed. It re-renders to
     measure, which is string formatting over at most a few dozen blocks against a
     call that is about to spend a model inference -- not a cost worth a cache.
     """
-    return pack_evidence(slice_, token_budget=token_budget)[3]
+    if not slice_.has_evidence():
+        return _ROW_CAP_LADDER[0]
+    return _fit(slice_, token_budget)[1]

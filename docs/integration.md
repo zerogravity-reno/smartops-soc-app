@@ -175,7 +175,7 @@ uv sync
 
 # 2. Set credentials
 cp .env.example .env
-# Fill in FS8B_MODEL_ARN, FS8B_API_KEY, AWS_REGION
+# Fill in SMARTOPS_ANALYST_MODEL_ARN, SMARTOPS_ANALYST_API_KEY, AWS_REGION
 
 # 3. Start the server
 uv run uvicorn webapp.main:app --port 8001 --reload
@@ -190,8 +190,8 @@ uv run uvicorn webapp.main:app --port 8001 --reload
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `FS8B_MODEL_ARN` | ✅ | Full ARN of imported Foundation-Sec-8B model |
-| `FS8B_API_KEY` | ✅ | ABSK bearer token (starts with ABSK...) |
+| `SMARTOPS_ANALYST_MODEL_ARN` | ✅ | Full ARN of imported Foundation-Sec-8B model |
+| `SMARTOPS_ANALYST_API_KEY` | ✅ | ABSK bearer token (starts with ABSK...); scoped to the Analyst's own client |
 | `AWS_REGION` | ✅ | Must match region in the ARN (field 4) |
 | `AWS_BEDROCK_MODEL_ID` | For Broker | Claude Sonnet model ID for the Task Broker |
 | `SPLUNK_MCP_URL` | For Broker | Splunk management port with MCP |

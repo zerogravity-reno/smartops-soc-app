@@ -248,6 +248,14 @@
           },
           "title": "Steps",
           "type": "array"
+        },
+        "unanswerable": {
+          "description": "Questions the Broker's plan stated no connected source can answer (B20).",
+          "items": {
+            "$ref": "#/$defs/Unanswerable"
+          },
+          "title": "Unanswerable",
+          "type": "array"
         }
       },
       "title": "RetrievalSummary",
@@ -304,6 +312,29 @@
         "objective"
       ],
       "title": "StepSummary",
+      "type": "object"
+    },
+    "Unanswerable": {
+      "description": "A question no connected source can answer, stated instead of fetched (B20).\n\nOn 89674d75 \"asset inventory\", \"CrowdStrike telemetry\" and \"forensics tools\"\nquestions were each run as Splunk searches, and the substitute rows came back\nas if they answered them.",
+      "properties": {
+        "question": {
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "reason": {
+          "description": "A short noun phrase naming only the missing source or observable, e.g. 'asset inventory', 'file hash'. Never what other tools hold or the data shows.",
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question",
+        "reason"
+      ],
+      "title": "Unanswerable",
       "type": "object"
     }
   },

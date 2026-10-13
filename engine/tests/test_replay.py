@@ -4,20 +4,17 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from smartops import subagents
-from smartops.budget import Budget, ModelChoice
 from smartops.replay import (
     ReplayToolset,
-    create_replay_subagent_runner,
     get_replay_tools_for_family,
     load_evidence_from_file,
     load_evidence_from_run,
     make_replay_tool,
 )
 from smartops.skills import SKILLS_ENABLED_ENV_VAR
-from smartops.subagents import _system_prompt_for
+from smartops.subagents import DEFAULT_TURNS, _system_prompt_for
 
-from contracts import Entity, Evidence, Scope, SubagentMission, SubtaskResult, SubtaskStatus
+from contracts import Evidence
 
 
 def _tool_names(tools) -> list:
@@ -232,27 +229,10 @@ class TestReplayKeepsTheSkillPackHalvesTogether:
 
     @staticmethod
     async def _replayed_siem_prompt_and_tools(monkeypatch, evidence):
-        """What the replay runner hands `investigate` for a `siem` mission."""
-        captured: dict = {}
+        """The toolset the replay builds for `siem`, and the prompt `investigate` would build for it."""
+        tools = get_replay_tools_for_family("siem", ReplayToolset(evidence))
+        return {"tools": _tool_names(tools), "prompt": _system_prompt_for("siem", turns=DEFAULT_TURNS)}
 
-        async def fake_investigate(mission, **kwargs):
-            captured["tools"] = _tool_names(kwargs["tools"])
-            # The prompt `investigate` would build for this mission -- see
-            # `subagents._run_agent`, which is the only construction site.
-            captured["prompt"] = _system_prompt_for(
-                mission.tool_family, turns=kwargs["turns"]
-            )
-            return SubtaskResult(task_id=mission.task_id, status=SubtaskStatus.OK)
-
-        monkeypatch.setattr(subagents, "investigate", fake_investigate)
-
-        runner = create_replay_subagent_runner(
-            ReplayToolset(evidence),
-            model=ModelChoice(model_id="mock-model", pricing_key="claude-sonnet-4-6"),
-            budget=Budget(10.0),
-        )
-        await runner(_siem_replay_mission())
-        return captured
 
     async def test_neither_half_by_default(self, monkeypatch, sample_evidence_items):
         monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
@@ -296,32 +276,6 @@ class TestReplayKeepsTheSkillPackHalvesTogether:
         tool_attached = "read_reference" in captured["tools"]
         table_injected = "SKILL PACK ROUTING TABLE" in captured["prompt"]
         assert tool_attached == table_injected
-
-
-class TestReplaySubagentRunner:
-    def test_create_replay_subagent_runner(self, sample_evidence_items):
-        replayer = ReplayToolset(sample_evidence_items)
-        model = ModelChoice(model_id="mock-model", pricing_key="claude-sonnet-4-6")
-        budget = Budget(10.0)
-
-        runner = create_replay_subagent_runner(replayer, model=model, budget=budget)
-        assert callable(runner)
-
-
-def _siem_replay_mission() -> SubagentMission:
-    return SubagentMission(
-        task_id="replay-1:siem:u1",
-        hypothesis_id="h1",
-        tool_family="siem",
-        goal="what did BSTOLL-L do with coinhive.com",
-        scope=Scope(
-            entities=[Entity(kind="host", value="BSTOLL-L")],
-            time_window=(
-                datetime(2018, 8, 20, tzinfo=UTC),
-                datetime(2018, 8, 21, tzinfo=UTC),
-            ),
-        ),
-    )
 
 
 class TestEvidenceById:

@@ -1,4 +1,4 @@
-# Tool Broker fixes: timesheet (2026-09-29 → 2026-10-11)
+# Tool Broker fixes: timesheet (2026-09-29 → 2026-10-12)
 
 **What this measures.** Time spent in Claude Code sessions on this repo, read from the session transcripts' message timestamps (local time, +03:00). A session's *active* time sums the gaps between consecutive messages and leaves out any gap longer than a cutoff:
 - **45-min cutoff (used for the totals):** counts waits on live runs and reviews, which often go 20–40 minutes without a message.
@@ -10,11 +10,11 @@
 
 | | Hours |
 |---|---|
-| All sessions on this repo, 09-29 → 10-11 (45-min cutoff, UI worker session excluded) | 39.6 |
-| Of which Broker and sub-analyst work | **≈ 27.7** |
-| Lower bound for the Broker work (15-min cutoff) | ≈ 19.7 |
+| All sessions on this repo, 09-29 → 10-12 (45-min cutoff, frontend sessions excluded) | 60.2 |
+| Of which Broker and sub-analyst work | **≈ 40.5** |
+| Lower bound for the Broker work (15-min cutoff) | ≈ 29.4 |
 
-The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, and the handovers themselves. The UI worker session (`4ca714f1`, 1.7 h) is left out.
+The rest went to the Analyst port and main integration, the webapp loop (T17, W8), the console UI, the 10-11 architecture audit and cleanups (AR1–AR11), G1/G2 coded on the Analyst side and reverted, and the handovers themselves. The frontend sessions (`4ca714f1` 1.7 h; `dd4e13fc` 0.8 h and `1365d3c2` 0.7 h on 10-12) are left out. On 10-12 the AR11 merge (`b58e3307`, `4ef63fc4`) is counted in the total but not as Broker work; Asana tracking of the Broker subtasks is counted as Broker work.
 
 ## By item
 
@@ -52,10 +52,25 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | P-1…P-8, P-10 | The prompt review's fixes, committed with PR #4 | 0.55 | 10-10 | `1f63130` | `89674d75` | P-10 didn't hold (B26) |
 | B24, B27 | Reconnect a dead MCP session; end and time-box a stuck step; row and cell caps | 0.75 | 10-10 pm | `8d21f8b` | `89674d75` (before) | — |
 | W10 | Don't re-send a follow-up already asked; end the run when nothing is new | 0.25 | 10-10 pm | `ee9958f` | replay of `89674d75` | — |
-| B14 | Budget re-measured (3.76 chars/token, 2 full rounds, compact reserve): 16,480 → 27,608 | 0.15 | 10-11 | (uncommitted) | replay of `89674d75` | second pass: 10-09's `facts` split didn't free enough |
-| B15 | Cause: one paragraph per set under a fixed cap; narrative rule rewritten | 0.1 | 10-11 | (uncommitted) | — | third pass, after 10-09's diagnostics |
-| B26, B25 | Splunk check (`stats … by` drops rows, not `host=`); `fillnull` rule; status from rows; entity rule | 0.1 | 10-11 | (uncommitted) | Splunk queries | the `host=` hypothesis was wrong |
-| B20, K4 | "Can't answer" design; model-tiering plan; issues report | 0.05 | 10-11 | (uncommitted) | — | — |
+| B14 | Budget re-measured (3.76 chars/token, 2 full rounds, compact reserve): 16,480 → 27,608 | 0.4 | 10-11 | `69c7e7a` | replay of `89674d75` | second pass: 10-09's `facts` split didn't free enough |
+| B15 | Cause: one paragraph per set under a fixed cap; narrative rule rewritten | 0.3 | 10-11 | `69c7e7a` | — | third pass, after 10-09's diagnostics |
+| B26, B25 | Splunk check (`stats … by` drops rows, not `host=`); `fillnull` rule; status from rows; entity rule | 0.3 | 10-11 | `69c7e7a` | Splunk queries | the `host=` hypothesis was wrong |
+| B20, K4 | "Can't answer" design; model-tiering plan; issues report | 0.3 | 10-11 | `9b340e8` | — | — |
+| K4 | Anthropic provider with per-role tiers; A/B runs | 0.3 | 10-11 | `47ec269`, `1dcf67e` | `3bf5fce8`, `8807fafa` | — |
+| B28–B33, B11, W11 | Rows by their own event code; estate `tstats` as discovery; gaps rule; refused-ref state; where hashes live; logon type names; one MCP client | 0.55 | 10-11 | `c7aa245`, `3be53b6`, `84c65b8`, `7babf3a`, `b7d458f`, `2c27cf6` | `8807fafa`, `3bf5fce8` replays; Splunk queries | — |
+| B30 | Tokens and requests per role | 0.05 | 10-11 | `4661868` | `a818a3fd` | — |
+| B34–B37, B31 | `a818a3fd` read; aggregate rows by event code, Sysmon network fields, output holds from measurement, coverage from rows, gaps filtered in code | 0.8 | 10-11 | `2ab6bb2`, `67718cd`, `6a8255b`, `0ce24c0`, `8902b52`, `868980f` (PR #6) | `a818a3fd`, re-projection | B34 is B28's second pass; B31's prompt rule failed live |
+| B15 | Code lever: collapse repeated sentences, quote the loop in the re-ask, salvage the first reply | 0.3 | 10-11 | `9190ad4`, `2b4f9ef` (PR #6) | `e8d949af`, `942115f7` | fourth pass; endpoint still lost 6 times |
+| G1–G3, B38 | Evidence-gate bugs and code-count rows registered from the two baselines; where the gates live (Analyst side); handover | 0.7 | 10-11 | (docs) | `e8d949af`, `942115f7` | — |
+| Efficiency plan | Cost and latency per role, wasted calls, 14 ranked items (smartops-worker) | 0.5 | 10-11 late | `docs/efficiency-plan-2026-10-11.md` (untracked) | `e8d949af`, `942115f7` | — |
+| Handoff timing | Analyst ↔ Broker handoff traced; serial fetch is ~70% of a round (942115f7 L3: 5m24s of 6m43s) | 0.15 | 10-11 late | — | `942115f7`, `e8d949af` | — |
+| B15 | A/B of 5 prompt versions on the 6 lost endpoint slices (0/6 → 6/6); the example sentence was the loop seed, removed in every domain; sub-analyst Bedrock key diagnosed | 1.35 | 10-11 late | `18f7719` (PR #6) | replays of `e8d949af`/`942115f7` slices, all 3 domains through `gather_finding` | fifth pass; held offline, live check pending |
+| B39, B40, B41 | `2a71757f` baseline read; `-` placeholder in `_first`; step status from rows; row-cap warning once | 1.2 | 10-11 night | `d259509`, `c052186` | `2a71757f` | — |
+| B20, B38, B39, B41 | "Can't answer" recorded, not searched; code-count calls as discovery; cumulative step rows | 1.7 | 10-12 | `01877a9`, `20c83b9`, `e8b0ffb` | `451334ad`, `ea38cb13` | B39 second pass |
+| 10-12 run reads | `aab8e000`, `204888fd`, `c8dd42cf`: B42–B45 and G1–G3 registered | 0.7 | 10-12 pm, eve | `9a8a118` | `aab8e000`, `204888fd`, `c8dd42cf` | — |
+| B42–B45, B11, B16 | Short unanswerable reasons; footer without VirusTotal; categories in the siem mission; client cleanup per round; `events=`; parallel fetch | 1.35 | 10-12 close | `4759d2b`, `ad5afe6`, `5b75365`, `28ca7f7`, `0430974`, `cfab611` | `ae7d41b0`, `b7359eab` | — |
+| Asana tracking | One subtask per B bug; status, stage and comments kept in line with the report | 1.75 | 10-12 | — | — | — |
+| `b7359eab` check | B11, B16, B44, B45 held; B43, B24 not exercised; B46 and B47 registered | 0.5 | 10-12 close | (docs) | `b7359eab` | — |
 
 ## By session
 
@@ -82,7 +97,21 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 | `3cede18f` | 10-09 19:34 → 19:45 | 0.1 / 0.1 | 100% | 0.1 | (10-09 report) | commit `276f789`, the 10-09 update |
 | `34fd06cb` | 10-10 13:21 → 15:06 | 0.9 / 0.9 | ~60% | 0.55 | 10-10 | PR #4; prompt fixes `1f63130`; committed the run-control UI (`5a6f88b`, not Broker) |
 | `0ed73387` | 10-10 21:13 → 22:25 | 1.2 / 0.9 | ~85% | 1.0 | 10-10 pm | B24, B27, W10 from the `89674d75` findings |
-| `53985608` | 10-11 09:19 → (in progress) | 0.4 / 0.4 | 100% | 0.4 | (this report) | push; B14, B15, B25, B26; B20 design; K4 plan |
+| `53985608` | 10-11 09:19 → 10:46 | 1.45 / 0.96 | ~90% | 1.3 | 10-11 pm | push; B14, B15, B25, B26; B20 design; K4 plan |
+| `cd672601` | 10-11 10:48 → 11:56 | 1.14 / 1.14 | ~80% | 0.9 | 10-11 eve | K4 A/B; B28–B33, W11; PR #5; T27 benign-lean write-up (Analyst side) |
+| `d862cc12` | 10-11 10:22 → 14:42 (parallel) | 1.03 / 0.22 | 0% | 0 | — | architecture audit AR1–AR10 (not Broker) |
+| `cf9a7026` | 10-11 11:58 → 14:41 | 1.81 / 1.42 | 100% | 1.8 | 10-11 close | `a818a3fd` read; B34–B37, B15 code lever, PR #6; `e8d949af`/`942115f7` read; gate bugs G1–G3 and where they live |
+| `38648d29` | 10-11 14:42 → 15:49 (parallel) | 1.11 / 0.84 | ~45% | 0.5 | (this update) | efficiency plan; AR3/AR4/AR5/AR7/AR9 engine half and AR11 (not Broker) |
+| `a1e6792c` | 10-11 14:42 → 16:30 | 1.79 / 1.23 | ~85% | 1.5 | 10-11 late | handoff timing; B15 A/B and `18f7719`; G1/G2 coded and reverted (Analyst side) |
+| `1fb79bee` | 10-11 16:50 → 20:39 | 1.31 / 0.58 | ~90% | 1.2 | 10-11 night | `2a71757f` baseline; B39–B41 |
+| `b58e3307` | 10-11 16:09 → 22:05 (parallel) | 2.51 / 1.36 | 0% | 0 | 10-11 worker | webapp decoupling, AR11 plan, frontend port (not Broker) |
+| `91116a66` | 10-11 20:55 → 10-12 13:20 | 2.26 / 1.39 | ~75% | 1.7 | 10-12 | B20, B38, B39, B41; `451334ad`, `ea38cb13` |
+| `4ef63fc4` | 10-12 11:09 → 12:55 (parallel) | 1.77 / 1.49 | 0% | 0 | 10-12 worker | AR11 merge (not Broker) |
+| `9d96eb0d` | 10-12 11:48 → 16:58 (parallel) | 1.50 / 1.17 | 100% | 1.5 | — | smartops-worker2: Asana Broker subtasks |
+| `3f408d18` | 10-12 13:24 → 15:35 | 0.78 / 0.78 | ~90% | 0.7 | 10-12 pm, eve | `aab8e000`, `204888fd`, `c8dd42cf` reads; B42–B45 registered |
+| `e76476ac` | 10-12 15:35 → 17:22 | 1.78 / 1.78 | ~75% | 1.35 | 10-12 close | B42–B45, B11, B16; AR12–AR14, AR3, W9/P3 (not Broker) |
+| `6a307d3d` | 10-12 17:23 → 17:37 | 0.24 / 0.24 | 100% | 0.25 | — | Asana update from the close brief |
+| `75bc991e` | 10-12 17:23 → 17:55 | 0.5 / 0.5 | 100% | 0.5 | (this update) | `b7359eab` check; B46, B47; report, Asana, timesheet |
 
 ## What stands out
 
@@ -91,4 +120,6 @@ Hours are the item's share of each session's Broker time (45-min cutoff). "Rewor
 - **Live verification is a large share of every item.** Most "Rework" entries trace to a run where the fix held in tests and not live, so a Broker fix isn't finished until a live run shows it.
 - **B14 and B15 needed a measurement, not another rule.** Both had a fix in place (10-09) that didn't hold on `89674d75`. In both, the cause was a number nobody had checked against a run: the payload's characters per token, and output that grew with the number of sets under a fixed cap.
 - **The `89674d75` trace itself isn't counted:** it isn't in any session on this repo.
+- **B15 is the longest-running item: five passes** (diagnostics, a narrative rule, a "write each group once" rule, code, then the A/B). Each rule added text around the prompt's own example sentence, which was what the model copied. Replaying the lost slices against prompt versions found it in under an hour; removing the example took 0/6 to 6/6 offline. It waits on a live run.
+- **On the 10-11 baselines the evidence gate, not the evidence, ended every round.** 5 of 6 rounds met the score rule and were refused on refs. Four of those were endpoint domains lost to B15, and one was a cited block the gate misread (G1).
 - **10-09's Broker fixes are only partly verified live:** `c90ca5f9` ran after B14–B18 landed and surfaced B19–B22; B19–B23 wait on the baseline replay of that alert.

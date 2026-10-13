@@ -26,7 +26,6 @@ from smartops.bench import (
     SYNTHETIC_INDICATOR_CASES,
     RunMetrics,
     _execute_single_run,
-    _pinned_skills,
     _run,
     check_index_scoping,
     compute_arm_summary,
@@ -36,8 +35,8 @@ from smartops.bench import (
     run,
     run_interleaved_benchmark,
 )
-from smartops.main import _PLACEHOLDER_MODEL
-from smartops.skills import SKILLS_ENABLED_ENV_VAR, skills_enabled
+from smartops.broker import _PLACEHOLDER_MODEL
+from smartops.skills import SKILLS_ENABLED_ENV_VAR, pinned_skills_enabled, skills_enabled
 
 from contracts import (
     AnalystDomain,
@@ -466,7 +465,7 @@ class TestBenchDisablesTheSkillPack:
         """
         monkeypatch.setenv(SKILLS_ENABLED_ENV_VAR, "1")
 
-        with pytest.raises(RuntimeError, match="benchmark exploded"), _pinned_skills(False):
+        with pytest.raises(RuntimeError, match="benchmark exploded"), pinned_skills_enabled(False):
             assert skills_enabled() is False
             raise RuntimeError("benchmark exploded")
 
@@ -476,7 +475,7 @@ class TestBenchDisablesTheSkillPack:
     def test_an_unset_environment_stays_unset_when_the_block_raises(self, monkeypatch):
         monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
 
-        with pytest.raises(RuntimeError, match="benchmark exploded"), _pinned_skills(True):
+        with pytest.raises(RuntimeError, match="benchmark exploded"), pinned_skills_enabled(True):
             assert skills_enabled() is True
             raise RuntimeError("benchmark exploded")
 
@@ -486,8 +485,8 @@ class TestBenchDisablesTheSkillPack:
     def test_nested_pins_restore_the_outer_pin(self, monkeypatch):
         monkeypatch.delenv(SKILLS_ENABLED_ENV_VAR, raising=False)
 
-        with _pinned_skills(True):
-            with contextlib.suppress(RuntimeError), _pinned_skills(False):
+        with pinned_skills_enabled(True):
+            with contextlib.suppress(RuntimeError), pinned_skills_enabled(False):
                 raise RuntimeError("inner exploded")
             assert skills_enabled() is True
 
@@ -512,7 +511,7 @@ class TestBenchDisablesTheSkillPack:
             return observed
 
         async def bench_like() -> bool:
-            with _pinned_skills(False):
+            with pinned_skills_enabled(False):
                 started.set()
                 await release.wait()
                 return skills_enabled()
@@ -535,7 +534,7 @@ class TestBenchDisablesTheSkillPack:
             await asyncio.sleep(0)
             return skills_enabled()
 
-        with _pinned_skills(False):
+        with pinned_skills_enabled(False):
             observed = await asyncio.gather(arm(), arm())
 
         assert observed == [False, False]

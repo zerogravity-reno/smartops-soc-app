@@ -1309,6 +1309,35 @@ class TestFetchPlanAndReport:
         assert request.plan.steps[0].step_id == "step-1"
         assert "step-1" in request.step_outcomes
 
+    async def test_a_plan_of_only_unanswerable_questions_records_and_plans_nothing(self):
+        # B20, 89674d75 T1: "asset inventory" was fetched as SIEM searches.
+        from smartops.broker import plan_fetch
+
+        from contracts import Unanswerable
+
+        request = BrokerRequest(task=make_task())
+        context = FakeToolContext(tool_use={"toolUseId": "tu-plan"}, invocation_state={"smartops": request})
+        asked = Unanswerable(question="Is 192.168.40.211 a sanctioned distribution point?", reason="asset inventory")
+
+        res = await plan_fetch(steps=[], rationale="r", tool_context=context, unanswerable=[asked])
+
+        assert "Dispatch nothing" in res
+        assert request.plan.unanswerable == [asked]
+        assert request.step_outcomes == {}
+
+    def test_an_unanswerable_reason_is_a_short_phrase_not_prose(self):
+        # 79c024e8 T2: a prose reason about VirusTotal became fake findings.
+        from pydantic import ValidationError
+
+        from contracts import Unanswerable
+
+        Unanswerable(question="q", reason="file hash")
+        with pytest.raises(ValidationError, match="at most 60"):
+            Unanswerable(
+                question="q",
+                reason="a file-reputation service such as VirusTotal. Neither is offered.",
+            )
+
     async def test_broker_outcome_carries_report_and_persists_artifacts(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         outcome = await broker_task(
@@ -1412,7 +1441,7 @@ class TestFetchPlanAndReport:
         and stamps the same join key -- so it is retargeted rather than dropped.
         """
         from contracts import HypothesisFindings
-        from smartops.main import _persist_findings
+        from smartops.broker import _persist_findings
 
         run_a = tmp_path / "run_a"
         run_b = tmp_path / "run_b"
@@ -2513,6 +2542,22 @@ class TestAFailedSubagentIsNotANegativeFinding:
         assert outcome.rows_retrieved == 0
         assert outcome.confirmed_empty is True
 
+    def test_an_empty_redispatch_does_not_turn_a_step_with_rows_into_no_data(self):
+        # B39, 2a71757f T2: rows_retrieved=5 beside status=no_data.
+        step = FetchStep(step_id="siem-1", family="siem", objective="Find the file")
+        rows = [{"_time": "t", "host": "h"}] * 5
+        found = SubtaskResult(
+            task_id="t1:siem:tu-1",
+            status=SubtaskStatus.OK,
+            findings=SiemFindings(file_events=[ResultSet(query="q", row_count=5, rows=rows)]),
+            queries_run=[QueryRun(query="q")],
+        )
+        empty = SubtaskResult(task_id="t1:siem:tu-2", status=SubtaskStatus.NO_DATA)
+
+        outcome = evaluate_step(step, empty, prior=evaluate_step(step, found))
+
+        assert (outcome.rows_retrieved, outcome.status) == (5, SubtaskStatus.OK)
+
     def test_a_redispatch_that_finds_rows_clears_a_stale_confirmed_empty(self):
         # `outcome.confirmed_empty` used to be OR'd with its own history, so once
         # one dispatch came back empty it stayed True forever -- even across a
@@ -2656,6 +2701,28 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
         )
         result = self._result(
             SiemFindings(dns_resolutions=[ResultSet(query="q", row_count=0, rows=[])])
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.confirmed_empty is True
+        assert outcome.completed is True
+
+    def test_an_empty_uncategorised_set_does_not_block_a_confirmed_negative(self):
+        # B46: an index-discovery query can leave an empty uncategorised set
+        # beside the category this step searched. Zero unattributed rows are not
+        # evidence against the step's confirmed-empty result.
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"]),
+        )
+        result = self._result(
+            SiemFindings(
+                dns_resolutions=[ResultSet(query="dns", row_count=0, rows=[])],
+                uncategorised=[ResultSet(query="discovery", row_count=0, rows=[])],
+            )
         )
 
         outcome = evaluate_step(step, result)
@@ -2904,7 +2971,9 @@ class TestPlanFetchRefusesUnservedFamilies:
 class TestOneFolderPerRound:
     async def test_a_task_lands_in_the_round_folder_under_its_short_id(self, tmp_path, monkeypatch):
         # 874ab334 was 12 sibling folders under the runs root (O5).
-        monkeypatch.setenv("SMARTOPS_OUT_DIR", str(tmp_path / "874ab334" / "L2"))
+        from smartops.broker import round_dir
+
+        round_dir.set(tmp_path / "874ab334" / "L2")  # this test's own context only
         task = make_task(task_id="874ab334-L2-T1", scope=make_scope(entities=[Entity(kind="ip", value="8.8.4.4")]))
 
         first = await broker_task(task, Budget.from_usd(1.0), model=MODEL, invoke=fake_invoker(["vt"]))
@@ -2913,3 +2982,57 @@ class TestOneFolderPerRound:
         assert first.run_dir == tmp_path / "874ab334" / "L2" / "T1"
         assert (first.run_dir / "report.json").is_file() and (first.run_dir / "evidence.json").is_file()
         assert again.run_dir.name == "874ab334-L2-T1"  # a clash takes the full id, never overwrites
+
+
+class TestNothingSearched:
+    """16386362: siem unreachable for three rounds; a round with no rows because a
+    source was down ends the run, one with rows elsewhere goes on."""
+
+    def _findings(self, rows: int, gap: str | None):
+        from contracts import DomainGap, HypothesisFindings, RetrievalSummary, StepSummary
+
+        gaps = [DomainGap(family="siem", reason=gap, served_domains=["endpoint"],
+                          unanswered_domains=["endpoint"])] if gap else []
+        steps = [StepSummary(step_id="s1", family="vt", objective="o", completed=bool(rows),
+                             evaluated=True, confirmed_empty=False, rows_retrieved=rows)]
+        return [HypothesisFindings(task_id="T1", hypothesis_id="T1",
+                                   retrieval=RetrievalSummary(gaps=gaps, steps=steps))]
+
+    def test_an_unreachable_source_and_no_rows_ends_the_round(self):
+        assert broker_module._nothing_searched(self._findings(0, "no_tools_resolved")) == ["siem"]
+
+    def test_rows_from_another_source_keep_the_round_going(self):
+        assert broker_module._nothing_searched(self._findings(3, "no_tools_resolved")) == []
+
+    def test_an_empty_round_with_every_source_up_is_not_a_failure(self):
+        assert broker_module._nothing_searched(self._findings(0, None)) == []
+        assert broker_module._nothing_searched(self._findings(0, "not_configured")) == []
+
+
+class TestAStepIsAskedForItsCategories:
+    """B44: every file step on 10-12 got only process rows from a keyword search,
+    then needed a second dispatch or ended incomplete."""
+
+    async def test_siem_is_told_the_categories_and_the_broker_what_is_missing(self):
+        step = FetchStep(step_id="file_write", family="siem", objective="file writes",
+                         completion=CompletionRule(categories=["file_events"]))
+        request = BrokerRequest(task=make_task())
+        with_plan(request, step)
+        goals = []
+
+        def process_rows_only(mission):
+            goals.append(mission.goal)
+            return SubtaskResult(
+                task_id=mission.task_id, status=SubtaskStatus.OK,
+                findings=SiemFindings(processes=[ResultSet(query="q", row_count=2, rows=[{"p": "a"}, {"p": "b"}])]),
+                queries_run=[QueryRun(query="q")],
+            )
+
+        request.run_subagent = runner_returning(process_rows_only)
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="was svcupdate.dat written?", step_id="file_write",
+            tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
+        )
+
+        assert goals == ["was svcupdate.dat written?\n\nThis step is complete only with rows in: file_events."]
+        assert digest.endswith("| step file_write incomplete: no file_events rows")

@@ -798,6 +798,21 @@ class TestExhibitsRenderAtTheAnalystsOwnCap:
         # is still traceable to 5000 rows in the store.
         assert exhibit.row_count == 5000
 
+    def test_re_measuring_the_row_cap_does_not_repeat_the_warning(self, caplog):
+        # B41: `exhibits_for` re-measures per set; 2a71757f logged the warning 7 times.
+        from smartops.subagent_analysts.packing import fitted_row_cap
+
+        rows = [{"user": f"u{i}", "action": "failure"} for i in range(5000)]
+        slice_ = DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=5000, rows=rows))],
+        )
+        _, _, _, packed_cap = pack_evidence(slice_, token_budget=200)
+        caplog.clear()
+
+        assert fitted_row_cap(slice_, token_budget=200) == packed_cap
+        assert "over budget" not in caplog.text and "exceeds budget" not in caplog.text
+
     def test_unshrunk_pack_uses_the_ladders_first_rung(self):
         from smartops.subagent_analysts.packing import exhibits_for
 
@@ -874,13 +889,11 @@ class TestThePromptsDescribeTheRowsThatActuallyArrive:
         return block[: block.index("GROUNDING RULES")]
 
     def test_every_body_documents_the_grouped_row_shape(self):
-        # Asserting on the whole body would pass against the unedited prompt:
-        # the shared footer already says "never add the `count=` values up
-        # yourself". The grouped shape has to appear where the row shapes are
-        # documented, beside the raw one.
+        # The grouped shape (a row ending in `events=<n>`) has to appear where
+        # the row shapes are documented, beside the raw one.
         for domain in ("identity", "network", "endpoint"):
             block = self._evidence_block(domain)
-            assert "count=" in block, (
+            assert "events=" in block, (
                 f"{domain} prompt documents no grouped row shape, only the raw one"
             )
             assert "stats count by" in _flat(block)

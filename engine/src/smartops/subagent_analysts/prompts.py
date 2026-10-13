@@ -189,7 +189,7 @@ found its time range; those figures reach the reader without you. So:
 - NARRATIVE carries no numbers and no times at all. Say what happened and who and what
   was involved; leave how many and when to the code.
 - An OBSERVATION may carry a number or a time only by copying it exactly as printed in a
-  header (`rows=`, `events=`) or a computed summary. Never count lines, add `count=`
+  header (`rows=`, `events=`) or a computed summary. Never count lines, add a row's `events=`
   values, subtract, split a total, or work out a range from the printed rows.
 
 HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per KIND of activity, in the order
@@ -244,7 +244,7 @@ it means, never suggest what it could be.
 _ROWS_BLOCK = """\
 Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
 one line of a `| stats count by ...` result standing for many events, and it ends in
-`count=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
+`events=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
 Take a set's time range only from its computed summary, never from the rows.
 
 A header may say rows=0 — the query ran and found nothing.
@@ -261,6 +261,21 @@ every distinct count and every time range from it, and never by counting the pri
 lines: those are a sample. Where its time line says the rows carry no timestamp, the set
 has no time range and you must not state one."""
 
+# B15: each body used to give a sentence SHAPE to copy ("Host <host> ran processes under
+# user <account>, started by <parent>; ..."), and the 8B model copied it once per group
+# until `max_gen_len` cut the reply off before OBSERVATIONS -- 6 endpoint domains lost on
+# e8d949af/942115f7, every one a run of that sentence. With the shape gone and the
+# narrative sized per KIND of set, the same 6 slices parsed 6 of 6 (scratchpad A/B,
+# 2026-10-11). The grounding rules' "(e.g. ...)" quotes were a second seed and went too.
+def _grouping_block(kinds: str, fields: str, per: str) -> str:
+    return f"""\
+COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
+can retype. Describe each KIND of set ({kinds}) in one or two sentences: name the values
+its computed summary lists first for {fields}, and cite the set. Never write one
+sentence per {per}: code passes the full lists on.
+Never drop a set because it looks uninteresting — say what it contains."""
+
+
 _IDENTITY_FACTS_BODY = f"""\
 Your task in this investigation is to act as the identity and authentication analyst.
 You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
@@ -269,14 +284,7 @@ the accounts, source addresses and hosts involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
-COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — the values involved and the shape
-of any repetition. The SHAPE to copy — never the names or the
-values, which are placeholders and are not in your evidence — is: "Account <account>
-logged on from <source address> to <host>, with successes against <host> and failures
-against <other host>". That accounts for every
-row without picking a winner. Never drop a set because it looks uninteresting — say what it
-contains.
+{_grouping_block("logons, failures", "account, source address and host", "account, address or host")}
 
 EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
 `auth_events#1`:
@@ -289,7 +297,7 @@ GROUNDING RULES (do not hallucinate)
   that appear in the evidence — never invent one.
 - Do NOT infer process, file, or network activity; you cannot see it here.
 - A set the rows show nothing else in is still part of what happened: say what it
-  contains and cite it (e.g. "action=success on every row, src 10.0.0.5, user svc_backup")
+  contains and cite it
   rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
@@ -304,14 +312,7 @@ the hosts, addresses, domains and ports involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
-COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — the values involved and the shape
-of any repetition. The SHAPE to copy — never the names or the
-values, which are placeholders and are not in your evidence — is: "Host <host> opened
-connections to several destinations; the repeated ones went to <address> on port
-<port>". That accounts for every
-row without picking a winner. Never drop a set because it looks uninteresting — say what it
-contains.
+{_grouping_block("connections, DNS lookups, reputation", "host, address, domain and port", "address, domain or port")}
 
 EVIDENCE YOU RECEIVE — under headers like these:
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
@@ -327,7 +328,7 @@ GROUNDING RULES (do not hallucinate)
   pair it with a dns or connection row before describing it as activity.
 - Do NOT infer host process, file, or authentication activity; you cannot see it here.
 - A set the rows show nothing else in is still part of what happened: say what it
-  contains and cite it (e.g. "dns queries from 10.0.0.5, every answer in 10.0.0.0/8")
+  contains and cite it
   rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
@@ -342,14 +343,7 @@ hosts, users, processes, parent processes and command lines involved.
 
 {_DESCRIBE_ONLY_BLOCK}
 
-COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Group like rows and describe the group — the values involved and the shape
-of any repetition. The SHAPE to copy — never the names or the
-values, which are placeholders and are not in your evidence — is: "Host <host> ran
-processes under user <account>, started by <parent>; one command line, starting
-<first few words>, repeated". That accounts for every
-row without picking a winner. Never drop a set because it looks uninteresting — say what it
-contains.
+{_grouping_block("process starts, file writes, registry changes, script blocks", "host, user, parent and process", "process, parent or user")}
 
 EVIDENCE YOU RECEIVE — under headers like these:
   processes#1       <timestamp> host=<> user=<> process=<name> parent=<path> cmdline=<...>
@@ -365,7 +359,7 @@ GROUNDING RULES (do not hallucinate)
   Only cite ids that appear in the evidence — never invent one.
 - Do NOT infer network volume or authentication history; you cannot see it here.
 - A set the rows show nothing else in is still part of what happened: say what it
-  contains and cite it (e.g. "process starts, process=backup.exe on every row, user=SYSTEM")
+  contains and cite it
   rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}

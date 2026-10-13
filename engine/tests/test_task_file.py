@@ -385,6 +385,7 @@ class TestTheRunShapeOverSeveralTasks:
     @staticmethod
     def _patch(monkeypatch, tmp_path, analyst, *, fetch_hook=None, fail_on=()):
         """Wire `main` up with no provider, no MCP and no real model."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         order: list[str] = []
@@ -406,14 +407,15 @@ class TestTheRunShapeOverSeveralTasks:
                 overlap["in_flight"] -= 1
 
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(main_mod, "broker_task", fake_broker_task)
-        monkeypatch.setattr(main_mod, "analyst_model_from_env", lambda: analyst)
-        monkeypatch.setattr(main_mod, "load_mcp_servers", lambda *a, **k: None)
+        monkeypatch.setattr(broker_mod, "broker_task", fake_broker_task)
+        monkeypatch.setattr(broker_mod, "analyst_model_from_env", lambda: analyst)
+        monkeypatch.setattr(broker_mod, "load_mcp_servers", lambda *a, **k: None)
         return order, overlap
 
     async def test_all_three_tasks_produce_their_own_artifacts(
         self, tmp_path, monkeypatch
     ):
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
         from contracts import AnalystPayload, HypothesisFindings
 
@@ -435,17 +437,18 @@ class TestTheRunShapeOverSeveralTasks:
             assert (findings.task_id, findings.hypothesis_id) == (task_id, hypothesis_id)
             assert (payload.task_id, payload.hypothesis_id) == (task_id, hypothesis_id)
 
-    async def test_fetch_is_sequential_and_in_file_order(self, tmp_path, monkeypatch):
-        """Sequential is the whole point: a single investigation already issues
-        several concurrent Splunk searches, and multiplying that by the task
-        count risks queued or rejected searches that read as data gaps."""
+    async def test_fetch_overlaps_up_to_the_cap_and_keeps_file_order(self, tmp_path, monkeypatch):
+        """B16: tasks fetch in parallel, but never more than FETCH_CONCURRENCY at
+        once -- each already issues several concurrent Splunk searches, and past
+        the search head's limit a queued search reads as a data gap."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
+        monkeypatch.setattr(broker_mod, "FETCH_CONCURRENCY", 2)
         path = write_task_file(tmp_path, self.THREE)
 
         async def yield_control():
-            # Gives the loop a chance to interleave if anything ever gathers
-            # these -- without it a sequential-looking result proves nothing.
+            # Lets the loop interleave; without it nothing could ever overlap.
             await asyncio.sleep(0)
 
         order, overlap = self._patch(
@@ -454,8 +457,8 @@ class TestTheRunShapeOverSeveralTasks:
 
         await main_mod._run(["--task-file", str(path), "--families", "siem"])
 
-        assert order == ["T1", "T2", "T3"], "tasks must be fetched in file order"
-        assert overlap["max"] == 1, "two Brokers must never be in flight at once"
+        assert order == ["T1", "T2", "T3"], "tasks must start in file order"
+        assert overlap["max"] == 2, "fetch must overlap, and never past the cap"
 
     async def test_every_analyst_call_runs_in_one_concurrent_burst(
         self, tmp_path, monkeypatch
@@ -466,6 +469,7 @@ class TestTheRunShapeOverSeveralTasks:
         analysing each task as its own fetch finished would scatter the calls
         across the whole fetch loop and open a fresh window per gap.
         """
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -486,6 +490,7 @@ class TestTheRunShapeOverSeveralTasks:
         self, tmp_path, monkeypatch
     ):
         """The others have their own hypotheses and are worth what they cost."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -505,6 +510,7 @@ class TestTheRunShapeOverSeveralTasks:
         also `goal`, so the fetch tier legitimately saw it. Nothing on the
         analyst path reads a goal, and this is what proves the two stayed apart.
         """
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -525,6 +531,7 @@ class TestTheRunShapeOverSeveralTasks:
         """The other half of blindness: unreachable by the analysts, but present
         on the record, because the artifact has to be self-describing at the
         boundary it crosses."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
         from contracts import HypothesisFindings
 
@@ -545,20 +552,21 @@ class TestTheRunShapeOverSeveralTasks:
         """One `Budget` is one cumulative pot. A flat default would exhaust
         partway through the second investigation, and a budget refusal reads as
         a data gap rather than the cost problem it is."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
         self._patch(monkeypatch, tmp_path, StubAnalyst())
         seen = {}
 
-        original = main_mod.Budget.from_usd
+        original = broker_mod.Budget.from_usd
 
         def record(usd, **kwargs):
             seen["usd"] = usd
             seen["max_output_tokens_total"] = kwargs.get("max_output_tokens_total")
             return original(usd, **kwargs)
 
-        monkeypatch.setattr(main_mod.Budget, "from_usd", record)
+        monkeypatch.setattr(broker_mod.Budget, "from_usd", record)
 
         await main_mod._run(["--task-file", str(path), "--families", "siem"])
 
@@ -569,15 +577,16 @@ class TestTheRunShapeOverSeveralTasks:
 
     async def test_an_explicit_budget_is_a_whole_run_ceiling(self, tmp_path, monkeypatch):
         """Someone naming a number means it."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
         self._patch(monkeypatch, tmp_path, StubAnalyst())
         seen = {}
 
-        original = main_mod.Budget.from_usd
+        original = broker_mod.Budget.from_usd
         monkeypatch.setattr(
-            main_mod.Budget,
+            broker_mod.Budget,
             "from_usd",
             lambda usd, **kw: (seen.update(usd=usd), original(usd, **kw))[1],
         )
@@ -602,6 +611,7 @@ class TestTheRunShapeOverSeveralTasks:
     ):
         """The unit of handover is the task file. Three hypotheses about one alert
         go out as one message, not three the recipient has to group itself."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -620,6 +630,7 @@ class TestTheRunShapeOverSeveralTasks:
     ):
         """Not redundant with the batch: the per-run-dir copy is what lets a
         reader of one run directory see what that investigation produced."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -635,6 +646,7 @@ class TestTheRunShapeOverSeveralTasks:
     ):
         """It belongs to no single task, and filing it under one task's id would
         make it look like that task's artifact."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -649,6 +661,7 @@ class TestTheRunShapeOverSeveralTasks:
     async def test_a_named_batch_lands_where_the_caller_said(self, tmp_path, monkeypatch):
         """A caller that has to find the payload again (the webapp loop) names the
         batch instead of guessing which timestamped directory is its own."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -665,6 +678,7 @@ class TestTheRunShapeOverSeveralTasks:
     ):
         """So the consumer has one predictable input shape rather than a batch
         sometimes and a bare payload other times."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, [a_task()])
@@ -681,6 +695,7 @@ class TestTheRunShapeOverSeveralTasks:
         """The batch carries what was actually analysed. A hypothesis with no
         findings must not appear as an empty member, which would read as
         'we looked and found nothing'."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, self.THREE)
@@ -694,6 +709,7 @@ class TestTheRunShapeOverSeveralTasks:
     async def test_the_flag_path_writes_no_batch(self, tmp_path, monkeypatch):
         """It investigates one hand-written task and has no file whose grouping a
         batch could represent."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         self._patch(monkeypatch, tmp_path, StubAnalyst())
@@ -710,6 +726,7 @@ class TestTheRunShapeOverSeveralTasks:
     ):
         """A one-task file must not gain the multi-task banners, and its budget
         must be the unscaled single-run default."""
+        import smartops.broker as broker_mod
         import smartops.main as main_mod
 
         path = write_task_file(tmp_path, [a_task()])

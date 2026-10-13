@@ -248,6 +248,23 @@ class TestOutputTokenCeiling:
         assert budget.output_tokens_remaining == 42_000
 
 
+class TestPerTaskOutputAllowance:
+    def test_one_tasks_default_allowance_covers_a_broker_and_three_siem_steps(self):
+        # a818a3fd G1 (B-2): the third siem step was refused with $9.96 left.
+        from smartops.broker import DEFAULT_BROKER_TURNS
+        from smartops.budget import loop_output_tokens
+        from smartops.broker import DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK
+        from smartops.subagents import _recovery_output_tokens
+
+        broker = ModelChoice(model_id="m", pricing_key="claude-haiku-4-5", effort="high")
+        siem = ModelChoice(model_id="m", pricing_key="claude-haiku-4-5", effort="medium")
+        hold = (
+            loop_output_tokens(broker, DEFAULT_BROKER_TURNS, 0)
+            + 3 * (loop_output_tokens(siem, 25, 0) + _recovery_output_tokens(siem))
+        )
+        assert hold <= DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK
+
+
 class TestLedger:
     async def test_spend_by_role_and_by_task(self):
         budget = Budget.from_usd(1.0)

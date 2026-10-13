@@ -571,12 +571,12 @@ _call_lock = threading.Lock()
 def call_tool(family: ToolFamily, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """One tool call on `family`'s first server, outside any agent.
 
-    For the webapp's alert reads, which used to open their own MCP session with
-    their own URL, token and TLS handling (`webapp/services/splunk_mcp.py`). Same
+    For the alert context reads (`smartops.context`), which used to open their own MCP session with
+    their own URL, token and TLS handling. Same
     config, TLS rule and dead-session reset as the Broker's calls. Returns the
     tool's `structuredContent`; raises on a tool error rather than returning it.
     """
-    # ponytail: one call at a time per process; the webapp's reads are a handful per alert
+    # ponytail: one call at a time per process; the context reads are a handful per alert
     with _call_lock:
         if not _clients_by_family:
             load_mcp_servers()
@@ -584,19 +584,15 @@ def call_tool(family: ToolFamily, name: str, arguments: dict[str, Any]) -> dict[
         if not clients:
             raise RuntimeError(f"no MCP server configured for {family}")
         client = clients[0]
-        if not client._is_session_active():
-            try:
-                client.start()
-            except Exception:
-                load_mcp_servers()
-                client = _clients_by_family[family][0]
-                client.start()
         try:
+            if _session_died(client):
+                _reset(client)
+            if not client._is_session_active():
+                client.start()
             result = client.call_tool_sync(tool_use_id=f"direct-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
         except Exception as exc:
-            logger.warning("MCP tool call failed, re-establishing session: %s", exc)
-            load_mcp_servers()
-            client = _clients_by_family[family][0]
+            logger.warning("MCP tool call failed, reconnecting once: %s", exc)
+            _reset(client)
             client.start()
             result = client.call_tool_sync(tool_use_id=f"direct-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
     if result.get("status") == "error":
@@ -688,5 +684,10 @@ async def _load_tools_off_loop(client: MCPClient) -> Sequence[Any]:
         # Inside the lock, so parallel steps on one dead client reset it once.
         if _session_died(client):
             logger.warning("an MCP client's session ended mid-run; reconnecting it")
+            await asyncio.to_thread(_reset, client)
+        elif getattr(client, "_connection_failed", False):
+            # Sticky until stop(): load_tools() returns [] without trying, even when
+            # call_tool() has since reconnected the same client (16386362's queue worked).
+            logger.warning("an MCP client's earlier connection failure is sticky; retrying it")
             await asyncio.to_thread(_reset, client)
         return await asyncio.to_thread(asyncio.run, client.load_tools())

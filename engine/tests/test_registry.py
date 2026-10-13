@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import json
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -70,7 +71,7 @@ class StickyFailureClient:
     def __init__(self, tools, *, failures: int):
         self._tools = tools
         self._remaining_failures = failures
-        self._failed = False
+        self._connection_failed = False
         self._loaded = None
         self.load_calls = 0
         self.handshakes = 0
@@ -79,21 +80,21 @@ class StickyFailureClient:
 
     async def load_tools(self):
         self.load_calls += 1
-        if self._failed:
+        if self._connection_failed:
             return []
         if self._loaded is not None:
             return self._loaded
         self.handshakes += 1
         if self._remaining_failures > 0:
             self._remaining_failures -= 1
-            self._failed = True
+            self._connection_failed = True
             return []
         self._loaded = self._tools
         return self._loaded
 
     def stop(self, exc_type=None, exc_val=None, exc_tb=None):
         self.stops += 1
-        self._failed = False
+        self._connection_failed = False
         self.consumers = set()
 
     def add_consumer(self, consumer_id, **kwargs):
@@ -332,7 +333,8 @@ class TestConcurrentResolutionDoesNotRaceTheConnection:
         await warm_mcp_clients()
 
         assert await tools_for("siem") == []
-        assert client.handshakes == registry_module.WARM_ATTEMPTS, "retries must be bounded"
+        # Warm-up retries are bounded; each later dispatch tries once more (sticky-flag reset).
+        assert client.handshakes == registry_module.WARM_ATTEMPTS + 1, "retries must be bounded"
 
     async def test_resolving_nothing_after_every_attempt_is_logged_at_warning(
         self, monkeypatch, caplog
@@ -352,6 +354,30 @@ class TestConcurrentResolutionDoesNotRaceTheConnection:
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings, "a client resolving no tools must warn"
         assert any("NO tools" in r.getMessage() for r in warnings)
+
+    async def test_a_sticky_failure_is_retried_at_dispatch(self, monkeypatch):
+        # 16386362: one failed handshake left _connection_failed set; Splunk was up
+        # (the queue reconnected through call_tool) but load_tools() kept returning [].
+        client = StickyFailureClient(tools=["splunk_run_query"], failures=1)
+        _install_clients(monkeypatch, siem=[client])
+        assert await client.load_tools() == []  # the one failed handshake
+
+        assert await tools_for("siem") == ["splunk_run_query"]
+        assert client.stops == 1
+
+    async def test_a_client_dead_at_boot_recovers_at_the_next_round(self, monkeypatch):
+        # 16386362: Splunk failed every boot attempt, and in-process rounds never
+        # retried it, so three rounds ran with no SIEM. run_round warms again.
+        from smartops import broker
+
+        client = StickyFailureClient(tools=["splunk_run_query"], failures=registry_module.WARM_ATTEMPTS)
+        _install_clients(monkeypatch, siem=[client])
+        await warm_mcp_clients()  # server boot: every attempt fails
+
+        with pytest.raises(AttributeError):  # args carry no model settings: stops right after the warm-up
+            await broker.run_round([], SimpleNamespace(families=None))
+
+        assert await tools_for("siem") == ["splunk_run_query"]
 
     async def test_a_healthy_client_is_not_stopped_or_retried(self, monkeypatch):
         """The common path must be untouched: one connection, no reset."""
@@ -672,8 +698,8 @@ class TestCallTool:
     """The webapp's direct reads go through the backend's client, not a second one."""
 
     class _Client:
-        def __init__(self, result):
-            self.result, self.started, self.calls = result, 0, []
+        def __init__(self, result, failures=0):
+            self.result, self.failures, self.started, self.calls = result, failures, 0, []
 
         def _is_session_active(self):
             return self.started > 0
@@ -681,8 +707,14 @@ class TestCallTool:
         def start(self):
             self.started += 1
 
+        def stop(self, *_):
+            self.started = 0
+
         def call_tool_sync(self, tool_use_id, name, arguments):
             self.calls.append((name, arguments))
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("session dropped")
             return self.result
 
     def test_starts_once_and_returns_structured_content(self, monkeypatch):
@@ -691,6 +723,13 @@ class TestCallTool:
 
         assert registry_module.call_tool("siem", "splunk_run_query", {"query": "q"}) == {"results": [{"n": 1}]}
         registry_module.call_tool("siem", "splunk_run_query", {"query": "q"})
+        assert client.started == 1 and len(client.calls) == 2
+
+    def test_reconnects_once_after_a_direct_call_fails(self, monkeypatch):
+        client = self._Client({"status": "success", "content": [], "structuredContent": {"results": [{"n": 1}]}}, failures=1)
+        _install_clients(monkeypatch, siem=[client])
+
+        assert registry_module.call_tool("siem", "splunk_run_query", {"query": "q"}) == {"results": [{"n": 1}]}
         assert client.started == 1 and len(client.calls) == 2
 
     def test_a_tool_error_raises(self, monkeypatch):

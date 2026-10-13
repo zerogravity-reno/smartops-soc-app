@@ -28,7 +28,9 @@ ladder are live; tests still inject a fake `BrokerInvoker` of the same shape.
 
 from __future__ import annotations
 
+import contextvars
 import copy
+import gc
 import json
 import logging
 import os
@@ -58,6 +60,7 @@ from contracts import (
     SubtaskStatus,
     TaskClassification,
     ToolFamily,
+    Unanswerable,
 )
 from smartops.budget import Budget, ModelChoice, call_usages, usage_from
 from smartops.domains import DOMAINS, DomainSpec, describe, scope_gap
@@ -163,6 +166,16 @@ Available specialists and when to use them are described in each tool's own desc
 Dispatch a specialist only when its domain is needed to answer the goal. A specialist that
 is not offered cannot query anything in this scope. If a specialist
 reports gaps that another domain could close, you may dispatch that domain as well.
+
+QUESTIONS NO SOURCE CAN ANSWER:
+A question that needs a source or an observable no offered specialist holds goes in
+`plan_fetch`'s `unanswerable`, with a reason of a few words naming only what is missing:
+the source (`asset inventory`) or, when an offered specialist could answer once it had an
+observable, that observable (`file hash`). The reason is not evidence: never describe what
+other tools hold or what the data shows. Do NOT plan substitute searches for it. Nothing offered holds: asset inventory or CMDB records, patch
+management, change or maintenance records, forensic disk or memory images, or the data of
+any product whose tool is not offered to you. A plan whose every question is unanswerable
+has no steps: record it and dispatch nothing.
 
 Your role is solely fetch dispatch:
 - Request evidence retrieval from domain specialists to gather facts into the required schema.
@@ -615,7 +628,7 @@ def evaluate_step(
         rows_retrieved == 0
         and looked_at_named_categories
         and result.status is not SubtaskStatus.ERROR
-        and not any(name == "uncategorised" for name, _ in counts)
+        and not any(name == "uncategorised" and rows > 0 for name, rows in counts)
         and (len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA)
     )
     # OR'd with history so one dispatch establishing "looked and empty" survives
@@ -638,7 +651,9 @@ def evaluate_step(
         completed = outcome.rows_retrieved >= max(1, step.completion.min_rows)
 
     outcome.completed = completed
-    outcome.status = result.status
+    # Status follows the cumulative rows, as a single result's does (B26): a
+    # second empty dispatch must not turn a step that found rows into `no_data` (B39).
+    outcome.status = SubtaskStatus.OK if outcome.rows_retrieved > 0 else result.status
     outcome.reason = result.reason
     outcome.evaluated = True
     # R3: a step this dispatch never actually attempted because the shared Budget
@@ -784,11 +799,15 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
             f"{', '.join(others) or 'none -- it is the only ' + family + ' step planned'}."
         )
 
+    # B44: the step is judged on its categories, so siem is told them. Without this a
+    # file step's keyword search returned only process rows and stopped (every file
+    # step on 10-12), and the step needed a second dispatch or ended incomplete.
+    wanted = step.completion.categories
     mission = SubagentMission(
         task_id=f"{req.task.task_id}:{family}:{ctx.tool_use['toolUseId']}",
         hypothesis_id=req.task.hypothesis_id,
         tool_family=family,
-        goal=question,
+        goal=question + (f"\n\nThis step is complete only with rows in: {', '.join(wanted)}." if wanted else ""),
         scope=req.task.scope,
     )
 
@@ -814,12 +833,18 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     # to step 2 the moment step 1 flipped complete, and a dispatch matching no
     # planned step at all still landed somewhere. Per-step completion is a
     # headline A/B metric; it must be measured off the binding, not a heuristic.
-    req.step_outcomes[step.step_id] = evaluate_step(
+    outcome = req.step_outcomes[step.step_id] = evaluate_step(
         step, result, prior=req.step_outcomes.get(step.step_id)
     )
 
     record_result_status(result)
-    return _digest(result)
+    digest = _digest(result)
+    if not outcome.completed and wanted:
+        # B44: so a re-dispatch asks for what is missing instead of repeating the question.
+        got = {name for name, n in _finding_counts(result.findings) if n}
+        missing = [c for c in wanted if c not in got]
+        digest += f" | step {step.step_id} incomplete: no {', '.join(missing or wanted)} rows"
+    return digest
 
 
 @tool(
@@ -827,7 +852,12 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     description="Author a bounded fetch plan decomposing the goal into specific data retrieval steps before dispatching domain missions.",
     context=True,
 )
-async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolContext) -> str:
+async def plan_fetch(
+    steps: list[FetchStep],
+    rationale: str,
+    tool_context: ToolContext,
+    unanswerable: list[Unanswerable] | None = None,
+) -> str:
     """Author a fetch plan decomposing the goal into bounded retrieval steps.
 
     Calling this a second time **re-plans**: the new plan replaces the old one and
@@ -844,8 +874,12 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     i.e. the report would under-count exactly the spend the caps exist to bound.
 
     Args:
-        steps: The list of fetch steps to execute.
+        steps: The list of fetch steps to execute. May be empty when every
+            question is in `unanswerable`.
         rationale: Explanation of why these steps were chosen.
+        unanswerable: Questions no connected source can answer, each with a
+            few-word reason naming only the missing source or observable
+            ('asset inventory', 'file hash'). Stated here, never searched for.
     """
     req: BrokerRequest = tool_context.invocation_state["smartops"]
 
@@ -855,7 +889,7 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     # reading the framework's generic tool-input error: only one of those tells it
     # what to change. Nothing is recorded, so any plan already in place survives.
     try:
-        plan = FetchPlan(steps=steps, rationale=rationale)
+        plan = FetchPlan(steps=steps, rationale=rationale, unanswerable=unanswerable or [])
     except ValidationError as exc:
         detail = "; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors())
         logger.warning(
@@ -949,6 +983,11 @@ async def plan_fetch(steps: list[FetchStep], rationale: str, tool_context: ToolC
     # unusable from the model's side.
     # `plan.steps` for the same reason as the loop above: the `steps` argument
     # holds the model's raw dicts, not `FetchStep`s.
+    if not plan.steps:
+        return (
+            f"Fetch plan recorded: nothing to fetch, {len(plan.unanswerable)} question(s) "
+            "recorded as unanswerable. Dispatch nothing; finish now."
+        )
     minted = "; ".join(f"{s.step_id} ({s.family}): {s.objective}" for s in plan.steps)
     replaced = (
         " This replaced the previous plan: any step id you re-listed kept the dispatches "
@@ -1186,8 +1225,15 @@ def default_broker_invoker(
 
 RUNS_DIR_ENV_VAR = "SMARTOPS_RUNS_DIR"
 DEFAULT_RUNS_DIR = ".smartops/runs"
-OUT_DIR_ENV_VAR = "SMARTOPS_OUT_DIR"
-"""One round's own folder, set by the webapp: each task is written straight into
+
+
+def runs_root() -> Path:
+    """The directory run artifacts are written under: `$SMARTOPS_RUNS_DIR`, else the default."""
+    return Path(os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR)
+
+
+round_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar("smartops_round_dir", default=None)
+"""One round's own folder, set by the Analyst: each task is written straight into
 `<out>/<short id>/` and the batch payload beside them, so one investigation is one
 folder tree, not 12 siblings under the runs root (O5)."""
 
@@ -1211,7 +1257,7 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
     happened to start in, which is how a test suite came to leave 179 artifact
     directories in the repository.
     """
-    out = os.environ.get(OUT_DIR_ENV_VAR, "").strip()
+    out = round_dir.get()
     if out and base_dir is None:
         # `874ab334-L2-T1` -> `T1`: the round folder already names the run and loop.
         # The full id on a clash, never an overwrite.
@@ -1224,7 +1270,7 @@ def save_run_artifacts(report: BrokerReport, base_dir: Path | str | None = None)
         _write_run_files(report, run_dir)
         return run_dir
     if base_dir is None:
-        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        base_dir = runs_root()
     case_dir = Path(base_dir) / report.task_id
     stamp = report.created_at.strftime("%Y%m%dT%H%M%S%f")[:-3]
     # Two runs of one case can share a millisecond -- the bench runs them back to
@@ -1450,3 +1496,954 @@ async def _run_broker_task(
         run_dir=run_dir,
     )
 
+
+# ── The round: fetch, analyse and hand over one batch of tasks ───────────────
+# What `run_round` and its CLI wrapper share. Imported here, at the end, because
+# `subagent_analysts.analyze` and `subagents` import names defined above; those two
+# by module, so either can be imported first.
+import argparse  # noqa: E402
+import asyncio  # noqa: E402
+import sys  # noqa: E402
+
+from contracts import (  # noqa: E402
+    AnalystPayloadBatch,
+    DomainFinding,
+    HypothesisFindings,
+    mission_family,
+    pack_for_analyst,
+)
+from smartops.budget import PROVIDER_ENV_VAR, loop_output_tokens, model_choices_from_env  # noqa: E402
+from smartops.domains import ALL_FAMILIES  # noqa: E402
+import smartops.subagent_analysts.analyze as analysis  # noqa: E402
+from smartops.subagent_analysts.model import analyst_model_from_env  # noqa: E402
+from smartops.subagent_analysts.packing import HANDOFF_CHAR_BUDGET  # noqa: E402
+import smartops.subagents as subagents  # noqa: E402
+from smartops.telemetry import analysis_span  # noqa: E402
+from smartops.tools.registry import load_mcp_servers, warm_mcp_clients  # noqa: E402
+
+AWS_PROFILE_ENV_VAR = "AWS_PROFILE"
+"""Botocore's profile selector. Named here because `_neutralise_aws_profile`
+UNSETS it, and a variable this code writes to deserves to be as visible as one
+it merely reads."""
+
+DEFAULT_BUDGET_USD_PER_TASK = 10.0
+"""Default investigation budget, **per task**, when `--budget-usd` is not given.
+
+1.0 was below the cost of a single run and guaranteed a confusing failure: one
+siem subagent reserves a measured $1.2431, so a default-budget run reserved the
+Broker's hold and was then declined on siem -- the one domain most cases are
+about -- reporting "budget exhausted" without naming the number. A realistic plan
+(3 siem steps plus one each edr/vt/ndr) holds ~$7.67 concurrently, and both arms
+reserve per step, so 10.0 clears it with headroom. A ceiling is not a bill:
+reservations settle to actual, measured ~1.27x lower.
+
+**Multiplied by the task count**, because a `Budget` is one cumulative pot and a
+task file holds several investigations. Up to `FETCH_CONCURRENCY` tasks *hold* at
+once (3 x ~$7.67 fits any pot of 3+ tasks at $10 each), and each settles into the same pot -- so a 3-task
+file against a flat $10 would exhaust it partway through the second
+investigation, and a budget refusal reads as a data gap (that is what
+`StepOutcome.refused_for_budget` exists to disambiguate) rather than as the cost
+problem it is. An explicitly passed `--budget-usd` is honoured verbatim as a
+whole-run ceiling, on the grounds that someone naming a number means it.
+"""
+
+DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK = 200_000
+
+FETCH_CONCURRENCY = 3
+"""Tasks fetched at once in a round (B16). See PHASE A in `_round` for the sizing."""
+# ponytail: sized on the lab search head (16 concurrent searches); a production
+# Splunk with a non-admin account needs its own number.
+"""Default hard ceiling on total output tokens, **per task**.
+
+Orthogonal to `--budget-usd`. The USD hold is sized from an optimistic input
+estimate (~8 expected turns, not the 25-turn worst case), so real settlement can
+carry spend past the USD ceiling when long subagents overlap. Output is the
+dominant cost and already per-call capped, so one investigation-wide output
+ceiling restores a genuine upper bound. Sized generously -- a full run reserves
+well under this -- so it bites only on a runaway, not a normal case. Scaled by
+task count for the same reason as the USD pot above.
+"""
+
+# Used only on the scripted path, where nothing reaches a provider: `Budget`
+# still needs a `pricing_key` to bill against, and `ModelChoice` still validates
+# the pairing at construction. Never built into a real model.
+_PLACEHOLDER_MODEL = ModelChoice(
+    model_id="scripted-no-model-call",
+    pricing_key="claude-sonnet-4-6",
+)
+
+
+@dataclass
+class _ScriptedMetrics:
+    accumulated_usage: dict
+
+
+@dataclass
+class _ScriptedResult:
+    structured_output: TaskClassification | None
+    metrics: _ScriptedMetrics
+
+
+def _scripted_invoker(families: list[ToolFamily]):
+    """Stands in for the Broker's model until credentials exist.
+
+    Authors a one-step-per-family fetch plan through the real `plan_fetch` tool,
+    then dispatches exactly `families`, in order, by calling the real `@tool`
+    wrappers -- a decorated tool stays directly callable, so this exercises the
+    genuine dispatch path rather than a parallel copy of it. The plan is not
+    decoration: a dispatch that names no planned step is refused now, so a
+    scripted run that skipped planning would fetch nothing at all. Then reports
+    the same families as its classification, so a normal run shows no divergence;
+    `test_broker.py` covers the case where the two disagree.
+    """
+    # `dict.fromkeys` first: keying by family collapses a repeated family onto one
+    # entry while `enumerate(families)` keeps counting, which would mint the same
+    # step-N id twice -- a plan `FetchPlan` now rejects outright, and for good
+    # reason. `_parse_families` de-dupes today, so this is a guard rather than a
+    # live bug; the test helper in `test_broker.py` has always had it.
+    step_ids = {
+        family: f"step-{index + 1}" for index, family in enumerate(dict.fromkeys(families))
+    }
+
+    async def invoke(prompt: str, request: BrokerRequest) -> _ScriptedResult:
+        if families:
+            # `FetchPlan` requires at least one step, and `--families ""` asks for
+            # no dispatch at all -- there is nothing to plan, so skip it.
+            await plan_fetch(
+                steps=[
+                    FetchStep(
+                        step_id=step_ids[family],
+                        family=family,
+                        objective=f"Retrieve {family} evidence for the goal",
+                    )
+                    for family in families
+                ],
+                rationale="scripted fetch plan, one step per requested family (no model call)",
+                tool_context=_ScriptedToolContext(
+                    tool_use={"toolUseId": "cli-plan"},
+                    invocation_state={"smartops": request},
+                ),
+            )
+        for index, family in enumerate(families):
+            context = _ScriptedToolContext(
+                tool_use={"toolUseId": f"cli-{index}"},
+                invocation_state={"smartops": request},
+            )
+            await TOOL_BY_FAMILY[family](
+                question=request.task.goal, step_id=step_ids[family], tool_context=context
+            )
+        return _ScriptedResult(
+            structured_output=TaskClassification(
+                tool_families=list(families),
+                rationale=f"scripted dispatch of {', '.join(families)} (no model call)",
+            ),
+            metrics=_ScriptedMetrics(accumulated_usage={"inputTokens": 0, "outputTokens": 0}),
+        )
+
+    return invoke
+
+
+@dataclass
+class _ScriptedToolContext:
+    """The two `ToolContext` attributes `_dispatch()` actually reads. Strands
+    builds the real one when a live `Agent` invokes a tool."""
+
+    tool_use: dict
+    invocation_state: dict
+
+
+def _result_line(result: SubtaskResult) -> str:
+    """One line describing a result, composed entirely by code.
+
+    There is no `summary` to print any more, deliberately -- it was the field
+    that made prose the only shape a finding could take. What an operator needs
+    at a glance is how much came back and why, so this renders row counts per
+    category plus the code-authored `reason`.
+    """
+    parts: list[str] = []
+
+    if result.findings is not None:
+        # Not every `Findings` list holds `ResultSet`. `SiemFindings` does, and a
+        # ResultSet knows how many rows it stands for -- but `VtFindings.verdicts`
+        # holds `VtVerdict`, which has no `row_count` because one verdict IS one
+        # indicator. Reading `.row_count` unconditionally raised AttributeError on
+        # every run that returned VT findings, after the investigation had already
+        # finished: no data lost, but the operator saw a traceback instead of their
+        # results. Anything without its own row count contributes itself.
+        counts = [
+            f"{name}:{sum(getattr(item, 'row_count', 1) for item in value)}"
+            for name, value in result.findings
+            if isinstance(value, list) and value
+        ]
+        if counts:
+            parts.append(" ".join(counts))
+
+    if result.queries_run:
+        parts.append(f"({len(result.queries_run)} quer{'y' if len(result.queries_run) == 1 else 'ies'})")
+
+    if result.reason:
+        parts.append(result.reason)
+
+    return " ".join(parts) if parts else "no rows"
+
+
+def _parse_families(raw: str) -> list[ToolFamily]:
+    families = [part.strip() for part in raw.split(",") if part.strip()]
+    unknown = [f for f in families if f not in ALL_FAMILIES]
+    if unknown:
+        raise SystemExit(
+            f"error: unknown tool famil{'y' if len(unknown) == 1 else 'ies'} "
+            f"{', '.join(unknown)} -- expected from {','.join(ALL_FAMILIES)}"
+        )
+    # Preserve order, drop duplicates.
+    return list(dict.fromkeys(families))
+
+
+def _print_outcome(outcome, budget: Budget) -> None:
+    if outcome.plan:
+        print(f"\nfetch plan ({len(outcome.plan.steps)} step(s)): {outcome.plan.rationale}")
+        for step in outcome.plan.steps:
+            print(f"  [{step.step_id}] {step.family}: {step.objective}")
+
+    print(f"\nclassification: {outcome.classification.rationale}")
+    print(f"dispatched:     {', '.join(outcome.dispatched) or '(nothing)'}")
+
+    if set(outcome.dispatched) != set(outcome.classification.tool_families):
+        # Surfaced rather than hidden: `dispatched` is observed, the
+        # classification is self-reported, and a gap means the Broker's account
+        # of its own reasoning disagrees with what ran.
+        print(
+            f"  ! divergence: classification claims "
+            f"{', '.join(outcome.classification.tool_families) or '(nothing)'}"
+        )
+
+    print(f"\n{len(outcome.results)} result(s):")
+    for result in outcome.results:
+        family = mission_family(result.task_id) or "?"
+        print(f"  [{result.status.value:<8}] {family:<5} {_result_line(result)}")
+        if result.gaps:
+            print(f"             gaps: {', '.join(result.gaps)}")
+        if result.error:
+            print(f"             error: {result.error}")
+
+    spend = budget.spend_by_role()
+    print("\nspend by role (micro-USD):", spend or "(nothing spent)")
+    for role, t in budget.usage_by_role().items():
+        print(f"usage {role}: " + " ".join(f"{k}={v}" for k, v in t.items()))
+    print(f"budget remaining: {budget.remaining} micro-USD")
+
+
+def _print_findings(findings: HypothesisFindings) -> None:
+    """Operator view of the blind path.
+
+    Deliberately prints no verdict of any kind: there isn't one. Each domain
+    translated its own evidence into plain English without seeing the
+    hypothesis and without judging it, and rolling that into SUPPORTS/REFUTES
+    is the Analyst Agent's job. Printing a stance or disposition here would be
+    inventing the very thing this path exists to keep separate.
+
+    `rows=N` per citation is shown because it is the cheapest way to see the
+    failure the exhibits exposed: a narrative resting on a cited block that
+    returned nothing.
+    """
+    print(f"\ndomain findings for hypothesis {findings.hypothesis_id} (analysts were blind):")
+    for judgement in findings.findings:
+        print(f"  [{judgement.domain:<8}]")
+        if judgement.narrative:
+            print(f"             {judgement.narrative}")
+        for observation in judgement.observations:
+            print(f"               - {observation}")
+        for exhibit in judgement.exhibits:
+            flag = "  <- EMPTY" if exhibit.row_count == 0 else ""
+            print(f"             cited: {exhibit.citation} (rows={exhibit.row_count}){flag}")
+
+    # The retrieval side, because an `inconclusive` above is unreadable without
+    # it: a domain reports it both when the rows decide nothing and when nothing
+    # was ever retrieved for it. `not evaluated` is called out separately from
+    # `incomplete` for the reason `StepOutcome.evaluated` exists.
+    if findings.retrieval is not None:
+        retrieval = findings.retrieval
+        print(f"\nretrieval (dispatched: {', '.join(retrieval.dispatched) or 'nothing'}):")
+        # Widened to the longest id rather than a fixed column: real step ids are
+        # model-authored ("siem-connections") and overran a hardcoded width,
+        # leaving the states unaligned in exactly the readout meant to be scanned.
+        id_width = max((len(s.step_id) for s in retrieval.steps), default=0)
+        for step in retrieval.steps:
+            if not step.evaluated:
+                state = "not evaluated"
+            elif step.completed:
+                state = "complete"
+            elif step.confirmed_empty:
+                state = "empty (confirmed)"
+            else:
+                state = "incomplete"
+            print(
+                f"  [{step.family:<5}] {step.step_id:<{id_width}} {state:<17} "
+                f"rows={step.rows_retrieved}"
+            )
+        if retrieval.covered:
+            print(f"  covered:     {', '.join(retrieval.covered)}")
+        if retrieval.not_covered:
+            print(f"  not covered: {', '.join(retrieval.not_covered)}")
+
+    print(
+        "\nno overall stance and no disposition: deciding whether this supports "
+        "or refutes the hypothesis, or what it means at all, is the Analyst "
+        "Agent's call, not this layer's."
+    )
+
+
+def _resolve_run_dir(task_id: str, run_dir: Path | str | None) -> Path | None:
+    """The directory a run's artifacts belong in, or `None` if it cannot be found.
+
+    A passed `run_dir` wins; otherwise `SMARTOPS_RUNS_DIR` (or the default) plus
+    the task's `latest.txt` pointer. `None` rather than a raise: a missing run
+    directory means the broker never wrote one, and a completed analysis should
+    still print its findings.
+
+    Extracted because `_persist_findings` and `_persist_reasoning_traces` must
+    resolve to the SAME directory. Two copies of these rules would drift, and the
+    failure would be a trace file landing beside a different run's findings --
+    silently, since both files would look well-formed.
+    """
+    if run_dir is not None:
+        return Path(run_dir)
+    latest = runs_root() / task_id / "latest.txt"
+    if not latest.exists():
+        return None
+    return latest.parent / latest.read_text(encoding="utf-8").strip()
+
+
+def _persist_reasoning_traces(
+    task_id: str,
+    hypothesis_id: str,
+    findings: list[DomainFinding],
+    run_dir: Path | str | None = None,
+) -> None:
+    """Write `traces.json` beside the run's other artifacts.
+
+    **Local audit only, and deliberately a separate file from `findings.json`.**
+    The trace is the model's `<think>` chain: it must never reach another model
+    (that is re-feeding a private chain of thought) and must never leave the
+    process on a span (OTel span content goes to whatever collector is
+    configured, and Strands' redaction is opt-in and OFF). Keeping it in its own
+    file on the run directory is what makes it auditable without making it
+    shippable -- `.smartops/` is gitignored, so it never reaches a remote either.
+
+    `DomainRecord` therefore has no field for it and `findings.json` correctly
+    lacks it. This is the other half of that decision: without this writer the
+    trace was simply discarded, while `DomainFinding.reasoning_trace` still
+    described itself as "persisted for audit". It had been, by an older artifact
+    format that dumped `DomainFinding` directly; the wire projection removed the
+    only writer and nothing replaced it.
+
+    Same run-directory resolution as `_persist_findings`, and silently does
+    nothing when there is no directory to write to -- an audit artifact must not
+    be the thing that fails a completed analysis.
+    """
+    target_dir = _resolve_run_dir(task_id, run_dir)
+    if target_dir is None:
+        return
+
+    payload = {
+        # The same join keys every other artifact carries, so a trace file found
+        # on its own is still resolvable back to the run and the claim.
+        "task_id": task_id,
+        "hypothesis_id": hypothesis_id,
+        "run_id": target_dir.name,
+        "traces": [
+            {
+                "domain": finding.domain,
+                "prompt_tokens": finding.prompt_tokens,
+                "generation_tokens": finding.generation_tokens,
+                "reasoning_trace": finding.reasoning_trace,
+            }
+            for finding in findings
+        ],
+    }
+    (target_dir / "traces.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+
+def _persist_findings(
+    task_id: str,
+    findings: HypothesisFindings,
+    run_dir: Path | str | None = None,
+    max_chars: int | None = None,
+) -> None:
+    """Write findings.json and analyst-payload.json beside the broker's artifacts.
+
+    `run_dir` wins over `SMARTOPS_RUNS_DIR` over the default. Named
+    `findings.json`, not `assessment.json`: `HypothesisAssessment` is the shape
+    that carries a decided stance, and `HypothesisFindings` deliberately does not
+    -- deciding for or against the hypothesis is the Analyst Agent's call, on the
+    far side of this contract. The writer for `assessment.json` was deleted with
+    the rest of the shown path; see `subagent_analysts/shown.py`.
+
+    **Two files, because the record and the message are not the same shape.**
+    `findings.json` is the durable audit trail: citations, exhibits, retrieval
+    summary, every row the analyst read. `analyst-payload.json` is
+    `HypothesisFindings.for_analyst()` -- prose and observations only, and what
+    actually crosses the boundary. On the 2026-09-01 live run that is 5,684
+    characters against 42,200, because 73% of the record is the raw rows this
+    tier exists to compress into prose; shipping them on would undo the
+    compression that justifies the tier.
+    """
+    target_dir = _resolve_run_dir(task_id, run_dir)
+    if target_dir is None:
+        return
+
+    if target_dir.is_dir():
+        # `gather()` already set run_id where the caller knew it; fill it in when
+        # it did not, so the artifact still names its own directory.
+        stamped = (
+            findings if findings.run_id else findings.model_copy(update={"run_id": target_dir.name})
+        )
+        (target_dir / "findings.json").write_text(
+            stamped.model_dump_json(indent=2), encoding="utf-8"
+        )
+        # The record is written above; the message is written here. Same call, so
+        # the two cannot drift apart on disk -- an artifact directory holding one
+        # without the other would leave a reader unable to tell which the Analyst
+        # Agent actually received.
+        (target_dir / "analyst-payload.json").write_text(
+            stamped.for_analyst(max_chars).model_dump_json(indent=2), encoding="utf-8"
+        )
+
+
+async def _analyse_one(
+    task: AnalystTask,
+    hypothesis: str,
+    outcome,
+    *,
+    analyst_model,
+    max_chars: int | None = None,
+) -> HypothesisFindings:
+    """The BLIND analysis path for one fetched task: three domain judgements.
+
+    **Returns the findings rather than printing them, and that is what lets the
+    caller run several of these concurrently.** Three tasks' worth of
+    `_print_findings` interleaved on one stdout is unreadable, so the caller
+    gathers the results and prints them in file order afterwards. Persisting is
+    still done here, because a file write per run directory cannot interleave
+    with anything.
+
+    The analysts never receive `hypothesis` -- `gather` takes no
+    `InvestigationContext` and `build_facts_user_turn` has no hypothesis
+    parameter, so it cannot reach them. It is carried on the result only, as the
+    attachment point where three independent judgements are joined to the claim
+    they were formed without. Note that for task-file input this string is also
+    `task.goal`, which the *fetch* tier did see; that is a different tier and a
+    deliberate difference, and the one-way property holds because nothing on the
+    analyst path reads a goal at all.
+
+    `analyze()`/`combine()` used to sit here and roll the three shown verdicts
+    into one decided stance; both were DELETED once nothing called them (see
+    `analyze.py`'s own module docstring and `docs/architecture.md`). A stance
+    formed by an analyst that was shown the hypothesis is the anchoring this path
+    exists to remove.
+    """
+    _current_task.set(task.task_id)  # this coroutine's own context: one per task under gather
+    run_dir = getattr(outcome, "run_dir", None)
+    run_id = Path(run_dir).name if run_dir else None
+    # The analyze tier's root span. A second root beside the fetch tier's
+    # `investigation_span`, which opened inside `broker_task()` and closed when
+    # it returned -- see `telemetry.analysis_span`. The two join on
+    # task_id/hypothesis_id, and on the fetch trace id recorded here.
+    with analysis_span(
+        task.task_id,
+        task.hypothesis_id,
+        run_id=run_id,
+        fetch_trace_id=outcome.report.trace_id,
+    ):
+        findings = await analysis.gather(
+            outcome.report,
+            task.scope,
+            analyst_model,
+            run_id=run_id,
+            hypothesis=hypothesis,
+            # The only hook that can reach `reasoning_trace`: `_as_record`
+            # drops it before `gather` returns.
+            trace_sink=lambda domain_findings: _persist_reasoning_traces(
+                task.task_id,
+                task.hypothesis_id,
+                domain_findings,
+                run_dir=run_dir,
+            ),
+        )
+    _persist_findings(task.task_id, findings, run_dir=run_dir, max_chars=max_chars)
+    return findings
+
+
+def _persist_payload_batch(
+    findings: list[HypothesisFindings],
+    batch_id: str | None = None,
+    max_chars: int | None = None,
+) -> AnalystPayloadBatch | None:
+    """Write one `analyst-payload.json` carrying every hypothesis in the file.
+
+    **The unit of handover is the task file, not the hypothesis.** A file arrives
+    with several hypotheses about one alert and the Analyst Agent has to weigh
+    them against each other; three separate payload files leave that grouping for
+    the recipient to infer from nothing. See `contracts.AnalystPayloadBatch`.
+
+    Written to `<runs_dir>/<batch_id>/`, a sibling of the per-task run
+    directories rather than inside one of them: it belongs to no single task, and
+    putting it under one task's id would make it look like that task's artifact.
+    Nothing scans the runs root for task directories -- `replay` is handed a case
+    directory and lists stamps *inside* it -- so a differently-shaped sibling is
+    safe there.
+
+    The per-task `analyst-payload.json` files are still written beside each run's
+    own report and evidence. They are not redundant: that is the per-run-dir
+    record, joined by `run_id`, and it is what lets a reader of one run directory
+    see what that investigation produced. This is the message.
+
+    Returns the batch written, or `None` when there is no runs directory to write
+    to -- the same trade `_persist_findings` makes, since an artifact must not be
+    the thing that fails a completed run.
+    """
+    root = runs_root()
+    out = round_dir.get()
+    if not root.is_dir() and not out:
+        # Every task's own run dir is created by the broker under this root, so a
+        # missing root means nothing was persisted at all and there is no place
+        # this belongs. Silent for the same reason `_resolve_run_dir` is.
+        logging.getLogger(__name__).debug("no runs directory at %s, batch not written", root)
+        return None
+
+    batch = AnalystPayloadBatch(
+        batch_id=batch_id or f"batch-{datetime.now(UTC):%Y%m%dT%H%M%S}",
+        payloads=pack_for_analyst(findings, max_chars),
+    )
+    # Beside the tasks in the round's own folder when the Analyst names one (O5).
+    target = Path(out) if out else root / batch.batch_id
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / "analyst-payload.json"
+    path.write_text(batch.model_dump_json(indent=2), encoding="utf-8")
+
+    print(
+        f"\nanalyst payload: {len(batch.payloads)} hypothes"
+        f"{'is' if len(batch.payloads) == 1 else 'es'} in one message -> {path}"
+    )
+    return batch
+
+
+async def _analyse_all(
+    fetched: list[tuple[AnalystTask, str | None, object]],
+    *,
+    analyst_model,
+    task_count: int,
+) -> tuple[int, list[HypothesisFindings]]:
+    """PHASE B -- analyse every fetched task at once.
+
+    Returns `(failure_count, findings_in_task_order)`. The findings come back
+    rather than being consumed here because the caller assembles them into one
+    `AnalystPayloadBatch` -- see `_persist_payload_batch`.
+
+    **One burst, deliberately, and it is where the parallelism in this CLI
+    actually is.** The analyst model bills in 5-minute windows starting at its
+    first successful invocation, and an idle five minutes closes one (see
+    `smartops.analyst_cost`). Deferring every task's analysis to a single burst
+    puts all of it inside one or two windows; analysing each task as soon as its
+    own fetch finished would instead scatter the calls across however long the
+    fetch loop took, opening a fresh window each time the gap ran over five
+    minutes. Three tasks x three domains is nine concurrent calls through one
+    shared `AnalystModel`, which is exactly what that sharing is for.
+
+    `return_exceptions=True` because one hypothesis failing to analyse must not
+    discard the findings of the others -- they have already been fetched and
+    paid for. Results are printed here, in the caller's task order, rather than
+    inside `_analyse_one`: nine concurrent calls printing as they finished would
+    interleave three reports into an unreadable stream.
+    """
+    analysable = [
+        (task, hypothesis, outcome)
+        for task, hypothesis, outcome in fetched
+        # A missing hypothesis is only possible on the flag path -- a task file
+        # always carries one, which is why file input needs no branch here.
+        if hypothesis and outcome.report is not None
+    ]
+    skipped = [
+        task for task, hypothesis, outcome in fetched
+        if hypothesis and outcome.report is None
+    ]
+    for task in skipped:
+        print(f"\nanalysis: skipped for {task.task_id} (the broker produced no report)")
+
+    if analyst_model is None or not analysable:
+        return 0, []
+
+    if task_count > 1:
+        print(f"\n{'=' * 70}")
+        print(
+            f"analysing {len(analysable)} task(s) concurrently "
+            f"({len(analysable) * 3} analyst calls in one billing window)"
+        )
+        print("=" * 70)
+
+    results = await asyncio.gather(
+        *(
+            _analyse_one(
+                task,
+                hypothesis,
+                outcome,
+                analyst_model=analyst_model,
+                # One round's handoff budget, split across the file's tasks.
+                max_chars=HANDOFF_CHAR_BUDGET // max(task_count, 1),
+            )
+            for task, hypothesis, outcome in analysable
+        ),
+        return_exceptions=True,
+    )
+
+    failures = 0
+    findings: list[HypothesisFindings] = []
+    for (task, _, _), result in zip(analysable, results):
+        if isinstance(result, BaseException):
+            print(
+                f"\nanalysis failed for {task.task_id}: "
+                f"{type(result).__name__}: {result}",
+                file=sys.stderr,
+            )
+            logging.getLogger(__name__).debug(
+                "gather failed for %s", task.task_id, exc_info=result
+            )
+            failures += 1
+            continue
+        if task_count > 1:
+            print(f"\n--- {task.task_id} / {task.hypothesis_id} ---")
+        _print_findings(result)
+        # Task order, not completion order: the batch below is handed over as a
+        # single message, and the order the producer wrote the hypotheses in is
+        # the only order that means anything to whoever reads it.
+        findings.append(result)
+
+    # The analyst model is billed per CMU-minute, not per token, so its spend is
+    # not in `Budget` and `_print_outcome` cannot show it. Printed ONCE for the
+    # whole run rather than per task, because one shared `AnalystModel` means one
+    # `AnalystSpend` -- printing it per task would repeat the same cumulative
+    # window count and make the batching look more expensive than it was.
+    #
+    # `getattr`, because the analyst model here is duck-typed -- tests inject
+    # fakes, and a bench harness may too. A cost READOUT must never be the thing
+    # that sinks a completed investigation, and the findings are already printed.
+    spend = getattr(analyst_model, "spend", None)
+    if spend is not None:
+        print()
+        print(spend.summary())
+
+    return failures, findings
+
+
+# The task a log line belongs to (O6): 874ab334 lost endpoint three times and the
+# log could not say in which task. A contextvar, so `asyncio.to_thread` in
+# `gather` carries it into every sub-analyst call.
+_current_task: contextvars.ContextVar[str] = contextvars.ContextVar("smartops_task", default="")
+
+
+def _name_the_task(record: logging.LogRecord) -> bool:
+    task = _current_task.get()
+    record.task = f"task={task} | " if task else ""
+    return True
+
+
+async def start(mcp_config: str | None = None) -> None:
+    """Build and warm this process's MCP clients: once per process, before any
+    `run_round` (the CLI per run, the server at startup).
+
+    A missing config or an unset ${VAR} credential leaves a family with no server
+    rather than failing -- which is how this runs with no credentials at all. A
+    malformed config raises. Warming resolves every client's tools now, so two
+    concurrent dispatches in one Broker turn cannot race each other's start-up.
+    """
+    load_mcp_servers(mcp_config)
+    await warm_mcp_clients()
+
+
+def _nothing_searched(findings: list[HypothesisFindings]) -> list[str]:
+    """The unreachable families, when they left the whole round with no rows; else [].
+
+    16386362 ran three rounds with siem unreachable: every step rejected, and the
+    Analyst kept asking. A round that retrieved nothing because a source was down
+    ends the run instead. One that got rows elsewhere goes on, saying what is
+    missing (`AnalystPayload.not_searched`).
+    """
+    retrievals = [h.retrieval for h in findings if h.retrieval]
+    if any(s.rows_retrieved for r in retrievals for s in r.steps):
+        return []
+    return sorted({g.family for r in retrievals for g in r.gaps if g.reason == "no_tools_resolved"})
+
+
+@dataclass
+class RoundResult:
+    """One round, for an in-process caller: what `_run_round` used to leave only on disk."""
+
+    fetched: list  # (task, hypothesis, outcome) for every task the Broker finished
+    findings: list[HypothesisFindings]
+    payload: AnalystPayloadBatch | None  # the batch handed to the Analyst, task-file rounds only
+    failures: int
+
+
+def round_args(**overrides) -> argparse.Namespace:
+    """The CLI's defaults as `run_round` settings, for a caller with no argv:
+    `round_args(batch_id="r1-L2")`."""
+    from smartops.main import _build_parser  # the CLI owns the defaults; main imports this module
+
+    args = _build_parser().parse_args([])
+    for name, value in overrides.items():
+        if not hasattr(args, name):
+            raise TypeError(f"unknown round setting {name!r}")
+        setattr(args, name, value)
+    return args
+
+
+async def run_round(
+    tasks: list[tuple[AnalystTask, str | None]], args: argparse.Namespace | None = None
+) -> RoundResult:
+    """Fetch, analyse and hand over one round of tasks. Call `start()` first.
+
+    `args` carries the knobs (`round_args()` for defaults). A configuration
+    problem -- no usable provider -- raises `ValueError` before anything is spent;
+    a task that fails is counted in `failures` and the others still run.
+    """
+    try:
+        return await _round(tasks, args)
+    finally:
+        # B45: each round runs in its own event loop. An anthropic client collected
+        # later closes its connections on the next round's loop ("Event loop is
+        # closed"); collected here, it closes them on its own loop.
+        gc.collect()
+
+
+async def _round(
+    tasks: list[tuple[AnalystTask, str | None]], args: argparse.Namespace | None
+) -> RoundResult:
+    args = args or round_args()
+    # Every round, not only at start(): in the server a client that failed once stays
+    # failed (the flag is sticky until stop()), and on 16386362 every siem step of
+    # three rounds was rejected for "no tools". The per-round subprocess used to give
+    # each round this retry. A healthy client returns its cached tools at no cost.
+    await warm_mcp_clients()
+    # Defaulting to every family dispatched nothing: plan_fetch refuses a plan
+    # naming an unconfigured one. Read after load_mcp_servers, which decides that.
+    families = (
+        _parse_families(args.families)
+        if args.families
+        else [f for f in ALL_FAMILIES if family_is_configured(f)]
+    )
+
+    if len(tasks) > 1:
+        print(f"tasks:    {len(tasks)} ({', '.join(t.task_id for t, _ in tasks)})")
+
+    # The three-state ladder: a configured provider drives a real Broker agent;
+    # no provider falls back to the scripted invoker, which is a supported state
+    # rather than an error. `--scripted` forces the floor even when credentials
+    # exist, for testing the dispatch path without spending anything.
+    # One choice per Broker role (K4): the planner, siem and vt can each run their own
+    # model. A ValueError here reaches the caller as the configuration error it is.
+    choices = None if args.scripted else model_choices_from_env()
+    choice = choices["broker"] if choices else None
+    broker_output_tokens = args.broker_output_tokens or (
+        loop_output_tokens(choice, DEFAULT_BROKER_TURNS, 16_000) if choice else 16_000
+    )
+
+    if choice is None:
+        model = _PLACEHOLDER_MODEL
+        invoke = _scripted_invoker(families)
+        print(f"model:    (none -- scripted dispatch of {', '.join(families)})")
+    else:
+        # Build eagerly: a Bedrock model resolves AWS credentials at
+        # construction, so a bad region or absent credentials fails here rather
+        # than mid-investigation, after budget has been reserved.
+        try:
+            for role_choice in choices.values():
+                role_choice.build()
+        except Exception as exc:
+            hint = ""
+            if os.environ.get(AWS_PROFILE_ENV_VAR):
+                hint = (
+                    f"\n       {AWS_PROFILE_ENV_VAR}="
+                    f"{os.environ[AWS_PROFILE_ENV_VAR]} is set and boto3 will use it; "
+                    "unset it to fall back to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."
+                )
+            # Continuation lines keep their 7-space indent under the CLI's `error: `.
+            raise ValueError(
+                f"provider {choice.provider.value!r} is selected but not usable: {exc}"
+                f"\n       set {PROVIDER_ENV_VAR} to another provider, fix its credentials, "
+                f"or pass --scripted to run without a model.{hint}"
+            ) from exc
+        model = choice
+        invoke = None  # broker_task builds default_broker_invoker itself
+        tier = os.environ.get("SMARTOPS_BROKER_TIERS", "").strip().upper() or "-"
+        print(f"model:    {choice.provider.value} tier={tier} "
+              + " ".join(f"{role}={c.model_id}" + (f"/{c.effort}" if c.effort else "") for role, c in choices.items())
+              + f" broker_output_tokens={broker_output_tokens}")
+
+    # Per task, then multiplied: see `DEFAULT_BUDGET_USD_PER_TASK`. An explicit
+    # value is a whole-run ceiling and is not scaled.
+    budget_usd = (
+        args.budget_usd if args.budget_usd is not None
+        else DEFAULT_BUDGET_USD_PER_TASK * len(tasks)
+    )
+    max_output_tokens = (
+        args.max_output_tokens if args.max_output_tokens is not None
+        else DEFAULT_MAX_OUTPUT_TOKENS_PER_TASK * len(tasks)
+    )
+    budget = Budget.from_usd(budget_usd, max_output_tokens_total=max_output_tokens)
+    if len(tasks) > 1:
+        per_task = budget_usd / len(tasks)
+        print(f"budget:   ${budget_usd:.2f} across {len(tasks)} tasks (${per_task:.2f} each)")
+
+    # ONE analyst model for every task, and that is load-bearing rather than
+    # tidy. The imported model bills in 5-minute windows from its first
+    # successful invocation (see `smartops.analyst_cost`), and a shared
+    # `AnalystModel` is what makes concurrent calls collapse into one window
+    # instead of one per caller. Built before the fetch loop so that a missing
+    # SMARTOPS_ANALYST_MODEL_ARN is reported once, up front, rather than after
+    # every task has already been fetched and paid for.
+    #
+    # Only when something actually wants analysing. A task file always does --
+    # `question` is required -- but the flag path without `--hypothesis` does
+    # not, and warning about an unset ARN there would name the wrong reason for
+    # a skip whose real cause is that no hypothesis was given.
+    analyst_model = None
+    if any(hypothesis for _, hypothesis in tasks):
+        analyst_model = None if args.scripted else analyst_model_from_env()
+        if analyst_model is None:
+            print(
+                "\nanalysis: will be skipped (set SMARTOPS_ANALYST_MODEL_ARN to enable, "
+                "and do not pass --scripted)"
+            )
+
+    if args.skills is not None:
+        from smartops.skills import pinned_skills_enabled
+        skills_ctx = pinned_skills_enabled(args.skills)
+    else:
+        import contextlib
+        skills_ctx = contextlib.nullcontext()
+
+    # PHASE A -- fetch, up to FETCH_CONCURRENCY tasks at a time (B16).
+    #
+    # Serial fetch was 176 s of ae7d41b0's 213 s Broker phase (five tasks, 10-51 s
+    # each). The ceiling is Splunk's concurrent-search limit, not the account's
+    # quota: the lab's MCP account is admin (srchJobsQuota 50), and the search head
+    # allows 6 + 1 per CPU x 10 cores = 16, shared with ES's scheduled searches. A
+    # task runs up to ~3 siem steps at once, so 3 tasks peak near 9 searches.
+    # A queued or rejected search returns as `error`/`no_data` and reads as a data
+    # gap, so stay under the limit rather than at it.
+    #
+    # Each task's printed lines are buffered and written out whole, in task order,
+    # so the round's log reads as it did when fetch was serial.
+    fetched: list[tuple[AnalystTask, str | None, object]] = []
+    failures = 0
+    with skills_ctx:
+        # With a real model, domains get a real subagent; without one there is
+        # nothing to drive a tool loop, so the Broker's stub stands in and reports
+        # what each family *could* have used. `vt` answers either way -- its lookup
+        # needs no model at all.
+        run_subagent = (
+            subagents.domain_runner(model=choices, budget=budget, turns=args.subagent_turns)
+            if choice is not None
+            else None
+        )
+
+        from smartops.telemetry import print_to
+
+        gate = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+        async def fetch(position: int, task: AnalystTask, hypothesis: str | None):
+            lines: list[str] = []
+            async with gate:
+                with print_to(lines.append):
+                    return lines, await _fetch_one(position, task, hypothesis)
+
+        async def _fetch_one(position: int, task: AnalystTask, hypothesis: str | None):
+            if len(tasks) > 1:
+                print(f"\n{'=' * 70}")
+                print(f"fetching {position}/{len(tasks)}: {task.task_id} / {task.hypothesis_id}")
+                print("=" * 70)
+
+            _current_task.set(task.task_id)
+            try:
+                outcome = await broker_task(
+                    task,
+                    budget,
+                    model=model,
+                    invoke=invoke,
+                    run_subagent=run_subagent,
+                    max_output_tokens=broker_output_tokens,
+                )
+            except Exception as exc:
+                # An investigation failing must not look like the tool crashing.
+                # Report it, and report the ledger too: the call may already have
+                # been billed, and that is worth seeing. With several tasks the
+                # others still run -- one failed hypothesis is not a reason to
+                # abandon the ones that would have succeeded.
+                print(
+                    f"\nerror: the investigation failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                logging.getLogger(__name__).debug("broker_task failed", exc_info=True)
+                print(f"spend by role (micro-USD): {budget.spend_by_role() or '(nothing spent)'}")
+                return None
+
+            print(f"task:     {task.task_id}")
+            print(f"goal:     {task.goal}")
+            print(
+                "scope:    "
+                + ", ".join(f"{e.kind}={e.value}" for e in task.scope.entities)
+            )
+            print(
+                f"window:   {task.scope.time_window[0].isoformat()}"
+                f" .. {task.scope.time_window[1].isoformat()}"
+            )
+            _print_outcome(outcome, budget)
+            if len(tasks) > 1:
+                # `_print_outcome`'s ledger lines are a running total across every
+                # task finished so far, which inside one task's block reads as this
+                # task's own spend.
+                print(f"this task: {budget.spend_for_task(task.task_id)} micro-USD")
+            return task, hypothesis, outcome
+
+        done = await asyncio.gather(
+            *(fetch(position, task, hypothesis) for position, (task, hypothesis) in enumerate(tasks, start=1))
+        )
+        for lines, item in done:
+            for line in lines:
+                print(line)
+            if item is None:
+                failures += 1
+            else:
+                fetched.append(item)
+
+    analysis_failures, findings = await _analyse_all(
+        fetched, analyst_model=analyst_model, task_count=len(tasks)
+    )
+    failures += analysis_failures
+    unreachable = _nothing_searched(findings)
+    if unreachable:
+        raise RuntimeError(
+            f"nothing was searched this round: {', '.join(unreachable)} could not be reached (no tools resolved)"
+        )
+
+    # One message per task FILE, not per hypothesis: for file input, or a caller
+    # that names the batch (the Analyst, in process). The legacy flag path
+    # investigates one hand-written task and has no grouping a batch could represent.
+    payload = None
+    if (args.task_file or args.batch_id) and findings:
+        payload = _persist_payload_batch(
+            findings,
+            batch_id=args.batch_id,
+            # The batch is one message: one budget, water-filled across its tasks.
+            max_chars=HANDOFF_CHAR_BUDGET,
+        )
+
+    if len(tasks) > 1:
+        print(f"\n{'=' * 70}")
+        print(f"{len(fetched)}/{len(tasks)} task(s) fetched, {failures} failure(s)")
+        print(f"spend by task (micro-USD): {budget.spend_by_task() or '(nothing spent)'}")
+        print(f"budget remaining: {budget.remaining} micro-USD")
+
+    return RoundResult(fetched=fetched, findings=findings, payload=payload, failures=failures)

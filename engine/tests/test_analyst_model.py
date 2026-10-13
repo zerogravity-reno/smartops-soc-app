@@ -365,3 +365,25 @@ class TestMaxGenLenIsClampedToTheReservedBudget:
         assert model is not None
         assert model.max_gen_len == DEFAULT_MAX_GEN_LEN
         assert caplog.text == ""
+
+
+class TestReadTimeout:
+    def test_both_clients_wait_out_a_long_generation(self, monkeypatch):
+        # botocore's default read is 60 s; a full 8,192-token synthesis took ~72 s (ea38cb13).
+        import boto3
+
+        from smartops.subagent_analysts.model import _botocore_config
+
+        seen = {}
+
+        class Session:
+            def __init__(self, **_):
+                pass
+
+            def client(self, *_, config, **__):
+                seen["bearer"] = config
+
+        monkeypatch.setattr(boto3, "Session", Session)
+        AnalystModel(model_arn="arn:x", region="us-east-1", api_key="ABSK" + "x" * 20)._get_client()
+        for config in (seen["bearer"], _botocore_config()):
+            assert config.read_timeout >= 600 and config.connect_timeout <= 30

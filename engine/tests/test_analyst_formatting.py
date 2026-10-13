@@ -24,10 +24,23 @@ class TestFieldProjection:
         assert "action=failure" in line
         assert "dest=BSTOLL-L" in line
 
-    def test_missing_field_renders_dash_not_dropped(self):
+    def test_missing_field_is_not_rendered_as_telemetry(self):
         line = format_row("auth_events", {"user": "bostoll"})
         assert "user=bostoll" in line
-        assert "src=-" in line  # absent field kept as a placeholder column
+        assert "src=" not in line
+
+    def test_connection_omits_missing_fields_instead_of_claiming_values(self):
+        # B47: `bytes=- action=-` was read as equal transfers and no action.
+        line = format_row("connections", {"src_ip": "10.0.10.20", "dest_ip": "192.168.40.211"})
+        assert "bytes=" not in line
+        assert "uri=" not in line
+        assert "action=" not in line
+
+    def test_dash_placeholder_does_not_mask_later_key(self):
+        # B40: `Hashes=-` hid the real `sha256`, so another file's hash got used.
+        from smartops.subagent_analysts.formatting import _first
+        assert _first({"Hashes": "-", "sha256": "ABC"}, "Hashes", "sha256") == "ABC"
+        assert _first({"Hashes": " - "}, "Hashes") == "-"  # all-dash still renders the default
 
     def test_case_insensitive_field_lookup(self):
         line = format_row("auth_events", {"User": "bostoll", "Action": "success"})
@@ -53,6 +66,16 @@ class TestFieldProjection:
             {"src": "10.0.0.5", "src_port": "51000", "dest": "1.2.3.4", "dest_port": "443"},
         )
         assert "10.0.0.5:51000→1.2.3.4:443" in line
+
+    def test_sysmon_connection_spellings_are_read(self):
+        # a818a3fd T4 (B-4): Sysmon EID 3 rows rendered `dest=-`.
+        line = format_row(
+            "connections",
+            {"_time": "t", "SourceIp": "10.0.10.20", "DestinationIp": "192.168.40.211",
+             "DestinationPort": "8888", "Protocol": "tcp"},
+        )
+        assert "10.0.10.20→192.168.40.211:8888" in line
+        assert "proto=tcp" in line
 
     def test_process_cmdline_is_truncated(self):
         line = format_row(
@@ -142,7 +165,8 @@ class TestRealSplunkFieldNames:
             "auth_events",
             {"Account_Name": "BSTOLL-L$", "Logon_Type": "5", "count": "164"},
         )
-        assert "count=164" in line
+        # Rendered as events=, so the quantity can't be read as bytes or actions (B35, B11).
+        assert "events=164" in line and "count=" not in line
 
     def test_connection_renders_both_byte_directions(self):
         # Both fields co-occur on real rows. Rendering only one direction
@@ -545,4 +569,4 @@ def test_a_logon_type_is_named_by_code_not_left_to_the_model():
 
 def test_the_event_code_is_labelled_as_one():
     """B33: `code=1` was narrated as "PowerShell executing with exit code 1"."""
-    assert "event_code=1 " in format_row("processes", {"EventCode": "1", "Image": "powershell.exe"})
+    assert "event_code=1" in format_row("processes", {"EventCode": "1", "Image": "powershell.exe"})

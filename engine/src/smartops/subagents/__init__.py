@@ -112,7 +112,7 @@ MISSION_TIMEOUT_SECONDS = 900
 """Wall clock for one mission, recovery call included (B24).
 
 Missions take one to two minutes; this leaves room for a slow Splunk and still
-ends a stuck call well inside the webapp's 1,800 s kill of the whole round, so
+ends a stuck call well inside the Analyst's 1,800 s timeout on the whole round, so
 one hung step costs that step, not the round."""
 
 CELL_CHAR_CAP = 8192
@@ -665,7 +665,13 @@ async def investigate(
         # Budget exhaustion is ERROR, not REJECTED: the domain was workable and
         # would have been attempted. REJECTED is documented as not-retryable and
         # would have an aggregator abandon the domain for the whole case.
-        logger.warning("task_id=%s family=%s | budget cannot cover the call", mission.task_id, family)
+        # Say which limit refused it: a818a3fd G1 (B-2) was refused on output tokens with $9.96 left.
+        logger.warning(
+            "task_id=%s family=%s | budget cannot cover the call: needs %d output tokens "
+            "(%s left); %d micro-USD left",
+            mission.task_id, family, max_output_tokens + _recovery_output_tokens(model),
+            budget.output_tokens_remaining, budget.remaining,
+        )
         return SubtaskResult(
             task_id=mission.task_id,
             status=SubtaskStatus.ERROR,
@@ -771,9 +777,11 @@ async def investigate(
     # findings. Per-claim citation needs the ids in the prompt; that is a
     # deliberate next step, not an oversight.
     # The prompt only names configured families, but the model can still emit any
-    # `ToolFamily`; an unconnected one must not reach the Broker as advice.
+    # `ToolFamily`; an unconnected one must not reach the Broker as advice. Nor one
+    # this scope gives nothing to query: a818a3fd T1 siem named vt on a host-only
+    # scope, which the Broker cannot dispatch (B-7, B31 again).
     answer = answer.model_copy(
-        update={"gaps": [f for f in answer.gaps if family_is_configured(f)]}
+        update={"gaps": [f for f in answer.gaps if family_is_configured(f) and scope_gap(f, mission.scope) is None]}
     )
     result = SubtaskResult.from_answer(
         task_id=mission.task_id,

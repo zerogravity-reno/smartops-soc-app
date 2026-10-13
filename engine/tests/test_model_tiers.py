@@ -75,8 +75,8 @@ class TestTierPresets:
     def test_loop_output_caps_follow_effort(self, monkeypatch):
         monkeypatch.setenv("SMARTOPS_BROKER_TIERS", "A")
         c = model_choices_from_env()
-        assert loop_output_tokens(c["broker"], 11, 16_000) == 44_000
-        assert loop_output_tokens(c["siem"], 25, 12_000) == 50_000
+        assert loop_output_tokens(c["broker"], 11, 16_000) == 22_000
+        assert loop_output_tokens(c["siem"], 25, 12_000) == 25_000
         assert loop_output_tokens(c["vt"], 25, 12_000) == 25_000
         monkeypatch.setenv(PROVIDER_ENV_VAR, "bedrock")
         monkeypatch.setenv(BEDROCK_MODEL_ID_ENV_VAR, "us.anthropic.claude-sonnet-4-6")

@@ -81,28 +81,28 @@ class TestTheReceivedTemplateLoadsUnchanged:
         """Results are reported in the order the producer wrote the tasks."""
         parsed = TaskInputFile.model_validate(RECEIVED_TEMPLATE)
 
-        assert [t.task_id for t in parsed.analyst_tasks()] == ["T1", "T2", "T3"]
+        assert [t.task_id for t in parsed.tasks] == ["T1", "T2", "T3"]
 
 
 class TestTheMappingOntoAnalystTask:
     def test_question_becomes_the_goal(self):
-        task = TaskInputFile.model_validate(RECEIVED_TEMPLATE).analyst_tasks()[2]
+        task = TaskInputFile.model_validate(RECEIVED_TEMPLATE).tasks[2].to_analyst_task()
 
         assert task.goal == RECEIVED_TEMPLATE["tasks"][2]["question"]
 
     def test_the_ids_cross_unchanged(self):
-        task = TaskInputFile.model_validate(RECEIVED_TEMPLATE).analyst_tasks()[0]
+        task = TaskInputFile.model_validate(RECEIVED_TEMPLATE).tasks[0].to_analyst_task()
 
         assert (task.task_id, task.hypothesis_id) == ("T1", "H1")
 
     def test_entity_type_becomes_entity_kind(self):
-        tasks = TaskInputFile.model_validate(RECEIVED_TEMPLATE).analyst_tasks()
+        tasks = [t.to_analyst_task() for t in TaskInputFile.model_validate(RECEIVED_TEMPLATE).tasks]
 
         assert [(e.kind, e.value) for e in tasks[0].scope.entities] == [("host", "BSTOLL-L")]
         assert [(e.kind, e.value) for e in tasks[2].scope.entities] == [("user", "bostoll")]
 
     def test_the_window_becomes_an_aware_ordered_tuple(self):
-        window = TaskInputFile.model_validate(RECEIVED_TEMPLATE).analyst_tasks()[0].scope.time_window
+        window = TaskInputFile.model_validate(RECEIVED_TEMPLATE).tasks[0].to_analyst_task().scope.time_window
         start, end = window
 
         assert start.tzinfo is not None and end.tzinfo is not None
@@ -118,7 +118,7 @@ class TestTheMappingOntoAnalystTask:
         undoing the blindness that tier rests on, so the field set is pinned here
         as well as in `test_analyst_task.py`.
         """
-        task = TaskInputFile.model_validate(RECEIVED_TEMPLATE).analyst_tasks()[0]
+        task = TaskInputFile.model_validate(RECEIVED_TEMPLATE).tasks[0].to_analyst_task()
 
         assert set(type(task).model_fields) == {
             "schema_version", "task_id", "hypothesis_id", "goal", "scope"
@@ -127,7 +127,7 @@ class TestTheMappingOntoAnalystTask:
 
 class TestEntityAcceptsOneOrMany:
     def test_a_single_object_is_the_template_form(self):
-        task = TaskInputFile.model_validate(one_task()).analyst_tasks()[0]
+        task = TaskInputFile.model_validate(one_task()).tasks[0].to_analyst_task()
 
         assert len(task.scope.entities) == 1
 
@@ -140,7 +140,7 @@ class TestEntityAcceptsOneOrMany:
             {"type": "domain", "value": "coinhive.com"},
         ]))
 
-        assert [(e.kind, e.value) for e in parsed.analyst_tasks()[0].scope.entities] == [
+        assert [(e.kind, e.value) for e in parsed.tasks[0].to_analyst_task().scope.entities] == [
             ("user", "bostoll"),
             ("host", "BSTOLL-L"),
             ("domain", "coinhive.com"),

@@ -1,0 +1,25 @@
+B24/ORCH START 2026-10-13T09:11:56.401077+00:00
+WARNING smartops.tools.registry: server_name=<splunk>, url=<https://127.0.0.1:18089/services/mcp> | TLS VERIFICATION DISABLED for this MCP server (listed in SMARTOPS_MCP_TLS_NO_VERIFY); its identity is unverified and its bearer token is exposed to any host answering on that address
+2026-10-13T09:11:56.501Z connection-open client=('127.0.0.1', 57997)
+2026-10-13T09:11:56.625Z connection-close client=('127.0.0.1', 57997)
+2026-10-13T09:11:56.627Z connection-open client=('127.0.0.1', 57999)
+tasks:    3 (b7359eab-L2-T1, b7359eab-L2-T4, b7359eab-L2-T5)
+model:    anthropic tier=A broker=claude-opus-5-5/high siem=claude-sonnet-5-5/medium vt=claude-haiku-5-5/low broker_output_tokens=22000
+budget:   $5.00 across 3 tasks ($1.67 each)
+2026-10-13T09:12:21.427Z connection-close client=('127.0.0.1', 57999)
+2026-10-13T09:12:21.428Z connection-open client=('127.0.0.1', 59122)
+B24/ORCH CUT at 2026-10-13T09:12:21.937280+00:00
+2026-10-13T09:12:21.976Z mode-change old=up new=down
+2026-10-13T09:12:21.977Z connection-close client=('127.0.0.1', 59122)
+WARNING smartops.tools.registry: an MCP client's session ended mid-run; reconnecting it
+WARNING smartops.tools.registry: an MCP session had closed: Connection to the MCP server was closed (cause: ExceptionGroup('unhandled errors in a TaskGroup', [RemoteProtocolError('Server disconnected without sending a response.')]))
+2026-10-13T09:12:22.589Z connection-open client=('127.0.0.1', 62193)
+2026-10-13T09:12:22.589Z connection-close client=('127.0.0.1', 62193)
+WARNING smartops.tools.registry: an MCP client's earlier connection failure is sticky; retrying it
+2026-10-13T09:12:22.606Z connection-open client=('127.0.0.1', 62198)
+2026-10-13T09:12:22.607Z connection-close client=('127.0.0.1', 62198)
+WARNING smartops.tools.registry: an MCP client's earlier connection failure is sticky; retrying it
+2026-10-13T09:12:22.622Z connection-open client=('127.0.0.1', 62203)
+2026-10-13T09:12:22.623Z connection-close client=('127.0.0.1', 62203)
+B24/ORCH RESTORE at 2026-10-13T09:12:31.951722+00:00
+2026-10-13T09:12:31.952Z mode-change old=down new=up

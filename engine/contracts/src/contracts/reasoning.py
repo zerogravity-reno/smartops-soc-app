@@ -21,7 +21,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from contracts.findings import CimCategory
-from contracts.subtask import ToolFamily
+from contracts.subtask import ToolFamily, Unanswerable
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +536,10 @@ class RetrievalSummary(BaseModel):
             "every family was dispatched, which `dispatched` answers."
         ),
     )
+    unanswerable: list[Unanswerable] = Field(
+        default_factory=list,
+        description="Questions the Broker's plan stated no connected source can answer (B20).",
+    )
 
 
 class HypothesisFindings(BaseModel):
@@ -758,10 +762,39 @@ class AnalystPayload(BaseModel):
     hypothesis_id: str
     hypothesis: str | None = None
     findings: list[DomainNarrative] = Field(default_factory=list)
-    # NOTE: `RetrievalSummary.gaps` deliberately does NOT cross this boundary
-    # yet -- whether it should is an open question for the producing team, see
-    # docs/open-questions-for-team.md (2026-09-02). Until that is settled the
-    # gap is on the record only, so `findings.json` carries it and this does not.
+    unanswerable: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Code-worded, one per question the Broker's plan said no connected source "
+            "holds (B20). Never trimmed for size: it is the answer to that question."
+        ),
+    )
+    not_searched: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Code-worded, one per source that could not be searched and left domains "
+            "empty: an empty domain there means nothing was searched, not that nothing "
+            "was found. Never trimmed for size."
+        ),
+    )
+
+
+# Code wording per `DomainGap.reason`; `detail` (raw refusal text) never reaches synthesis.
+_GAP_WORDING = {
+    "no_tools_resolved": "could not be reached (no tools resolved)",
+    "not_configured": "is not connected",
+    "no_observable_in_scope": "had nothing in this task's scope to look up",
+}
+
+
+def _not_searched(gap: DomainGap) -> str:
+    # 16386362: siem was unreachable for three rounds, every domain arrived empty,
+    # and synthesis read the silence as "no malicious indicators".
+    return (
+        f"Not searched: {gap.family} {_GAP_WORDING[gap.reason]}. The "
+        f"{', '.join(gap.unanswered_domains)} findings of this task are empty because "
+        "nothing was searched, not because nothing was found."
+    )
 
 
 # The header line opening each block of `DomainRecord.facts`, here because the
@@ -771,7 +804,8 @@ ENCODED_FOOTER = "Encoded commands in these rows, decoded by code:"
 COMMANDS_FOOTER = "Interpreter and LOLBin command lines in these rows, rarest first:"
 NO_ROWS_FOOTER = "Searches that returned no rows:"
 HASHES_FOOTER = "File hashes in these rows, rarest first:"
-ADDRESSES_FOOTER = "Private addresses in these rows and this task (VirusTotal holds no reputation for them):"
+# Not "VirusTotal holds no reputation": aab8e000 and 204888fd read that aside as a VirusTotal result (B43).
+ADDRESSES_FOOTER = "Private addresses in these rows and this task (not internet-routable):"
 _FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
 # Least needed first: an empty search is a count; a command line is in report.json.
 # Names, decoded text, hashes and addresses are what a narrative cannot recover, so they always cross.
@@ -812,6 +846,14 @@ def pack_for_analyst(
             run_id=h.run_id,
             hypothesis_id=h.hypothesis_id,
             hypothesis=h.hypothesis,
+            unanswerable=[
+                f"No connected source holds this: {u.question} ({u.reason})"
+                for u in (h.retrieval.unanswerable if h.retrieval else [])
+            ],
+            # Only gaps that left a domain empty: a missing edr whose endpoint SIEM filled stays off the wire.
+            not_searched=[
+                _not_searched(g) for g in (h.retrieval.gaps if h.retrieval else []) if g.unanswered_domains
+            ],
             findings=[
                 DomainNarrative(domain=f.domain, narrative=f.narrative,
                                 observations=list(f.observations), facts=list(f.facts))

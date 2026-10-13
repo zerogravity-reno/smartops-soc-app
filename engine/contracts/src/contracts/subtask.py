@@ -701,11 +701,40 @@ class FetchStep(BaseModel):
     )
 
 
+class Unanswerable(BaseModel):
+    """A question no connected source can answer, stated instead of fetched (B20).
+
+    On 89674d75 "asset inventory", "CrowdStrike telemetry" and "forensics tools"
+    questions were each run as Splunk searches, and the substitute rows came back
+    as if they answered them.
+    """
+
+    question: str = Field(min_length=1)
+    # Capped: on 79c024e8 a prose reason ("…VirusTotal. Neither is offered. SIEM
+    # telemetry at best records signer subject…") came back as findings. A noun
+    # phrase has no room to describe what other tools hold.
+    reason: str = Field(
+        min_length=1,
+        max_length=60,
+        description=(
+            "A short noun phrase naming only the missing source or observable, e.g. "
+            "'asset inventory', 'file hash'. Never what other tools hold or the data shows."
+        ),
+    )
+
+
 class FetchPlan(BaseModel):
     """The Broker's explicit fetch plan, authored via `plan_fetch` before dispatch."""
 
-    steps: list[FetchStep] = Field(min_length=1)
+    steps: list[FetchStep] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
+    unanswerable: list[Unanswerable] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _plans_something(self) -> Self:
+        if not self.steps and not self.unanswerable:
+            raise ValueError("a fetch plan needs at least one step or one unanswerable question")
+        return self
 
     @model_validator(mode="after")
     def _step_ids_are_unique(self) -> Self:

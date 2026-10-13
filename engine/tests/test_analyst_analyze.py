@@ -283,6 +283,34 @@ class TestGatherFinding:
         assert finding.narrative == "one logon."
         assert not any(", , ," in o for o in finding.observations)
 
+    _LOOP = "Host H ran processes under user U, started by OneDrive.exe; one command line, repeated."
+
+    def _slice(self) -> DomainSlice:
+        return DomainSlice(
+            domain="identity",
+            siem_sets=[("auth_events", ResultSet(query="q", row_count=1, rows=[{"user": "bostoll"}]))],
+        )
+
+    def test_a_repeated_sentence_is_kept_once(self):
+        # a818a3fd T4 endpoint (B-1): one sentence written over and over.
+        model = _SequenceModel([_finding_gen(" ".join([self._LOOP] * 30), "x", "auth_events#1")])
+        finding = gather_finding(model, _scope(), self._slice())
+        assert finding.narrative.count(self._LOOP) == 1
+        assert model.calls == 1
+
+    def test_a_looping_cut_off_reask_names_the_sentence(self):
+        looping = "</think>NARRATIVE: " + " ".join([self._LOOP] * 30)
+        model = _SequenceModel([(looping, "length"), _finding_gen("one logon.", "x", "auth_events#1")])
+        gather_finding(model, _scope(), self._slice())
+        assert f'You wrote "{self._LOOP}" 30 times' in model.prompts[1]
+
+    def test_the_first_cut_off_reply_is_salvaged_when_the_reask_is_not(self):
+        first = _finding_gen(" ".join([self._LOOP] * 5), "x", "auth_events#1") + "\n- and then [auth_ev"
+        model = _SequenceModel([(first, "length"), ("</think>NARRATIVE: " + self._LOOP * 40, "length")])
+        finding = gather_finding(model, _scope(), self._slice())
+        assert finding.citations == ["auth_events#1"]
+        assert finding.narrative.count(self._LOOP) == 1
+
     def test_a_reply_with_no_narrative_triggers_the_reask(self):
         """The narrative is the product, so its absence is a parse failure.
 
@@ -946,10 +974,12 @@ class TestGatherCarriesTheRetrievalRecord:
         assert by_id["siem-2"].completed is False
         assert by_id["siem-2"].evaluated is False
 
-    async def test_coverage_comes_from_the_subagents_own_assessment(self):
+    async def test_coverage_is_the_assessment_plus_what_rows_settle(self):
+        # The assessment omits `processes`, but a processes row was projected:
+        # rows settle coverage, not the model's claim (a818a3fd T1, B-6).
         findings = await gather(self._report(), _scope(), _RecordingDomainModel(self._GENS))
 
-        assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
+        assert findings.retrieval.covered == ["auth_events", "dns_resolutions", "processes"]
         assert findings.retrieval.not_covered == ["connections"]
 
     async def test_a_category_one_dispatch_retrieved_is_not_reported_unmet(self):
@@ -972,7 +1002,7 @@ class TestGatherCarriesTheRetrievalRecord:
                     connections=[ResultSet(query="conn", row_count=2, rows=[{"src_ip": "1.1.1.1"}])]
                 ),
                 assessment=SiemAssessment(
-                    covered=["connections"], not_covered=["auth_events", "processes"]
+                    covered=["connections"], not_covered=["auth_events", "registry_events"]
                 ),
             )
         )
@@ -981,9 +1011,9 @@ class TestGatherCarriesTheRetrievalRecord:
 
         covered = findings.retrieval.covered
         not_covered = findings.retrieval.not_covered
-        assert set(covered) == {"auth_events", "dns_resolutions", "connections"}
-        # `processes` is the only category nobody retrieved.
-        assert not_covered == ["processes"]
+        assert set(covered) == {"auth_events", "dns_resolutions", "processes", "connections"}
+        # `registry_events` is the only category nobody retrieved.
+        assert not_covered == ["registry_events"]
         assert not set(covered) & set(not_covered)
 
     async def test_a_vt_assessment_contributes_no_categories(self):
@@ -1006,7 +1036,7 @@ class TestGatherCarriesTheRetrievalRecord:
 
         # Unchanged by the vt result -- no spurious category, and no crash on an
         # assessment that has no `covered` field at all.
-        assert findings.retrieval.covered == ["auth_events", "dns_resolutions"]
+        assert findings.retrieval.covered == ["auth_events", "dns_resolutions", "processes"]
         assert findings.retrieval.not_covered == ["connections"]
 
 

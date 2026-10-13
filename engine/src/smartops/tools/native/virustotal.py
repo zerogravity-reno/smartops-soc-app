@@ -260,10 +260,6 @@ class Enrichment:
     failure: str | None = None
     attempted: int = 0
 
-    @property
-    def is_partial(self) -> bool:
-        return self.failure is not None and bool(self.verdicts)
-
 
 async def enrich_scope(scope: Scope, *, timeout: float = _DEFAULT_TIMEOUT) -> Enrichment:
     """Look up every queryable entity in `scope`. Model-free.

@@ -2,7 +2,7 @@
 name = "smartops-contracts"
 version = "0.1.0"
 description = "Shared data contracts for the SmartOps SOC multi-agent pipeline"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "pydantic>=2.9",
 ]

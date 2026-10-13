@@ -20,7 +20,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from smartops.main import _persist_reasoning_traces, _resolve_run_dir
+from smartops.broker import _persist_reasoning_traces, _resolve_run_dir
 from smartops.subagent_analysts.analyze import gather
 from smartops.subagent_analysts.model import AnalystResponse
 

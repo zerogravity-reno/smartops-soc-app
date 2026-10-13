@@ -343,8 +343,7 @@ class TestOneTracePerInvestigation:
         from smartops.telemetry import analysis_span, round_span
 
         trace_id = "ab" * 16
-        monkeypatch.setenv("TRACEPARENT", f"00-{trace_id}-{'cd' * 8}-01")
-        with round_span("874ab334-L2"):
+        with round_span("874ab334-L2", f"00-{trace_id}-{'cd' * 8}-01"):
             with analysis_span("874ab334-L2-T1", "874ab334-L2-T1"):
                 pass
             with analysis_span("874ab334-L2-T2", "874ab334-L2-T2"):
@@ -354,3 +353,20 @@ class TestOneTracePerInvestigation:
         assert {format(s.context.trace_id, "032x") for s in finished} == {trace_id}
         round_ = next(s for s in finished if s.name == "smartops.round")
         assert all(s.parent.span_id == round_.context.span_id for s in finished if s.name == "smartops.analysis")
+
+
+class TestPrintTo:
+    async def test_a_rounds_prints_reach_its_sink_and_no_other(self, capsys):
+        # In the server a round's progress is its log and event stream, not the console.
+        import asyncio
+
+        from smartops.telemetry import print_to
+
+        lines = []
+        with print_to(lines.append):
+            print("fetch plan (2 step(s))")
+            await asyncio.to_thread(print, "from a worker thread")
+            print("partial", end="")
+        print("console")
+        assert lines == ["fetch plan (2 step(s))", "from a worker thread", "partial"]
+        assert capsys.readouterr().out == "console\n"

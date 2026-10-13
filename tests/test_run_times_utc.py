@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from webapp.services import run_trace
+from smartops.broker import runs_root
 
 # ISO date-times and Splunk's `ctime` (`10/05/2026 14:38:58`), with whatever follows.
 _TIME = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?(?:\.\d+)?([^\s\"',\]]{0,14})"
@@ -17,7 +17,7 @@ _TIME = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?(?:\.\d+)?([^\s\"',\]
 
 
 def _newest_run():
-    root = run_trace.runs_dir()
+    root = runs_root()
     name = os.environ.get("SMARTOPS_CHECK_RUN")
     runs = [root / name] if name else sorted(
         (p for p in root.glob("*") if p.is_dir() and any(p.rglob("tasks.json"))),

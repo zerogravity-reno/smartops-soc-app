@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,15 +18,8 @@ from typing import Any, get_args
 
 from strands import tool
 
-from contracts import Evidence, SubagentMission, SubtaskResult, ToolFamily, answer_tool_name
-from smartops.broker import DEFAULT_RUNS_DIR, RUNS_DIR_ENV_VAR, SubagentRunner
-from smartops.budget import Budget, ModelChoice
-from smartops.subagents import (
-    DEFAULT_MAX_OUTPUT_TOKENS as _SUBAGENT_OUTPUT_TOKENS,
-)
-from smartops.subagents import (
-    DEFAULT_TURNS as _SUBAGENT_TURNS,
-)
+from contracts import Evidence, ToolFamily, answer_tool_name
+from smartops.broker import runs_root
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +122,7 @@ def load_evidence_from_run(
     reader and the writer looked in different trees.
     """
     if base_dir is None:
-        base_dir = os.environ.get(RUNS_DIR_ENV_VAR, "").strip() or DEFAULT_RUNS_DIR
+        base_dir = runs_root()
 
     path = Path(run_id_or_path)
     if not path.is_absolute() and not path.exists():
@@ -355,30 +347,3 @@ def get_replay_tools_for_family(family: ToolFamily | str, replayer: ReplayToolse
             tools.append(read_reference)
 
     return tools
-
-
-def create_replay_subagent_runner(
-    replayer: ReplayToolset,
-    *,
-    model: ModelChoice,
-    budget: Budget,
-    turns: int = _SUBAGENT_TURNS,
-    max_output_tokens: int = _SUBAGENT_OUTPUT_TOKENS,
-) -> SubagentRunner:
-    """Create a `SubagentRunner` that executes missions offline using replayed tool calls."""
-    from smartops.subagents import investigate
-
-    async def run(mission: SubagentMission) -> SubtaskResult:
-        family = mission.tool_family
-        tools = get_replay_tools_for_family(family, replayer)
-
-        return await investigate(
-            mission,
-            model=model,
-            budget=budget,
-            tools=tools,
-            turns=turns,
-            max_output_tokens=max_output_tokens,
-        )
-
-    return run

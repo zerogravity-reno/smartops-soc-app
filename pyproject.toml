@@ -1,22 +1,11 @@
 [project]
 name = "smartops-soc"
 version = "1.0.0"
-description = "SmartOps SOC — Unified Web UI + Engine"
-requires-python = ">=3.11"
+description = "SmartOps SOC: backend (engine/) and frontend (frontend/)"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "fastapi>=0.111",
-    "uvicorn[standard]>=0.29",
-    "boto3>=1.34",
-    "botocore>=1.34",
-    "rank-bm25>=0.2.2",
-    "pydantic>=2.0",
-    "python-dotenv>=1.0",
-    "requests>=2.32",
-    # The webapp launches the engine and shares its MCP client; both are workspace members.
+    # The backend (API server, Analyst, Tool Broker) and its contracts; both are workspace members.
     "smartops-backend",
-    "smartops-contracts",
-    "mcp",
-    "httpx",
 ]
 
 # An application, not a library: uv installs the workspace members and never
@@ -46,8 +35,6 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["engine/contracts/tests", "engine/tests", "tests"]
-# `webapp` is imported from the repo root; it is an app, not an installed package.
-pythonpath = ["."]
 
 # Strands deprecations must fail the suite, not scroll past it. The Broker spent
 # an unknown number of runs passing `smartops=request` through the `**kwargs`
