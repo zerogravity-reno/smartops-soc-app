@@ -49,6 +49,7 @@ function Facts({ data, onCopyFail }: { data: ImportedAlert; onCopyFail: () => vo
 interface Props {
   fields: AlertFields; setFields: (f: AlertFields) => void; imported: ImportedAlert | null; note: string;
   controls: Controls; onInvestigate: () => void; onPause: () => void; onStop: () => void; onRestart: () => void; onReset: () => void;
+  onExport: () => void; exporting: boolean;
   toast: (msg: string, bad?: boolean) => void;
 }
 
@@ -86,6 +87,9 @@ export function AlertStrip(p: Props) {
             <button className="btn-ghost btn-ctl btn-stop" type="button" disabled={c === 'stopping'} onClick={p.onStop}><i className="ph-bold ph-stop" />{c === 'stopping' ? 'Stopping' : 'Stop'}</button>
           </> : null}
           {c === 'ended' ? <>
+            <button className="btn-ghost btn-ctl" type="button" disabled={p.exporting} onClick={p.onExport}>
+              <i className="ph ph-download-simple" aria-hidden="true" />{p.exporting ? 'Exporting' : 'Export HTML'}
+            </button>
             <button className="btn-ghost btn-ctl" type="button" onClick={p.onReset}><i className="ph-bold ph-arrow-counter-clockwise" aria-hidden="true" />Reset</button>
             <button className="btn-ghost btn-ctl" type="button" onClick={p.onRestart}><i className="ph-bold ph-arrows-clockwise" aria-hidden="true" />Restart</button>
           </> : null}

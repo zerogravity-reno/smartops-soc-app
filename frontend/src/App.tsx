@@ -5,6 +5,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { api } from './api';
 import { buildContract, observables, type AlertFields } from './contract';
 import { shortRule } from './format';
+import { exportCurrentRun } from './exportReport';
 import { outcomeTag, reduce, type RunState, type StageName } from './run';
 import type { ImportedAlert, QueueEvent, QueueGroup, StreamEvent } from './types';
 import { AlertStrip, type Controls } from './components/AlertStrip';
@@ -46,6 +47,7 @@ export default function App() {
   const devSearch = useRef<HTMLInputElement>(null);
   const devToggleRef = useRef<HTMLButtonElement>(null);
   const [toastMsg, setToastMsg] = useState<[string, boolean] | null>(null);
+  const [exporting, setExporting] = useState(false);
   const toastTimer = useRef<number>(0);
 
   const toast = useCallback((msg: string, bad = false) => {
@@ -206,6 +208,19 @@ export default function App() {
     ui('View reset');
   }
 
+  async function exportReport() {
+    if (!run || run.mode !== 'ended' || exporting) return;
+    setExporting(true);
+    try {
+      await exportCurrentRun(run.id);
+      toast('Standalone HTML report downloaded.');
+    } catch (e) {
+      toast('Could not export the report: ' + (e as Error).message, true);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   // A finished (or failed, or stopped) run tags its alert in the queue.
   useEffect(() => {
     const tag = run && outcomeTag(run);
@@ -260,7 +275,8 @@ export default function App() {
         openGroup={openGroup} onPick={importAlert} onRefresh={() => loadQueue()} />
 
       <AlertStrip fields={fields} setFields={setFields} imported={imported} note={note} controls={controls}
-        onInvestigate={investigate} onPause={pauseOrResume} onStop={stop} onRestart={restart} onReset={reset} toast={toast} />
+        onInvestigate={investigate} onPause={pauseOrResume} onStop={stop} onRestart={restart} onReset={reset}
+        onExport={exportReport} exporting={exporting} toast={toast} />
 
       <Verdict run={run} />
 
