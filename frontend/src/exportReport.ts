@@ -23,14 +23,27 @@ function safeFilePart(value: string) {
   return value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'run';
 }
 
-async function dataUri(url: string) {
+async function dataUri(url: string, mime?: string) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Could not embed ${new URL(url).pathname}.`);
   const blob = await response.blob();
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = '';
   for (const chunk of Array.from(bytes)) binary += String.fromCharCode(chunk);
-  return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
+  return `data:${mime || blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
+}
+
+async function embeddedFonts() {
+  const [geist, mono, phosphor, phosphorBold] = await Promise.all([
+    dataUri(new URL(geistUrl, document.baseURI).href, 'font/woff2'),
+    dataUri(new URL(geistMonoUrl, document.baseURI).href, 'font/woff2'),
+    dataUri(new URL(phosphorUrl, document.baseURI).href, 'font/woff2'),
+    dataUri(new URL(phosphorBoldUrl, document.baseURI).href, 'font/woff2'),
+  ]);
+  return `@font-face{font-family:"Geist Variable";font-style:normal;font-weight:100 900;src:url("${geist}") format("woff2");}
+@font-face{font-family:"Geist Mono Variable";font-style:normal;font-weight:100 900;src:url("${mono}") format("woff2");}
+@font-face{font-family:"Phosphor";font-style:normal;font-weight:normal;src:url("${phosphor}") format("woff2");}
+@font-face{font-family:"Phosphor-Bold";font-style:normal;font-weight:normal;src:url("${phosphorBold}") format("woff2");}`;
 }
 
 async function resolvedCss(css: string, stylesheetUrl: string) {
@@ -40,7 +53,7 @@ async function resolvedCss(css: string, stylesheetUrl: string) {
     urls.push(new URL(raw, stylesheetUrl).href);
     return `__SMARTOPS_ASSET_${urls.length - 1}__`;
   });
-  const assets = await Promise.all(urls.map(dataUri));
+  const assets = await Promise.all(urls.map(url => dataUri(url)));
   return marked.replace(/__SMARTOPS_ASSET_(\d+)__/g, (_placeholder, index) => `url("${assets[Number(index)]}")`);
 }
 
@@ -70,6 +83,8 @@ export async function exportCurrentRun(runId?: string) {
 
   const sourceLinks = [...document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')];
   const exportedLinks = [...root.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')];
+  const sourceStyles = [...document.querySelectorAll<HTMLStyleElement>('style')];
+  const exportedStyles = [...root.querySelectorAll<HTMLStyleElement>('style')];
   const css = await Promise.all(sourceLinks.map(async link => {
     const response = await fetch(link.href);
     if (!response.ok) throw new Error(`Could not load the application stylesheet.`);
@@ -80,8 +95,10 @@ export async function exportCurrentRun(runId?: string) {
     style.textContent = css[index] || '';
     link.replaceWith(style);
   });
+  const styleAssets = await Promise.all(sourceStyles.map(style => resolvedCss(style.textContent || '', document.baseURI)));
+  exportedStyles.forEach((style, index) => { style.textContent = styleAssets[index] || ''; });
   const printStyle = document.createElement('style');
-  printStyle.textContent = INLINE_EXPORT_CSS;
+  printStyle.textContent = (await embeddedFonts()) + INLINE_EXPORT_CSS;
   root.querySelector('head')?.append(printStyle);
 
   const output = '<!DOCTYPE html>\n' + root.outerHTML;
@@ -95,3 +112,8 @@ export async function exportCurrentRun(runId?: string) {
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+import geistUrl from '@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url';
+import geistMonoUrl from '@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url';
+import phosphorUrl from '../node_modules/@phosphor-icons/web/src/regular/Phosphor.woff2?url';
+import phosphorBoldUrl from '../node_modules/@phosphor-icons/web/src/bold/Phosphor-Bold.woff2?url';
+
