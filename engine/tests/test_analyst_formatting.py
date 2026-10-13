@@ -24,10 +24,17 @@ class TestFieldProjection:
         assert "action=failure" in line
         assert "dest=BSTOLL-L" in line
 
-    def test_missing_field_renders_dash_not_dropped(self):
+    def test_missing_field_is_not_rendered_as_telemetry(self):
         line = format_row("auth_events", {"user": "bostoll"})
         assert "user=bostoll" in line
-        assert "src=-" in line  # absent field kept as a placeholder column
+        assert "src=" not in line
+
+    def test_connection_omits_missing_fields_instead_of_claiming_values(self):
+        # B47: `bytes=- action=-` was read as equal transfers and no action.
+        line = format_row("connections", {"src_ip": "10.0.10.20", "dest_ip": "192.168.40.211"})
+        assert "bytes=" not in line
+        assert "uri=" not in line
+        assert "action=" not in line
 
     def test_dash_placeholder_does_not_mask_later_key(self):
         # B40: `Hashes=-` hid the real `sha256`, so another file's hash got used.

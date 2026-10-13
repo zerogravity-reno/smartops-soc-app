@@ -2708,6 +2708,28 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
         assert outcome.confirmed_empty is True
         assert outcome.completed is True
 
+    def test_an_empty_uncategorised_set_does_not_block_a_confirmed_negative(self):
+        # B46: an index-discovery query can leave an empty uncategorised set
+        # beside the category this step searched. Zero unattributed rows are not
+        # evidence against the step's confirmed-empty result.
+        step = FetchStep(
+            step_id="siem-dns",
+            family="siem",
+            objective="Resolve coinhive.com from BSTOLL-L",
+            completion=CompletionRule(categories=["dns_resolutions"]),
+        )
+        result = self._result(
+            SiemFindings(
+                dns_resolutions=[ResultSet(query="dns", row_count=0, rows=[])],
+                uncategorised=[ResultSet(query="discovery", row_count=0, rows=[])],
+            )
+        )
+
+        outcome = evaluate_step(step, result)
+
+        assert outcome.confirmed_empty is True
+        assert outcome.completed is True
+
     def test_rows_required_in_a_named_category_is_not_satisfied_by_emptiness(self):
         step = FetchStep(
             step_id="siem-dns",

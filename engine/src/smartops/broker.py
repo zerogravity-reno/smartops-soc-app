@@ -628,7 +628,7 @@ def evaluate_step(
         rows_retrieved == 0
         and looked_at_named_categories
         and result.status is not SubtaskStatus.ERROR
-        and not any(name == "uncategorised" for name, _ in counts)
+        and not any(name == "uncategorised" and rows > 0 for name, rows in counts)
         and (len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA)
     )
     # OR'd with history so one dispatch establishing "looked and empty" survives

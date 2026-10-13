@@ -27,6 +27,7 @@ from contracts import CimCategory, ResultSet, VtVerdict
 # hundreds of characters; the reasoning signal is in its head (the binary and its
 # first arguments), and an un-truncated one would blow the row budget on one row.
 _CMDLINE_LIMIT = 200
+_EMPTY_FIELD = re.compile(r"\s+[A-Za-z_][\w.]*=-(?=\s|$)")
 
 
 def _sanitise(value: str) -> str:
@@ -449,6 +450,11 @@ def _projection_is_empty(line: str) -> bool:
     return True
 
 
+def _omit_empty_fields(line: str) -> str:
+    """Do not present Splunk's missing-value marker as telemetry (B47)."""
+    return _EMPTY_FIELD.sub("", line)
+
+
 def format_row(category: str, row: dict[str, Any]) -> str:
     """One line for one row, using the projector for its CIM category.
 
@@ -467,7 +473,7 @@ def format_row(category: str, row: dict[str, Any]) -> str:
     formatter = _FORMATTERS.get(category)
     if formatter is None:
         return _format_generic(row)
-    line = formatter(row)
+    line = _omit_empty_fields(formatter(row))
     return _format_generic(row) if _projection_is_empty(line) else line
 
 
