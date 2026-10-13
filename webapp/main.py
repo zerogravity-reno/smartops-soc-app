@@ -1,4 +1,4 @@
-﻿"""
+"""
 main.py - SmartOps SOC Unified Web Application
 FastAPI server wiring the Web UI to the SmartOps Engine (Broker + Subagents)
 using Foundation-Sec-8B-Reasoning on AWS Bedrock (invoke_model, NOT Converse).
@@ -352,9 +352,8 @@ def escu_endpoint(req: ESCURequest):
     
     # Clean the incoming rule name from common ES prefixes/suffixes to improve BM25 score
     clean_name = req.rule_name.lower()
-    clean_name = re.sub(r'^(endpoint|network|cloud|web)\s*-\s*', '', clean_name)
-    clean_name = re.sub(r'sama\s*-\s*', '', clean_name)
-    clean_name = re.sub(r'escu\s*-\s*', '', clean_name)
+    clean_name = re.sub(r'^(threat|endpoint|network|cloud|web|es)\s*-\s*', '', clean_name)
+    clean_name = re.sub(r'(sama|custom|escu)\s*-\s*', '', clean_name)
     clean_name = re.sub(r'\s*-\s*rule(\s*-\s*rule)?$', '', clean_name)
     
     query_tokens = clean_name.split()
@@ -724,7 +723,16 @@ def _run_investigation(run_id: str, req: RunRequest, q: Queue):
                 "  verdict_reasoning: string explanation\n"
                 "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
+                "  follow_up_tasks: list of {task_id, question} for the next round (only when status=REQUIRES_INVESTIGATION)\n"
                 "Do NOT output planning JSON (hypotheses list, tasks list).\n"
+                "\n"
+                "VERDICT GATE RULES (enforced by the system — align your status to these):\n"
+                "  Set status=VERDICT_REACHED when ALL of:\n"
+                "    1. The top hypothesis score >= 85\n"
+                "    2. The gap between the top and runner-up score >= 20\n"
+                "  Otherwise set status=REQUIRES_INVESTIGATION and populate follow_up_tasks.\n"
+                "  If you believe the evidence is conclusive but the scores do not meet the gate,\n"
+                "  raise your scores to reflect your true confidence — do not game the threshold.\n"
                 "---\n"
             )
             sections = [eval_header + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]

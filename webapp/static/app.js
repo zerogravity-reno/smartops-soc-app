@@ -214,6 +214,43 @@ async function importAlert(index, btn) {
   }
 }
 
+function _filterRelevantStories(ruleName, stories) {
+  if (!stories || stories.length === 0) return [];
+  const rule = (ruleName || '').toLowerCase();
+  // Filter out irrelevant server exploits, CVEs, or external enterprise server bugs unless rule specifically mentions them
+  const serverExploitPats = [/CVE-\d+/i, /vulnerabilit/i, /SharePoint/i, /Exchange/i, /SolarWinds/i, /WSUS/i, /IIS Module/i];
+  let candidates = stories.filter(s => {
+    if (!rule.includes('sharepoint') && !rule.includes('exchange') && !rule.includes('solarwinds') && !rule.includes('wsus')) {
+      if (serverExploitPats.some(p => p.test(s))) return false;
+    }
+    return true;
+  });
+
+  if (candidates.length === 0) candidates = stories.slice(0, 3);
+
+  // Score stories based on relevance to the rule's core concepts
+  const keywords = rule.match(/[a-z0-9]+/g) || [];
+  const genericTokens = new Set(['the', 'and', 'for', 'with', 'used', 'rule', 'threat', 'sama', 'escu', 'endpoint', 'process', 'windows']);
+  const ruleTokens = keywords.filter(k => k.length > 2 && !genericTokens.has(k));
+
+  candidates.sort((a, b) => {
+    const aLower = a.toLowerCase();
+    const bLower = b.toLowerCase();
+    let aScore = 0, bScore = 0;
+    ruleTokens.forEach(t => {
+      if (aLower.includes(t)) aScore += 5;
+      if (bLower.includes(t)) bScore += 5;
+    });
+    // Boost behavioral / commodity malware categories that fit alert execution
+    if (/powershell|persistence|registry|execution|stealer|rat\b|trojan|wiper/i.test(a)) aScore += 2;
+    if (/powershell|persistence|registry|execution|stealer|rat\b|trojan|wiper/i.test(b)) bScore += 2;
+    return bScore - aScore;
+  });
+
+  // Keep top 3 most relevant stories to prevent context poisoning and lookup delays
+  return candidates.slice(0, 3);
+}
+
 // ── Context contract (data logic unchanged from the previous page) ─────────
 
 async function buildContract(f, raw) {
@@ -226,8 +263,11 @@ async function buildContract(f, raw) {
 
   let splunk_mitre = [];
   if (raw['annotations.mitre_attack']) splunk_mitre = raw['annotations.mitre_attack'].split(';');
-  let splunk_story = [];
-  if (raw['annotations.analytic_story']) splunk_story = raw['annotations.analytic_story'].split(';');
+  let raw_stories = [];
+  if (raw['annotations.analytic_story']) raw_stories = raw['annotations.analytic_story'].split(';');
+
+  // Dynamically filter down to the most relevant stories for this detection rule
+  const splunk_story = _filterRelevantStories(rule_name, raw_stories);
 
   const observables = [src_ip, hash, domain, url, email, file_name, ...splunk_mitre, ...splunk_story].filter(v => v && v.length > 0);
 
@@ -322,7 +362,8 @@ async function buildContract(f, raw) {
     full_metadata = match;
     if (match.data) {
       mitre_techniques = match.data.mitre_attack_id || match.data.mitre || [];
-      analytic_story = match.data.analytic_story || [];
+      analytic_story = _filterRelevantStories(rule_name, match.data.analytic_story || []);
+      match.data.analytic_story = analytic_story; // Clean the raw ESCU match as well
       reference_spl = match.data.spl || match.data.search || "SPL missing in ESCU definition";
       data_sources = match.data.data_source || [];
       known_false_positives = match.data.known_false_positives || [];

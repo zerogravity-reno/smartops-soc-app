@@ -12,7 +12,7 @@ REGION    = MODEL_ARN.split(":")[3] if MODEL_ARN and len(MODEL_ARN.split(":")) >
 
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P       = 0.95
-DEFAULT_MAX_GEN_LEN = 8192  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
+DEFAULT_MAX_GEN_LEN = 16384  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
 COLD_START_RETRIES  = 10
 COLD_START_WAIT     = 30.0
 

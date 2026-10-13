@@ -584,11 +584,21 @@ def call_tool(family: ToolFamily, name: str, arguments: dict[str, Any]) -> dict[
         if not clients:
             raise RuntimeError(f"no MCP server configured for {family}")
         client = clients[0]
-        if _session_died(client):
-            _reset(client)
         if not client._is_session_active():
+            try:
+                client.start()
+            except Exception:
+                load_mcp_servers()
+                client = _clients_by_family[family][0]
+                client.start()
+        try:
+            result = client.call_tool_sync(tool_use_id=f"direct-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
+        except Exception as exc:
+            logger.warning("MCP tool call failed, re-establishing session: %s", exc)
+            load_mcp_servers()
+            client = _clients_by_family[family][0]
             client.start()
-        result = client.call_tool_sync(tool_use_id=f"direct-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
+            result = client.call_tool_sync(tool_use_id=f"direct-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
     if result.get("status") == "error":
         text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
         raise RuntimeError(text or f"{name} failed")
