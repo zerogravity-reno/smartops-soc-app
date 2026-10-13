@@ -1,4 +1,4 @@
-from smartops.analyst import follow_up_tasks, verdict_gate
+from smartops.analyst import evaluation_limits, follow_up_tasks, verdict_gate
 
 PLAN = {"hypotheses": [{"id": "H1", "verdict": "TRUE_POSITIVE"}, {"id": "H2", "verdict": "BENIGN"}]}
 PAYLOADS = [
@@ -60,6 +60,30 @@ def test_handoff_budget_leaves_the_analyst_its_generation():
     from smartops import analyst
     assert packing._ANALYST_GENERATION_RESERVE == analyst.MAX_GEN_LEN
     assert packing._ANALYST_ROUNDS == analyst.FULL_ROUNDS
+
+
+def test_evaluation_limits_keep_unanswerable_questions_out_of_evidence():
+    limits = evaluation_limits([{
+        "unanswerable": ["No connected source holds this: Is 192.168.40.211 registered? (asset inventory)"]
+    }])
+    assert "unknown, not negative findings" in limits
+    assert "192.168.40.211 registered" in limits
+    assert evaluation_limits([{}]) == ""
+
+
+def test_gate_rejects_negative_claim_from_an_unanswerable_source():
+    out = verdict_gate(
+        {"hypothesis_scores": {"H1": 95, "H2": 10},
+         "verdict": "TRUE_POSITIVE",
+         "verdict_reasoning": "Asset inventory lacks any update-server registration for 192.168.40.211."},
+        PLAN,
+        [{"unanswerable": [
+            "No connected source holds this: Is 192.168.40.211 registered? (asset inventory)"
+        ]}],
+    )
+    assert out["status"] == "REQUIRES_INVESTIGATION"
+    assert out["verdict"] == "REQUIRES_INVESTIGATION"
+    assert out["unsupported_claims"]
 
 
 def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():

@@ -244,6 +244,36 @@ def compact_round(payload: dict, evaluation: dict) -> dict:
     }
 
 
+def evaluation_limits(payloads: list[dict]) -> str:
+    """Code-owned facts that synthesis must not turn into affirmative evidence."""
+    unknowns = [item for payload in payloads for item in payload.get("unanswerable", [])]
+    if not unknowns:
+        return ""
+    return (
+        "[EVIDENCE LIMITS — CODE GENERATED]\n"
+        "The following questions were not answerable from any connected source. They are "
+        "unknown, not negative findings: \n- " + "\n- ".join(unknowns) + "\n"
+    )
+
+
+def unsupported_unanswerable_claims(synth: dict, payloads: list[dict] | None) -> list[str]:
+    """Return source-absence claims that contradict a Broker ``unanswerable`` result."""
+    reasoning = str(synth.get("verdict_reasoning", "")).lower()
+    negative_fact = re.compile(
+        r"\b(?:no|not|lack\w*|absen\w*|unregister\w*)\b.{0,80}"
+        r"\b(?:record\w*|registr\w*|known|approved|sanctioned)\b"
+    )
+    if not negative_fact.search(reasoning):
+        return []
+    claims = []
+    for payload in payloads or []:
+        for item in payload.get("unanswerable", []):
+            source = re.search(r"\(([^()]+)\)\s*$", str(item))
+            if source and source.group(1).lower() in reasoning:
+                claims.append(str(item))
+    return claims
+
+
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
     """The synthesis output with `status` decided here, not by the model.
 
@@ -251,6 +281,16 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     runner-up. Evidence refs are informational and do not block the verdict.
     """
     out = dict(synth)
+    unsupported = unsupported_unanswerable_claims(synth, payloads)
+    if unsupported:
+        out["status"] = "REQUIRES_INVESTIGATION"
+        out["verdict"] = "REQUIRES_INVESTIGATION"
+        out["unsupported_claims"] = unsupported
+        out["evidence_gaps"] = list(out.get("evidence_gaps") or []) + [
+            "Verdict rationale treated an unanswerable source as evidence."
+        ]
+        out["follow_up_tasks"] = []
+        return out
     scores = {}
     for h, s in (synth.get("hypothesis_scores") or {}).items():
         try:
@@ -449,12 +489,19 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 "  verdict: one of TRUE_POSITIVE / FALSE_POSITIVE / BENIGN / REQUIRES_INVESTIGATION\n"
                 "  verdict_reasoning: string explanation\n"
                 "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
+                "  evidence_gaps: list of unanswered questions that materially limit a conclusion\n"
+                "  follow_up_tasks: list of atomic source-answerable questions when status is REQUIRES_INVESTIGATION\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
                 "Set status=VERDICT_REACHED when the top score is at least 85 and leads by at least 20; otherwise set REQUIRES_INVESTIGATION.\n"
+                "Task questions state what was asked, never what happened. Treat only broker findings as evidence. "
+                "An unanswerable or not-searched item is unknown: never turn it into absence, registration status, "
+                "execution, creation, or other affirmative evidence. If such an unknown is material to the top score, "
+                "set REQUIRES_INVESTIGATION.\n"
                 "Do NOT output planning JSON (hypotheses list, tasks list).\n"
                 "---\n"
             )
-            sections = [eval_header + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]
+            payloads = [p for r in all_findings.values() for p in r.get("payloads", [])]
+            sections = [eval_header + evaluation_limits(payloads) + f"[INVESTIGATION PLAN (context only)]\n{json.dumps(plan_slim, indent=2)}"]
             # The last FULL_ROUNDS in full; older ones as a short record (W8): re-sending
             # every round outgrew the 32k window by round ~6. The gate still checks all rounds.
             labels = list(all_findings)
@@ -467,7 +514,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
             checkpoint()
             rN = _ask(system_prompt, "\n\n".join(sections), "synthesis")
             raw_synth = extract_json(rN["answer"]) or {}
-            synth = evaluations[f"Round {loop_num}"] = verdict_gate(raw_synth, plan, [p for r in all_findings.values() for p in r.get("payloads", [])], all_runs)
+            synth = evaluations[f"Round {loop_num}"] = verdict_gate(raw_synth, plan, payloads, all_runs)
             emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                  tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},
                  message=f"Loop {loop_num} — Synthesis complete: {synth.get('status','?')}")
