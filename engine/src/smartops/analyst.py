@@ -22,7 +22,7 @@ from smartops.subagent_analysts.model import AnalystModel
 PROMPT_PATH = Path(__file__).parent / "prompts" / "analyst_system_prompt.txt"
 
 FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must match
-MAX_GEN_LEN = 8192  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
+MAX_GEN_LEN = 16_384  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
 
 
 def load_system_prompt() -> str:

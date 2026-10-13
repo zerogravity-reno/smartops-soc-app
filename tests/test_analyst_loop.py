@@ -16,7 +16,7 @@ PAYLOAD = {"payloads": [{"task_id": "r1-L2-T1", "findings": [{"domain": "endpoin
 class FakeModel:
     """Answers in order; each is (json, stop_reason) or a raw generation string."""
 
-    max_gen_len = 8192
+    max_gen_len = 16_384
 
     def __init__(self, *answers):
         self.answers = iter(answers)
@@ -63,14 +63,14 @@ def test_one_round_to_a_verdict_streams_the_stages_in_order(run):
 
 
 def test_a_cut_off_synthesis_ends_the_run_as_a_model_failure_not_a_verdict(run):
-    # ea38cb13: 8,192/8,192 tokens, </think> never closed, {} went through the gate as
+    # ea38cb13: a complete generation must close </think>; an incomplete one is
     # a silent REQUIRES_INVESTIGATION with no follow-ups (T15).
     events, _, _ = run((PLAN, "stop"), ("the model loops on the same thought " * 50, "length"))
 
     assert [e["type"] for e in events][-2:] == ["synthesis", "error"]  # no gated synthesis, no verdict
     end = events[-1]
-    assert end["message"] == "Loop 2 synthesis was cut off at 8,192 tokens (stop_reason=length)"
-    assert end["cut_off"] == {"stage": "synthesis", "loop": 2, "max_gen_len": 8192, "prompt_tokens": 6877}
+    assert end["message"] == "Loop 2 synthesis was cut off at 16,384 tokens (stop_reason=length)"
+    assert end["cut_off"] == {"stage": "synthesis", "loop": 2, "max_gen_len": 16384, "prompt_tokens": 6877}
 
 
 def test_a_cut_off_plan_records_its_whole_generation_and_sends_nothing(run):
@@ -80,4 +80,4 @@ def test_a_cut_off_plan_records_its_whole_generation_and_sends_nothing(run):
     [cut] = records
     assert cut["step"] == "cut_off" and cut["loop"] == 1 and cut["stage"] == "planning"
     assert (cut["reasoning"], cut["answer"], cut["think_closed"]) == ("x" * 40, '{"hypotheses": [', True)
-    assert (cut["stop_reason"], cut["max_gen_len"], cut["generation_tokens"]) == ("length", 8192, 100)
+    assert (cut["stop_reason"], cut["max_gen_len"], cut["generation_tokens"]) == ("length", 16384, 100)
