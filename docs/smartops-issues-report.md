@@ -115,7 +115,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
 | B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
-| B24 | Broker | The Splunk MCP session dies mid-round, nothing restarts it, and the round hangs | High | Fixed on `smartops-loop-fix`; no session loss in the 4 runs of 10-12, so the reconnect is still unexercised live |
+| B24 | Broker | The Splunk MCP session dies mid-round, nothing restarts it, and the round hangs | High | Fixed on `smartops-loop-fix`; 10-13 client interruption exercised session-loss detection/reset, but no final step ERROR or successful re-dispatch was captured; live validation remains open |
 | B25 | Broker | The Broker writes the task's IP as the host's address | Medium | Fixed on `smartops-loop-fix` (rule in the user turn); live check pending |
 | B26 | Broker | siem tasks disagree on whether svcupdate.dat is in the data; `no_data` beside returned rows | Medium | Fixed on `smartops-loop-fix`: the cause is `stats … by` dropping rows missing a by-field, not `host=` (checked in Splunk); status from the rows |
 | B27 | Broker | A siem step pulls every script block on the host (6.9 MB of evidence in one step) | Medium | Fixed on `smartops-loop-fix`; held: largest `report.json` in the 4 runs of 10-12 is 1.1 MB (was 11.8 MB) |
@@ -177,8 +177,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | AR10 | Architecture | There is no frontend: the only UI is the vanilla stopgap in `webapp/static`, and `frontend/` is empty | Medium | Fixed: React + TS frontend in `frontend/` (smartops-worker); `webapp/static` deleted with AR11 |
 | AR11 | Architecture | The codebase's file structure: `webapp/` mixes the frontend, the main Analyst, the context pipeline, the Broker handoff and the API server; one model has two configurations; dev tools sit inside the engine package | High | Fixed (`12c34e3`..`4ff806c`, merged 2026-10-12): `analyst.py`, `broker.py`, `context.py`, `main.py` (CLI + API); `webapp/` gone; Broker round in process; Python pinned to 3.13. Live on `79c024e8`; round 2 warm-up still unexercised |
 | AR12 | Architecture | AR11 integration: the Splunk client is warmed once per server, and one failed handshake leaves it returning no tools for the server's life, while the incident queue still works | High | Fixed (`7901a43`, `0b15cdf`): warm every round, and reset a sticky failure at dispatch |
-| AR13 | Architecture | A source that could not be searched reaches the Analyst as empty domains, which synthesis reads as "nothing found" | High | Fixed (`ef1bde8`): `AnalystPayload.not_searched` |
-| AR14 | Architecture | A round in which no source could be searched does not end the run; it loops | Medium | Fixed (`ef1bde8`): `run_round` raises when an unreachable source left the round with no rows |
+| AR13 | Architecture | A source that could not be searched reaches the Analyst as empty domains, which synthesis reads as "nothing found" | High | Fixed (`ef1bde8`): `AnalystPayload.not_searched`; Broker handoff verified live on 10-13 with SIEM unavailable and one real VT row; full Analyst interpretation untested |
+| AR14 | Architecture | A round in which no source could be searched does not end the run; it loops | Medium | Fixed (`ef1bde8`): Broker failure verified live on 10-13 with SIEM unavailable and zero rows; full Analyst termination untested |
 
 ## Triage logic (Analyst plan and synthesis)
 
@@ -703,7 +703,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Done:** `formatting.utc_row` converts every time-named field (time/first/last/earliest/latest/utc) once, before rendering, in `format_row`, `format_result_set` and `summarise_rows`. Epochs (10 digits) and offset-bearing values → UTC `Z`; `UtcTime` is read as UTC; a naive value takes its own row's `_time` offset, otherwise it is marked `(zone-unknown)`, never guessed. The siem prompt now asks for times as Splunk stores them, not `strftime`/`convert ctime` output. `tests/test_run_times_utc.py` walks the newest stored run's `tasks.json` and `analyst-payload.json` and fails on any time that isn't UTC `Z`.
 - **Left alone:** the vended Splunk skill's `strftime(_time, "%Y-%m-%d %H:%M:%S UTC")` example labels search-head local time as UTC. It's third-party; the siem prompt rule overrides it.
 
-**B24. The Splunk MCP session dies mid-round, nothing restarts it, and the round hangs.** *High. Fixed on `smartops-loop-fix`; no session loss since, so the reconnect is unexercised live.*
+**B24. The Splunk MCP session dies mid-round, nothing restarts it, and the round hangs.** *High. Fixed on `smartops-loop-fix`; live validation remains incomplete.*
+- **Live client interruption (2026-10-13):** a test-only local TCP relay cut an established production MCP connection during the instrumented three-task round. Registry logged the session-ended reconnect and sticky startup retries. The preserved attempt has no terminal affected-step ERROR or successful re-dispatch; runner truncation leaves the result inconclusive. See `docs/mcp-ar13-ar14-live-2026-10-13.md` and `scratchpad/b24_attempt3_output.txt`. No shared Splunk service was stopped.
 - **Evidence (`89674d75` round 5):**
   - FU1 finished at 17:51:09Z: 3 siem steps, 25 queries.
   - From FU2's first query on, every `splunk_run_query` failed at once with `MCPClientInitializationError: the client session is not running`. That happened 60 times (`L5/broker.log`).
@@ -1211,6 +1212,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
   - A server that stays down costs one more attempt per dispatch.
 
 **AR13. A source that could not be searched reaches the Analyst as empty domains.** *High. Fixed (`ef1bde8`).*
+- **Live Broker handoff (2026-10-13):** a configured SIEM client behind a closed local relay produced `no_tools_resolved`; a separate real VT lookup returned one row. The round completed in 34.2s and `.smartops/runs/ar13-lab/analyst-payload.json` carried the exact `not_searched` explanation for the empty SIEM domains. Parent and Luna verified the evidence. Full Analyst synthesis was not exercised; see `docs/mcp-ar13-ar14-live-2026-10-13.md`.
 - **Evidence (`16386362`):**
   - The Broker recorded `DomainGap(siem, no_tools_resolved, unanswered_domains=[identity, network, endpoint])` in `findings.json`. `AnalystPayload` didn't carry `gaps`, so each task arrived as three empty domains.
   - Round 2 synthesis leaned BENIGN "given the lack of malicious indicators". Round 4 was writing BENIGN 95, VERDICT_REACHED, "all attempts to identify svcupdate.dat failed to yield malicious indicators", when it was cut off (T15).
@@ -1222,6 +1224,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 - **Analyst owner:** the payload gained a field. It isn't in the published schemas.
 
 **AR14. A round in which nothing could be searched does not end the run.** *Medium. Fixed (`ef1bde8`).*
+- **Live Broker failure (2026-10-13):** with the configured SIEM client behind a closed local relay, both SIEM steps were rejected for `no_tools_resolved`, zero rows were returned, and `run_round` raised the expected `nothing was searched this round: siem could not be reached (no tools resolved)` in 33.8s. Parent and Luna verified the result. Full Analyst-loop termination was not exercised; see `scratchpad/ar14_result_patched_run2.json` and `docs/mcp-ar13-ar14-live-2026-10-13.md`.
 - **Evidence (`16386362`):** three rounds and about $1 of Broker spend went on planning searches against an unreachable source, and each synthesis asked for more of the same.
 - **Fix:**
   - `run_round` raises "nothing was searched this round: siem could not be reached" when an unreachable source left the whole round with no rows.
@@ -1231,7 +1234,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 ## Priorities
 
-**Where things stand (2026-10-12 close).** The lists below this one are history.
+**Where things stand (2026-10-13 live validation; implementation counts unchanged from 10-12 close).** The lists below this one are history.
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
@@ -1246,7 +1249,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 - **Broker:** B1–B45 are fixed except B2, B6 and B20's scoping, which wait on the Analyst's follow-ups. Two new ones from `ae7d41b0` and `b7359eab` are proposed: B46 (an empty `uncategorised` set blocks `confirmed_empty`) and B47 (`-` placeholders read as values).
 - **Held live:** AR12, AR3, B43 on `ae7d41b0`; B11, B44, B45 on `ae7d41b0` and `b7359eab`; B16 on `b7359eab`.
-- **Live checks pending:** B24's reconnect and AR13/AR14. All three need a Splunk MCP outage; none fired on `b7359eab`.
+- **Live checks (10-13):** AR13 Broker handoff and AR14 Broker failure passed with client-local outages; full Analyst behavior remains untested. B24 session-loss detection/reset fired, but step termination and successful re-dispatch remain unverified because the runner did not capture a final result. See `docs/mcp-ar13-ar14-live-2026-10-13.md`.
 - **Decisions (Mohammed):** B46 and B47; the B15 safety net; T25 (one bad ref blocks a verdict); T20; P1's raw time fields.
 - **Analyst owner, routed:**
   - B42's `maxLength: 60`.
