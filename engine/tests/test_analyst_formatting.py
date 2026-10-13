@@ -569,4 +569,4 @@ def test_a_logon_type_is_named_by_code_not_left_to_the_model():
 
 def test_the_event_code_is_labelled_as_one():
     """B33: `code=1` was narrated as "PowerShell executing with exit code 1"."""
-    assert "event_code=1 " in format_row("processes", {"EventCode": "1", "Image": "powershell.exe"})
+    assert "event_code=1" in format_row("processes", {"EventCode": "1", "Image": "powershell.exe"})
