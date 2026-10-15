@@ -2,7 +2,7 @@
 
 An investigation pipeline for Splunk ES notable events. It builds the alert's context (ESCU rule, OpenCTI intel), has an Analyst model plan hypotheses and tasks, sends those tasks to a Tool Broker that fetches evidence from Splunk and VirusTotal, and loops until the Analyst reaches a verdict.
 
-**Models:** Foundation-Sec-8B (Analyst) and Claude Sonnet (Tool Broker), both on AWS Bedrock.
+**Models:** Foundation-Sec-8B (Analyst, AWS Bedrock) and Claude (Tool Broker, Anthropic API).
 
 ---
 
@@ -71,7 +71,8 @@ start.ps1                    uv sync, build the frontend, start the server
 - Windows with PowerShell, or any OS with a POSIX shell.
 - Python 3.13, pinned in `.python-version` and `pyproject.toml` (`>=3.13,<3.14`), and [uv](https://docs.astral.sh/uv/), which fetches that Python if it is missing.
 - Node.js with npm, to build the frontend.
-- AWS Bedrock access to the imported Foundation-Sec-8B model and to Claude Sonnet.
+- AWS Bedrock access to the imported Foundation-Sec-8B model.
+- An Anthropic API key for the Tool Broker's Claude models.
 - A Splunk ES instance with the official Splunk MCP server app, plus a token for it.
 - A VirusTotal API key. OpenCTI is optional.
 
@@ -94,13 +95,13 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 
 | Variable | Used by | Required | Default | What it is |
 |---|---|---|---|---|
-| `AWS_REGION` | both | yes for Broker on Bedrock | `us-east-1` for the Analyst; the Broker also accepts `AWS_DEFAULT_REGION` and refuses to start with neither | Bedrock region; keep it the same as the model ARN's |
-| `AWS_BEDROCK_MODEL_ID` | Broker | yes, to use a model | none | Claude Sonnet inference profile, e.g. `us.anthropic.claude-sonnet-4-6`. Find yours with `aws bedrock list-inference-profiles --region <region>`. |
-| `SMARTOPS_LLM_PROVIDER` | Broker | no | blank | `bedrock`, `deepseek` or `none`. `none` turns the Broker model off even if credentials are set. Blank means detect: Bedrock if `AWS_BEDROCK_MODEL_ID` is set, else DeepSeek if `DEEPSEEK_API_KEY` is set, else no model (scripted dispatch). Any other value is an error. |
-| `SMARTOPS_MODEL_ID` | Broker | no | none | Model id override for any provider; wins over `AWS_BEDROCK_MODEL_ID`. |
-| `SMARTOPS_PRICING_KEY` | Broker | no | inferred from the model id | Pricing entry for the budget. Set only if the model family can't be read from its id. |
-| `DEEPSEEK_API_KEY` | Broker | no | none | Selects DeepSeek when no Bedrock model id is set. `.env.example` notes that selecting DeepSeek currently fails at startup (no pricing entry yet). |
-| `AWS_PROFILE` | Broker | no | none | Standard AWS profile; boto3 uses it when set. If the Broker model then fails to build, the error says to unset it to fall back to `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (`engine/src/smartops/broker.py`). |
+| `AWS_REGION` | Analyst and sub-analysts | yes | `us-east-1` | Bedrock region; keep it the same as the Foundation model ARN's region. |
+| `SMARTOPS_ANALYST_MODEL_ARN` | Analyst and sub-analysts | yes for the Analyst | none | Imported Foundation-Sec model: the Analyst, and the identity, network and endpoint sub-analysts. Empty skips the sub-analysts. |
+| `SMARTOPS_ANALYST_API_KEY` | Analyst and sub-analysts | yes for the Analyst | falls back to the standard AWS credential chain | `ABSK...` bearer token, or `ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]`. Scoped to the Analyst model's own client, never the Broker's (AR3). |
+| `ANTHROPIC_API_KEY` | Broker | yes for live Broker calls | none | First-party Anthropic API key for the Broker's Claude models. |
+| `SMARTOPS_LLM_PROVIDER` | Broker | yes for live Broker calls | `anthropic` in `.env.example` | Set to `anthropic`. Set `none` to disable Broker model calls. |
+| `SMARTOPS_BROKER_TIERS` | Broker | no | `A` | Claude model/effort preset for the Broker, SIEM, and VirusTotal roles. |
+| `SMARTOPS_MODEL_ID_BROKER`, `SMARTOPS_MODEL_ID_SIEM`, `SMARTOPS_MODEL_ID_VT` | Broker | no | tier preset | Per-role Claude model overrides. |
 | `SPLUNK_MCP_URL` | import and Broker | yes | none | Official Splunk MCP endpoint, e.g. `https://<host>:8089/services/mcp` |
 | `SPLUNK_TOKEN` | import and Broker | yes | none | Splunk token for the MCP server |
 | `SMARTOPS_MCP_TLS_NO_VERIFY` | import and Broker | no | blank (verify TLS) | `splunk` to accept a self-signed :8089 certificate |
@@ -110,8 +111,6 @@ The env file is `.env` in the repo root (copy [`.env.example`](.env.example), wh
 | `OPENCTI_URL` | context pipeline | no | `http://localhost:8080/graphql` | OpenCTI GraphQL endpoint, e.g. `http://<opencti-host>:8080/graphql` |
 | `OPENCTI_TOKEN` | context pipeline | no | blank | OpenCTI token |
 | `SMARTOPS_RUNS_DIR` | Analyst and Broker | no | `.smartops/runs` | Where run folders are written (relative to the working directory) |
-| `SMARTOPS_ANALYST_MODEL_ARN` | Analyst and sub-analysts | yes for the Analyst | none | Imported Foundation-Sec model: the Analyst, and the identity, network and endpoint sub-analysts. Empty skips the sub-analysts. |
-| `SMARTOPS_ANALYST_API_KEY` | Analyst and sub-analysts | yes for the Analyst | falls back to the standard AWS credential chain | `ABSK...` bearer token, or `ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]`. Scoped to the Analyst model's own client, never the Broker's (AR3). |
 | `SMARTOPS_ANALYST_TEMPERATURE`, `SMARTOPS_ANALYST_TOP_P` | Broker sub-analysts | no | `0.3`, `0.95` | Generation settings (defaults per `.env.example`) |
 | `SMARTOPS_ANALYST_MAX_GEN_LEN` | Broker sub-analysts | no | `3072` | Max generated tokens; values above the default are clamped |
 | `SMARTOPS_SKILLS_ENABLED` | Broker | no | off | `true` enables the reference skill pack for siem (same as `--skills`) |
@@ -125,8 +124,8 @@ Copy-paste template (placeholders only; fill in your own values):
 SMARTOPS_ANALYST_MODEL_ARN=arn:aws:bedrock:us-east-1:<acct>:imported-model/<id>
 SMARTOPS_ANALYST_API_KEY=<your-bedrock-api-key>
 AWS_REGION=us-east-1
-AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
-SMARTOPS_LLM_PROVIDER=bedrock
+ANTHROPIC_API_KEY=<your-anthropic-api-key>
+SMARTOPS_LLM_PROVIDER=anthropic
 SPLUNK_MCP_URL=https://<splunk-host>:8089/services/mcp
 SPLUNK_TOKEN=<your-splunk-token>
 SMARTOPS_MCP_TLS_NO_VERIFY=splunk
@@ -169,7 +168,7 @@ The Broker's MCP clients are built and warmed at startup, and warmed again at th
 # Free: no model calls, scripted dispatch
 uv run python -m smartops.main --task-file docs\examples\botsv3-coinhive-tasks.json --batch-id demo-L2 --scripted
 
-# Live: real Bedrock and Splunk calls
+# Live: real Anthropic and Splunk calls
 uv run python -m smartops.main --task-file docs\examples\botsv3-coinhive-tasks.json --batch-id demo-L2
 ```
 
@@ -177,7 +176,7 @@ Run `uv run python -m smartops.main --help` for all flags (`--budget-usd`, `--fa
 
 ### Cost
 
-A live investigation costs real money. On 2026-09-30, one Broker loop over 6 tasks cost about **$12** (run `cecd266a`). Most of that came from long Splunk results being re-sent to the model on every turn. Only `--scripted` is guaranteed free. Leaving `SMARTOPS_LLM_PROVIDER` blank does **not** stop Broker model calls.
+A live investigation costs real money. On 2026-09-30, one Broker loop over 6 tasks cost about **$12** (run `cecd266a`). Most of that came from long Splunk results being re-sent to the model on every turn. `--scripted` is guaranteed free; set `SMARTOPS_LLM_PROVIDER=none` to disable Broker model calls without that flag.
 
 ### Tests
 
@@ -186,19 +185,12 @@ uv run pytest -q              # engine/contracts/tests, engine/tests, tests (pyp
 
 cd frontend
 npm test                      # vitest: the run reducer and formatting
-npm run e2e                   # Playwright: the console against a mocked API, both colour modes, axe WCAG AA
 npm run build                 # tsc --noEmit, then vite build
 ```
 
-None of these needs a network or makes model calls. Type-check the frontend through `npm run build`, not a separate `tsc` call.
+None of these needs a network or makes model calls. Type-check the frontend through `npm run build`, not a separate `tsc` call. There is no Playwright e2e script in `frontend/`; do not run `npm run e2e`.
 
-**Live end-to-end run** (real calls, costs money): starts the server on :8001, drives the UI with Playwright through one notable (`tests/test-integration/scripts/notable.json`), and stops the server.
-
-```bash
-RUNS=1 bash tests/test-integration/scripts/repeats.sh
-```
-
-The UI log and screenshots land in `tests/test-integration/scripts/rep1*`, and the run itself in `.smartops/runs/<run_id>*`.
+**Live investigation** (real calls, costs money): start the server (`.\start.ps1`, port 8013), pick an alert in the Incident queue, and click Investigate. The run itself lands in `.smartops/runs/<run_id>/`. The old `tests/test-integration/scripts/repeats.sh` harness and its `notable.json` no longer exist (only past `rep1*.log`/`server-rep*.log` output remains), so do not run that command.
 
 ### Common problems
 

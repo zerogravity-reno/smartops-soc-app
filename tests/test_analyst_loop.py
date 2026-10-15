@@ -20,8 +20,10 @@ class FakeModel:
 
     def __init__(self, *answers):
         self.answers = iter(answers)
+        self.calls = []
 
     def invoke(self, system, user):
+        self.calls.append((system, user))
         answer, stop = next(self.answers)
         text = "thinking</think>" + json.dumps(answer) if isinstance(answer, dict) else answer
         return AnalystResponse(generation=text, prompt_tokens=6877, generation_tokens=100, stop_reason=stop)
@@ -41,8 +43,11 @@ def run(monkeypatch, tmp_path):
 
     monkeypatch.setattr(analyst, "_broker_round", broker_round)
 
-    def go(*answers):
-        monkeypatch.setattr(analyst, "_model", FakeModel(*answers))
+    def go(*answers, _fm=None):
+        fm = FakeModel(*answers)
+        if _fm is not None:
+            _fm.append(fm)
+        monkeypatch.setattr(analyst, "_model", fm)
         q = Queue()
         analyst.investigate("r1", {"normalized_seed": {}}, 15, q, lambda: None, {})
         events = [q.get_nowait() for _ in range(q.qsize())]
@@ -81,3 +86,16 @@ def test_a_cut_off_plan_records_its_whole_generation_and_sends_nothing(run):
     assert cut["step"] == "cut_off" and cut["loop"] == 1 and cut["stage"] == "planning"
     assert (cut["reasoning"], cut["answer"], cut["think_closed"]) == ("x" * 40, '{"hypotheses": [', True)
     assert (cut["stop_reason"], cut["max_gen_len"], cut["generation_tokens"]) == ("length", 16384, 100)
+
+
+def test_synthesis_prompt_closes_with_the_output_shape_rule(run):
+    # 75bf5a70 looped on the evidence_refs format and never emitted JSON. The
+    # closest instruction to the findings must be the output shape, not evidence.
+    fms = []
+    synth = {"hypothesis_scores": {"H1": 95, "H2": 10}, "evidence_refs": ["T1:endpoint"]}
+    run((PLAN, "stop"), (synth, "stop"), _fm=fms)
+
+    planning_user, synthesis_user = fms[0].calls[0][1], fms[0].calls[-1][1]
+    assert synthesis_user.rstrip().endswith("naming the broker findings above.")
+    assert "T1:endpoint" in synthesis_user
+    assert planning_user.rstrip() != synthesis_user.rstrip()  # trailer is synthesis-only

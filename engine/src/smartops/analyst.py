@@ -24,6 +24,22 @@ PROMPT_PATH = Path(__file__).parent / "prompts" / "analyst_system_prompt.txt"
 FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must match
 MAX_GEN_LEN = 16_384  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
 
+_EVAL_CLOSE = (
+    "\n\nOutput ONLY the EVALUATION JSON object specified above: no preamble, "
+    "no markdown fences, no reasoning outside the JSON. evidence_refs entries "
+    "have the form <task_id>:<domain>, for example T1:endpoint, naming the "
+    "broker findings above."
+)
+"""Last line of every synthesis prompt (recency over the mid-prompt rule).
+
+Run `75bf5a70` looped on how to shape evidence_refs and never emitted JSON,
+burning the whole 16k ceiling on meta-reasoning. Restating the shape at the
+end, after the findings it names, keeps the closest instruction the output
+format rather than the evidence. No automatic retry accompanies this: a
+generation that still hits the ceiling is a CutOff model failure, never
+retried with paid calls by this code.
+"""
+
 
 def load_system_prompt() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8")
@@ -512,7 +528,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 slim = {k:v for k,v in all_findings[round_label].items() if k != "_raw_intel_dump"}
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
             checkpoint()
-            rN = _ask(system_prompt, "\n\n".join(sections), "synthesis")
+            rN = _ask(system_prompt, "\n\n".join(sections) + _EVAL_CLOSE, "synthesis")
             raw_synth = extract_json(rN["answer"]) or {}
             synth = evaluations[f"Round {loop_num}"] = verdict_gate(raw_synth, plan, payloads, all_runs)
             emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
