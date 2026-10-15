@@ -185,19 +185,12 @@ uv run pytest -q              # engine/contracts/tests, engine/tests, tests (pyp
 
 cd frontend
 npm test                      # vitest: the run reducer and formatting
-npm run e2e                   # Playwright: the console against a mocked API, both colour modes, axe WCAG AA
 npm run build                 # tsc --noEmit, then vite build
 ```
 
-None of these needs a network or makes model calls. Type-check the frontend through `npm run build`, not a separate `tsc` call.
+None of these needs a network or makes model calls. Type-check the frontend through `npm run build`, not a separate `tsc` call. There is no Playwright e2e script in `frontend/`; do not run `npm run e2e`.
 
-**Live end-to-end run** (real calls, costs money): starts the server on :8001, drives the UI with Playwright through one notable (`tests/test-integration/scripts/notable.json`), and stops the server.
-
-```bash
-RUNS=1 bash tests/test-integration/scripts/repeats.sh
-```
-
-The UI log and screenshots land in `tests/test-integration/scripts/rep1*`, and the run itself in `.smartops/runs/<run_id>*`.
+**Live investigation** (real calls, costs money): start the server (`.\start.ps1`, port 8013), pick an alert in the Incident queue, and click Investigate. The run itself lands in `.smartops/runs/<run_id>/`. The old `tests/test-integration/scripts/repeats.sh` harness and its `notable.json` no longer exist (only past `rep1*.log`/`server-rep*.log` output remains), so do not run that command.
 
 ### Common problems
 
