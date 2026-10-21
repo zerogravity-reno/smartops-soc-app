@@ -1,0 +1,87 @@
+name: RFC feedback reconciliation
+
+on:
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted, edited]
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: rfc-feedback-pr-9
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      ((github.event.issue.number == 9 || github.event.pull_request.number == 9) &&
+      contains(fromJSON('["ysalahai", "mrahmy-reno", "ayousry84"]'), github.event.sender.login))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      fingerprint: ${{ steps.prepare.outputs.fingerprint }}
+      reply: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Collect new authenticated feedback
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/rfc_feedback.py prepare
+      - name: Require the repository API-key secret
+        if: steps.prepare.outputs.pending == 'true'
+        env:
+          RFC_FEEDBACK_API_KEY: ${{ secrets.RFC_FEEDBACK_API_KEY }}
+        run: |
+          if [ -z "$RFC_FEEDBACK_API_KEY" ]; then
+            echo '::error::Add the RFC_FEEDBACK_API_KEY repository Actions secret to activate discussion replies.'
+            exit 1
+          fi
+      # Last step: the official action drops privileges before running the read-only agent.
+      - name: Reconcile discussion with Codex
+        if: steps.prepare.outputs.pending == 'true'
+        id: codex
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.RFC_FEEDBACK_API_KEY }}
+          codex-version: '0.163.0'
+          permission-profile: ':read-only'
+          safety-strategy: drop-sudo
+          prompt-file: .rfc-feedback-prompt.md
+          output-schema-file: .github/rfc-feedback-output.schema.json
+          codex-args: '["--ephemeral"]'
+
+  publish:
+    needs: reconcile
+    if: needs.reconcile.outputs.reply != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Recheck discussion and publish a reply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECONCILIATION_RESULT: ${{ needs.reconcile.outputs.reply }}
+          FEEDBACK_FINGERPRINT: ${{ needs.reconcile.outputs.fingerprint }}
+        run: python .github/scripts/rfc_feedback.py publish
