@@ -6,9 +6,9 @@
 - Do not commit or push directly to `main`. An environment's generic `work` branch is not a substitute for a task-specific branch.
 - Use the existing checkout; create a Git worktree only when explicitly requested.
 - Commit focused changes, push the topic branch, and open a pull request targeting `main`. Follow `.github/pull_request_template.md` and include relevant validation and limitations.
-- For Codex-requested changes, the repository owner's standing preference is to create the PR automatically and arrange GitHub auto-merge after the configured approval and required checks pass. Do not request separate merge confirmation for that workflow.
-- Before enabling auto-merge, verify the intended approval and check requirements are enforced. `gh pr merge --auto` can merge immediately when no requirements block it; do not use it to skip the intended approval. Never approve your own PR, use an administrator bypass, or weaken repository protection to make a merge pass.
-- If repository settings, permissions, missing review, or missing CI prevent auto-merge, leave the PR open and report what is needed. Do not report auto-merge as enabled until GitHub confirms it.
+- For Codex-requested changes, create the PR automatically and arrange GitHub auto-merge after the required automated checks pass. The repository owner explicitly chose checks-only merging, with zero required human approvals. Do not request separate approval or merge confirmation for that workflow.
+- Before enabling auto-merge, verify that the main branch requires PRs and the GitHub Actions `SmartOps CI` check from `.github/workflows/ci.yml`, with the branch up to date. Never use an administrator bypass, remove required checks, or fabricate an approval or passing result to make a merge pass. Do not silently change a live repository policy if it differs; report it unless the user authorized that policy change.
+- If repository settings, permissions, unresolved discussions, or missing/failing CI prevent auto-merge, leave the PR open and report what is needed. Do not report auto-merge as enabled until GitHub confirms it.
 - If permissions or network access prevent pushing or opening the PR, preserve the work on its topic branch and report the exact blocker. Do not describe a compare link as a created PR.
 
 ## Development and handoff

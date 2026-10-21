@@ -89,6 +89,8 @@ npm run build
 
 The Python suite covers `engine/contracts/tests`, `engine/tests`, and `tests`. The frontend build includes TypeScript checking. These checks do not require service credentials or model calls. There is no configured `npm run e2e` command.
 
+If the cloud environment or your shell injects an unavailable AWS profile, run `env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE uv run --frozen pytest -q -ra` in a POSIX shell. CI uses this isolated invocation so tests use their own mocked credentials rather than an ambient profile.
+
 Report the command, result, and any skips or failures in your pull request. The UTC artifact check can skip when no stored investigation exists; a skip is not a passing integration test. A successful local suite does not establish that Splunk or live models work.
 
 For a targeted Python check, pass its path to pytest, for example `uv run --frozen pytest -q engine/contracts/tests/test_published_schema.py`. Run the broader checks above before sharing changes affecting multiple components.
@@ -105,7 +107,7 @@ Live investigations incur API charges. `--scripted` disables model calls in the 
 
 ## Keep collaboration clean
 
-- Create a dedicated branch for every change before editing, for example `git switch -c docs/update-setup-guide`. Commit and push that branch, then open a pull request targeting `main`. Merge through pull request review; do not commit or push changes directly to `main`.
+- Create a dedicated branch for every change before editing, for example `git switch -c docs/update-setup-guide`. Commit and push that branch, then open a pull request targeting `main`. Merge through the PR after required checks pass; do not commit or push changes directly to `main`.
 - Check `git status --short` before starting and before handing work over. Preserve other developers' changes and keep each change focused.
 - Keep `.venv/`, `frontend/node_modules/`, `frontend/dist/`, `.env`, logs, and investigation outputs out of commits. These paths are already ignored. Review staged files rather than adding the entire checkout blindly.
 - Direct exploratory Broker output to a scratch location with `SMARTOPS_RUNS_DIR`; keep runs separate from committed examples and test fixtures. Use the task files in [docs/examples](docs/examples/README.md) as inputs.
@@ -118,9 +120,9 @@ Coding agents must also follow [AGENTS.md](AGENTS.md). New pull requests use the
 
 ## Automatic PR creation and merging with Codex
 
-Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the intended approval and required check rules are verified. The repository owner's standing preference authorizes this workflow without a separate manual merge confirmation. Auto-merge waits for the configured requirements; it does not generate an approval or allow the PR author to approve their own change.
+Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the required check rules are verified. The repository owner chose **passing automated checks alone**, with **zero required human approvals**. This authorizes the workflow without a separate manual approval or merge confirmation. Reviews remain welcome; unresolved discussions must be resolved before merging.
 
-The repository must have **Allow auto-merge** enabled under **Settings → General → Pull Requests**. With the one-approval policy below, another reviewer must approve before the PR merges. A checks-only policy is a separate choice: it requires real CI checks and deliberately removes mandatory reviewer approval. Never silently make that change to unblock merging.
+The repository must have **Allow auto-merge** enabled under **Settings → General → Pull Requests**. The [CI workflow](.github/workflows/ci.yml) runs the Python suite and frontend tests, type-check, and build on every PR to `main`. Its final `SmartOps CI` check fails unless both jobs succeed, including when a dependency job fails or is skipped. No service secrets or live investigations are needed.
 
 After verifying the protection rules and choosing a merge method allowed by the repository, enable auto-merge for the PR. For example, from the PR's topic branch when squash merging is enabled:
 
@@ -128,15 +130,16 @@ After verifying the protection rules and choosing a merge method allowed by the 
 gh pr merge --auto --squash
 ```
 
-If all requirements already pass, this command can merge immediately. If protection is missing or cannot be verified, leave the PR open and report the blocker rather than bypassing review. When enabling auto-merge succeeds, confirm GitHub reports it as enabled or the PR as merged.
+If all requirements already pass, this command can merge immediately. If protection is missing or cannot be verified, leave the PR open and report the blocker rather than bypassing checks. When enabling auto-merge succeeds, confirm GitHub reports it as enabled or the PR as merged. A failed check must be fixed and rerun; do not weaken the rules to merge it.
 
 ## Enforce the pull request workflow on GitHub
 
-Documentation describes the policy; GitHub branch protection or a branch ruleset enforces it. A repository administrator should configure an active rule targeting `main` in **Settings → Rules → Rulesets** (or **Settings → Branches** for branch protection):
+Documentation describes the policy; GitHub branch protection or a branch ruleset enforces it. A repository administrator should configure an active rule targeting `main` in **Settings → Rules → Rulesets**. The importable [main ruleset](.github/main-ruleset.json) contains this policy:
 
-- Require a pull request before merging and at least one approval from another developer.
-- Dismiss stale approvals when new commits are pushed.
+- Require a pull request before merging, with **zero** required approvals and no required Code Owner or last-push approval.
+- Require the GitHub Actions **SmartOps CI** check and an up-to-date branch.
+- Require all review conversations to be resolved.
 - Block force pushes and branch deletion.
 - Apply the rule to administrators as well, with no routine bypass actors.
 
-Developers push topic branches and merge through reviewed pull requests. Required status checks should name actual CI jobs once those jobs exist; the local test commands in this guide do not themselves create GitHub checks. An administrator must verify that the rule is active and supported by the repository's GitHub plan before treating direct pushes as blocked.
+Developers push topic branches and merge through passing pull requests. When replacing an existing one-approval rule, update that rule rather than leaving both active: rulesets combine, so the old rule would still require a reviewer. Existing classic branch protection must also agree with this policy. The `SmartOps CI` context must match the workflow's final job name exactly and be sourced from GitHub Actions. An administrator must verify that the rule is active and supported by the repository's GitHub plan before treating direct pushes as blocked.
