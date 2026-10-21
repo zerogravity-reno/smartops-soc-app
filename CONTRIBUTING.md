@@ -113,3 +113,16 @@ Live investigations incur API charges. `--scripted` disables model calls in the 
 - When changing published contract models, regenerate schemas from the repository root with `uv run --frozen python engine/contracts/schemas/generate.py`, inspect the generated diff, and run the contract tests. Breaking changes need a new schema version so existing consumers retain their contract.
 - Describe the behavior changed, validation performed, and remaining limitations in pull requests. Include reproduction steps for bugs and coordinate changes to shared API contracts using [docs/frontend-api-contract.md](docs/frontend-api-contract.md).
 - Update this guide and the README in the same change when installation, commands, ports, required variables, or supported tool versions change. Check commands from their documented directories and use a local functional request when startup behavior changes. Keep credential-free checks separate from live service validation.
+
+Coding agents must also follow [AGENTS.md](AGENTS.md). New pull requests use the repository's [review template](.github/pull_request_template.md).
+
+## Enforce the pull request workflow on GitHub
+
+Documentation describes the policy; GitHub branch protection or a branch ruleset enforces it. A repository administrator should configure an active rule targeting `main` in **Settings → Rules → Rulesets** (or **Settings → Branches** for branch protection):
+
+- Require a pull request before merging and at least one approval from another developer.
+- Dismiss stale approvals when new commits are pushed.
+- Block force pushes and branch deletion.
+- Apply the rule to administrators as well, with no routine bypass actors.
+
+Developers push topic branches and merge through reviewed pull requests. Required status checks should name actual CI jobs once those jobs exist; the local test commands in this guide do not themselves create GitHub checks. An administrator must verify that the rule is active and supported by the repository's GitHub plan before treating direct pushes as blocked.
