@@ -116,6 +116,20 @@ Live investigations incur API charges. `--scripted` disables model calls in the 
 
 Coding agents must also follow [AGENTS.md](AGENTS.md). New pull requests use the repository's [review template](.github/pull_request_template.md).
 
+## Automatic PR creation and merging with Codex
+
+Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the intended approval and required check rules are verified. The repository owner's standing preference authorizes this workflow without a separate manual merge confirmation. Auto-merge waits for the configured requirements; it does not generate an approval or allow the PR author to approve their own change.
+
+The repository must have **Allow auto-merge** enabled under **Settings → General → Pull Requests**. With the one-approval policy below, another reviewer must approve before the PR merges. A checks-only policy is a separate choice: it requires real CI checks and deliberately removes mandatory reviewer approval. Never silently make that change to unblock merging.
+
+After verifying the protection rules and choosing a merge method allowed by the repository, enable auto-merge for the PR. For example, from the PR's topic branch when squash merging is enabled:
+
+```sh
+gh pr merge --auto --squash
+```
+
+If all requirements already pass, this command can merge immediately. If protection is missing or cannot be verified, leave the PR open and report the blocker rather than bypassing review. When enabling auto-merge succeeds, confirm GitHub reports it as enabled or the PR as merged.
+
 ## Enforce the pull request workflow on GitHub
 
 Documentation describes the policy; GitHub branch protection or a branch ruleset enforces it. A repository administrator should configure an active rule targeting `main` in **Settings → Rules → Rulesets** (or **Settings → Branches** for branch protection):

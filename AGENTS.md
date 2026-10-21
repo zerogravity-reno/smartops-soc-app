@@ -6,7 +6,9 @@
 - Do not commit or push directly to `main`. An environment's generic `work` branch is not a substitute for a task-specific branch.
 - Use the existing checkout; create a Git worktree only when explicitly requested.
 - Commit focused changes, push the topic branch, and open a pull request targeting `main`. Follow `.github/pull_request_template.md` and include relevant validation and limitations.
-- Merge through pull request review only. Do not merge without the user's explicit instruction, and never bypass repository protection rules.
+- For Codex-requested changes, the repository owner's standing preference is to create the PR automatically and arrange GitHub auto-merge after the configured approval and required checks pass. Do not request separate merge confirmation for that workflow.
+- Before enabling auto-merge, verify the intended approval and check requirements are enforced. `gh pr merge --auto` can merge immediately when no requirements block it; do not use it to skip the intended approval. Never approve your own PR, use an administrator bypass, or weaken repository protection to make a merge pass.
+- If repository settings, permissions, missing review, or missing CI prevent auto-merge, leave the PR open and report what is needed. Do not report auto-merge as enabled until GitHub confirms it.
 - If permissions or network access prevent pushing or opening the PR, preserve the work on its topic branch and report the exact blocker. Do not describe a compare link as a created PR.
 
 ## Development and handoff
