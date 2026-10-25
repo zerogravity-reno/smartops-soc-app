@@ -4,6 +4,8 @@ An investigation pipeline for Splunk ES notable events. It builds the alert's co
 
 **Models:** Foundation-Sec-8B (Analyst, AWS Bedrock) and Claude (Tool Broker, Anthropic API).
 
+For installation, local development, testing, and collaboration, start with the [contributor guide](CONTRIBUTING.md). Local tests and ESCU search work without service credentials.
+
 ---
 
 ## How it works
@@ -54,7 +56,6 @@ engine/                      the backend (package smartops)
   contracts/                 shared Pydantic models and JSON schemas (task-input.v1, …)
   tests/                     engine test suite
 frontend/                    React + TypeScript UI (built by start.ps1; served at /)
-  e2e/                       Playwright browser checks, API mocked
 tests/                       Analyst and server tests
 mcp_servers.json             MCP server config (official Splunk MCP)
 docs/
@@ -70,26 +71,27 @@ start.ps1                    uv sync, build the frontend, start the server
 **Prerequisites**
 - Windows with PowerShell, or any OS with a POSIX shell.
 - Python 3.13, pinned in `.python-version` and `pyproject.toml` (`>=3.13,<3.14`), and [uv](https://docs.astral.sh/uv/), which fetches that Python if it is missing.
-- Node.js with npm, to build the frontend.
-- AWS Bedrock access to the imported Foundation-Sec-8B model.
-- An Anthropic API key for the Tool Broker's Claude models.
-- A Splunk ES instance with the official Splunk MCP server app, plus a token for it.
-- A VirusTotal API key. OpenCTI is optional.
+- Node.js 24 with npm is the tested development baseline.
+- For live investigations: AWS Bedrock access to the imported Foundation-Sec-8B model, an Anthropic API key, and a Splunk ES instance with the official Splunk MCP server app and token.
+- A VirusTotal API key enables VirusTotal lookups. OpenCTI is optional. These services are not needed to install, build, or run the local tests.
 
 **Install**
 
 ```powershell
 git clone https://github.com/zerogravity-reno/smartops-soc-app.git
 cd smartops-soc-app
-uv sync                      # installs the backend + contracts + dev tools into .venv
-Copy-Item .env.example .env  # then fill in .env (see below)
+uv sync --frozen              # backend + contracts + dev tools in .venv
+cd frontend
+npm ci
+npm run build
+cd ..
 ```
 
-`.env` is git-ignored. Never put secrets in a tracked file.
+No `.env` is needed for local tests or ESCU search. For live services, create a git-ignored `.env` with the settings you need below. Never put secrets in a tracked file.
 
 ### Environment variables (`.env`)
 
-The env file is `.env` in the repo root (copy [`.env.example`](.env.example), which holds placeholders only).
+The env file is `.env` in the repo root. Use [`.env.example`](.env.example) as a reference; replace placeholders and leave `SMARTOPS_MCP_TLS_NO_VERIFY` unset to keep certificate verification enabled.
 - The server and the Broker CLI (`python -m smartops.main`) both search upward from the working directory for a `.env`, the server once at startup. `--verbose` prints which file the CLI loaded.
 - A variable already set in your shell wins over the file (`override=False`).
 
@@ -128,7 +130,6 @@ ANTHROPIC_API_KEY=<your-anthropic-api-key>
 SMARTOPS_LLM_PROVIDER=anthropic
 SPLUNK_MCP_URL=https://<splunk-host>:8089/services/mcp
 SPLUNK_TOKEN=<your-splunk-token>
-SMARTOPS_MCP_TLS_NO_VERIFY=splunk
 SMARTOPS_SIEM_INDEXES=botsv3
 VT_API_KEY=<your-vt-key>
 OPENCTI_URL=http://<opencti-host>:8080/graphql
@@ -165,7 +166,7 @@ The Broker's MCP clients are built and warmed at startup, and warmed again at th
 ### The Tool Broker on its own
 
 ```powershell
-# Free: no model calls, scripted dispatch
+# No model calls; configured domain services may still receive requests
 uv run python -m smartops.main --task-file docs\examples\botsv3-coinhive-tasks.json --batch-id demo-L2 --scripted
 
 # Live: real Anthropic and Splunk calls
@@ -176,12 +177,12 @@ Run `uv run python -m smartops.main --help` for all flags (`--budget-usd`, `--fa
 
 ### Cost
 
-A live investigation costs real money. On 2026-09-30, one Broker loop over 6 tasks cost about **$12** (run `cecd266a`). Most of that came from long Splunk results being re-sent to the model on every turn. `--scripted` is guaranteed free; set `SMARTOPS_LLM_PROVIDER=none` to disable Broker model calls without that flag.
+A live investigation costs real money. On 2026-09-30, one Broker loop over 6 tasks cost about **$12** (run `cecd266a`). Most of that came from long Splunk results being re-sent to the model on every turn. `--scripted` disables model calls, but configured domain services can still receive requests. Set `SMARTOPS_LLM_PROVIDER=none` to disable Broker model calls without that flag; this does not disable the Analyst's Bedrock calls during a web investigation.
 
 ### Tests
 
 ```powershell
-uv run pytest -q              # engine/contracts/tests, engine/tests, tests (pyproject testpaths)
+uv run --frozen pytest -q -ra  # engine/contracts/tests, engine/tests, tests
 
 cd frontend
 npm test                      # vitest: the run reducer and formatting
@@ -195,7 +196,7 @@ None of these needs a network or makes model calls. Type-check the frontend thro
 ### Common problems
 
 - **HTTP 429 from Foundation-Sec-8B at the start:** the imported model is cold-starting. The client retries every 30 s, so wait.
-- **TLS errors against Splunk :8089:** set `SMARTOPS_MCP_TLS_NO_VERIFY=splunk` for a self-signed certificate.
+- **TLS errors against Splunk :8089:** use a certificate valid for the endpoint hostname and configure trust for your organization's CA. Keep certificate verification enabled.
 - **A live run stalls or the browser dies:** check free memory first; the Playwright driver plus the server need about 1 GB.
 
 ---
