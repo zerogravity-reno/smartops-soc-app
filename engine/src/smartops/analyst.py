@@ -25,7 +25,8 @@ FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must 
 MAX_GEN_LEN = 16_384  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
 
 _EVAL_CLOSE = (
-    "\n\nOutput ONLY the EVALUATION JSON object specified above: no preamble, "
+    "\n\nKeep reasoning concise: do NOT repeat thoughts or deliberate endlessly on formatting. "
+    "Output ONLY the EVALUATION JSON object specified above: no preamble, "
     "no markdown fences, no reasoning outside the JSON. evidence_refs entries "
     "have the form <task_id>:<domain>, for example T1:endpoint, naming the "
     "broker findings above."
@@ -459,7 +460,7 @@ def _ask(system: str, user: str, stage: str) -> dict:
     global _model
     if _model is None:
         # The Analyst's own sampling, not the sub-analysts' SMARTOPS_ANALYST_* settings.
-        _model = AnalystModel(temperature=0.0, top_p=0.95, max_gen_len=MAX_GEN_LEN)
+        _model = AnalystModel(temperature=0.2, top_p=0.95, max_gen_len=MAX_GEN_LEN)
     r = _model.invoke(system, user)
     reasoning, think, answer = r.generation.partition("</think>")
     if not think:
