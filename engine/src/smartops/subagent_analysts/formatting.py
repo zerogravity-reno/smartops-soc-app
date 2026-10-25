@@ -540,7 +540,7 @@ def _event_total(rows: Sequence[dict[str, Any]]) -> int | None:
 # near-unique per row, so a distribution over them is a list of the rows with
 # extra steps, and it is the wide field that would spend the budget.
 _SUMMARY_DIMENSIONS: dict[str, tuple[str, ...]] = {
-    "auth_events": ("user", "src", "dest", "action", "event_code", "logon_type"),
+    "auth_events": ("user", "subject", "src", "dest", "action", "event_code", "logon_type"),
     "dns_resolutions": ("src", "query", "answer", "rtype", "rcode"),
     "connections": ("src", "dest", "dest_port", "proto", "action"),
     "processes": ("host", "user", "process", "parent"),

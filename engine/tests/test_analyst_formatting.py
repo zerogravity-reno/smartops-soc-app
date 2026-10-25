@@ -422,6 +422,11 @@ class TestComputedAggregate:
         assert "logon_type: 2 distinct — (absent)=1, 5 (Service)=1" in summary
         assert "event_code: 2 distinct — 4624 (logon)=1" in summary
 
+    def test_auth_summary_counts_the_subject_account(self):
+        # B11: three replays said "the subject is SYSTEM" on every row; half were the machine account.
+        rows = [{"EventCode": "4624", "SubjectUserName": "HOST$"}, {"EventCode": "4672", "SubjectUserName": "SYSTEM"}]
+        assert "subject: 2 distinct — HOST$=1, SYSTEM=1" in summarise_rows("auth_events", rows)
+
     def test_totals_weight_by_the_count_column(self):
         # A `| stats count by ...` set: 3 rows standing for 100+55+7 = 162
         # events. Summing rows instead of counts would say 3.

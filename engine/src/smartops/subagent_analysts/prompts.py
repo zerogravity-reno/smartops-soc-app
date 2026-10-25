@@ -99,9 +99,10 @@ SECURITY CONSTRAINTS
 # dropping a set.
 
 _NARRATIVE_ANSWER_BLOCK = """\
-NARRATIVE: <plain English: what these rows show, in order, naming the hosts,
-accounts, addresses and processes. Group like rows. No numbers and no times: code
-attaches those. What happened, not what it means.>
+NARRATIVE: <plain English: what these rows show, naming the hosts, accounts,
+addresses and processes. Group like rows. No quantities and no times: code attaches
+those. Identifiers (event codes, ports, addresses) are fine. What happened, not what
+it means.>
 OBSERVATIONS:
 - <one distinct thing the rows state> [header_id]
 - <one line per distinct thing; repeat as many times as you have>
@@ -129,6 +130,8 @@ HOW TO WRITE EACH LINE. Every rule below fixes something a real reply got wrong 
 2. Each OBSERVATIONS line ends with the header id(s) it rests on, in brackets, each
    carrying its full category prefix: `[auth_events#6] [auth_events#9]`, never
    `[auth_events#6, #9]` and never a bare `#9`.
+
+Rules 3 to 5 are for OBSERVATIONS. The NARRATIVE states no times and no counts at all.
 
 3. TIMES ARE COPIED, NEVER CONVERTED. Take the range verbatim from the set's computed
    summary — if it reads `2018-08-20T13:35:34Z`, write exactly that. Do not re-render it
@@ -186,8 +189,9 @@ CRITICAL CITATION RULES:
 
 NUMBERS AND TIMES ARE NEVER CALCULATED BY YOU. Code has already counted every set and
 found its time range; those figures reach the reader without you. So:
-- NARRATIVE carries no numbers and no times at all. Say what happened and who and what
-  was involved; leave how many and when to the code.
+- NARRATIVE carries no quantities and no times at all. Say what happened and who and
+  what was involved; leave how many and when to the code. Identifiers such as event
+  codes, ports and addresses are not quantities and may be named.
 - An OBSERVATION may carry a number or a time only by copying it exactly as printed in a
   header (`rows=`, `events=`) or a computed summary. Never count lines, add a row's `events=`
   values, subtract, split a total, or work out a range from the printed rows.
@@ -245,19 +249,23 @@ _ROWS_BLOCK = """\
 Rows arrive in two shapes. A RAW row is one event, laid out as above. A GROUPED row is
 one line of a `| stats count by ...` result standing for many events, and it ends in
 `events=<n>`; a grouped row is a bucket, not a moment, so IT CARRIES NO TIME OF ITS OWN.
-Take a set's time range only from its computed summary, never from the rows.
+An observation takes a set's time range only from its computed summary, never from the rows.
+
+Sets and rows are printed in no meaningful order. Print order is not time order, and rows
+with the same timestamp have no order at all: never write that one event followed,
+preceded or caused another.
 
 A header may say rows=0 — the query ran and found nothing.
 `rows=N` in a header is the TRUE number of rows the query matched, and can be larger
 than the number of lines printed beneath it. When lines were held back the set ends with
-a line like `… 20 of 4000 rows shown`. Say so by copying that line's two numbers as
-printed, rather than treating the printed lines as the whole set.
+a line like `… 20 of 4000 rows shown`. An observation says so by copying that line's two
+numbers as printed, rather than treating the printed lines as the whole set.
 
 THE COMPUTED SUMMARY IS AUTHORITATIVE. Beneath every set's rows is a block beginning
 `~ computed over all N rows`. It was calculated in code over the WHOLE set — every row,
 including the ones not printed — and it gives you the event total, the distinct count and
-top and rarest values of each field, and the true earliest-to-latest time range. Take every count,
-every distinct count and every time range from it, and never by counting the printed
+top and rarest values of each field, and the true earliest-to-latest time range. Observations
+take every count, every distinct count and every time range from it, never by counting the printed
 lines: those are a sample. Where its time line says the rows carry no timestamp, the set
 has no time range and you must not state one."""
 
@@ -279,7 +287,7 @@ Never drop a set because it looks uninteresting — say what it contains."""
 _IDENTITY_FACTS_BODY = f"""\
 Your task in this investigation is to act as the identity and authentication analyst.
 You are given the AUTHENTICATION evidence retrieved for this investigation. Your job is
-to TRANSLATE it into plain English: say what happened in these rows, in order, naming
+to TRANSLATE it into plain English: say what happened in these rows, naming
 the accounts, source addresses and hosts involved.
 
 {_DESCRIBE_ONLY_BLOCK}
@@ -288,7 +296,9 @@ the accounts, source addresses and hosts involved.
 
 EVIDENCE YOU RECEIVE — authentication events, one per line, under headers like
 `auth_events#1`:
-  <timestamp> user=<account> src=<source addr> dest=<host> action=<success|failure> app=<log source>
+  <timestamp> user=<account> subject=<Windows SubjectUserName> src=<source addr> dest=<host>
+  action=<success|failure> event_code=<code> (<event name>) logon_type=<n> (<type name>) app=<log source>
+A field missing from a row is not recorded for that row; never give it another row's value.
 {_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
@@ -307,7 +317,7 @@ GROUNDING RULES (do not hallucinate)
 _NETWORK_FACTS_BODY = f"""\
 Your task in this investigation is to act as the network detection and response
 analyst. You are given the NETWORK evidence retrieved for this investigation. Your job
-is to TRANSLATE it into plain English: say what happened in these rows, in order, naming
+is to TRANSLATE it into plain English: say what happened in these rows, naming
 the hosts, addresses, domains and ports involved.
 
 {_DESCRIBE_ONLY_BLOCK}
@@ -340,7 +350,7 @@ GROUNDING RULES (do not hallucinate)
 _ENDPOINT_FACTS_BODY = f"""\
 Your task in this investigation is to act as the endpoint and host-forensics analyst.
 You are given the ENDPOINT evidence retrieved for this investigation. Your job is to
-TRANSLATE it into plain English: say what happened in these rows, in order, naming the
+TRANSLATE it into plain English: say what happened in these rows, naming the
 hosts, users, processes, parent processes and command lines involved.
 
 {_DESCRIBE_ONLY_BLOCK}
@@ -395,6 +405,6 @@ def build_facts_user_turn(scope: Scope, evidence_text: str) -> str:
         fenced("scope", _render_scope(scope))
         + "\n\n"
         + fenced("evidence", evidence_text)
-        + "\n\nDescribe what the evidence above shows, in order, grouping like rows. "
+        + "\n\nDescribe what the evidence above shows, grouping like rows. "
         "Give your reasoning, then the required block."
     )
