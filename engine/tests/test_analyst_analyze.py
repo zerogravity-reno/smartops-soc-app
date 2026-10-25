@@ -1547,3 +1547,17 @@ def test_narrative_sentences_with_figures_no_summary_prints_are_dropped():
 
     assert kept == r"Host ran C:\Edge\154.0.4258.62\setup.exe. Nothing else ran."
     assert _drop_unsupported_sentences("Host ran setup.exe.", slice_, "endpoint") == "Host ran setup.exe."
+
+
+def test_a_protocol_the_rows_do_not_carry_is_dropped():
+    # B11, 20592fea replay: "used UDP port 5353" over rows grouped by address and port only.
+    def network(row):
+        return DomainSlice(domain="network", siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[row]))])
+
+    narrative = "Traffic went to 224.0.0.251:5353. These connections used UDP port 5353."
+    dest_only = network({"DestinationIp": "224.0.0.251", "DestinationPort": "5353"})
+    assert _drop_unsupported_sentences(narrative, dest_only, "network") == "Traffic went to 224.0.0.251:5353."
+    assert _drop_unsupported_figures(["Used UDP to port 5353 [connections#1]"], dest_only, "network") == []
+
+    with_proto = network({"DestinationIp": "224.0.0.251", "DestinationPort": "5353", "transport": "udp"})
+    assert _drop_unsupported_sentences(narrative, with_proto, "network") == narrative

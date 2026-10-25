@@ -319,7 +319,7 @@ EVIDENCE YOU RECEIVE — under headers like these:
   dns_resolutions#1 <timestamp> query=<domain>→<answer> rtype=<type>
   connections#1     <timestamp> <src>:<port>→<dst>:<port> proto=<t> bytes=<n> action=<>
 A connection row with `dest=` and no `src=` does not say what sent the traffic; never
-name a source for it.
+name a source for it. Never name a protocol that no `proto=` field shows.
 {_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)

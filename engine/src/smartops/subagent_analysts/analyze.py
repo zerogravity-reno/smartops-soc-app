@@ -703,6 +703,18 @@ _FIGURE_RE = re.compile(r"(?<![\w.-])(\d{2,})(?![\w.-])")
 _TIME_CLAIM_RE = re.compile(r"\d{1,2}:\d{2}")
 
 
+# A protocol is a closed set of names, so like a figure it can be checked against
+# the rows: 20592fea's network replay said "used UDP port 5353" over rows carrying
+# no protocol, read off the port (B11).
+_PROTOCOL_RE = re.compile(r"\b(tcp|udp|icmp)\b", re.I)
+
+
+def _unsupported_protocols(text: str, shown: str) -> list[str]:
+    """Protocol names `text` states that `shown` never prints."""
+    printed = {p.lower() for p in _PROTOCOL_RE.findall(shown)}
+    return sorted({p.lower() for p in _PROTOCOL_RE.findall(text)} - printed)
+
+
 def _figures(text: str) -> set[str]:
     """Multi-digit figures an observation asserts, less its citations and times."""
     stripped = _TIME_TOKEN_RE.sub(" ", _CITATION_DIGITS_RE.sub(" ", text))
@@ -799,8 +811,9 @@ def _drop_unsupported_figures(
         # from both and therefore unchecked; that is a narrow, deliberate hole,
         # and it fails open rather than dropping a sound line.
         asserted = _figures(observation)
-        supported_by_rows = _figures(" ".join(b.text for b in blocks))
-        unsupported = sorted(asserted - supported_by_rows)
+        cited_text = " ".join(b.text for b in blocks)
+        supported_by_rows = _figures(cited_text)
+        unsupported = sorted(asserted - supported_by_rows) + _unsupported_protocols(observation, cited_text)
         if unsupported:
             # Both halves, deliberately. The unsupported figures say WHY the line
             # went; the supported ones say how much of it was sound, which is the
@@ -911,7 +924,7 @@ def _drop_unsupported_sentences(narrative: str, slice_: DomainSlice, domain: str
         bare = _CITATION_DIGITS_RE.sub(" ", sentence)
         unsupported = sorted(_figures(sentence) - shown_figures) + [
             t for t in _TIME_CLAIM_RE.findall(bare) if t not in shown
-        ]
+        ] + _unsupported_protocols(sentence, shown)
         if unsupported:
             logger.warning(
                 "domain=%s | dropped a narrative sentence asserting %s, which no "
