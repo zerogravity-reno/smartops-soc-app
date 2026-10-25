@@ -293,58 +293,35 @@ def unsupported_unanswerable_claims(synth: dict, payloads: list[dict] | None) ->
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
     """Pass the model's synthesis through unchanged.
 
-    The verdict criteria (top_score >= 85, gap >= 20) live in the system
-    prompt and are enforced by the model.  This function only fills in a
-    missing verdict label when the model already declared VERDICT_REACHED
-    and clears follow_up_tasks once a verdict is reached so the loop stops.
+    The 85/20 verdict gate lives entirely in the system prompt; this
+    function only does the minimum bookkeeping the loop needs:
 
-    Status inference order:
-    1. Trust explicit ``status`` field from the model.
-    2. If absent: a conclusive ``verdict`` (TRUE_POSITIVE / FALSE_POSITIVE /
-       BENIGN) implies VERDICT_REACHED.
-    3. If both absent: fall back to the 85/20 score math as a safety net
-       so a model that omits both fields still reaches a verdict when the
-       scores are conclusive.
+    - VERDICT_REACHED → clear follow_up_tasks, fill a missing verdict
+      label from the plan's top-scored hypothesis.
+    - Anything else → normalise to REQUIRES_INVESTIGATION.
     """
     out = dict(synth)
     status = out.get("status", "")
-    verdict = out.get("verdict", "")
-
-    # Parse scores for fallback inference.
-    scores = {}
-    for h, s in (synth.get("hypothesis_scores") or {}).items():
-        try:
-            scores[h] = int(s)
-        except (TypeError, ValueError):
-            scores[h] = 0
-    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    top_id, top_score = ranked[0] if ranked else (None, 0)
-    runner_up_score = ranked[1][1] if len(ranked) > 1 else 0
-    gap = top_score - runner_up_score
-
-    _conclusive = {"TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN"}
-
-    # Infer status when the model omitted it.
-    if not status:
-        if verdict in _conclusive:
-            status = "VERDICT_REACHED"
-        elif top_score >= 85 and gap >= 20:
-            # Scores are conclusive but model forgot to set status/verdict.
-            status = "VERDICT_REACHED"
-        else:
-            status = "REQUIRES_INVESTIGATION"
 
     if status == "VERDICT_REACHED":
-        out["status"] = "VERDICT_REACHED"
         out["follow_up_tasks"] = []
-        # Fill missing verdict label from the plan's top hypothesis.
+        verdict = out.get("verdict", "")
         if not verdict or verdict in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
+            scores = {}
+            for h, s in (synth.get("hypothesis_scores") or {}).items():
+                try:
+                    scores[h] = int(s)
+                except (TypeError, ValueError):
+                    scores[h] = 0
+            ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+            top_id = ranked[0][0] if ranked else None
             out["verdict"] = next(
                 (h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
                 "TRUE_POSITIVE"
             )
     else:
         out["status"] = "REQUIRES_INVESTIGATION"
+        verdict = out.get("verdict", "")
         if not verdict or verdict == "VERDICT_REACHED":
             out["verdict"] = "REQUIRES_INVESTIGATION"
 
