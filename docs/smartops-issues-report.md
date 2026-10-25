@@ -100,11 +100,11 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
 | P5 | Context | ESCU matcher scores rule names only | Medium | Open (C5) |
 | B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`, narrative names on this branch); live re-run pending |
-| B2 | Broker | Narrow task windows miss the activity | Medium | Open, Analyst side (follows P1: the windows are planned there) |
+| B2 | Broker | Narrow task windows miss the activity | Medium | Not reproduced on live run `c75abeae` (2026-10-25): task windows are widened to at least the event ±1 h, and every window held the activity. Closed |
 | B3 | Broker | Planned steps for families with no tool (`investigate_edr`) | Medium | Fixed in `58d39c3` |
 | B4 | Broker | Sub-analyst misread a `+03:00` row as outside a `Z` window | High | Fixed in `58d39c3` |
 | B5 | Broker | Subagent hit its output-token cap; recovery produced no answer | Medium | Closed: not reproduced since 2026-09-30 (20+ runs); logged if it recurs |
-| B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open, Analyst side: the follow-ups must name their task (B20); no Broker work left |
+| B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open, Analyst side. Still seen on `c75abeae`: every round-3 follow-up got all round-2 entities and the widest window (1–7 Oct). GitHub #14 (Yousef) |
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
@@ -118,7 +118,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
 | B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; held on `89674d75` |
-| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" fixed on `broker-a818-fixes` (`plan_fetch` `unanswerable`, `01877a9`); held live on `451334ad` and `ea38cb13`; scoping is Analyst-side |
+| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" holds on `c75abeae` (FU1, FU3 not searched). Repeats remain: FU2 re-ran round 2's searches because it carried every entity (B6). GitHub #14 (Yousef) |
 | B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
 | B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
@@ -1320,7 +1320,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 43 | 2 | 3 | B50 new; B11 partly. B2, B6 and B20's scoping wait on the Analyst's follow-ups |
+| Broker | 44 | 2 | 2 | B50 new; B11 partly; B2 closed; B6/B20 with Yousef (#14). B2, B6 and B20's scoping wait on the Analyst's follow-ups |
 | Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
 | Triage (Analyst) | 0 | 3 | 26 | T1 partly; T2–T24, T26–T30 (T25 removed by design) |
 | Gate (Analyst) | 0 | 0 | 10 | G2, G4–G12 (G1, G3 removed by design) |
