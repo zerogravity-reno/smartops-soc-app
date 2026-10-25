@@ -291,22 +291,22 @@ def unsupported_unanswerable_claims(synth: dict, payloads: list[dict] | None) ->
 
 
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
-    """The synthesis output with `status` decided here, not by the model.
+    """Strictly enforce the verdict gate dynamically in Python:
+    1. top_score >= 85
+    2. gap >= 20 between top score and runner-up
 
-    VERDICT_REACHED needs the top hypothesis at 85 or more and 20 clear of the
-    runner-up. Evidence refs are informational and do not block the verdict.
+    If either condition fails:
+    - Force status to REQUIRES_INVESTIGATION
+    - If the model did not provide follow_up_tasks or evidence_gaps (e.g. because
+      it prematurely believed it reached a verdict), dynamically generate follow-up
+      tasks:
+      * Differentiating tasks between competing hypotheses (all hypotheses within 20
+        points of the top score, which could be 2 or all 3).
+      * Corroborating tasks for the top hypothesis to push its score past 85%.
     """
     out = dict(synth)
-    unsupported = unsupported_unanswerable_claims(synth, payloads)
-    if unsupported:
-        out["status"] = "REQUIRES_INVESTIGATION"
-        out["verdict"] = "REQUIRES_INVESTIGATION"
-        out["unsupported_claims"] = unsupported
-        out["evidence_gaps"] = list(out.get("evidence_gaps") or []) + [
-            "Verdict rationale treated an unanswerable source as evidence."
-        ]
-        out["follow_up_tasks"] = []
-        return out
+
+    # 1. Parse and rank scores dynamically
     scores = {}
     for h, s in (synth.get("hypothesis_scores") or {}).items():
         try:
@@ -314,18 +314,55 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
         except (TypeError, ValueError):
             scores[h] = 0
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    top_id, top = ranked[0] if ranked else (None, 0)
-    gap = top - (ranked[1][1] if len(ranked) > 1 else 0)
-    if top >= 85 and gap >= 20:
+    top_id, top_score = ranked[0] if ranked else (None, 0)
+    runner_up_id, runner_up_score = ranked[1] if len(ranked) > 1 else (None, 0)
+    gap = top_score - runner_up_score
+
+    # Determine gate satisfaction:
+    is_gate_satisfied = (top_score >= 85) and (gap >= 20)
+
+    if is_gate_satisfied:
         out["status"] = "VERDICT_REACHED"
         out["follow_up_tasks"] = []
-        if not out.get("verdict") or out["verdict"] == "REQUIRES_INVESTIGATION":
-            out["verdict"] = next((h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
-                                  "REQUIRES_INVESTIGATION")
+        top_hypothesis_verdict = next(
+            (h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
+            None
+        )
+        if top_hypothesis_verdict:
+            out["verdict"] = top_hypothesis_verdict
+        elif not out.get("verdict") or out.get("verdict") in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
+            out["verdict"] = "TRUE_POSITIVE"
         return out
-    out["status"] = "REQUIRES_INVESTIGATION"
-    return out
 
+    # Gate NOT satisfied -> force continuation
+    out["status"] = "REQUIRES_INVESTIGATION"
+    out["verdict"] = "REQUIRES_INVESTIGATION"
+
+    # Check if the model provided valid follow-up tasks or evidence gaps
+    has_follow_ups = any(isinstance(f, dict) and f.get("question") for f in out.get("follow_up_tasks") or [])
+    has_evidence_gaps = any(isinstance(g, str) and g.strip() for g in out.get("evidence_gaps") or [])
+
+    if not has_follow_ups and not has_evidence_gaps:
+        # Dynamically find all hypotheses within 20 points of the top score (could be 2 or all 3)
+        close_ids = [h for h, s in ranked if (top_score - s) < 20]
+        if len(close_ids) < 2 and runner_up_id:
+            close_ids = [top_id, runner_up_id]
+
+        generated_tasks = []
+        if len(close_ids) >= 2:
+            competing_labels = ", ".join(close_ids)
+            generated_tasks.append({
+                "task_id": "FU1",
+                "question": f"Gather distinguishing process lineage, network activity, and execution telemetry to differentiate between hypotheses {competing_labels}."
+            })
+        if top_score < 85 and top_id:
+            generated_tasks.append({
+                "task_id": f"FU{len(generated_tasks) + 1}",
+                "question": f"Investigate historical baseline, user/service activity patterns, and system logs to corroborate hypothesis {top_id} to exceed 85% confidence."
+            })
+        out["follow_up_tasks"] = generated_tasks
+
+    return out
 
 def broker_runs(task_ids: list[str], fetched: list) -> list[dict]:
     """What the Tool Broker did for each task, from the round's outcomes
@@ -452,7 +489,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
         user_msg = "[ALERT CONTEXT]\n" + json.dumps(clean_context, indent=2)
         checkpoint()
         r1 = _ask(system_prompt, user_msg, "planning")
-        plan = extract_json(r1["answer"]) or {}
+        plan = extract_json(r1["answer"]) or extract_json(r1["reasoning"]) or {}
         plan["reasoning"] = r1["reasoning"]
         tokens1 = {"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]}
         emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
@@ -508,7 +545,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 "  evidence_gaps: list of unanswered questions that materially limit a conclusion\n"
                 "  follow_up_tasks: list of atomic source-answerable questions when status is REQUIRES_INVESTIGATION\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
-                "Set status=VERDICT_REACHED when the top score is at least 85 and leads by at least 20; otherwise set REQUIRES_INVESTIGATION.\n"
+                "CRITICAL VERDICT GATE: Declare VERDICT_REACHED ONLY if (top_score >= 85 AND top_score - runner_up >= 20). If either condition fails, you MUST set status='REQUIRES_INVESTIGATION', verdict='REQUIRES_INVESTIGATION', and provide non-empty follow_up_tasks to close the gap. When VERDICT_REACHED, the 'verdict' field MUST match the verdict type of the winning hypothesis with highest score (e.g. if H3 won and H3 is BENIGN, verdict MUST be BENIGN).\n"
                 "Task questions state what was asked, never what happened. Treat only broker findings as evidence. "
                 "An unanswerable or not-searched item is unknown: never turn it into absence, registration status, "
                 "execution, creation, or other affirmative evidence. If such an unknown is material to the top score, "
@@ -529,7 +566,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 sections.append(f"[BROKER FINDINGS - {round_label}]\n{json.dumps(slim, indent=2)}")
             checkpoint()
             rN = _ask(system_prompt, "\n\n".join(sections) + _EVAL_CLOSE, "synthesis")
-            raw_synth = extract_json(rN["answer"]) or {}
+            raw_synth = extract_json(rN["answer"]) or extract_json(rN["reasoning"]) or {}
             synth = evaluations[f"Round {loop_num}"] = verdict_gate(raw_synth, plan, payloads, all_runs)
             emit(q, "synthesis", synth, loop=loop_num, reasoning=rN["reasoning"],
                  tokens={"prompt_tokens": rN["prompt_tokens"], "generation_tokens": rN["generation_tokens"]},

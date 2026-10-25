@@ -58,7 +58,9 @@ def run(monkeypatch, tmp_path):
 
 
 def test_one_round_to_a_verdict_streams_the_stages_in_order(run):
-    synth = {"hypothesis_scores": {"H1": 95, "H2": 10}, "evidence_refs": ["T1:endpoint"]}
+    # The model follows the system prompt and includes status + verdict.
+    synth = {"hypothesis_scores": {"H1": 95, "H2": 10}, "evidence_refs": ["T1:endpoint"],
+             "status": "VERDICT_REACHED", "verdict": "TRUE_POSITIVE"}
     events, records, _ = run((PLAN, "stop"), (synth, "stop"))
 
     assert [e["type"] for e in events] == ["analyst", "analyst", "handoff", "broker_log", "broker", "payload",

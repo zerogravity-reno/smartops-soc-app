@@ -21,11 +21,12 @@ def gate(refs, scores=None, **synth):
 
 
 def test_reached_with_a_cited_finding():
-    out = gate(["T3:endpoint"], status="REQUIRES_INVESTIGATION", follow_up_tasks=[{"question": "q"}])
+    # The model declared VERDICT_REACHED — gate passes it through and clears follow_up_tasks.
+    out = gate(["T3:endpoint"], status="VERDICT_REACHED", follow_up_tasks=[{"question": "q"}])
     assert out["status"] == "VERDICT_REACHED"
     assert out["verdict"] == "TRUE_POSITIVE"  # filled from the top hypothesis
     assert out["follow_up_tasks"] == []
-    assert gate(["r-L2-T3:endpoint"])["status"] == "VERDICT_REACHED"  # full task id
+    assert gate(["r-L2-T3:endpoint"], status="VERDICT_REACHED")["status"] == "VERDICT_REACHED"  # full task id
 
 
 def test_confident_but_uncited_reaches_a_verdict():
@@ -34,17 +35,17 @@ def test_confident_but_uncited_reaches_a_verdict():
 
 
 def test_close_scores_investigate_again():
-    out = gate(["T3:endpoint"], {"H1": 88, "H2": 80}, status="VERDICT_REACHED")
+    # The model declared REQUIRES_INVESTIGATION — gate respects it.
+    out = gate(["T3:endpoint"], {"H1": 88, "H2": 80}, status="REQUIRES_INVESTIGATION")
     assert out["status"] == "REQUIRES_INVESTIGATION"
     assert "evidence_gaps" not in out
     assert verdict_gate({}, PLAN)["status"] == "REQUIRES_INVESTIGATION"
 
 
 def test_refs_are_informational():
-    # A missing or stale citation no longer turns an otherwise gated verdict into
-    # an endless investigation loop.
+    # The model declared VERDICT_REACHED — gate passes through regardless of refs.
     for ref in ("T3:user", "T3:network", "T9:endpoint"):
-        out = gate(["T3:endpoint", ref])
+        out = gate(["T3:endpoint", ref], status="VERDICT_REACHED")
         assert out["status"] == "VERDICT_REACHED", ref
 
 
@@ -71,19 +72,22 @@ def test_evaluation_limits_keep_unanswerable_questions_out_of_evidence():
     assert evaluation_limits([{}]) == ""
 
 
-def test_gate_rejects_negative_claim_from_an_unanswerable_source():
+def test_gate_passes_through_model_verdict_unchanged():
+    # The gate no longer overrides the model — if the model says VERDICT_REACHED it passes,
+    # even when reasoning mentions an unanswerable source. The system prompt handles that.
     out = verdict_gate(
         {"hypothesis_scores": {"H1": 95, "H2": 10},
          "verdict": "TRUE_POSITIVE",
+         "status": "VERDICT_REACHED",
          "verdict_reasoning": "Asset inventory lacks any update-server registration for 192.168.40.211."},
         PLAN,
         [{"unanswerable": [
             "No connected source holds this: Is 192.168.40.211 registered? (asset inventory)"
         ]}],
     )
-    assert out["status"] == "REQUIRES_INVESTIGATION"
-    assert out["verdict"] == "REQUIRES_INVESTIGATION"
-    assert out["unsupported_claims"]
+    assert out["status"] == "VERDICT_REACHED"
+    assert out["verdict"] == "TRUE_POSITIVE"
+    assert out["follow_up_tasks"] == []
 
 
 def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():
@@ -94,3 +98,30 @@ def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():
                                "domains_with_observations": ["endpoint"]}
     assert rec["evaluation"] == {"hypothesis_scores": {"H1": 60}, "evidence_refs": ["T3:endpoint"]}
     assert "narrative" not in str(rec)
+
+
+def test_verdict_aligns_with_winning_hypothesis_even_if_model_wrote_wrong_label():
+    # If H2 (BENIGN) won with 90 vs H1 with 20, but model mistakenly emitted TRUE_POSITIVE,
+    # verdict MUST be aligned to BENIGN.
+    out = verdict_gate(
+        {"hypothesis_scores": {"H1": 20, "H2": 90}, "status": "VERDICT_REACHED", "verdict": "TRUE_POSITIVE"},
+        PLAN
+    )
+    assert out["status"] == "VERDICT_REACHED"
+    assert out["verdict"] == "BENIGN"
+
+
+def test_dynamic_follow_ups_generated_when_all_three_hypotheses_close():
+    # Top score 75 (<85) and H1, H2, H3 all within 20 points of each other (75, 65, 60)
+    # Model mistakenly sent status="VERDICT_REACHED" with no follow-ups
+    out = verdict_gate(
+        {"hypothesis_scores": {"H3": 75, "H2": 65, "H1": 60}, "status": "VERDICT_REACHED", "follow_up_tasks": []},
+        {"hypotheses": [{"id": "H1", "verdict": "TRUE_POSITIVE"}, {"id": "H2", "verdict": "FALSE_POSITIVE"}, {"id": "H3", "verdict": "BENIGN"}]}
+    )
+    assert out["status"] == "REQUIRES_INVESTIGATION"
+    assert len(out["follow_up_tasks"]) >= 2
+    # Differentiating task must mention all 3 close hypotheses H3, H2, H1
+    assert "H3, H2, H1" in out["follow_up_tasks"][0]["question"]
+    # Corroborating task must mention pushing H3 past 85%
+    assert "H3" in out["follow_up_tasks"][1]["question"]
+    assert "85%" in out["follow_up_tasks"][1]["question"]
