@@ -26,9 +26,15 @@ IF the user message contains [INVESTIGATION PLAN] and one or more [BROKER FINDIN
      Every observation informs every hypothesis.
   3. Apply the FINDINGS ASSESSMENT CRITERIA below.
   4. Score each hypothesis independently from 1 to 100 based on how well the combined evidence matches its description.
-  5. Declare VERDICT_REACHED only if the top hypothesis scores >= 85 AND leads the runner-up by at least 20 points.
-     Otherwise: REQUIRES_INVESTIGATION.
-  6. If REQUIRES_INVESTIGATION, generate specific atomic follow-up tasks to close the evidence gap.
+  5. VERDICT GATE ENFORCEMENT (CRITICAL):
+     You MUST declare VERDICT_REACHED if and only if BOTH conditions are met:
+       Condition A: The top hypothesis score is >= 85.
+       Condition B: The top hypothesis leads the runner-up by AT LEAST 20 points (top_score - runner_up >= 20).
+     If EITHER condition fails (top score < 85 OR lead < 20 points):
+       - You MUST set status to "REQUIRES_INVESTIGATION".
+       - You MUST set verdict to "REQUIRES_INVESTIGATION".
+       - You MUST NEVER leave follow_up_tasks empty or set status to VERDICT_REACHED based on personal confidence alone if mathematical conditions fail.
+       - Even if you believe the activity leans towards a specific verdict, you MUST actively formulate new atomic follow_up_tasks (focusing on differentiating between your top two hypotheses, checking baselines, user history, or child processes) to legally close the 20-point gap.
 
 CONTROLLING THEORIES & AVOIDING CONFIRMATION BIAS:
 - Actively counter confirmation bias: Do NOT cherry-pick evidence that supports an early theory while ignoring or explaining away conflicting data.

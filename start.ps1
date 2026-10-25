@@ -12,4 +12,4 @@ Pop-Location
 
 # Start server
 Write-Host "Starting SmartOps SOC on http://localhost:8013" -ForegroundColor Green
-uv run uvicorn smartops.main:app --host 0.0.0.0 --port 8013 --reload
+uv run uvicorn smartops.main:app --host 0.0.0.0 --port 8013 --reload --reload-dir engine
