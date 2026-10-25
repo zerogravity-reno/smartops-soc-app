@@ -78,12 +78,13 @@ def _normalise(query: str | None) -> str:
 _ROW_KEYS = ("results", "rows", "records", "events")
 
 
-def _rows_of(payload: Any) -> list[dict[str, Any]]:
+def _rows_of(payload: Any) -> list[dict[str, Any]] | None:
     """Rows inside a tool result, without knowing the server's envelope.
 
     Tries the common shapes and gives up honestly rather than guessing: an
-    unrecognised payload yields no rows and is reported as a zero-row result set,
-    which is visible, instead of being silently reshaped into something wrong.
+    unrecognised payload is `None`, never `[]`. A real empty search always carries
+    its row list (`results: []`); a Splunk 400 (`{"status_code": 400, "content":
+    "Error parsing…"}`) carries none, and read as `[]` it confirmed absence (B50).
 
     **`structuredContent` is unwrapped first, and that is not a nicety.** A tool
     reached through a live `Agent` returns
@@ -109,7 +110,7 @@ def _rows_of(payload: Any) -> list[dict[str, Any]]:
         inner = payload.get("structuredContent")
         if isinstance(inner, dict | list):
             return _rows_of(inner)
-    return []
+    return None
 
 
 def _has_eventcode(q: str, code: int) -> bool:
@@ -316,7 +317,8 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
     buckets["discovery"] = []
 
     for index, call in enumerate(calls):
-        rows = _rows_of(call.payload)
+        decoded = _rows_of(call.payload)
+        rows = decoded or []
         result_set = ResultSet(
             query=call.query or f"<{call.tool}: query not recoverable from tool input>",
             row_count=len(rows),
@@ -334,6 +336,19 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
         # rows -- which is how a delivered narrative came to describe Splunk's
         # `_internal` index and hosts outside the scope. See
         # `SiemFindings.discovery`.
+        # A payload with no row list is a failed call, not an empty search: filed
+        # where neither completion nor any analyst reads it, kept for the audit (B50).
+        if decoded is None:
+            logger.warning(
+                "task_id=%s tool=%s | payload carried no rows to decode; not counted as "
+                "a search. query=%r",
+                task_id,
+                call.tool,
+                (call.query or "")[:200],
+            )
+            buckets["discovery"].append(result_set)
+            continue
+
         if _describes_estate(call.query):
             logger.info(
                 "tool=%s | no evidence search in this call's input, filing as discovery "

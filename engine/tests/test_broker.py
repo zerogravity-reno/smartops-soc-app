@@ -3073,6 +3073,21 @@ class TestAStepAboutANamedValueNeedsRowsNamingIt:
         outcome = evaluate_step(self.STEP, self._result((self.FILTERED, [row])))
         assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (1, True, False)
 
+    def test_a_failed_filtered_search_does_not_rule_it_out(self):
+        """B50: a Splunk 400 has no row list, so it is not an empty search."""
+        from smartops.projection import project_siem
+        from smartops.subagents import _ToolCall
+
+        error = {"structuredContent": {"status_code": 400, "content": "Error parsing Splunk query"}}
+        result = SubtaskResult(
+            task_id="t1:siem:tu-1", status=SubtaskStatus.OK,
+            findings=project_siem([_ToolCall(tool="splunk_run_query", query=self.FILTERED, payload=error)],
+                                  [], task_id="t1"),
+            queries_run=[QueryRun(query=self.FILTERED)],
+        )
+        outcome = evaluate_step(self.STEP, result)
+        assert (outcome.completed, outcome.confirmed_empty) == (False, False)
+
     def test_without_match_every_row_in_the_category_still_counts(self):
         step = self.STEP.model_copy(update={"completion": CompletionRule(categories=["file_events"])})
         assert evaluate_step(step, self._result((self.UNFILTERED, self.OTHER_FILES))).completed is True

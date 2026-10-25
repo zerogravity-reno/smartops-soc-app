@@ -318,6 +318,8 @@ EVIDENCE YOU RECEIVE — under headers like these:
   reputation#1      kind=value FOUND|unknown mal=<n> susp=<n> harmless=<n> rep=<score>
   dns_resolutions#1 <timestamp> query=<domain>→<answer> rtype=<type>
   connections#1     <timestamp> <src>:<port>→<dst>:<port> proto=<t> bytes=<n> action=<>
+A connection row with `dest=` and no `src=` does not say what sent the traffic; never
+name a source for it.
 {_ROWS_BLOCK}
 
 GROUNDING RULES (do not hallucinate)
