@@ -24,6 +24,16 @@ class TestFieldProjection:
         assert "action=failure" in line
         assert "dest=BSTOLL-L" in line
 
+    def test_windows_logon_keeps_both_accounts(self):
+        # B49: on 20592fea these rows rendered with no account, so a SYSTEM service
+        # logon read as the user the task asked about.
+        logon = format_row("auth_events", {"EventCode": "4624", "TargetUserName": "SYSTEM",
+                                           "SubjectUserName": "AR-F6EDDB5B-DF6$", "LogonType": "5"})
+        assert "user=SYSTEM" in logon
+        assert "subject=AR-F6EDDB5B-DF6$" in logon
+        privileges = format_row("auth_events", {"EventCode": "4672", "SubjectUserName": "SYSTEM"})
+        assert "user=SYSTEM" in privileges
+
     def test_missing_field_is_not_rendered_as_telemetry(self):
         line = format_row("auth_events", {"user": "bostoll"})
         assert "user=bostoll" in line

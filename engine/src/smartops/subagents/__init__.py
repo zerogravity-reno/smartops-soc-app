@@ -179,6 +179,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- Rows from the `notable` and `risk` indexes are Splunk ES detections (alerts and risk scores), not telemetry. Say so in `assessment` when you return any.\n"
         "- Filter early using sourcetype or eventtype predicates before searching free-text fields.\n"
         "- Conclude a category's data is absent only once the fallback above has run (`summariesonly=t`, then `=f`, then the raw sourcetype, then the real sourcetype you listed) and every step returned 0 rows. Note the gap in `assessment` and finish.\n"
+        "- When the mission names values the rows must contain, keep that filter at EVERY stage of the fallback. Never drop it to show the category holds data: rows about other files or users answer nothing. Search the category itself, filtered: a file name is `EventCode IN (11,15,29) TargetFilename=\"*<name>*\"`, not a bare keyword search, which no category can claim. That search returning 0 rows is the answer.\n"
         "- In `queries_run`, tag every query with its `category`, one of: 'dns_resolutions', 'connections', 'processes', 'auth_events', 'file_events', 'registry_events', 'script_blocks'.\n"
     ),
     "edr": (
@@ -215,8 +216,11 @@ BUDGET & STOPPING CONDITIONS -- read this before your first tool call:
 - So: if you are running short, stop searching and report what you have. A
   partial answer that states its own gaps is worth far more than none.
 - STOP EARLY WHEN YOU HAVE THE ANSWER. The turn budget is a ceiling, not a
-  target. As soon as your queries have covered the requested categories --
-  including categories that came back empty -- report immediately. Do NOT spend
+  target. When the mission names values the rows must contain, you have the
+  answer once rows contain one of them, or once a search of the requested
+  category filtered on them returns nothing -- report immediately. Otherwise,
+  as soon as your queries have covered the requested categories -- including
+  categories that came back empty -- report immediately. Do NOT spend
   a further turn re-running a query you already ran, confirming a result you
   already have, or widening a search that already answered the question.
 

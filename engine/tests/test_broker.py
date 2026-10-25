@@ -3036,3 +3036,67 @@ class TestAStepIsAskedForItsCategories:
 
         assert goals == ["was svcupdate.dat written?\n\nThis step is complete only with rows in: file_events."]
         assert digest.endswith("| step file_write incomplete: no file_events rows")
+
+
+class TestAStepAboutANamedValueNeedsRowsNamingIt:
+    """B48: on 20592fea a step about svcupdate.dat dropped its filename filter, got ten
+    `__PSScriptPolicyTest_*.ps1` rows, and closed as answered. The rows go through
+    `project_siem`, so a set's category is the one its SPL implies, as in a run."""
+
+    STEP = FetchStep(step_id="file_write", family="siem", objective="svcupdate.dat writes",
+                     completion=CompletionRule(categories=["file_events"], match=["svcupdate.dat"]))
+    FILTERED = 'host=h EventCode IN (11,15,29) TargetFilename="*svcupdate.dat*" | table TargetFilename'
+    UNFILTERED = "host=h EventCode=11 | table TargetFilename"
+    OTHER_FILES = [{"EventCode": "11", "TargetFilename": rf"C:\Temp\__PSScriptPolicyTest_{n}.ps1"} for n in range(10)]
+
+    def _result(self, *calls: tuple[str, list[dict]]) -> SubtaskResult:
+        from smartops.projection import project_siem
+        from smartops.subagents import _ToolCall
+
+        return SubtaskResult(
+            task_id="t1:siem:tu-1", status=SubtaskStatus.OK,
+            findings=project_siem([_ToolCall(tool="splunk_run_query", query=q, payload={"results": rows})
+                                   for q, rows in calls], [], task_id="t1"),
+            queries_run=[QueryRun(query=q) for q, _ in calls],
+        )
+
+    def test_rows_about_other_files_neither_answer_nor_rule_it_out(self):
+        outcome = evaluate_step(self.STEP, self._result((self.UNFILTERED, self.OTHER_FILES)))
+        assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (0, False, False)
+
+    def test_an_empty_filtered_search_rules_it_out_whatever_a_wider_one_found(self):
+        outcome = evaluate_step(self.STEP, self._result((self.FILTERED, []), (self.UNFILTERED, self.OTHER_FILES)))
+        assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (0, True, True)
+
+    def test_a_row_naming_the_file_answers_it_whatever_the_case_or_path(self):
+        row = {"EventCode": "11", "TargetFilename": r"C:\Users\x\AppData\Local\Temp\SvcUpdate.DAT"}
+        outcome = evaluate_step(self.STEP, self._result((self.FILTERED, [row])))
+        assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (1, True, False)
+
+    def test_without_match_every_row_in_the_category_still_counts(self):
+        step = self.STEP.model_copy(update={"completion": CompletionRule(categories=["file_events"])})
+        assert evaluate_step(step, self._result((self.UNFILTERED, self.OTHER_FILES))).completed is True
+
+    async def test_siem_is_sent_after_the_target_and_the_broker_told_it_missed(self):
+        request = BrokerRequest(task=make_task())
+        with_plan(request, self.STEP)
+        goals = []
+
+        def other_files(mission):
+            goals.append(mission.goal)
+            return self._result((self.UNFILTERED, self.OTHER_FILES)).model_copy(update={"task_id": mission.task_id})
+
+        request.run_subagent = runner_returning(other_files)
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="was svcupdate.dat written?", step_id="file_write",
+            tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
+        )
+
+        assert goals[0].endswith(
+            "\n\nSearch file_events for svcupdate.dat. The step is complete with rows naming it, or with "
+            "a file_events search filtered on it that returns none. Keep the filter in every query."
+        )
+        assert digest.endswith(
+            "| step file_write missed: 10 file_events rows, none contain svcupdate.dat; "
+            "no empty file_events search filtered on it"
+        )

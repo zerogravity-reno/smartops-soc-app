@@ -258,10 +258,12 @@ _HANDOFF_CHARS_PER_TOKEN = 3.5
 """The payload JSON, not raw rows (`_CHARS_PER_TOKEN`). Measured 3.76 on 89674d75:
 round 3's synthesis prompt grew 4,789 tokens for round 3's 17,985 characters."""
 
-_ANALYST_GENERATION_RESERVE = 16_384
+_ANALYST_GENERATION_RESERVE = 12_288
 """The Analyst's own `max_gen_len` (`analyst.MAX_GEN_LEN`),
 not the sub-analysts' `_GENERATION_RESERVE`: at 4,096 its synthesis thinking ran
-out before the JSON on 78cd60ec (T15). `tests/test_verdict_gate.py` holds the two equal."""
+out before the JSON on 78cd60ec (T15). 16,384 (a26b2fd, after ea38cb13's cut-off at
+8,192) halved the handoff below and dropped all 27 observations on 20592fea (B14), whose
+synthesis wrote 1.8k tokens. `tests/test_verdict_gate.py` holds the two equal."""
 
 HANDOFF_CHAR_BUDGET = int(
     (_CONTEXT_WINDOW - _ANALYST_GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE
@@ -270,7 +272,7 @@ HANDOFF_CHAR_BUDGET = int(
     * _HANDOFF_CHARS_PER_TOKEN
 )
 """Characters one round's whole payload batch may take, split across its tasks by
-the caller."""
+the caller. 20,440: 27,608 at an 8,192 reserve, 13,272 at 16,384 (B14 on 20592fea)."""
 
 
 @dataclass(frozen=True)

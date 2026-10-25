@@ -22,7 +22,7 @@ from smartops.subagent_analysts.model import AnalystModel
 PROMPT_PATH = Path(__file__).parent / "prompts" / "analyst_system_prompt.txt"
 
 FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must match
-MAX_GEN_LEN = 16_384  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
+MAX_GEN_LEN = 12_288  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
 
 _EVAL_CLOSE = (
     "\n\nOutput ONLY the EVALUATION JSON object specified above: no preamble, "

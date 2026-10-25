@@ -889,7 +889,8 @@ def pack_for_analyst(
         while over > 0:
             heavy = [n for p in payloads for n in p.findings if n.observations]
             if not heavy:
-                logger.warning("analyst payload: narratives alone exceed the %d-character budget by %d", max_chars, over)
+                logger.warning("analyst payload: what always crosses (narratives, fact headers, structure) "
+                               "exceeds the %d-character budget by %d", max_chars, over)
                 break
             biggest = max(heavy, key=lambda n: sum(cost(o) for o in n.observations))
             if id(biggest) not in trimmed:

@@ -156,6 +156,10 @@ HOW TO DECOMPOSE:
 - Only name categories the goal genuinely needs. A step naming a category nobody retrieves
   stays incomplete, which is the correct outcome and not something to plan around.
 - `vt` findings are not bucketed this way: leave `completion.categories` empty for them.
+- When a step asks about a named file, hash, user, domain or IP, put that bare value in
+  `completion.match` (`svcupdate.dat`, not its full path): only rows containing it then
+  count, and if the search returns rows about something else you are told it missed.
+  Leave it empty for a host-wide sweep.
 
 `plan_fetch` returns the step ids it recorded. Every dispatch must name one of them: call a
 specialist's tool with the `step_id` of the planned step that dispatch carries out. A dispatch
@@ -545,6 +549,46 @@ def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     return counts
 
 
+def _step_rows(step: FetchStep, findings: Any) -> tuple[int, int, bool]:
+    """(rows in the step's categories, those that answer it, whether every named
+    category came back from at least one search with no rows) for one result.
+
+    The first two differ only when the step names `completion.match` (B48): a row
+    answers it only if one of its values contains a match value, so a search
+    broadened past the file it was asked about returns rows that count for nothing.
+    Judged on the rows, never on the query text or the model's tag: `NOT x` and
+    `x OR y` both name x. `uncategorised` and `_NOT_RETRIEVAL` never count -- see
+    `evaluate_step`.
+
+    The third is what lets a filtered search prove absence. `project_siem` files a
+    set by the category its SPL implies, and only a call that ran yields one, so an
+    empty `file_events` set is a file search that ran and found nothing.
+    """
+    wanted = set(step.completion.categories)
+    match = [m.lower() for m in step.completion.match if m.strip()]
+    retrieved = answering = 0
+    came_back_empty: set[str] = set()
+    for name, value in findings or []:
+        if (not isinstance(value, list) or name in _NOT_RETRIEVAL or name == "uncategorised"
+                or (wanted and name not in wanted)):
+            continue
+        for item in value:
+            rows = getattr(item, "row_count", 1)
+            retrieved += rows
+            if rows == 0:
+                came_back_empty.add(name)
+            if not match:
+                answering += rows
+            else:
+                # ponytail: counts the rows kept on the ResultSet, not `row_count`; a
+                # capped set under-counts matches, which can only leave a step open.
+                answering += sum(
+                    1 for row in getattr(item, "rows", [])
+                    if any(m in str(v).lower() for v in row.values() for m in match)
+                )
+    return retrieved, answering, bool(wanted) and wanted <= came_back_empty
+
+
 def evaluate_step(
     step: FetchStep, result: SubtaskResult, *, prior: StepOutcome | None = None
 ) -> StepOutcome:
@@ -592,13 +636,8 @@ def evaluate_step(
     # `uncategorised` never counts: rows nobody attributed to a category cannot
     # show the step's question was answered. A subagent cut off before its answer
     # puts every row there, and on c7dbf51d 74 fallback-scan rows closed T1 (F7).
-    rows_retrieved = sum(
-        n
-        for name, n in counts
-        if name not in _NOT_RETRIEVAL
-        and name != "uncategorised"
-        and (not wanted or name in wanted)
-    )
+    # With `completion.match`, only rows naming the step's target count (B48).
+    in_categories, rows_retrieved, searched_empty = _step_rows(step, result.findings)
     outcome.rows_retrieved += rows_retrieved
 
     # `confirmed_empty` is a claim about the *data*: we looked, and it is not
@@ -624,8 +663,12 @@ def evaluate_step(
     looked_at_named_categories = wanted <= {name for name, _ in counts}
     # Not after a failed dispatch, nor with unattributed rows in hand: "looked and
     # empty" is a claim nobody can make when the answer was lost or rows exist.
+    # With `completion.match`, rows about other things decide nothing either way: ten
+    # other files neither show svcupdate.dat nor rule it out. What rules it out is a
+    # search of every named category that came back empty (B48) -- the filtered one
+    # siem is told to run -- whatever a wider query also returned.
     confirmed_empty = (
-        rows_retrieved == 0
+        (rows_retrieved == 0 and searched_empty if step.completion.match else in_categories == 0)
         and looked_at_named_categories
         and result.status is not SubtaskStatus.ERROR
         and not any(name == "uncategorised" and rows > 0 for name, rows in counts)
@@ -803,11 +846,21 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
     # file step's keyword search returned only process rows and stopped (every file
     # step on 10-12), and the step needed a second dispatch or ended incomplete.
     wanted = step.completion.categories
+    match = step.completion.match
     mission = SubagentMission(
         task_id=f"{req.task.task_id}:{family}:{ctx.tool_use['toolUseId']}",
         hypothesis_id=req.task.hypothesis_id,
         tool_family=family,
-        goal=question + (f"\n\nThis step is complete only with rows in: {', '.join(wanted)}." if wanted else ""),
+        goal=question
+        + (
+            # B48: with a target the step is about the target. "Complete only with rows
+            # in file_events" alone sent siem after any file row it could find.
+            f"\n\nSearch {', '.join(wanted) or 'the data'} for {' or '.join(match)}. The step is "
+            f"complete with rows naming it, or with a {', '.join(wanted)} search filtered on it "
+            f"that returns none. Keep the filter in every query."
+            if match
+            else f"\n\nThis step is complete only with rows in: {', '.join(wanted)}." if wanted else ""
+        ),
         scope=req.task.scope,
     )
 
@@ -839,7 +892,13 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
 
     record_result_status(result)
     digest = _digest(result)
-    if not outcome.completed and wanted:
+    in_categories, answering, _ = _step_rows(step, result.findings)
+    if not outcome.completed and match and in_categories and not answering:
+        # B48: the search came back, but with rows about something else. Counts, not
+        # content, so the Broker can re-dispatch filtered on the target or accept the miss.
+        digest += (f" | step {step.step_id} missed: {in_categories} {'/'.join(wanted) or family} rows, "
+                   f"none contain {', '.join(match)}; no empty {'/'.join(wanted) or family} search filtered on it")
+    elif not outcome.completed and wanted:
         # B44: so a re-dispatch asks for what is missing instead of repeating the question.
         got = {name for name, n in _finding_counts(result.findings) if n}
         missing = [c for c in wanted if c not in got]

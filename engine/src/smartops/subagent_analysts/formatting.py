@@ -117,8 +117,13 @@ def _count_suffix(row: dict[str, Any]) -> str:
 _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
     "auth_events": {
         "time": ("time", "_time", "timestamp"),
-        "user": ("user", "src_user", "Account_Name", "AccountName", "userPrincipalName"),
-        "src": ("src", "src_ip", "Source_Network_Address", "ipAddress", "Workstation_Name"),
+        # Raw Windows Security events name two accounts (B49): `TargetUserName` is the one
+        # logged on (4624), `SubjectUserName` the one asking -- or, on 4672, the one granted.
+        "user": ("user", "src_user", "Account_Name", "AccountName", "userPrincipalName",
+                 "TargetUserName", "SubjectUserName"),
+        "subject": ("SubjectUserName",),
+        "src": ("src", "src_ip", "Source_Network_Address", "ipAddress", "IpAddress",
+                "Workstation_Name", "WorkstationName"),
         "dest": ("dest", "dest_host", "Computer", "host"),
         "action": ("action", "status", "signature", "failureReason"),
         # `code`/`logon_type` are the discriminating pair: without them, a
@@ -307,6 +312,7 @@ def _format_auth_event(row: dict[str, Any]) -> str:
     return (
         f"{_field(row, 'auth_events', 'time')} "
         f"user={_field(row, 'auth_events', 'user')} "
+        f"subject={_field(row, 'auth_events', 'subject')} "
         f"src={_field(row, 'auth_events', 'src')} "
         f"dest={_field(row, 'auth_events', 'dest')} "
         f"action={_field(row, 'auth_events', 'action')} "

@@ -674,6 +674,16 @@ class CompletionRule(BaseModel):
             "false-completion problem back where it was."
         ),
     )
+    match: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Values a row must contain to answer this step -- the file name, hash, "
+            "user, domain or IP it asks about. When set, only rows containing one "
+            "(case-insensitive) count, so a step about svcupdate.dat is not closed "
+            "by ten other files a broadened search returned (B48). Empty, the "
+            "default, counts every row in `categories`: a host-wide sweep."
+        ),
+    )
 
 
 class FetchStep(BaseModel):
