@@ -58,6 +58,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 ## Summary
 
+**2026-10-25 (b) delta (`broker-fixes`: `a6b698a`, `67128bc`, `b1511bc`):** B11 and B50 fixed. B50: a payload with no row list (a Splunk 400) is filed as discovery, not as an empty search; 11 saved 400s re-projected, none counted, and a live 400 today came back as an error reply, which was never evidence. B11: the 20592fea misreads are gone on a live sub-analyst replay of the same evidence (no source invented, 4624 and 4672 told apart); a protocol the rows don't carry is dropped; the auth summary counts event code and subject; counts and times are scoped to observations in the prompt. Residual small-model wording (spelled-out counts, an odd interpretation) is left to B51, which takes the narrative out of synthesis.
+
 **2026-10-25 delta (PR #11, `4016a5c`..`db9d90f`, read on `main` @ `010108b`):** `verdict_gate` enforces 85/20 in code again, and nothing else. It checks no refs, evidence or step outcomes. It no longer calls the unknown-evidence guard from `0e341d0` (G4). It doesn't validate the scores it gates on (G8, G10), and passing scores override the model's own REQUIRES_INVESTIGATION (G11). New G4–G12 and T28–T30, all Analyst code, routed. G1, G3 and T25 stay removed. G2 is still open.
 
 **2026-10-14 delta (`20592fea`):** B46 and B47 verified fixed; B14 reopened (27 observations omitted); B11 field interpretation recurred. New B48 (named-file step completes on unrelated files) and B49 (Windows authentication usernames lost in projection). Reference blocking was deliberately removed from the current gate, so T25/G1/G3 no longer block, while T1's older reference-validation guarantee no longer applies. Full evidence and unexercised cases: [run review](run-20592fea-review.md). Historical issue descriptions below retain their original chronology.
@@ -109,7 +111,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
 | B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Fixed (B10c, verified live on `dce405e5`; decoded block capped at 8 lines, `ENCODED_LINE_CAP`) |
-| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Partly fixed (`0430974`, `events=`). Recurred on `20592fea`: T5 invents self-connections from destination-only rows and overstates service-logon fields. Missing account projection split out as B49; placeholders as B47 |
+| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Fixed (`0430974`, `a6b698a`, `67128bc`, `b1511bc`); held on a live replay of `20592fea` T5. Residual narrative wording is B51 |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
 | B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed (`ed27070`): the Analyst's generation reserve 16,384 → 12,288 (`a26b2fd` had halved the budget to 13,272; now 20,440). Re-run of `20592fea` L2: 29/29 observations kept, none omitted; set summaries still drop for size |
@@ -148,7 +150,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B47 | Broker | Empty fields render as `bytes=- uri=- action=-`, and a sub-analyst reads the placeholders as values | Medium | Fixed (`3d5cd88`); verified live on `20592fea` network exhibits: missing fields omitted, no equal-byte claim. Focused tests passed; direction hallucination remains B11 |
 | B48 | Broker | Named-file retrieval completes on unrelated file events | High | Fixed (`ed27070`): `completion.match` names the target; only rows naming it count, and an empty search of each named category confirms absence. siem's prompt and mission keep the filter at every stage. Held on T3 re-run: one filtered EventCode 11/15/29 search, confirmed empty |
 | B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
-| B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Open (Codex review of B48, `projection.py:82`) |
+| B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Fixed (`a6b698a`): 11 saved 400s re-projected, none counted; live re-run `20592fea-L2-T5` showed no regression |
+| B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Open. Candidate (Codex): keep the narrative for audit, send synthesis code-owned evidence instead; decouple `name_expansions` from narrative text first. Changes what the Analyst reads: needs Yousef |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -572,6 +575,13 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
 - **Logon type (`3bf5fce8`, 2026-10-11):** "five successful remote interactive logons … logon type 5 (remote interactive)". Type 5 is a service logon. Fixed on `broker-k4-ab-fixes`: `formatting._field` writes `logon_type=5 (Service)` from the Windows table, so the model quotes a name it was given.
 - **Fixed (`0430974`, 2026-10-12):** judging is nearly gone after B15's prompt rewrite (2 hedging words in 29 domains on `aab8e000`, `204888fd`, `c8dd42cf`, `2a71757f`). What remained was field misreads, and the clearest class was the aggregate count: "269 bytes" (B35) and "1,633 allowed actions" (`c8dd42cf` T3 network). `_count_suffix` now renders `events=N`, matching the set header's `events=`, and the two prompt lines describing grouped rows follow. Left as a known 8B limit: `aab8e000` T2 read PowerShell spawned by PowerShell as "child processes of themselves".
 - **Held live (`ae7d41b0`, `b7359eab`):** no count read as bytes or actions; grouped rows render `events=7`. A neighbouring misread remains and is split out as B47: empty fields render as `bytes=- uri=- action=-`, and `b7359eab` T4 network wrote "All six connections had equal byte transfers and no recorded actions" over 3 rows and 21 events.
+- **Fixed (2026-10-25, `a6b698a`, `67128bc`, `b1511bc`):** the `20592fea` recurrences, each now stated by code.
+  - A connection row missing an end renders `dest=…`, never `-→dest`; the self-connection and multicast claims are gone.
+  - Auth event codes carry their names (`4672 (special privileges assigned to new logon)`); the summary counts `event_code` and `subject`, and a field some rows lack reads `(absent)`, not `-`.
+  - A narrative sentence or observation naming TCP/UDP/ICMP that no row prints is dropped (the replay guessed UDP from port 5353).
+  - The prompt scopes counts and times to observations, and says print order is not time order.
+  - **Held:** live sub-analyst replays of `20592fea` T5 (one before the prompt change, three after). No invented source or protocol reaches the payload; identity tells 4624 from 4672 and no longer reads 20 rows as "20 sequences". No judging words, no parent path read as an endpoint, no `notable`/`risk` query.
+  - **Not fixed by design:** narratives still carry spelled-out counts and an occasional interpretation ("scanning" for `Test-NetConnection`). A quantity filter was tried and reverted: it emptied a narrative and dropped true counts. The lever is B51.
 
 **B12. A sub-analyst cut off twice loses its whole domain.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`78cd60ec`):** T1 endpoint's first reply and its re-ask both hit `max_gen_len`, and the payload carried "endpoint analyst produced no parseable finding after a re-ask" in place of the domain's narrative. The narrative itself had been written.
@@ -1320,7 +1330,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 44 | 2 | 2 | B50 new; B11 partly; B2 closed; B6/B20 with Yousef (#14). B2, B6 and B20's scoping wait on the Analyst's follow-ups |
+| Broker | 46 | 1 | 2 | B51 new (needs Yousef); B11 and B50 fixed; B6/B20 with Yousef (#14) |
 | Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
 | Triage (Analyst) | 0 | 3 | 26 | T1 partly; T2–T24, T26–T30 (T25 removed by design) |
 | Gate (Analyst) | 0 | 0 | 10 | G2, G4–G12 (G1, G3 removed by design) |
@@ -1329,7 +1339,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 | Frontend | 1 | 0 | 0 | W9 fixed with P3 |
 | Cost, audit, security, handoff | 14 | 0 | 0 | None |
 
-- **Broker (ours), next:** B14, B48 and B49 fixed (`ed27070`, held on CLI re-runs of `20592fea` L2 and T3). Next: B11's recurrence, then B50. B2, B6 and B20's scoping still wait on the Analyst's follow-ups.
+- **Broker (ours), next:** B11 and B50 fixed (`a6b698a`, `67128bc`, `b1511bc`). Next: the Broker owner's reply on PR #9, which is also where B51 (narrative out of synthesis) belongs. B6 and B20's scoping still wait on the Analyst's follow-ups.
 - **Held live:** AR12, AR3, B43 on `ae7d41b0`; B11, B44, B45 on `ae7d41b0` and `b7359eab`; B16 on `b7359eab`.
 - **Live checks (10-13):** AR13 Broker handoff and AR14 Broker failure passed with client-local outages; full Analyst behavior remains untested. B24 session-loss detection/reset fired, but step termination and successful re-dispatch remain unverified because the runner did not capture a final result. See `docs/mcp-ar13-ar14-live-2026-10-13.md`.
 - **Decisions (Mohammed):** the B15 safety net; T20; P1's raw time fields.
