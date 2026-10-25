@@ -104,7 +104,7 @@ Coding agents must also follow [AGENTS.md](AGENTS.md). New pull requests use the
 
 ## Automatic PR creation and merging with Codex
 
-Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the required check rules are verified. Auto-merge waits for passing checks **and one approving review** from a code owner of the changed paths ([CODEOWNERS](.github/CODEOWNERS)); a push after approval needs a fresh approval. Unresolved discussions must be resolved before merging.
+Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the required check rules are verified. Auto-merge waits for passing checks **and one approving review** from the code owner ([CODEOWNERS](.github/CODEOWNERS)); a push after approval needs a fresh approval. The code owner's own PRs cannot be self-approved: the owner merges them with the review ruleset's bypass once checks pass. Unresolved discussions must be resolved before merging.
 
 The repository must have **Allow auto-merge** enabled under **Settings → General → Pull Requests**. The [CI workflow](.github/workflows/ci.yml) runs the Python suite and frontend tests, type-check, and build on every PR to `main`. A smoke job also builds the UI, starts the API, runs [`.github/scripts/smoke.py`](.github/scripts/smoke.py), and completes one `--scripted` Broker run. Its final `SmartOps CI` check fails unless every job succeeds, including when a dependency job fails or is skipped. No service secrets or live investigations are needed.
 
@@ -118,13 +118,15 @@ If all requirements already pass, this command can merge immediately. If protect
 
 ## Enforce the pull request workflow on GitHub
 
-Documentation describes the policy; GitHub branch protection or a branch ruleset enforces it. A repository administrator should configure an active rule targeting `main` in **Settings → Rules → Rulesets**. The importable [main ruleset](.github/main-ruleset.json) contains this policy:
+Documentation describes the policy; GitHub rulesets enforce it. A repository administrator configures two active rulesets targeting `main` in **Settings → Rules → Rulesets**. The importable [main ruleset](.github/main-ruleset.json) has no bypass actors and contains:
 
-- Require a pull request before merging, with **one** approval from a code owner. Pushes after approval dismiss it and need a fresh approval.
+- Require a pull request before merging.
 - Allow squash merging only.
 - Require the GitHub Actions **SmartOps CI** check and an up-to-date branch.
 - Require all review conversations to be resolved.
 - Block force pushes and branch deletion.
-- Apply the rule to administrators as well, with no routine bypass actors.
+- Apply the rule to administrators as well, with no bypass actors.
+
+The importable [review ruleset](.github/main-review-ruleset.json) requires **one** approval from the code owner; pushes after approval dismiss it and need a fresh approval. After importing it, add a bypass actor: a team whose only member is the code owner (`@mrahmy-reno`), with bypass mode **For pull requests only**. The owner can then merge their own PRs without an approval, but never push to `main` directly or skip the required checks in the main ruleset.
 
 Developers push topic branches and merge through passing pull requests. Update the existing ruleset rather than adding a second one: rulesets combine, so the stricter of two rules always applies. Enable **Automatically delete head branches** under **Settings → General**. Existing classic branch protection must also agree with this policy. The `SmartOps CI` context must match the workflow's final job name exactly and be sourced from GitHub Actions. An administrator must verify that the rule is active and supported by the repository's GitHub plan before treating direct pushes as blocked.

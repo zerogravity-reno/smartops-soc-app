@@ -1,13 +1,4 @@
-# Each path names its primary owner first; the second is the backup reviewer,
-# since GitHub never lets an author approve their own pull request.
-
-# Tool Broker and sub-analysts
-/engine/src/smartops/broker.py             @mrahmy-reno @ysalahai
-/engine/src/smartops/subagents/            @mrahmy-reno @ysalahai
-/engine/src/smartops/subagent_analysts/    @mrahmy-reno @ysalahai
-/engine/src/smartops/tools/                @mrahmy-reno @ysalahai
-
-# Analyst
-/engine/src/smartops/analyst.py            @ysalahai @mrahmy-reno
-/engine/src/smartops/analyst_cost.py       @ysalahai @mrahmy-reno
-/engine/src/smartops/prompts/              @ysalahai @mrahmy-reno
+# Every pull request needs a review from the code owner. The owner's own pull
+# requests merge through the review ruleset's bypass team instead, since GitHub
+# never lets an author approve their own pull request (see CONTRIBUTING.md).
+*    @mrahmy-reno
