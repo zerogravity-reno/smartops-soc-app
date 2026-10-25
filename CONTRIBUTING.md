@@ -37,26 +37,10 @@ No credentials or `.env` file are needed to serve the UI, search the local ESCU 
 uv run --frozen uvicorn smartops.main:app --host 0.0.0.0 --port 8013
 ```
 
-Wait for `Application startup complete`. The API serves the built UI at `/`. From another terminal, verify that both the server and the local corpus work:
+Wait for `Application startup complete`. The API serves the built UI at `/`. From another terminal, verify that both the server and the local corpus work (CI runs the same check):
 
 ```sh
-uv run --frozen python -c '
-import json
-from urllib.request import Request, urlopen
-
-base = "http://127.0.0.1:8013"
-with urlopen(base + "/", timeout=10) as page:
-    assert page.status == 200 and b"id=\"root\"" in page.read()
-request = Request(
-    base + "/api/escu",
-    data=json.dumps({"rule_name": "Windows PowerShell DownloadString"}).encode(),
-    headers={"Content-Type": "application/json"},
-)
-with urlopen(request, timeout=10) as response:
-    result = json.load(response)
-assert result["status"] == "success" and result["matches"]
-print("UI and ESCU lookup passed")
-'
+uv run --frozen python .github/scripts/smoke.py
 ```
 
 Without Splunk configuration, `/api/incident-queue` reports `no MCP server configured for siem`. This is expected for local development; it does not validate a live integration.
@@ -120,11 +104,11 @@ Coding agents must also follow [AGENTS.md](AGENTS.md). New pull requests use the
 
 ## Automatic PR creation and merging with Codex
 
-Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the required check rules are verified. The repository owner chose **passing automated checks alone**, with **zero required human approvals**. This authorizes the workflow without a separate manual approval or merge confirmation. Reviews remain welcome; unresolved discussions must be resolved before merging.
+Codex should commit and push its topic branch, create the PR, and enable GitHub auto-merge once the required check rules are verified. Auto-merge waits for passing checks **and one approving review** from a code owner of the changed paths ([CODEOWNERS](.github/CODEOWNERS)); a push after approval needs a fresh approval. Unresolved discussions must be resolved before merging.
 
-The repository must have **Allow auto-merge** enabled under **Settings → General → Pull Requests**. The [CI workflow](.github/workflows/ci.yml) runs the Python suite and frontend tests, type-check, and build on every PR to `main`. Its final `SmartOps CI` check fails unless both jobs succeed, including when a dependency job fails or is skipped. No service secrets or live investigations are needed.
+The repository must have **Allow auto-merge** enabled under **Settings → General → Pull Requests**. The [CI workflow](.github/workflows/ci.yml) runs the Python suite and frontend tests, type-check, and build on every PR to `main`. A smoke job also builds the UI, starts the API, runs [`.github/scripts/smoke.py`](.github/scripts/smoke.py), and completes one `--scripted` Broker run. Its final `SmartOps CI` check fails unless every job succeeds, including when a dependency job fails or is skipped. No service secrets or live investigations are needed.
 
-After verifying the protection rules and choosing a merge method allowed by the repository, enable auto-merge for the PR. For example, from the PR's topic branch when squash merging is enabled:
+After verifying the protection rules, enable auto-merge for the PR. Squash is the only allowed merge method, so one PR lands as one revertible commit:
 
 ```sh
 gh pr merge --auto --squash
@@ -136,10 +120,11 @@ If all requirements already pass, this command can merge immediately. If protect
 
 Documentation describes the policy; GitHub branch protection or a branch ruleset enforces it. A repository administrator should configure an active rule targeting `main` in **Settings → Rules → Rulesets**. The importable [main ruleset](.github/main-ruleset.json) contains this policy:
 
-- Require a pull request before merging, with **zero** required approvals and no required Code Owner or last-push approval.
+- Require a pull request before merging, with **one** approval from a code owner. Pushes after approval dismiss it and need a fresh approval.
+- Allow squash merging only.
 - Require the GitHub Actions **SmartOps CI** check and an up-to-date branch.
 - Require all review conversations to be resolved.
 - Block force pushes and branch deletion.
 - Apply the rule to administrators as well, with no routine bypass actors.
 
-Developers push topic branches and merge through passing pull requests. When replacing an existing one-approval rule, update that rule rather than leaving both active: rulesets combine, so the old rule would still require a reviewer. Existing classic branch protection must also agree with this policy. The `SmartOps CI` context must match the workflow's final job name exactly and be sourced from GitHub Actions. An administrator must verify that the rule is active and supported by the repository's GitHub plan before treating direct pushes as blocked.
+Developers push topic branches and merge through passing pull requests. Update the existing ruleset rather than adding a second one: rulesets combine, so the stricter of two rules always applies. Enable **Automatically delete head branches** under **Settings → General**. Existing classic branch protection must also agree with this policy. The `SmartOps CI` context must match the workflow's final job name exactly and be sourced from GitHub Actions. An administrator must verify that the rule is active and supported by the repository's GitHub plan before treating direct pushes as blocked.

@@ -1,6 +1,8 @@
 ## Change
 
-Describe the problem and resulting behavior. Link the issue if there is one.
+Asana task: <link>
+
+Describe the problem and resulting behavior.
 
 ## Validation
 

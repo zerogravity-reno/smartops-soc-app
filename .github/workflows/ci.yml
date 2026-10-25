@@ -47,9 +47,41 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  smoke:
+    name: App starts and a scripted run completes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.12.23"
+          python-version: "3.13"
+          enable-cache: true
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv sync --frozen
+      - name: Build the UI the API serves
+        working-directory: frontend
+        run: npm ci && npm run build
+      - name: Serve the UI and answer an ESCU lookup
+        run: |
+          uv run --frozen uvicorn smartops.main:app --host 127.0.0.1 --port 8013 > uvicorn.log 2>&1 &
+          uv run --frozen python .github/scripts/smoke.py || { cat uvicorn.log; exit 1; }
+      - name: Complete a scripted Broker run (no model calls, no credentials)
+        env:
+          SMARTOPS_RUNS_DIR: ${{ runner.temp }}/runs
+        run: >-
+          env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE uv run --frozen python -m smartops.main
+          --task-file docs/examples/botsv3-coinhive-tasks.json
+          --task-id botsv3-coinhive-consent --scripted
+
   required:
     name: SmartOps CI
-    needs: [python, frontend]
+    needs: [python, frontend, smoke]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -58,6 +90,8 @@ jobs:
         env:
           PYTHON_RESULT: ${{ needs.python.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
         run: |
           test "$PYTHON_RESULT" = success
           test "$FRONTEND_RESULT" = success
+          test "$SMOKE_RESULT" = success
