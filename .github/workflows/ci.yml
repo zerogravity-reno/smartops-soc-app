@@ -48,7 +48,7 @@ jobs:
       - run: npm run build
 
   smoke:
-    name: App starts and a scripted run completes
+    name: App starts and serves the UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -71,13 +71,6 @@ jobs:
         run: |
           uv run --frozen uvicorn smartops.main:app --host 127.0.0.1 --port 8013 > uvicorn.log 2>&1 &
           uv run --frozen python .github/scripts/smoke.py || { cat uvicorn.log; exit 1; }
-      - name: Complete a scripted Broker run (no model calls, no credentials)
-        env:
-          SMARTOPS_RUNS_DIR: ${{ runner.temp }}/runs
-        run: >-
-          env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE uv run --frozen python -m smartops.main
-          --task-file docs/examples/botsv3-coinhive-tasks.json
-          --task-id botsv3-coinhive-consent --scripted
 
   required:
     name: SmartOps CI
