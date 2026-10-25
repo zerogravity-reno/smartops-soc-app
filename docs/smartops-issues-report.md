@@ -112,7 +112,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Partly fixed (`0430974`, `events=`). Recurred on `20592fea`: T5 invents self-connections from destination-only rows and overstates service-logon fields. Missing account projection split out as B49; placeholders as B47 |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
-| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Reopened on `20592fea`: 13,272-character budget overflow warning; saved batch 17,646 characters, all 27 observations replaced by omission markers |
+| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed (`ed27070`): the Analyst's generation reserve 16,384 → 12,288 (`a26b2fd` had halved the budget to 13,272; now 20,440). Re-run of `20592fea` L2: 29/29 observations kept, none omitted; set summaries still drop for size |
 | B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Fixed (`18f7719`): the example sentence was the loop seed, removed in every domain. Held live on `2a71757f` (0 cut-offs, 15/15 domains) |
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Fixed: cache on `smartops-loop-fix`; tasks fetch in parallel, at most 3 at a time (`cfab611`); held live on `b7359eab` |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
@@ -146,8 +146,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Fixed (`28ca7f7`): `run_round` collects its clients before its loop closes; held live on `ae7d41b0` and `b7359eab` |
 | B46 | Broker | A step that searched its categories and found nothing is marked incomplete when an empty `uncategorised` set came back with it | Medium | Fixed (`3d5cd88`); verified live on `20592fea` T4 `reg_task_gpo_keys`: zero registry rows plus empty uncategorised set, completed and confirmed_empty. Focused test passed |
 | B47 | Broker | Empty fields render as `bytes=- uri=- action=-`, and a sub-analyst reads the placeholders as values | Medium | Fixed (`3d5cd88`); verified live on `20592fea` network exhibits: missing fields omitted, no equal-byte claim. Focused tests passed; direction hallucination remains B11 |
-| B48 | Broker | Named-file retrieval completes on unrelated file events | High | Open; `20592fea` T3 completed svcupdate.dat file step on ten policy-test .ps1 files, none matching target. See run review |
-| B49 | Broker | Windows authentication projection drops target and subject account names | High | Open; `20592fea` T5 SYSTEM/machine-account rows render without usernames while answering a Mariam task. See run review |
+| B48 | Broker | Named-file retrieval completes on unrelated file events | High | Fixed (`ed27070`): `completion.match` names the target; only rows naming it count, and an empty search of each named category confirms absence. siem's prompt and mission keep the filter at every stage. Held on T3 re-run: one filtered EventCode 11/15/29 search, confirmed empty |
+| B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
+| B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Open (Codex review of B48, `projection.py:82`) |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -1319,7 +1320,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 40 | 2 | 5 | B14 reopened; B48, B49 new; B11 partly. B2, B6 and B20's scoping wait on the Analyst's follow-ups |
+| Broker | 43 | 2 | 3 | B50 new; B11 partly. B2, B6 and B20's scoping wait on the Analyst's follow-ups |
 | Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
 | Triage (Analyst) | 0 | 3 | 26 | T1 partly; T2–T24, T26–T30 (T25 removed by design) |
 | Gate (Analyst) | 0 | 0 | 10 | G2, G4–G12 (G1, G3 removed by design) |
@@ -1328,7 +1329,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 | Frontend | 1 | 0 | 0 | W9 fixed with P3 |
 | Cost, audit, security, handoff | 14 | 0 | 0 | None |
 
-- **Broker (ours), next:** B14 (budget overflow, all 27 observations omitted on `20592fea`), B48 (a named-file step completes on unrelated files), B49 (authentication usernames lost in projection), then B11's recurrence. B46 and B47 are fixed (`3d5cd88`), and held live on `20592fea`. B2, B6 and B20's scoping still wait on the Analyst's follow-ups.
+- **Broker (ours), next:** B14, B48 and B49 fixed (`ed27070`, held on CLI re-runs of `20592fea` L2 and T3). Next: B11's recurrence, then B50. B2, B6 and B20's scoping still wait on the Analyst's follow-ups.
 - **Held live:** AR12, AR3, B43 on `ae7d41b0`; B11, B44, B45 on `ae7d41b0` and `b7359eab`; B16 on `b7359eab`.
 - **Live checks (10-13):** AR13 Broker handoff and AR14 Broker failure passed with client-local outages; full Analyst behavior remains untested. B24 session-loss detection/reset fired, but step termination and successful re-dispatch remain unverified because the runner did not capture a final result. See `docs/mcp-ar13-ar14-live-2026-10-13.md`.
 - **Decisions (Mohammed):** the B15 safety net; T20; P1's raw time fields.
