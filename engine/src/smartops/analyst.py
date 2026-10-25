@@ -291,28 +291,26 @@ def unsupported_unanswerable_claims(synth: dict, payloads: list[dict] | None) ->
 
 
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
-    """Strictly enforce the two verdict gate conditions:
-    1. top_score >= 85
-    2. gap >= 20 between top score and runner-up
+    """Pass the model's synthesis through unchanged.
 
-    Both conditions must be met to reach VERDICT_REACHED.
-    Otherwise, status is forced to REQUIRES_INVESTIGATION.
+    The verdict criteria (top_score >= 85, gap >= 20) live in the system
+    prompt and are enforced by the model.  This function only fills in a
+    missing verdict label when the model already declared VERDICT_REACHED
+    and clears follow_up_tasks once a verdict is reached so the loop stops.
 
-    Pre-gate: if synthesis reasoning leans on an unanswerable source as negative
-    evidence, the gate is failed immediately (unsupported_claims set) regardless
-    of scores — the model cannot draw absence conclusions from a disconnected source.
+    Status inference order:
+    1. Trust explicit ``status`` field from the model.
+    2. If absent: a conclusive ``verdict`` (TRUE_POSITIVE / FALSE_POSITIVE /
+       BENIGN) implies VERDICT_REACHED.
+    3. If both absent: fall back to the 85/20 score math as a safety net
+       so a model that omits both fields still reaches a verdict when the
+       scores are conclusive.
     """
     out = dict(synth)
+    status = out.get("status", "")
+    verdict = out.get("verdict", "")
 
-    # --- Pre-gate: unsupported unanswerable claims check ---
-    unsupported = unsupported_unanswerable_claims(synth, payloads)
-    if unsupported:
-        out["status"] = "REQUIRES_INVESTIGATION"
-        out["verdict"] = "REQUIRES_INVESTIGATION"
-        out["unsupported_claims"] = unsupported
-        return out
-
-    # --- Math gate: top_score >= 85 AND gap >= 20 ---
+    # Parse scores for fallback inference.
     scores = {}
     for h, s in (synth.get("hypothesis_scores") or {}).items():
         try:
@@ -324,20 +322,32 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     runner_up_score = ranked[1][1] if len(ranked) > 1 else 0
     gap = top_score - runner_up_score
 
-    is_gate_satisfied = (top_score >= 85) and (gap >= 20)
+    _conclusive = {"TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN"}
 
-    if is_gate_satisfied:
+    # Infer status when the model omitted it.
+    if not status:
+        if verdict in _conclusive:
+            status = "VERDICT_REACHED"
+        elif top_score >= 85 and gap >= 20:
+            # Scores are conclusive but model forgot to set status/verdict.
+            status = "VERDICT_REACHED"
+        else:
+            status = "REQUIRES_INVESTIGATION"
+
+    if status == "VERDICT_REACHED":
         out["status"] = "VERDICT_REACHED"
         out["follow_up_tasks"] = []
-        model_verdict = out.get("verdict")
-        if not model_verdict or model_verdict in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
-            out["verdict"] = next((h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
-                                  "TRUE_POSITIVE")
-        return out
+        # Fill missing verdict label from the plan's top hypothesis.
+        if not verdict or verdict in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
+            out["verdict"] = next(
+                (h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
+                "TRUE_POSITIVE"
+            )
+    else:
+        out["status"] = "REQUIRES_INVESTIGATION"
+        if not verdict or verdict == "VERDICT_REACHED":
+            out["verdict"] = "REQUIRES_INVESTIGATION"
 
-    # If either condition is not met, force continuation
-    out["status"] = "REQUIRES_INVESTIGATION"
-    out["verdict"] = "REQUIRES_INVESTIGATION"
     return out
 
 def broker_runs(task_ids: list[str], fetched: list) -> list[dict]:

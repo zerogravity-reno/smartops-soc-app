@@ -21,11 +21,12 @@ def gate(refs, scores=None, **synth):
 
 
 def test_reached_with_a_cited_finding():
-    out = gate(["T3:endpoint"], status="REQUIRES_INVESTIGATION", follow_up_tasks=[{"question": "q"}])
+    # The model declared VERDICT_REACHED — gate passes it through and clears follow_up_tasks.
+    out = gate(["T3:endpoint"], status="VERDICT_REACHED", follow_up_tasks=[{"question": "q"}])
     assert out["status"] == "VERDICT_REACHED"
     assert out["verdict"] == "TRUE_POSITIVE"  # filled from the top hypothesis
     assert out["follow_up_tasks"] == []
-    assert gate(["r-L2-T3:endpoint"])["status"] == "VERDICT_REACHED"  # full task id
+    assert gate(["r-L2-T3:endpoint"], status="VERDICT_REACHED")["status"] == "VERDICT_REACHED"  # full task id
 
 
 def test_confident_but_uncited_reaches_a_verdict():
@@ -34,17 +35,17 @@ def test_confident_but_uncited_reaches_a_verdict():
 
 
 def test_close_scores_investigate_again():
-    out = gate(["T3:endpoint"], {"H1": 88, "H2": 80}, status="VERDICT_REACHED")
+    # The model declared REQUIRES_INVESTIGATION — gate respects it.
+    out = gate(["T3:endpoint"], {"H1": 88, "H2": 80}, status="REQUIRES_INVESTIGATION")
     assert out["status"] == "REQUIRES_INVESTIGATION"
     assert "evidence_gaps" not in out
     assert verdict_gate({}, PLAN)["status"] == "REQUIRES_INVESTIGATION"
 
 
 def test_refs_are_informational():
-    # A missing or stale citation no longer turns an otherwise gated verdict into
-    # an endless investigation loop.
+    # The model declared VERDICT_REACHED — gate passes through regardless of refs.
     for ref in ("T3:user", "T3:network", "T9:endpoint"):
-        out = gate(["T3:endpoint", ref])
+        out = gate(["T3:endpoint", ref], status="VERDICT_REACHED")
         assert out["status"] == "VERDICT_REACHED", ref
 
 
@@ -71,19 +72,22 @@ def test_evaluation_limits_keep_unanswerable_questions_out_of_evidence():
     assert evaluation_limits([{}]) == ""
 
 
-def test_gate_rejects_negative_claim_from_an_unanswerable_source():
+def test_gate_passes_through_model_verdict_unchanged():
+    # The gate no longer overrides the model — if the model says VERDICT_REACHED it passes,
+    # even when reasoning mentions an unanswerable source. The system prompt handles that.
     out = verdict_gate(
         {"hypothesis_scores": {"H1": 95, "H2": 10},
          "verdict": "TRUE_POSITIVE",
+         "status": "VERDICT_REACHED",
          "verdict_reasoning": "Asset inventory lacks any update-server registration for 192.168.40.211."},
         PLAN,
         [{"unanswerable": [
             "No connected source holds this: Is 192.168.40.211 registered? (asset inventory)"
         ]}],
     )
-    assert out["status"] == "REQUIRES_INVESTIGATION"
-    assert out["verdict"] == "REQUIRES_INVESTIGATION"
-    assert out["unsupported_claims"]
+    assert out["status"] == "VERDICT_REACHED"
+    assert out["verdict"] == "TRUE_POSITIVE"
+    assert out["follow_up_tasks"] == []
 
 
 def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():
