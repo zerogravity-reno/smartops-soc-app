@@ -291,32 +291,39 @@ def unsupported_unanswerable_claims(synth: dict, payloads: list[dict] | None) ->
 
 
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
-    """Pass the model's synthesis through unchanged, while strictly ensuring
-    the verdict matches the winning hypothesis.
+    """Strictly enforce the verdict gate dynamically in Python:
+    1. top_score >= 85
+    2. gap >= 20 between top score and runner-up
 
-    The 85/20 verdict gate lives in the system prompt. This function handles
-    bookkeeping:
-    - VERDICT_REACHED → clear follow_up_tasks, and ensure the verdict label
-      matches the plan's top-scored hypothesis (preventing model hallucination
-      where e.g. H3/BENIGN scored 90 but the model wrote TRUE_POSITIVE).
-    - Anything else → normalise to REQUIRES_INVESTIGATION.
+    If either condition fails:
+    - Force status to REQUIRES_INVESTIGATION
+    - If the model did not provide follow_up_tasks or evidence_gaps (e.g. because
+      it prematurely believed it reached a verdict), dynamically generate follow-up
+      tasks:
+      * Differentiating tasks between competing hypotheses (all hypotheses within 20
+        points of the top score, which could be 2 or all 3).
+      * Corroborating tasks for the top hypothesis to push its score past 85%.
     """
     out = dict(synth)
-    status = out.get("status", "")
 
-    if status == "VERDICT_REACHED":
+    # 1. Parse and rank scores dynamically
+    scores = {}
+    for h, s in (synth.get("hypothesis_scores") or {}).items():
+        try:
+            scores[h] = int(s)
+        except (TypeError, ValueError):
+            scores[h] = 0
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top_id, top_score = ranked[0] if ranked else (None, 0)
+    runner_up_id, runner_up_score = ranked[1] if len(ranked) > 1 else (None, 0)
+    gap = top_score - runner_up_score
+
+    # Determine gate satisfaction:
+    is_gate_satisfied = (top_score >= 85) and (gap >= 20)
+
+    if is_gate_satisfied:
+        out["status"] = "VERDICT_REACHED"
         out["follow_up_tasks"] = []
-        # Find the winning hypothesis by score
-        scores = {}
-        for h, s in (synth.get("hypothesis_scores") or {}).items():
-            try:
-                scores[h] = int(s)
-            except (TypeError, ValueError):
-                scores[h] = 0
-        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-        top_id = ranked[0][0] if ranked else None
-
-        # Align verdict with the top hypothesis from plan
         top_hypothesis_verdict = next(
             (h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
             None
@@ -325,11 +332,35 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
             out["verdict"] = top_hypothesis_verdict
         elif not out.get("verdict") or out.get("verdict") in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
             out["verdict"] = "TRUE_POSITIVE"
-    else:
-        out["status"] = "REQUIRES_INVESTIGATION"
-        verdict = out.get("verdict", "")
-        if not verdict or verdict == "VERDICT_REACHED":
-            out["verdict"] = "REQUIRES_INVESTIGATION"
+        return out
+
+    # Gate NOT satisfied -> force continuation
+    out["status"] = "REQUIRES_INVESTIGATION"
+    out["verdict"] = "REQUIRES_INVESTIGATION"
+
+    # Check if the model provided valid follow-up tasks or evidence gaps
+    has_follow_ups = any(isinstance(f, dict) and f.get("question") for f in out.get("follow_up_tasks") or [])
+    has_evidence_gaps = any(isinstance(g, str) and g.strip() for g in out.get("evidence_gaps") or [])
+
+    if not has_follow_ups and not has_evidence_gaps:
+        # Dynamically find all hypotheses within 20 points of the top score (could be 2 or all 3)
+        close_ids = [h for h, s in ranked if (top_score - s) < 20]
+        if len(close_ids) < 2 and runner_up_id:
+            close_ids = [top_id, runner_up_id]
+
+        generated_tasks = []
+        if len(close_ids) >= 2:
+            competing_labels = ", ".join(close_ids)
+            generated_tasks.append({
+                "task_id": "FU1",
+                "question": f"Gather distinguishing process lineage, network activity, and execution telemetry to differentiate between hypotheses {competing_labels}."
+            })
+        if top_score < 85 and top_id:
+            generated_tasks.append({
+                "task_id": f"FU{len(generated_tasks) + 1}",
+                "question": f"Investigate historical baseline, user/service activity patterns, and system logs to corroborate hypothesis {top_id} to exceed 85% confidence."
+            })
+        out["follow_up_tasks"] = generated_tasks
 
     return out
 

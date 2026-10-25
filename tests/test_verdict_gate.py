@@ -109,3 +109,19 @@ def test_verdict_aligns_with_winning_hypothesis_even_if_model_wrote_wrong_label(
     )
     assert out["status"] == "VERDICT_REACHED"
     assert out["verdict"] == "BENIGN"
+
+
+def test_dynamic_follow_ups_generated_when_all_three_hypotheses_close():
+    # Top score 75 (<85) and H1, H2, H3 all within 20 points of each other (75, 65, 60)
+    # Model mistakenly sent status="VERDICT_REACHED" with no follow-ups
+    out = verdict_gate(
+        {"hypothesis_scores": {"H3": 75, "H2": 65, "H1": 60}, "status": "VERDICT_REACHED", "follow_up_tasks": []},
+        {"hypotheses": [{"id": "H1", "verdict": "TRUE_POSITIVE"}, {"id": "H2", "verdict": "FALSE_POSITIVE"}, {"id": "H3", "verdict": "BENIGN"}]}
+    )
+    assert out["status"] == "REQUIRES_INVESTIGATION"
+    assert len(out["follow_up_tasks"]) >= 2
+    # Differentiating task must mention all 3 close hypotheses H3, H2, H1
+    assert "H3, H2, H1" in out["follow_up_tasks"][0]["question"]
+    # Corroborating task must mention pushing H3 past 85%
+    assert "H3" in out["follow_up_tasks"][1]["question"]
+    assert "85%" in out["follow_up_tasks"][1]["question"]
