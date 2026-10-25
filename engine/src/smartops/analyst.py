@@ -291,13 +291,14 @@ def unsupported_unanswerable_claims(synth: dict, payloads: list[dict] | None) ->
 
 
 def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: list | None = None) -> dict:
-    """Pass the model's synthesis through unchanged.
+    """Pass the model's synthesis through unchanged, while strictly ensuring
+    the verdict matches the winning hypothesis.
 
-    The 85/20 verdict gate lives entirely in the system prompt; this
-    function only does the minimum bookkeeping the loop needs:
-
-    - VERDICT_REACHED → clear follow_up_tasks, fill a missing verdict
-      label from the plan's top-scored hypothesis.
+    The 85/20 verdict gate lives in the system prompt. This function handles
+    bookkeeping:
+    - VERDICT_REACHED → clear follow_up_tasks, and ensure the verdict label
+      matches the plan's top-scored hypothesis (preventing model hallucination
+      where e.g. H3/BENIGN scored 90 but the model wrote TRUE_POSITIVE).
     - Anything else → normalise to REQUIRES_INVESTIGATION.
     """
     out = dict(synth)
@@ -305,20 +306,25 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
 
     if status == "VERDICT_REACHED":
         out["follow_up_tasks"] = []
-        verdict = out.get("verdict", "")
-        if not verdict or verdict in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
-            scores = {}
-            for h, s in (synth.get("hypothesis_scores") or {}).items():
-                try:
-                    scores[h] = int(s)
-                except (TypeError, ValueError):
-                    scores[h] = 0
-            ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-            top_id = ranked[0][0] if ranked else None
-            out["verdict"] = next(
-                (h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
-                "TRUE_POSITIVE"
-            )
+        # Find the winning hypothesis by score
+        scores = {}
+        for h, s in (synth.get("hypothesis_scores") or {}).items():
+            try:
+                scores[h] = int(s)
+            except (TypeError, ValueError):
+                scores[h] = 0
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        top_id = ranked[0][0] if ranked else None
+
+        # Align verdict with the top hypothesis from plan
+        top_hypothesis_verdict = next(
+            (h.get("verdict") for h in plan.get("hypotheses", []) if h.get("id") == top_id),
+            None
+        )
+        if top_hypothesis_verdict:
+            out["verdict"] = top_hypothesis_verdict
+        elif not out.get("verdict") or out.get("verdict") in ("REQUIRES_INVESTIGATION", "UNKNOWN"):
+            out["verdict"] = "TRUE_POSITIVE"
     else:
         out["status"] = "REQUIRES_INVESTIGATION"
         verdict = out.get("verdict", "")
@@ -508,7 +514,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 "  evidence_gaps: list of unanswered questions that materially limit a conclusion\n"
                 "  follow_up_tasks: list of atomic source-answerable questions when status is REQUIRES_INVESTIGATION\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
-                "CRITICAL VERDICT GATE: Declare VERDICT_REACHED ONLY if (top_score >= 85 AND top_score - runner_up >= 20). If either condition fails, you MUST set status='REQUIRES_INVESTIGATION', verdict='REQUIRES_INVESTIGATION', and provide non-empty follow_up_tasks to close the gap.\n"
+                "CRITICAL VERDICT GATE: Declare VERDICT_REACHED ONLY if (top_score >= 85 AND top_score - runner_up >= 20). If either condition fails, you MUST set status='REQUIRES_INVESTIGATION', verdict='REQUIRES_INVESTIGATION', and provide non-empty follow_up_tasks to close the gap. When VERDICT_REACHED, the 'verdict' field MUST match the verdict type of the winning hypothesis with highest score (e.g. if H3 won and H3 is BENIGN, verdict MUST be BENIGN).\n"
                 "Task questions state what was asked, never what happened. Treat only broker findings as evidence. "
                 "An unanswerable or not-searched item is unknown: never turn it into absence, registration status, "
                 "execution, creation, or other affirmative evidence. If such an unknown is material to the top score, "

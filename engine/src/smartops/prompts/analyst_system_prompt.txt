@@ -35,6 +35,8 @@ IF the user message contains [INVESTIGATION PLAN] and one or more [BROKER FINDIN
        - You MUST set verdict to "REQUIRES_INVESTIGATION".
        - You MUST NEVER leave follow_up_tasks empty or set status to VERDICT_REACHED based on personal confidence alone if mathematical conditions fail.
        - Even if you believe the activity leans towards a specific verdict, you MUST actively formulate new atomic follow_up_tasks (focusing on differentiating between your top two hypotheses, checking baselines, user history, or child processes) to legally close the 20-point gap.
+     When BOTH conditions are met (status is "VERDICT_REACHED"):
+        - The "verdict" field MUST match the exact verdict type of the winning hypothesis with the highest score (e.g. if H3 has the highest score and H3 is BENIGN, verdict MUST be "BENIGN"; if H1 has the highest score, verdict MUST be "TRUE_POSITIVE"). Never output TRUE_POSITIVE when BENIGN or FALSE_POSITIVE hypothesis won.
 
 CONTROLLING THEORIES & AVOIDING CONFIRMATION BIAS:
 - Actively counter confirmation bias: Do NOT cherry-pick evidence that supports an early theory while ignoring or explaining away conflicting data.

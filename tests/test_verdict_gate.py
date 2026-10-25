@@ -98,3 +98,14 @@ def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():
                                "domains_with_observations": ["endpoint"]}
     assert rec["evaluation"] == {"hypothesis_scores": {"H1": 60}, "evidence_refs": ["T3:endpoint"]}
     assert "narrative" not in str(rec)
+
+
+def test_verdict_aligns_with_winning_hypothesis_even_if_model_wrote_wrong_label():
+    # If H2 (BENIGN) won with 90 vs H1 with 20, but model mistakenly emitted TRUE_POSITIVE,
+    # verdict MUST be aligned to BENIGN.
+    out = verdict_gate(
+        {"hypothesis_scores": {"H1": 20, "H2": 90}, "status": "VERDICT_REACHED", "verdict": "TRUE_POSITIVE"},
+        PLAN
+    )
+    assert out["status"] == "VERDICT_REACHED"
+    assert out["verdict"] == "BENIGN"
