@@ -297,8 +297,22 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
 
     Both conditions must be met to reach VERDICT_REACHED.
     Otherwise, status is forced to REQUIRES_INVESTIGATION.
+
+    Pre-gate: if synthesis reasoning leans on an unanswerable source as negative
+    evidence, the gate is failed immediately (unsupported_claims set) regardless
+    of scores — the model cannot draw absence conclusions from a disconnected source.
     """
     out = dict(synth)
+
+    # --- Pre-gate: unsupported unanswerable claims check ---
+    unsupported = unsupported_unanswerable_claims(synth, payloads)
+    if unsupported:
+        out["status"] = "REQUIRES_INVESTIGATION"
+        out["verdict"] = "REQUIRES_INVESTIGATION"
+        out["unsupported_claims"] = unsupported
+        return out
+
+    # --- Math gate: top_score >= 85 AND gap >= 20 ---
     scores = {}
     for h, s in (synth.get("hypothesis_scores") or {}).items():
         try:
@@ -310,7 +324,6 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     runner_up_score = ranked[1][1] if len(ranked) > 1 else 0
     gap = top_score - runner_up_score
 
-    # Both conditions are strictly enforced
     is_gate_satisfied = (top_score >= 85) and (gap >= 20)
 
     if is_gate_satisfied:
@@ -326,6 +339,7 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     out["status"] = "REQUIRES_INVESTIGATION"
     out["verdict"] = "REQUIRES_INVESTIGATION"
     return out
+
 def broker_runs(task_ids: list[str], fetched: list) -> list[dict]:
     """What the Tool Broker did for each task, from the round's outcomes
     (`RoundResult.fetched`, by the `task_id` each report names).
