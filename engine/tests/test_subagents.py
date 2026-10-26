@@ -1356,6 +1356,11 @@ class TestASearchClaimIsAttributed:
         assert subagents._claim_problems(answer, [call], FILE_STEP) == []  # no recheck: it can only drop it
         assert subagents._attributed(answer, [call], FILE_STEP).assessment.results == []
 
+    def test_absence_over_rows_still_goes_back_it_can_become_a_yes(self):
+        answer = _siem_answer([SearchClaim(search=1, answers_question="absence", reason="r")])
+        assert subagents._claim_problems(answer, self.CALLS, FILE_STEP) == [
+            "search 1 (absence): search 1 returned 2 rows, not 0"]
+
     def test_an_empty_category_search_can_claim_absence_without_a_target(self):
         answer = _siem_answer([SearchClaim(search=2, answers_question="absence", reason="no files")])
         rule = CompletionRule(categories=["file_events"])

@@ -641,12 +641,18 @@ def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> 
 
 def _claim_problems(answer: Any, calls: list[_ToolCall], rule: CompletionRule | None) -> list[str]:
     claims = getattr(getattr(answer, "assessment", None), "results", None) or []
+    from smartops.projection import _rows_of
+
     rule = rule or CompletionRule()
-    # A target-absence claim never holds and a recheck can only drop it, so
-    # `_attributed` drops it without paying a turn (7 of 14 answers on the live run).
+
+    def empty_target_absence(c: Any) -> bool:
+        # Never holds and a recheck can only drop it, so `_attributed` drops it without
+        # paying a turn (7 of 14 answers on the live run). With rows it can become a yes.
+        return (c.answers_question == "absence" and bool(rule.match) and c.search <= len(calls)
+                and not _rows_of(calls[c.search - 1].payload))
+
     return [f"search {c.search} ({c.answers_question}): {p}" for c in claims
-            if not (c.answers_question == "absence" and rule.match)
-            and (p := _claim_problem(c, calls, rule))]
+            if not empty_target_absence(c) and (p := _claim_problem(c, calls, rule))]
 
 
 def _attributed(answer: Any, calls: list[_ToolCall], rule: CompletionRule | None) -> Any:
