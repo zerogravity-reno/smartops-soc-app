@@ -6,7 +6,8 @@
 
 ## State
 - **PR:** https://github.com/zerogravity-reno/smartops-soc-app/pull/15, branch `broker-memory` → `main`. It holds every unmerged Broker commit since `main` @ `010108b`: B11, B14, B48–B50, B52 A–C, B53, B54 and B56.
-- **Merge:** main returned no readable branch protection (`gh api …/protection` 404), so auto-merge isn't set. Waiting on CI (`SmartOps CI`) and Mohammed.
+- **CI:** green on `20b9ceb` (run 40351100411): Python tests, frontend tests and build, and `SmartOps CI` all pass.
+- **Merge:** keep the PR open; Mohammed said don't merge yet. Auto-merge isn't set: main returned no readable branch protection (`gh api …/protection` 404).
 - **Tests:** 1,447 pass (`.venv/Scripts/python -m pytest engine/tests engine/contracts tests -q`). Ruff isn't in `.venv`.
 - **Superseded branches:** `fix/siem-step-c-review`, `fix/broker-run-memory`, `broker-fixes` and `docs/handover-step-c-review`. All are contained in `broker-memory` except `e52e3d4` (a stale handover doc). They can be deleted once #15 merges.
 - **Untracked, not in the PR:** `docs/handover-2026-10-26{b..h}.md`, `docs/handover-step-c-review.md`, `docs/b52-plan.md` and `docs/run-20592fea-review.md`. These are superseded working notes; delete them, or ask before committing any of them.
@@ -36,6 +37,6 @@ Tests: `engine/tests/test_result_kind.py`, one per item. Three `test_broker` fix
 - Neither `_absence_count`'s wildcard match nor the absence template fields changed (B54 limit).
 
 ## Next
-1. Get PR #15 through CI and review; fix anything CI finds.
+1. PR #15: CI is green, and the PR waits on Mohammed's go-ahead. Don't merge it before then.
 2. **Step D:** the Broker review card (`review_step`). Keep `FinishCheck` the single resume owner.
 3. Owner items, carried over: the Asana B52–B56 subtasks (`1219394496434075`), and a live model check of B56 if Mohammed wants one (it costs money).
