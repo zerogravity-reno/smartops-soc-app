@@ -1226,10 +1226,23 @@ class TestTheSearchLine:
         line = _lines(FILE_STEP, _call(PROCS, [{"Image": "a.exe"}]))[-1]
         assert line == "search 1: processes 1 rows | still missing: file_events (not searched)"
 
-    def test_a_row_floor_is_heard_too(self):
-        rule = CompletionRule(categories=["processes"], min_rows=3)
-        assert _lines(rule, _call(PROCS, [{"Image": "a.exe"}]))[-1].endswith(
-            "still missing: 2 more rows (the step needs 3)")
+    @pytest.mark.parametrize("categories", [[], ["processes"]])
+    @pytest.mark.parametrize("match", [[], ["a.exe"]])
+    def test_a_row_floor_is_heard_too(self, categories, match):
+        rule = CompletionRule(categories=categories, match=match, min_rows=3)
+        call = _call(PROCS, [{"Image": "a.exe"}])
+        lines = _lines(rule, call, call, call)
+        assert lines[0].endswith("still missing: 2 more rows (the step needs 3)")
+        assert lines[1].endswith("still missing: 1 more rows (the step needs 3)")
+        assert lines[2].endswith("nothing missing: report now")
+
+    @pytest.mark.parametrize("categories", [[], ["file_events"]])
+    @pytest.mark.parametrize("match", [[], ["svcupdate.dat"]])
+    def test_empty_searches_do_not_satisfy_required_rows(self, categories, match):
+        rule = CompletionRule(categories=categories, match=match, requires="rows_required")
+        line = _lines(rule, _call(FILTERED, []))[-1]
+        assert "still missing:" in line
+        assert "report now" not in line
 
     def test_a_failing_line_never_breaks_the_mission(self, monkeypatch):
         collector = subagents._EvidenceCollector()
@@ -1307,7 +1320,8 @@ class TestASearchClaimIsAttributed:
 
     @pytest.mark.parametrize(("claim", "problem"), [
         (SearchClaim(search=1, answers_question="yes", reason="r", rows=[2]), None),
-        (SearchClaim(search=2, answers_question="absence", reason="r"), None),
+        (SearchClaim(search=2, answers_question="absence", reason="r"),
+         "search 2: target absence needs the Broker's independent code count"),
         (SearchClaim(search=3, answers_question="no", reason="r"), None),
         (SearchClaim(search=1, answers_question="yes", reason="r", rows=[1]),
          "search 1 row 1 does not contain svcupdate.dat"),
@@ -1321,6 +1335,23 @@ class TestASearchClaimIsAttributed:
     ])
     def test_a_claim_holds_only_against_the_rows(self, claim, problem):
         assert subagents._claim_problem(claim, self.CALLS, FILE_STEP) == problem
+
+    @pytest.mark.parametrize("filter", [
+        "", 'TargetFilename="*svcupdate.dat*"', 'TargetFilename="*unrelated.txt*"',
+        'NOT TargetFilename="*svcupdate.dat*"',
+        '(TargetFilename="*svcupdate.dat*" OR TargetFilename="*unrelated.txt*")',
+    ])
+    def test_empty_searches_cannot_claim_target_absence(self, filter):
+        call = _call(f"{UNFILTERED.split('|')[0]} {filter}", [])
+        answer = _siem_answer([SearchClaim(search=1, answers_question="absence", reason="target absent")])
+        assert "independent code count" in subagents._claim_problems(answer, [call], FILE_STEP)[0]
+        assert subagents._attributed(answer, [call], FILE_STEP).assessment.results == []
+
+    def test_an_empty_category_search_can_claim_absence_without_a_target(self):
+        answer = _siem_answer([SearchClaim(search=2, answers_question="absence", reason="no files")])
+        rule = CompletionRule(categories=["file_events"])
+        assert subagents._claim_problems(answer, self.CALLS, rule) == []
+        assert subagents._attributed(answer, self.CALLS, rule).assessment.results == answer.assessment.results
 
     def test_a_claim_that_does_not_hold_is_dropped(self):
         answer = _siem_answer([SearchClaim(search=1, answers_question="yes", reason="r", rows=[2]),

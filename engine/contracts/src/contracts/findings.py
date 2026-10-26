@@ -131,8 +131,9 @@ class SearchClaim(BaseModel):
 
     search: int = Field(ge=1, description="The number on the search's 'search N' line.")
     answers_question: Literal["yes", "no", "absence"] = Field(
-        description="yes: rows answer it; absence: a search of the asked category, "
-        "filtered on the asked values, returned 0 rows; no: it does not bear on it.",
+        description="yes: rows answer it; absence: a search of the asked category "
+        "returned 0 rows and the step has no target values (target absence needs "
+        "the Broker's independent code count); no: it does not bear on it.",
     )
     reason: str = Field(max_length=200, description="One line: why.")
     rows: list[int] = Field(

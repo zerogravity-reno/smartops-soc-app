@@ -184,7 +184,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- When the mission names values the rows must contain, keep that filter at EVERY stage of the fallback. Never drop it to show the category holds data: rows about other files or users answer nothing. Search the category itself, filtered: a file name is `EventCode IN (11,15,29) TargetFilename=\"*<name>*\"`, not a bare keyword search, which no category can claim. That search returning 0 rows is the answer.\n"
         "- In `queries_run`, tag every query with its `category`, one of: 'dns_resolutions', 'connections', 'processes', 'auth_events', 'file_events', 'registry_events', 'script_blocks'.\n"
         "- After each search, code adds a `search N:` line to its result: the category and rows it returned, the rows naming the values the mission asks about, and what the step still misses. When it says `nothing missing: report now`, report.\n"
-        "- In `assessment.results`, for each search that bears on the question: its number N, `answers_question` (yes: its rows answer the question; absence: a search of the asked category, filtered on the asked values, returned 0 rows; no: it does not answer it), a one-line reason, and for yes the row numbers its `search N:` line lists. Code checks each claim against the rows.\n"
+        "- In `assessment.results`, for each search that bears on the question: its number N, `answers_question` (yes: its rows answer the question; absence: a search of the asked category returned 0 rows and the step has no target values; no: it does not answer it), a one-line reason, and for yes the row numbers its `search N:` line lists. Empty searches cannot prove target absence: the Broker checks that with an independent code count. Code checks each claim against the rows.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"
@@ -525,7 +525,7 @@ def _search_line(mission: SubagentMission, calls: list[_ToolCall], so_far: dict[
     if not rows and (unseen := _unseen_filter_fields(call.query, calls[:-1])):
         parts.append(f"filter fields no earlier row of this source held: {', '.join(unseen)} "
                      "(a hint: unobserved, not proven invalid)")
-    if rule.categories or rule.match:
+    if rule.categories or rule.match or rule.min_rows or rule.requires == "rows_required":
         missing = _still_missing(rule, measure_step(rule, so_far.items()))
         parts.append(f"still missing: {'; '.join(missing)}" if missing else "nothing missing: report now")
     return " | ".join(parts)
@@ -535,19 +535,18 @@ def _still_missing(rule: CompletionRule, measured: dict[str, tuple[int, int, boo
     """What the step lacks after the searches so far. Mirrors `broker._settle` from the
     subagent's side: a category answers with rows (naming the target, when there is
     one), or, for `rows_or_confirmed_empty`, with a search that came back empty. With
-    a target an empty search is the answer too: code counts the target afterwards (B54)."""
+    a target that empty result still needs the Broker's independent count (B54)."""
     targets = " or ".join(rule.match)
     either = rule.requires == "rows_or_confirmed_empty"
 
     def answered(rows: int, answering: int) -> bool:
-        return answering > 0 or (rows == 0 and (either or bool(rule.match)))
+        return answering > 0 or (rows == 0 and either)
 
+    missing = []
     if not rule.categories:
         rows, answering = (sum(v[0] for v in measured.values()), sum(v[1] for v in measured.values()))
-        if measured and answered(rows, answering):
-            return []
-        return [f"rows containing {targets}" if rule.match else "rows"]
-    missing = []
+        if not measured or not answered(rows, answering):
+            missing.append(f"rows containing {targets}" if rule.match else "rows")
     for name in rule.categories:
         if name not in measured:
             missing.append(f"{name} (not searched)")
@@ -612,7 +611,10 @@ def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> 
     if not sets:
         return f"search {claim.search} is not a {asked} search"
     if claim.answers_question == "absence":
-        return f"search {claim.search} returned {len(rows)} rows, not 0" if rows else None
+        if rows:
+            return f"search {claim.search} returned {len(rows)} rows, not 0"
+        # The Broker runs B54's count after this answer; no target proof exists here.
+        return f"search {claim.search}: target absence needs the Broker's independent code count" if rule.match else None
     in_category = [row for rs in sets for row in rs.rows]
     if not claim.rows:
         if rule.match:
