@@ -47,6 +47,53 @@ def test_follow_ups_inherit_the_entities_and_the_widest_window():
     assert task["time_window"] == {"start": "2026-09-01T00:00:00Z", "end": WINDOW["end"]}
 
 
+
+def test_follow_up_inherits_from_followed_task():
+    sent = [
+        {"task_id": "T1", "entity": [{"type": "ip", "value": "10.0.0.1"}],
+         "time_window": {"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T12:00:00Z"}},
+        {"task_id": "T2", "entity": [{"type": "file_hash", "value": "abc"}],
+         "time_window": {"start": "2026-09-01T00:00:00Z", "end": "2026-09-30T00:00:00Z"}},
+    ]
+    [fu1] = analyst.follow_up_tasks([{"task_id": "FU1", "question": "Check IP", "follows": "T1"}], sent)
+    assert fu1["entity"] == [{"type": "ip", "value": "10.0.0.1"}]
+    assert fu1["time_window"] == {"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T12:00:00Z"}
+
+
+def test_follow_up_with_explicit_entity_and_window():
+    sent = [
+        {"task_id": "T1", "entity": [{"type": "ip", "value": "10.0.0.1"}], "time_window": WINDOW},
+    ]
+    custom_window = {"start": "2026-10-05T08:00:00Z", "end": "2026-10-05T09:00:00Z"}
+    [fu1] = analyst.follow_up_tasks([{
+        "task_id": "FU1",
+        "question": "Check specific host",
+        "entity": {"type": "host", "value": "WORKSTATION-9"},
+        "time_window": custom_window,
+    }], sent)
+    assert fu1["entity"] == [{"type": "host", "value": "WORKSTATION-9"}]
+    assert fu1["time_window"] == custom_window
+
+
+def test_follow_up_falls_back_to_alert_scope_and_event_time():
+    sent = [
+        {"task_id": "T1", "entity": [{"type": "file_hash", "value": "xyz"}],
+         "time_window": {"start": "2026-09-01T00:00:00Z", "end": "2026-09-30T00:00:00Z"}},
+    ]
+    alert_scope = [{"type": "host", "value": "server-1"}]
+    event_time = "2026-10-15T12:00:00Z"
+    [fu1] = analyst.follow_up_tasks(
+        [{"task_id": "FU1", "question": "Any lateral movement?"}],
+        sent,
+        event_time=event_time,
+        alert_scope=alert_scope,
+    )
+    assert fu1["entity"] == [{"type": "host", "value": "server-1"}]
+    assert fu1["time_window"]["start"] == "2026-10-15T11:00:00Z"
+    assert fu1["time_window"]["end"] == "2026-10-15T13:00:00Z"
+
+
+
 def test_a_follow_up_already_asked_is_not_sent_again():
     # 89674d75: round 3's gaps came back unchanged, and round 4 re-ran round 3.
     sent = [{"entity": [{"type": "ip", "value": "192.168.40.211"}], "time_window": WINDOW}]

@@ -93,6 +93,6 @@ EVALUATION MODE — Required JSON schema:
   "evidence_refs": ["<task_id>:<domain> of each broker finding the verdict rests on>"],
   "evidence_gaps": ["<gap 1>", "<gap 2>"],
   "follow_up_tasks": [
-    {"task_id": "FU1", "question": "<atomic follow-up question to close the evidence gap>"}
+    {"task_id": "FU1", "question": "<atomic follow-up question to close the evidence gap>", "follows": "<optional task_id this follows, e.g. T1>", "entity": {"type": "host|ip|user|domain|file_hash|process_id", "value": "<value>"}, "time_window": {"start": "<ISO8601>", "end": "<ISO8601>"}}
   ]
 }
