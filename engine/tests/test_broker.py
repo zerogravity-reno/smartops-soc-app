@@ -3039,7 +3039,7 @@ class TestAStepIsAskedForItsCategories:
         goals = []
 
         def process_rows_only(mission):
-            goals.append(mission.goal)
+            goals.append(mission)
             return SubtaskResult(
                 task_id=mission.task_id, status=SubtaskStatus.OK,
                 findings=SiemFindings(processes=[ResultSet(query="q", row_count=2, rows=[{"p": "a"}, {"p": "b"}])]),
@@ -3052,7 +3052,9 @@ class TestAStepIsAskedForItsCategories:
             tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
         )
 
-        assert goals == ["was svcupdate.dat written?\n\nThis step is complete only with rows in: file_events."]
+        from smartops.subagents import _prompt_for
+        assert goals[0].goal == "was svcupdate.dat written?" and goals[0].completion == step.completion
+        assert "was svcupdate.dat written?\n\nThis step is complete only with rows in: file_events." in _prompt_for(goals[0])
         assert digest.endswith("| plan progress: file_write missing file_events, 1 dispatch(es) left")
 
 
@@ -3120,7 +3122,7 @@ class TestAStepAboutANamedValueNeedsRowsNamingIt:
         goals = []
 
         def other_files(mission):
-            goals.append(mission.goal)
+            goals.append(mission)
             return self._result((self.UNFILTERED, self.OTHER_FILES)).model_copy(update={"task_id": mission.task_id})
 
         request.run_subagent = runner_returning(other_files)
@@ -3129,10 +3131,12 @@ class TestAStepAboutANamedValueNeedsRowsNamingIt:
             tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
         )
 
-        assert goals[0].endswith(
+        from smartops.subagents import _prompt_for
+        assert goals[0].completion == self.STEP.completion
+        assert (
             "\n\nSearch file_events for svcupdate.dat. The step is complete with rows naming it; "
             "if there are none, code checks that by counting it. Keep the filter in every query."
-        )
+        ) in _prompt_for(goals[0])
         assert digest.endswith(
             "| step file_write missed: 10 file_events rows, none contain svcupdate.dat"
             " | file_events: absence of svcupdate.dat not shown"
@@ -3528,3 +3532,24 @@ class TestTheFinishCheck:
         event = _after(request, **kwargs)
         _finish_check().on_after_invocation(event)
         assert event.resume is None and request.answer_before_resume is None
+
+
+class TestSiemHearsWhatWasSearched:
+    """B52 C: the mission carries the step's rule and what this run already searched."""
+
+    async def test_an_earlier_round_and_the_steps_own_dispatch_reach_the_mission(self):
+        await _fetch("run1-L2-T4")
+        runner = runner_returning(_connections)
+        await _fetch("run1-L3-G1", PROCS, step_id="procs", runner=runner)
+        await _fetch("run1-L3-G1", PROCS, step_id="procs", runner=runner)
+
+        first, second = runner.missions
+        assert first.completion == PROCS.completion
+        assert first.context.startswith('L2-T4 siem step conn "connections to 10.0.0.9"')
+        assert second.context.splitlines()[-1].startswith('L3-G1 siem step procs')
+
+    async def test_a_sibling_of_the_same_round_is_not_shown(self):
+        await _fetch("run1-L3-T1")
+        runner = runner_returning(_connections)
+        await _fetch("run1-L3-T2", PROCS, step_id="procs", runner=runner)
+        assert runner.missions[0].context is None

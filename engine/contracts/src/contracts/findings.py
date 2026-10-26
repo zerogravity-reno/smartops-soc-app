@@ -121,6 +121,26 @@ class Findings(BaseModel):
     """Base for the code-assembled per-family payload."""
 
 
+class SearchClaim(BaseModel):
+    """The siem subagent's claim about one search: does it answer the question?
+
+    Model-authored. Code checks the **attribution** only (B52 C): the search and its
+    cited rows exist, sit in a category the step wants, and name its target when it
+    has one. Whether the rows mean what the claim says is the Broker's review.
+    """
+
+    search: int = Field(ge=1, description="The number on the search's 'search N' line.")
+    answers_question: Literal["yes", "no", "absence"] = Field(
+        description="yes: rows answer it; absence: a search of the asked category, "
+        "filtered on the asked values, returned 0 rows; no: it does not bear on it.",
+    )
+    reason: str = Field(max_length=200, description="One line: why.")
+    rows: list[int] = Field(
+        default_factory=list,
+        description="For yes: the row numbers that answer, as the 'search N' line lists them.",
+    )
+
+
 class SiemAssessment(Assessment):
     """What the SIEM subagent asserts about its own retrieval.
 
@@ -150,6 +170,11 @@ class SiemAssessment(Assessment):
             "Categories asked for but not retrieved, including ones that returned "
             "nothing. An empty result is a finding, not a failure."
         ),
+    )
+    results: list[SearchClaim] = Field(
+        default_factory=list,
+        description="Per search that bears on the question: whether it answers it. "
+        "Claims code could not attribute are dropped.",
     )
 
 

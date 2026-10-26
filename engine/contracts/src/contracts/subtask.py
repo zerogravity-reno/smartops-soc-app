@@ -304,7 +304,18 @@ class SubagentMission(BaseModel):
     tool_family: ToolFamily
     goal: str = Field(min_length=1)
     scope: Scope
-    context: str | None = None
+    context: str | None = Field(
+        default=None,
+        description="Code-rendered: what earlier dispatches in this run already searched (B52 C).",
+    )
+    completion: CompletionRule | None = Field(
+        default=None,
+        description=(
+            "The fetch step's completion rule, so the subagent hears its goal after each "
+            "search (B52 C). A goal, not a pre-authored query: it names categories and "
+            "values, never how to search for them."
+        ),
+    )
     budget_cost: int = Field(
         default=1,
         ge=0,

@@ -53,6 +53,7 @@ from strands.hooks import AfterInvocationEvent, BeforeToolCallEvent, HookProvide
 from contracts import (
     AnalystTask,
     BrokerReport,
+    CompletionRule,
     CostSummary,
     Evidence,
     FetchPlan,
@@ -558,7 +559,7 @@ def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     return counts
 
 
-def measure_step(step: FetchStep, findings: Any) -> dict[str, tuple[int, int, bool]]:
+def measure_step(rule: CompletionRule, findings: Any) -> dict[str, tuple[int, int, bool]]:
     """Per category the step counts: (rows, rows that answer it, whether a search of
     it came back with no rows), for one result. Pure; completion lives in `evaluate_step`.
 
@@ -574,8 +575,8 @@ def measure_step(step: FetchStep, findings: Any) -> dict[str, tuple[int, int, bo
     file search that ran and found nothing. Whether it filtered on a target the SPL
     cannot show (B54); that takes `_absence_count`.
     """
-    wanted = set(step.completion.categories)
-    match = [m.lower() for m in step.completion.match if m.strip()]
+    wanted = set(rule.categories)
+    match = [m.lower() for m in rule.match if m.strip()]
     measured: dict[str, tuple[int, int, bool]] = {}
     for name, value in findings or []:
         if (not isinstance(value, list) or not value or name in _NOT_RETRIEVAL
@@ -647,7 +648,7 @@ def evaluate_step(
     # show the step's question was answered. A subagent cut off before its answer
     # puts every row there, and on c7dbf51d 74 fallback-scan rows closed T1 (F7).
     # With `completion.match`, only rows naming the step's target count (B48).
-    measured = measure_step(step, result.findings)
+    measured = measure_step(step.completion, result.findings)
     in_categories = sum(rows for rows, _, _ in measured.values())
     rows_retrieved = sum(answering for _, answering, _ in measured.values())
     outcome.rows_retrieved += rows_retrieved
@@ -882,7 +883,7 @@ def _remember(task: AnalystTask, step: FetchStep, outcome: StepOutcome,
     if run is None:
         return  # no run id (CLI, tests): memory is off
     family, entities, window, asks = _fetch_key(step.family, task.scope, step)
-    measured = measure_step(step, result.findings)
+    measured = measure_step(step.completion, result.findings)
     entry = _Fetch(
         label=task.task_id[run.end(1) + 1:], round=int(run[2]), family=family,
         step_id=step.step_id, objective=step.objective, entities=entities, window=window,
@@ -910,6 +911,25 @@ def _earlier(task: AnalystTask) -> list[_Fetch]:
         return []
     with _RUN_LOCK:
         return [e for e in _RUN_STATE.get(run[1], []) if e.round < int(run[2])]
+
+
+_SEARCHED_SHOWN = 5
+
+
+def _searched_before(task: AnalystTask, step: FetchStep) -> list[_Fetch]:
+    """What the subagent should hear was already searched (B52 C): this step's own
+    earlier dispatch, then earlier rounds' fetches sharing an entity. Most recent
+    last, bounded. Never a sibling's: those depend on timing (see `_earlier`)."""
+    run = _TASK_ROUND.match(task.task_id)
+    if run is None:
+        return []
+    label = task.task_id[run.end(1) + 1:]
+    entities = {(e.kind, e.value) for e in task.scope.entities}
+    with _RUN_LOCK:
+        held = list(_RUN_STATE.get(run[1], []))
+    own = [e for e in held if e.label == label and e.step_id == step.step_id]
+    earlier = [e for e in held if e.round < int(run[2]) and e.entities & entities]
+    return (earlier + own)[-_SEARCHED_SHOWN:]
 
 
 def _render_fetch(e: _Fetch) -> str:
@@ -1155,26 +1175,19 @@ async def _dispatch_step(family: ToolFamily, question: str, step_id: str, ctx: T
         logger.info("task_id=%s family=%s | step_id=%r repeats %s: %s",
                     req.task.task_id, family, step_id, earlier.label, repeat_reason)
 
-    # B44: the step is judged on its categories, so siem is told them. Without this a
-    # file step's keyword search returned only process rows and stopped (every file
-    # step on 10-12), and the step needed a second dispatch or ended incomplete.
+    # B44: the step is judged on its categories, so siem is told them (B52 C: as the
+    # rule itself, which its per-search progress line measures against).
     wanted = step.completion.categories
     match = step.completion.match
+    searched = _searched_before(req.task, step)
     mission = SubagentMission(
         task_id=f"{req.task.task_id}:{family}:{ctx.tool_use['toolUseId']}",
         hypothesis_id=req.task.hypothesis_id,
         tool_family=family,
-        goal=question
-        + (
-            # B48: with a target the step is about the target. "Complete only with rows
-            # in file_events" alone sent siem after any file row it could find.
-            f"\n\nSearch {', '.join(wanted) or 'the data'} for {' or '.join(match)}. The step is "
-            f"complete with rows naming it; if there are none, code checks that by counting it. "
-            f"Keep the filter in every query."
-            if match
-            else f"\n\nThis step is complete only with rows in: {', '.join(wanted)}." if wanted else ""
-        ),
+        goal=question,
         scope=req.task.scope,
+        completion=step.completion,
+        context="\n".join(_render_fetch(e) for e in searched) or None,
     )
 
     req.dispatched.append(family)
@@ -1205,7 +1218,7 @@ async def _dispatch_step(family: ToolFamily, question: str, step_id: str, ctx: T
 
     record_result_status(result)
     digest = _digest(result)
-    measured = measure_step(step, result.findings)
+    measured = measure_step(step.completion, result.findings)
     in_categories = sum(rows for rows, _, _ in measured.values())
     targets = " or ".join(match)
     if not outcome.completed and match and in_categories and not sum(a for _, a, _ in measured.values()):
