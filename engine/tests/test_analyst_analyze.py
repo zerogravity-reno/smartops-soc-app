@@ -949,7 +949,8 @@ class TestGatherCarriesTheRetrievalRecord:
             hypothesis_id="h-42",
             plan=FetchPlan(steps=[step_done, step_unplanned], rationale="r"),
             step_outcomes=[
-                StepOutcome(step=step_done, completed=True, rows_retrieved=3, evaluated=True),
+                StepOutcome(step=step_done, completed=True, rows_retrieved=3, evaluated=True,
+                            proven_empty={"file_events": "Endpoint.Filesystem"}),
                 # Planned, never dispatched: `completed=False, evaluated=False`.
                 StepOutcome(step=step_unplanned, completed=False, evaluated=False),
             ],
@@ -969,6 +970,8 @@ class TestGatherCarriesTheRetrievalRecord:
         assert by_id["siem-1"].completed is True
         assert by_id["siem-1"].evaluated is True
         assert by_id["siem-1"].rows_retrieved == 3
+        # The dataset an absence proof holds in reaches the Analyst (B54).
+        assert by_id["siem-1"].proven_empty == {"file_events": "Endpoint.Filesystem"}
         # The distinction `StepOutcome.evaluated` exists for: nobody judged this
         # one, which is not the same fact as "ran and fell short".
         assert by_id["siem-2"].completed is False

@@ -784,6 +784,14 @@ class StepOutcome(BaseModel):
     order -- the join from a step to `BrokerReport.results` (O2). `dispatches`
     alone said how many, not which."""
     rows_retrieved: int = 0
+    rows_by_category: dict[str, int] = Field(default_factory=dict)
+    """`rows_retrieved` per category, cumulative across dispatches. A step naming
+    two categories is complete only when each has rows or is in `proven_empty`
+    (B53); the total alone closed it on one."""
+    proven_empty: dict[CimCategory, str] = Field(default_factory=dict)
+    """Categories shown to hold no answer, each with what showed it: for a step with
+    `completion.match`, the datamodel a code-run count on the target searched (B54),
+    since absence holds only within that dataset; without one, `"empty search"`."""
     confirmed_empty: bool = False
     status: SubtaskStatus | None = None
     reason: str | None = None

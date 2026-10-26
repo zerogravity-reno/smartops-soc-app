@@ -28,6 +28,7 @@ ladder are live; tests still inject a fake `BrokerInvoker` of the same shape.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import copy
 import gc
@@ -54,6 +55,7 @@ from contracts import (
     FetchPlan,
     FetchStep,
     QueryRun,
+    Scope,
     StepOutcome,
     SubagentMission,
     SubtaskResult,
@@ -549,36 +551,36 @@ def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     return counts
 
 
-def _step_rows(step: FetchStep, findings: Any) -> tuple[int, int, bool]:
-    """(rows in the step's categories, those that answer it, whether every named
-    category came back from at least one search with no rows) for one result.
+def measure_step(step: FetchStep, findings: Any) -> dict[str, tuple[int, int, bool]]:
+    """Per category the step counts: (rows, rows that answer it, whether a search of
+    it came back with no rows), for one result. Pure; completion lives in `evaluate_step`.
 
-    The first two differ only when the step names `completion.match` (B48): a row
-    answers it only if one of its values contains a match value, so a search
-    broadened past the file it was asked about returns rows that count for nothing.
-    Judged on the rows, never on the query text or the model's tag: `NOT x` and
-    `x OR y` both name x. `uncategorised` and `_NOT_RETRIEVAL` never count -- see
-    `evaluate_step`.
+    Rows and answering rows differ only when the step names `completion.match`
+    (B48): a row answers it only if one of its values contains a match value, so a
+    search broadened past the file it was asked about returns rows that count for
+    nothing. Judged on the rows, never on the query text or the model's tag: `NOT x`
+    and `x OR y` both name x. `uncategorised` and `_NOT_RETRIEVAL` never count --
+    see `evaluate_step`. A category nobody searched is absent from the result.
 
-    The third is what lets a filtered search prove absence. `project_siem` files a
-    set by the category its SPL implies, and only a call that ran yields one, so an
-    empty `file_events` set is a file search that ran and found nothing.
+    The empty flag proves absence only for a step without `match`: `project_siem`
+    files a set by the category its SPL implies, so an empty `file_events` set is a
+    file search that ran and found nothing. Whether it filtered on a target the SPL
+    cannot show (B54); that takes `_absence_count`.
     """
     wanted = set(step.completion.categories)
     match = [m.lower() for m in step.completion.match if m.strip()]
-    retrieved = answering = 0
-    came_back_empty: set[str] = set()
+    measured: dict[str, tuple[int, int, bool]] = {}
     for name, value in findings or []:
-        if (not isinstance(value, list) or name in _NOT_RETRIEVAL or name == "uncategorised"
-                or (wanted and name not in wanted)):
+        if (not isinstance(value, list) or not value or name in _NOT_RETRIEVAL
+                or name == "uncategorised" or (wanted and name not in wanted)):
             continue
+        rows, answering, empty = measured.get(name, (0, 0, False))
         for item in value:
-            rows = getattr(item, "row_count", 1)
-            retrieved += rows
-            if rows == 0:
-                came_back_empty.add(name)
+            count = getattr(item, "row_count", 1)
+            rows += count
+            empty = empty or count == 0
             if not match:
-                answering += rows
+                answering += count
             else:
                 # ponytail: counts the rows kept on the ResultSet, not `row_count`; a
                 # capped set under-counts matches, which can only leave a step open.
@@ -586,7 +588,8 @@ def _step_rows(step: FetchStep, findings: Any) -> tuple[int, int, bool]:
                     1 for row in getattr(item, "rows", [])
                     if any(m in str(v).lower() for v in row.values() for m in match)
                 )
-    return retrieved, answering, bool(wanted) and wanted <= came_back_empty
+        measured[name] = (rows, answering, empty)
+    return measured
 
 
 def evaluate_step(
@@ -637,8 +640,13 @@ def evaluate_step(
     # show the step's question was answered. A subagent cut off before its answer
     # puts every row there, and on c7dbf51d 74 fallback-scan rows closed T1 (F7).
     # With `completion.match`, only rows naming the step's target count (B48).
-    in_categories, rows_retrieved, searched_empty = _step_rows(step, result.findings)
+    measured = measure_step(step, result.findings)
+    in_categories = sum(rows for rows, _, _ in measured.values())
+    rows_retrieved = sum(answering for _, answering, _ in measured.values())
     outcome.rows_retrieved += rows_retrieved
+    for name, (_, answering, _) in measured.items():
+        if answering:
+            outcome.rows_by_category[name] = outcome.rows_by_category.get(name, 0) + answering
 
     # `confirmed_empty` is a claim about the *data*: we looked, and it is not
     # there. Retrieved rows refute that claim outright, whatever the status says.
@@ -652,48 +660,47 @@ def evaluate_step(
     # negative. Observed live: a siem step recorded 252 rows and `confirmed_empty`
     # together, for a host that really had resolved the domain 21 times.
     #
-    # A category-scoped step adds a second requirement: the categories it names
-    # must actually have been retrieved into. `_finding_counts` reports a bucket
-    # that ran and came back with nothing (it holds a zero-row `ResultSet`) and
-    # omits a bucket nobody touched, so presence here is the code-side evidence
-    # that the question was asked. Without this check, a step scoped to
-    # `dns_resolutions` whose subagent only ever returned process events would
-    # score as "we looked for DNS and it is not there" -- the same false negative
-    # in a new place.
-    looked_at_named_categories = wanted <= {name for name, _ in counts}
+    # A category-scoped step adds a second requirement: each category it names
+    # must actually have been retrieved into. `measure_step` reports a bucket that
+    # ran and came back with nothing (it holds a zero-row `ResultSet`) and omits a
+    # bucket nobody touched, so presence there is the code-side evidence that the
+    # question was asked. Without this check, a step scoped to `dns_resolutions`
+    # whose subagent only ever returned process events would score as "we looked
+    # for DNS and it is not there" -- the same false negative in a new place.
     # Not after a failed dispatch, nor with unattributed rows in hand: "looked and
     # empty" is a claim nobody can make when the answer was lost or rows exist.
     # With `completion.match`, rows about other things decide nothing either way: ten
-    # other files neither show svcupdate.dat nor rule it out. What rules it out is a
-    # search of every named category that came back empty (B48) -- the filtered one
-    # siem is told to run -- whatever a wider query also returned.
-    confirmed_empty = (
-        (rows_retrieved == 0 and searched_empty if step.completion.match else in_categories == 0)
-        and looked_at_named_categories
-        and result.status is not SubtaskStatus.ERROR
+    # other files neither show svcupdate.dat nor rule it out, and an empty search
+    # does not either, because nothing shows it filtered on the target (`NOT x`,
+    # `x OR y`). Only `_absence_count`, run by `_dispatch`, proves that (B54).
+    trusted = (
+        result.status is not SubtaskStatus.ERROR
         and not any(name == "uncategorised" and rows > 0 for name, rows in counts)
         and (len(result.queries_run) > 0 or result.status == SubtaskStatus.NO_DATA)
     )
-    # OR'd with history so one dispatch establishing "looked and empty" survives
-    # a later dispatch that looked at nothing (e.g. a budget refusal) -- but
-    # gated on the *cumulative* row count, not just this call's, because a
-    # `rows_required` step re-dispatches on an empty first attempt and a later
-    # dispatch finding real rows must clear the flag: `outcome.rows_retrieved`
-    # and `outcome.confirmed_empty` are both persisted onto the Analyst-facing
-    # `BrokerReport.step_outcomes`, and "rows_retrieved=10, confirmed_empty=True"
-    # in the same record is a claim the data both was and was not found.
-    outcome.confirmed_empty = (
-        confirmed_empty or outcome.confirmed_empty
-    ) and outcome.rows_retrieved == 0
-
-    if step.completion.requires == "rows_or_confirmed_empty":
-        completed = (
-            outcome.rows_retrieved >= max(1, step.completion.min_rows) or outcome.confirmed_empty
-        )
+    if wanted:
+        # Per category (B53): one that came back empty is proven so on its own,
+        # whatever another category returned.
+        if trusted and not step.completion.match:
+            for name in wanted:
+                if name in measured and measured[name][0] == 0:
+                    outcome.proven_empty.setdefault(name, "empty search")
     else:
-        completed = outcome.rows_retrieved >= max(1, step.completion.min_rows)
-
-    outcome.completed = completed
+        confirmed_empty = (
+            not step.completion.match and in_categories == 0 and trusted
+        )
+        # OR'd with history so one dispatch establishing "looked and empty" survives
+        # a later dispatch that looked at nothing (e.g. a budget refusal) -- but
+        # gated on the *cumulative* row count, not just this call's, because a
+        # `rows_required` step re-dispatches on an empty first attempt and a later
+        # dispatch finding real rows must clear the flag: `outcome.rows_retrieved`
+        # and `outcome.confirmed_empty` are both persisted onto the Analyst-facing
+        # `BrokerReport.step_outcomes`, and "rows_retrieved=10, confirmed_empty=True"
+        # in the same record is a claim the data both was and was not found.
+        outcome.confirmed_empty = (
+            confirmed_empty or outcome.confirmed_empty
+        ) and outcome.rows_retrieved == 0
+    _settle(step, outcome)
     # Status follows the cumulative rows, as a single result's does (B26): a
     # second empty dispatch must not turn a step that found rows into `no_data` (B39).
     outcome.status = SubtaskStatus.OK if outcome.rows_retrieved > 0 else result.status
@@ -705,6 +712,116 @@ def evaluate_step(
     # problem rather than a fetch one.
     outcome.refused_for_budget = result.error == BUDGET_REFUSAL_ERROR
     return outcome
+
+
+def _asks(step: FetchStep) -> tuple[list[str], list[str]]:
+    """What decides which rows answer a step, so whether its evidence still applies."""
+    return sorted(step.completion.categories), sorted(m.lower() for m in step.completion.match)
+
+
+def _settle(step: FetchStep, outcome: StepOutcome) -> None:
+    """Set `confirmed_empty` and `completed` from the cumulative counts. The one
+    copy of the rule, so `_dispatch` reapplies it after `_absence_count` (B54).
+
+    A step naming categories needs every one of them answered (B53): rows in it,
+    or, for `rows_or_confirmed_empty`, proof it holds none. Summed rows closed a
+    [processes, file_events] step on process rows alone. Without categories the
+    total decides, and `evaluate_step` has already set `confirmed_empty`.
+    """
+    rule = step.completion
+    either = rule.requires == "rows_or_confirmed_empty"
+    if rule.categories:
+        # Rows refute a proof of absence, as the cumulative gate on `confirmed_empty` does.
+        outcome.proven_empty = {c: by for c, by in outcome.proven_empty.items()
+                                if not outcome.rows_by_category.get(c)}
+        outcome.confirmed_empty = (
+            outcome.rows_retrieved == 0 and set(rule.categories) <= set(outcome.proven_empty)
+        )
+        covered = all(
+            outcome.rows_by_category.get(c) or (either and c in outcome.proven_empty)
+            for c in rule.categories
+        )
+    else:
+        covered = True
+    enough = outcome.rows_retrieved >= max(1, rule.min_rows) or (either and outcome.confirmed_empty)
+    outcome.completed = covered and enough
+
+
+# (category, target kind) -> (datamodel, target fields, host field). Allowlisted because a
+# field the datamodel lacks returns 0 rows, not an error (see `guards.py`), which would
+# read as absence. No host field: the count is estate-wide, so 0 still proves absence on
+# the host, and a hit says only that the target exists somewhere in the window.
+# ponytail: CIM datamodels only; raw-source absence needs per-source field validation,
+# add when a step needs it. Network host fields (src/dest) hold IPs, so they go unfiltered.
+# No file_hash: the lab's `Filesystem.file_hash` is mostly "unknown", so a count is a false 0.
+_ABSENCE_TEMPLATES: dict[tuple[str, str], tuple[str, tuple[str, ...], str | None]] = {
+    ("file_events", "file_name"): ("Endpoint.Filesystem", ("Filesystem.file_name",), "Filesystem.dest"),
+    ("processes", "process"): ("Endpoint.Processes", ("Processes.process_name",), "Processes.dest"),
+    ("connections", "ip"): ("Network_Traffic", ("All_Traffic.dest", "All_Traffic.src"), None),
+    ("dns_resolutions", "domain"): ("Network_Resolution", ("DNS.query",), None),
+}
+
+
+def _absence_count(category: str, match: list[str], scope: Scope) -> tuple[int | None, str]:
+    """(rows naming any `match` value in `category`, the datamodel counted), by one
+    code-run `tstats` count; `None` when that cannot be shown.
+
+    The only proof a target step's answer is absent (B54): nothing on a siem search
+    shows it filtered on the target. Unknown -- no scope entity naming the target,
+    no template for its kind, no host for an endpoint model, a datamodel with no
+    events at all in the window, an error, a count that is not a number -- is
+    `None`, never zero. Sync and locked (`registry.call_tool`); run it in a thread.
+
+    Absence holds only in the template's fields. A row answers when the target is in
+    any of its fields, so a target named only elsewhere (a command line) counts 0
+    here. Accepted, not chased: rows come from arbitrary SPL (B54 known limit).
+    """
+    from smartops.context import _spl_escape, run_query
+
+    def basename(value: str) -> str:
+        return value.replace("\\", "/").rsplit("/", 1)[-1]
+
+    by_value = {}
+    for entity in scope.entities:
+        for name in {entity.value.lower(), basename(entity.value).lower()}:
+            by_value.setdefault(name, entity.kind)
+    # The name fields hold basenames, so a full path would count 0 and read as absent.
+    # No basename hit rules the path out too; a hit only leaves the step open.
+    match = list(dict.fromkeys(basename(m) for m in match))
+    templates = {_ABSENCE_TEMPLATES.get((category, by_value.get(m.lower(), ""))) for m in match}
+    if not match or None in templates or len(templates) != 1:
+        return None, ""
+    datamodel, fields, host_field = templates.pop()
+    hosts = [e.value for e in scope.entities if e.kind == "host"]
+    if host_field and not hosts:
+        return None, datamodel
+    # Substring, as `measure_step` matches rows: an exact name would miss
+    # `svcupdate.dat.bak`, which answers the step, and count 0.
+    target = " OR ".join(f'{f}="*{_spl_escape(m)}*"' for f in fields for m in match)
+    start, end = scope.time_window
+
+    def count(condition: str) -> int | None:
+        query = f"| tstats summariesonly=f count from datamodel={datamodel}" + (f" where{condition}" if condition else "")
+        try:
+            rows = run_query(query, earliest_time=str(start.timestamp()),
+                             latest_time=str(end.timestamp()), row_limit=1)
+            value = rows[0]["count"]
+        except Exception:
+            logger.warning("absence count failed: %s", query, exc_info=True)
+            return None
+        # Only a non-negative whole number is a count; `int(0.75)` or `int(False)` is a false 0.
+        if isinstance(value, bool) or not str(value).isdecimal():
+            logger.warning("absence count not a count: %r from %s", value, query)
+            return None
+        return int(value)
+
+    if not host_field:
+        return (count(f" ({target})") if count("") else None), datamodel
+    # Every host must hold data: one with none would count every target absent on it.
+    if not all(count(f' {host_field}="{_spl_escape(h)}"') for h in hosts):
+        return None, datamodel
+    on_hosts = " OR ".join(f'{host_field}="{_spl_escape(h)}"' for h in hosts)
+    return count(f" ({on_hosts}) ({target})"), datamodel
 
 
 async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolContext) -> str:
@@ -856,8 +973,8 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
             # B48: with a target the step is about the target. "Complete only with rows
             # in file_events" alone sent siem after any file row it could find.
             f"\n\nSearch {', '.join(wanted) or 'the data'} for {' or '.join(match)}. The step is "
-            f"complete with rows naming it, or with a {', '.join(wanted)} search filtered on it "
-            f"that returns none. Keep the filter in every query."
+            f"complete with rows naming it; if there are none, code checks that by counting it. "
+            f"Keep the filter in every query."
             if match
             else f"\n\nThis step is complete only with rows in: {', '.join(wanted)}." if wanted else ""
         ),
@@ -892,17 +1009,37 @@ async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolCo
 
     record_result_status(result)
     digest = _digest(result)
-    in_categories, answering, _ = _step_rows(step, result.findings)
-    if not outcome.completed and match and in_categories and not answering:
+    measured = measure_step(step, result.findings)
+    in_categories = sum(rows for rows, _, _ in measured.values())
+    targets = " or ".join(match)
+    if not outcome.completed and match and in_categories and not sum(a for _, a, _ in measured.values()):
         # B48: the search came back, but with rows about something else. Counts, not
         # content, so the Broker can re-dispatch filtered on the target or accept the miss.
         digest += (f" | step {step.step_id} missed: {in_categories} {'/'.join(wanted) or family} rows, "
-                   f"none contain {', '.join(match)}; no empty {'/'.join(wanted) or family} search filtered on it")
-    elif not outcome.completed and wanted:
+                   f"none contain {', '.join(match)}")
+
+    def unanswered() -> list[str]:
+        return [c for c in wanted if not outcome.rows_by_category.get(c) and c not in outcome.proven_empty]
+
+    # B54: a target step with no target rows is closed only by code counting the
+    # target, never by an empty search, which cannot show it filtered on it.
+    if (not outcome.completed and match and unanswered() and family == "siem"
+            and step.completion.requires == "rows_or_confirmed_empty"
+            and result.status is not SubtaskStatus.REJECTED and not outcome.refused_for_budget):
+        for category in unanswered():
+            found, datamodel = await asyncio.to_thread(_absence_count, category, match, req.task.scope)
+            if found == 0:
+                outcome.proven_empty[category] = datamodel
+                digest += f" | {category}: code count over {datamodel} finds no {targets} in the window"
+            elif found:
+                digest += f" | {category}: code count finds {found} {datamodel} rows containing {targets}"
+            else:
+                digest += f" | {category}: absence of {targets} not shown"
+        _settle(step, outcome)
+    if not outcome.completed and unanswered():
         # B44: so a re-dispatch asks for what is missing instead of repeating the question.
-        got = {name for name, n in _finding_counts(result.findings) if n}
-        missing = [c for c in wanted if c not in got]
-        digest += f" | step {step.step_id} incomplete: no {', '.join(missing or wanted)} rows"
+        digest += (f" | step {step.step_id} incomplete: no {', '.join(unanswered())} rows"
+                   + (f" containing {targets}" if match else ""))
     return digest
 
 
@@ -1012,6 +1149,11 @@ async def plan_fetch(
     # attribute access works, so nothing caught it.
     for step in plan.steps:
         prior = carried.pop(step.step_id, None)
+        if prior is not None and _asks(prior.step) != _asks(step):
+            # A new target or category is a new question: rows and absence proofs
+            # answered the old one, and would close this one uncounted (B54).
+            prior = StepOutcome(step=step, evaluated=False, dispatches=prior.dispatches,
+                                result_ids=prior.result_ids)
         req.step_outcomes[step.step_id] = (
             # Planned, not judged: `evaluated=False` until `evaluate_step()` runs
             # a rule against a real result. A planned step nobody ever dispatched

@@ -1318,6 +1318,7 @@ def _retrieval_summary(
                 evaluated=outcome.evaluated,
                 confirmed_empty=outcome.confirmed_empty,
                 rows_retrieved=outcome.rows_retrieved,
+                proven_empty=dict(outcome.proven_empty),
             )
             for outcome in report.step_outcomes
         ],

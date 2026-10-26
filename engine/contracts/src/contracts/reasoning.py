@@ -357,7 +357,7 @@ class StepSummary(BaseModel):
     """What became of one planned fetch step, as the Analyst Agent needs to see it.
 
     A projection of `contracts.subtask.StepOutcome`, code-assembled, carrying the
-    four facts that change how a judgement should be weighed and nothing else.
+    facts that change how a judgement should be weighed and nothing else.
     Dropped: `dispatches`, `refused_for_budget`, `status`, `reason` and the full
     `FetchStep` -- dispatch counts and budget refusals are our operational
     concern, not an input to reasoning about evidence.
@@ -375,6 +375,9 @@ class StepSummary(BaseModel):
     evaluated: bool = True
     confirmed_empty: bool = False
     rows_retrieved: int = Field(default=0, ge=0)
+    proven_empty: dict[str, str] = Field(default_factory=dict)
+    """Category -> what showed it holds no answer: the datamodel a code count
+    searched (absence holds only within it), or `"empty search"`."""
 
 
 class DomainGap(BaseModel):

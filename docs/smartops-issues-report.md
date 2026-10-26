@@ -58,6 +58,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 ## Summary
 
+**2026-10-26 delta:** B52–B55 logged. Yousef's four runs confirmed VT on unrelated questions and repeated across rounds (B55). A review with Codex and Antigravity found two completion bugs (B53, B54) and agreed a plan for B52: memory between rounds, feedback loops for the Broker and the siem agent, a Broker review of each result, a check on sub-analyst claims, and VT as a direct tool. Two live runs on the `20592fea` alert (`08590c74`, `cc991548`) gave a verdict at planning with no Broker round (G7).
+
 **2026-10-25 (b) delta (`broker-fixes`: `a6b698a`, `67128bc`, `b1511bc`):** B11 and B50 fixed. B50: a payload with no row list (a Splunk 400) is filed as discovery, not as an empty search; 11 saved 400s re-projected, none counted, and a live 400 today came back as an error reply, which was never evidence. B11: the 20592fea misreads are gone on a live sub-analyst replay of the same evidence (no source invented, 4624 and 4672 told apart); a protocol the rows don't carry is dropped; the auth summary counts event code and subject; counts and times are scoped to observations in the prompt. Residual small-model wording (spelled-out counts, an odd interpretation) is left to B51, which takes the narrative out of synthesis.
 
 **2026-10-25 delta (PR #11, `4016a5c`..`db9d90f`, read on `main` @ `010108b`):** `verdict_gate` enforces 85/20 in code again, and nothing else. It checks no refs, evidence or step outcomes. It no longer calls the unknown-evidence guard from `0e341d0` (G4). It doesn't validate the scores it gates on (G8, G10), and passing scores override the model's own REQUIRES_INVESTIGATION (G11). New G4–G12 and T28–T30, all Analyst code, routed. G1, G3 and T25 stay removed. G2 is still open.
@@ -152,6 +154,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
 | B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Fixed (`a6b698a`): 11 saved 400s re-projected, none counted; live re-run `20592fea-L2-T5` showed no regression |
 | B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Open. Candidate (Codex): keep the narrative for audit, send synthesis code-owned evidence instead; decouple `name_expansions` from narrative text first. Changes what the Analyst reads: needs Yousef |
+| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. Branch `fix/broker-run-memory` |
+| B53 | Broker | A step with several categories completes when only one of them has rows | High | Open (part of B52 plan A) |
+| B54 | Broker | "Looked and empty" accepts any empty search in the category, even one that never filtered on the target | High | Open (part of B52 plan A): absence proven only by a code-run count query |
+| B55 | Broker | VT is dispatched on the alert's hash for questions that aren't about reputation, and repeated across rounds | High | Open (part of B52 plan F). Seen on Yousef's runs `deb8195a`, `2ae9b697`, `9495f122` |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -981,6 +987,38 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
 - **Class:** B40's (a `-` placeholder counted as a value), on the rendering side. B11's `events=` fix held on the same rows.
 - **Proposed fix:** leave empty fields out of the rendered row instead of writing `-`.
 
+**B52. Retrieval is never checked.** *High. Open; plan agreed 2026-10-26.*
+- **Evidence:**
+  - `c75abeae` L3-FU2 (allowlist question about one IP): 12 searches, 2 exact repeats of round 2 (a data count on the host), 2 on entities the question didn't ask about. Nothing told the Broker these had already run.
+  - Yousef's runs (B55) repeat the same VT lookup across rounds.
+  - Today the siem agent hears its goal once, as text. Step progress is computed only after the whole dispatch, and only the Broker hears it, as row counts. Nobody checks whether the rows answer the question or whether a search was wrong. Sub-analyst output passes only the grounding gate (citations, figures, protocols exist in the shown rows).
+- **Cause:** each task gets a fresh Broker agent with no record of earlier rounds; no step reviews a result against its question.
+- **Plan (agreed by Claude, Codex and Antigravity over 5 + 2 review rounds):**
+  - A: a pure row measurement, plus B53 and B54.
+  - B: a run ledger shared by the run's Broker agents (Strands `AgentState`), shown as "already fetched by L2-T4: …"; plan progress after each dispatch; a repeat warning; one finish check through `AfterInvocationEvent.resume`.
+  - C: the siem agent hears progress after each search and what was already searched; it claims which rows answer, and code checks the attribution.
+  - D: the Broker reviews each result on a code-built card (question, real searches, counts, cited rows) through a `review_step` tool. A step is complete only when code facts hold and the Broker accepted it.
+  - E: sub-analyst presence claims checked against their cited rows (one batched call per finding, cheapest tier, budget-reserved). Sub-analysts stay blind to the question.
+  - F: VT as a direct Broker tool, once per observable per run.
+- **Plan file:** see `docs/handover-2026-10-26b.md`.
+
+**B53. A multi-category step completes on one category.** *High. Open.*
+- **Evidence:** `evaluate_step` sums rows across all the step's categories (`broker.py:689-694`), so a [processes, file_events] step closes on process rows alone. Found by Codex in the B52 review.
+- **Fix (B52 A):** every named category needs rows, or its own proof that it is empty.
+
+**B54. Absence can be "proved" by the wrong search.** *High. Open.*
+- **Evidence:** `_step_rows` (`broker.py:563-590`) counts any zero-row set in the category as "looked and empty", even a search that never filtered on `completion.match`. An unrelated empty file search can confirm `svcupdate.dat` isn't there. Search text can't prove a filter either (`NOT x`, `x OR y`).
+- **Fix (B52 A):** code runs one fixed count query from an allowlisted template (category, target kind), escaped, `summariesonly=f`, host and window explicit. 0 means absent within that dataset; anything unknown means "not shown", never absent.
+- **Known limit:** the count searches only the template's fields, while a row answers if the target appears in any field. A target only in another field (e.g. a `cmd.exe` command line naming `svcupdate.dat`) can be counted absent. Accepted: rows come from arbitrary SPL, so no field list can match them; `proven_empty` records the datamodel the proof holds in.
+
+**B55. VT on unrelated questions, repeated across rounds.** *High. Open.*
+- **Evidence (Yousef's runs, 26 Oct):**
+  - `deb8195a`: 6 of 15 round-2 tasks plus L3-FU2 sent the alert's hash to VT, for questions such as "Is Mariam's account involved in privileged operations?".
+  - `2ae9b697` L2-T3, "What is the parent process (PID 2900) executing?", went to siem and VT.
+  - `9495f122`: the same hash went to VT 10 times across loops 3–7.
+  - The hash is in every task's scope because `to_task_file` adds the alert's entities; the Broker chose VT anyway.
+- **Fix (B52 F):** a direct `vt_lookup` tool, allowed for an observable named in the question or found in this task's rows; the alert's own hash is allowed once per run with a reason; repeats return the earlier task and verdict.
+
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
 ## Webapp integration
@@ -1330,7 +1368,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 46 | 1 | 2 | B51 new (needs Yousef); B11 and B50 fixed; B6/B20 with Yousef (#14) |
+| Broker | 46 | 1 | 6 | B52–B55 new (10-26, plan agreed); B51 (needs Yousef); B6/B20 with Yousef (#14) |
 | Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
 | Triage (Analyst) | 0 | 3 | 26 | T1 partly; T2–T24, T26–T30 (T25 removed by design) |
 | Gate (Analyst) | 0 | 0 | 10 | G2, G4–G12 (G1, G3 removed by design) |

@@ -2153,6 +2153,22 @@ class TestRePlanningRebuildsTheOutcomes:
         assert outcome.step.objective == "auth events for host-1 only"
         assert outcome.step.completion.min_rows == 4
         assert outcome.dispatches == 1
+        assert outcome.rows_retrieved == 1, "a tightened row floor keeps the rows"
+
+    async def test_a_new_target_drops_the_old_answer(self):
+        """B54: rows and absence proofs about one target closed a re-plan asking about another."""
+        request = BrokerRequest(task=make_task(), run_subagent=runner_returning(self._one_row))
+        await plan_via_tool(request, self._AUTH)
+        await dispatch(request, "siem", "siem-auth")
+        request.step_outcomes["siem-auth"].proven_empty = {"auth_events": "Authentication"}
+
+        retargeted = self._AUTH.model_copy(update={"completion": CompletionRule(
+            categories=["auth_events"], match=["new-user"])})
+        await plan_via_tool(request, retargeted, rationale="other user")
+
+        outcome = request.step_outcomes["siem-auth"]
+        assert (outcome.rows_retrieved, outcome.proven_empty, outcome.completed, outcome.evaluated,
+                outcome.dispatches) == (0, {}, False, False, 1)
 
     async def test_dropping_a_dispatched_step_is_logged(self, caplog):
         request = BrokerRequest(task=make_task(), run_subagent=runner_returning(self._one_row))
@@ -3064,9 +3080,13 @@ class TestAStepAboutANamedValueNeedsRowsNamingIt:
         outcome = evaluate_step(self.STEP, self._result((self.UNFILTERED, self.OTHER_FILES)))
         assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (0, False, False)
 
-    def test_an_empty_filtered_search_rules_it_out_whatever_a_wider_one_found(self):
-        outcome = evaluate_step(self.STEP, self._result((self.FILTERED, []), (self.UNFILTERED, self.OTHER_FILES)))
-        assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (0, True, True)
+    def test_an_empty_search_alone_does_not_rule_it_out(self):
+        """B54: nothing on a search shows it filtered on the target; `_absence_count` decides."""
+        negated = 'host=h EventCode=11 NOT TargetFilename="*svcupdate.dat*" | table TargetFilename'
+        for calls in ([(self.FILTERED, [])], [(self.FILTERED, []), (self.UNFILTERED, self.OTHER_FILES)],
+                      [(negated, [])]):
+            outcome = evaluate_step(self.STEP, self._result(*calls))
+            assert (outcome.rows_retrieved, outcome.completed, outcome.confirmed_empty) == (0, False, False)
 
     def test_a_row_naming_the_file_answers_it_whatever_the_case_or_path(self):
         row = {"EventCode": "11", "TargetFilename": r"C:\Users\x\AppData\Local\Temp\SvcUpdate.DAT"}
@@ -3108,10 +3128,201 @@ class TestAStepAboutANamedValueNeedsRowsNamingIt:
         )
 
         assert goals[0].endswith(
-            "\n\nSearch file_events for svcupdate.dat. The step is complete with rows naming it, or with "
-            "a file_events search filtered on it that returns none. Keep the filter in every query."
+            "\n\nSearch file_events for svcupdate.dat. The step is complete with rows naming it; "
+            "if there are none, code checks that by counting it. Keep the filter in every query."
         )
         assert digest.endswith(
-            "| step file_write missed: 10 file_events rows, none contain svcupdate.dat; "
-            "no empty file_events search filtered on it"
+            "| step file_write missed: 10 file_events rows, none contain svcupdate.dat"
+            " | file_events: absence of svcupdate.dat not shown"
+            " | step file_write incomplete: no file_events rows containing svcupdate.dat"
         )
+
+    @pytest.mark.parametrize("found, completed, line", [
+        (0, True, "| file_events: code count over Endpoint.Filesystem finds no svcupdate.dat in the window"),
+        (3, False, "| file_events: code count finds 3 Endpoint.Filesystem rows containing svcupdate.dat"),
+    ])
+    async def test_only_a_code_count_rules_the_target_out(self, monkeypatch, found, completed, line):
+        asked = []
+        monkeypatch.setattr(broker_module, "_absence_count",
+                            lambda *args: asked.append(args) or (found, "Endpoint.Filesystem"))
+        request = BrokerRequest(task=make_task())
+        with_plan(request, self.STEP)
+        request.run_subagent = runner_returning(
+            lambda m: self._result((self.FILTERED, [])).model_copy(update={"task_id": m.task_id}))
+        digest = await TOOL_BY_FAMILY["siem"](
+            question="was svcupdate.dat written?", step_id="file_write",
+            tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
+        )
+
+        outcome = request.step_outcomes["file_write"]
+        assert [a[:2] for a in asked] == [("file_events", ["svcupdate.dat"])]
+        assert (outcome.completed, outcome.confirmed_empty) == (completed, completed)
+        assert line in digest
+
+
+class TestEveryNamedCategoryNeedsAnAnswer:
+    """B53: rows were summed across a step's categories, so a [processes, file_events]
+    step closed on process rows alone."""
+
+    STEP = FetchStep(step_id="s", family="siem", objective="what ran and what it wrote",
+                     completion=CompletionRule(categories=["processes", "file_events"]))
+
+    @staticmethod
+    def _result(**sets):
+        return SubtaskResult(
+            task_id="t1:siem:tu", status=SubtaskStatus.OK,
+            findings=SiemFindings(**{name: [ResultSet(query="q", row_count=len(rows), rows=rows)]
+                                     for name, rows in sets.items()}),
+            queries_run=[QueryRun(query="q")],
+        )
+
+    def test_rows_in_one_category_leave_the_other_open(self):
+        outcome = evaluate_step(self.STEP, self._result(processes=[{"p": "a"}]))
+        assert (outcome.completed, outcome.rows_by_category) == (False, {"processes": 1})
+
+    def test_rows_in_both_or_an_empty_search_of_the_other_close_it(self):
+        assert evaluate_step(self.STEP, self._result(processes=[{"p": "a"}], file_events=[{"f": "x"}])).completed
+        outcome = evaluate_step(self.STEP, self._result(processes=[{"p": "a"}], file_events=[]))
+        assert (outcome.completed, outcome.proven_empty, outcome.confirmed_empty) == (
+            True, {"file_events": "empty search"}, False)
+
+    def test_a_second_dispatch_supplying_the_missing_category_closes_it(self):
+        first = evaluate_step(self.STEP, self._result(processes=[{"p": "a"}]))
+        outcome = evaluate_step(self.STEP, self._result(file_events=[{"f": "x"}]), prior=first)
+        assert (outcome.completed, outcome.rows_by_category) == (True, {"processes": 1, "file_events": 1})
+
+    def test_rows_required_takes_rows_in_every_category(self):
+        step = self.STEP.model_copy(update={"completion": CompletionRule(
+            requires="rows_required", categories=["processes", "file_events"])})
+        assert not evaluate_step(step, self._result(processes=[{"p": "a"}], file_events=[])).completed
+
+
+class TestATargetStepOverSeveralCategories:
+    """B53 with B54: each category of a target step is answered on its own, by rows
+    naming the target or a code count proving it absent there."""
+
+    STEP = FetchStep(step_id="s", family="siem", objective="svcupdate.dat run or written",
+                     completion=CompletionRule(categories=["processes", "file_events"], match=["svcupdate.dat"]))
+    MODELS = {"processes": "Endpoint.Processes", "file_events": "Endpoint.Filesystem"}
+
+    async def _dispatch(self, monkeypatch, result, absent):
+        monkeypatch.setattr(broker_module, "_absence_count",
+                            lambda category, *_: (0 if category in absent else None, self.MODELS[category]))
+        request = BrokerRequest(task=make_task())
+        with_plan(request, self.STEP)
+        request.run_subagent = runner_returning(lambda m: result.model_copy(update={"task_id": m.task_id}))
+        await TOOL_BY_FAMILY["siem"](
+            question="was svcupdate.dat run or written?", step_id="s",
+            tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
+        )
+        return request.step_outcomes["s"]
+
+    async def test_rows_in_one_and_absence_in_the_other_close_it(self, monkeypatch):
+        result = TestEveryNamedCategoryNeedsAnAnswer._result(
+            processes=[{"process": "svcupdate.dat"}], file_events=[])
+        outcome = await self._dispatch(monkeypatch, result, absent={"file_events"})
+        assert (outcome.completed, outcome.confirmed_empty, outcome.proven_empty) == (
+            True, False, {"file_events": "Endpoint.Filesystem"})
+
+    async def test_absence_in_every_category_confirms_it_empty(self, monkeypatch):
+        result = TestEveryNamedCategoryNeedsAnAnswer._result(processes=[], file_events=[])
+        outcome = await self._dispatch(monkeypatch, result, absent={"processes", "file_events"})
+        assert (outcome.completed, outcome.confirmed_empty, outcome.proven_empty) == (True, True, self.MODELS)
+
+    async def test_absence_unshown_in_one_category_leaves_it_open(self, monkeypatch):
+        result = TestEveryNamedCategoryNeedsAnAnswer._result(processes=[], file_events=[])
+        outcome = await self._dispatch(monkeypatch, result, absent={"processes"})
+        assert (outcome.completed, outcome.proven_empty) == (False, {"processes": "Endpoint.Processes"})
+
+    async def test_later_rows_overturn_an_absence_proof(self, monkeypatch):
+        empty = TestEveryNamedCategoryNeedsAnAnswer._result(processes=[], file_events=[])
+        outcome = await self._dispatch(monkeypatch, empty, absent={"processes", "file_events"})
+        found = TestEveryNamedCategoryNeedsAnAnswer._result(file_events=[{"file": r"C:\Temp\svcupdate.dat"}])
+        outcome = evaluate_step(self.STEP, found, prior=outcome)
+        assert (outcome.completed, outcome.confirmed_empty, outcome.proven_empty, outcome.rows_by_category) == (
+            True, False, {"processes": "Endpoint.Processes"}, {"file_events": 1})
+
+
+class TestAbsenceCount:
+    """B54: the one code-run proof that a target is absent. Anything unknown is `None`."""
+
+    SCOPE = make_scope(entities=[Entity(kind="host", value="host-1"),
+                                 Entity(kind="file_name", value='C:\\Temp\\svc"update.dat')])
+
+    def _count(self, monkeypatch, replies, match=('svc"update.dat',), category="file_events", scope=None):
+        import smartops.context as context
+        queries = []
+
+        def run_query(query, **kwargs):
+            queries.append((query, kwargs))
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        monkeypatch.setattr(context, "run_query", run_query)
+        return broker_module._absence_count(category, list(match), scope or self.SCOPE), queries
+
+    def test_counts_the_escaped_target_on_the_host_in_the_window(self, monkeypatch):
+        start = datetime(2026, 8, 11, 9, 0, 0, 250000, tzinfo=UTC)
+        end = datetime(2026, 8, 11, 10, 0, 0, 750000, tzinfo=UTC)
+        scope = self.SCOPE.model_copy(update={"time_window": (start, end)})
+        (found, datamodel), queries = self._count(monkeypatch, [[{"count": "40"}], [{"count": "0"}]], scope=scope)
+        assert (found, datamodel) == (0, "Endpoint.Filesystem")
+        # Fractional seconds: `int()` cut the last part-second off the window.
+        assert queries[1] == (
+            '| tstats summariesonly=f count from datamodel=Endpoint.Filesystem where '
+            '(Filesystem.dest="host-1") (Filesystem.file_name="*svc\\"update.dat*")',
+            {"earliest_time": "1786438800.25", "latest_time": "1786442400.75", "row_limit": 1},
+        )
+
+    @pytest.mark.parametrize("replies", [
+        [[{"count": "0"}]],                        # the datamodel holds nothing for the host
+        [[{"count": "40"}], [{"count": "n/a"}]],   # not a number
+        [[{"count": "40"}], []],                   # no row
+        [[{"count": "40"}], RuntimeError("400")],  # tool error
+        [[{"count": "40"}], [{"count": 0.75}]],    # a fraction, which `int()` made 0
+        [[{"count": "40"}], [{"count": False}]],   # a bool, which `int()` made 0
+        [[{"count": "40"}], [{"count": "5.0"}]],
+        [[{"count": "-1"}]],                       # a negative base count
+    ])
+    def test_an_unknown_answer_is_none(self, monkeypatch, replies):
+        assert self._count(monkeypatch, replies)[0][0] is None
+
+    @pytest.mark.parametrize("category, kind, value, field", [
+        ("file_events", "file_name", r"C:\Temp\svcupdate.dat", "Filesystem.file_name"),
+        ("processes", "process", r"C:\Windows\Temp\svc.exe", "Processes.process_name"),
+    ])
+    def test_a_full_path_is_counted_by_its_basename(self, monkeypatch, category, kind, value, field):
+        """The name fields hold basenames: the full path counted 0 and closed the step."""
+        scope = make_scope(entities=[Entity(kind="host", value="host-1"), Entity(kind=kind, value=value)])
+        (found, _), queries = self._count(monkeypatch, [[{"count": "40"}], [{"count": "2"}]],
+                                          match=(value,), category=category, scope=scope)
+        assert found == 2
+        assert queries[1][0].endswith(f'{field}="*{value.rsplit(chr(92), 1)[-1]}*")')
+
+    @pytest.mark.parametrize("hosts", [("h1", "h2"), ("h2", "h1")])
+    def test_every_scoped_host_is_counted(self, monkeypatch, hosts):
+        """Only the first host was counted, so a target on the second read as absent."""
+        scope = make_scope(entities=[*(Entity(kind="host", value=h) for h in hosts),
+                                     Entity(kind="file_name", value="svcupdate.dat")])
+        (found, _), queries = self._count(monkeypatch, [[{"count": "40"}], [{"count": "7"}], [{"count": "3"}]],
+                                          match=("svcupdate.dat",), scope=scope)
+        assert found == 3
+        assert [q for q, _ in queries[:2]] == [
+            f'| tstats summariesonly=f count from datamodel=Endpoint.Filesystem where Filesystem.dest="{h}"'
+            for h in hosts]
+        assert f'(Filesystem.dest="{hosts[0]}" OR Filesystem.dest="{hosts[1]}")' in queries[2][0]
+
+    def test_a_host_with_no_data_proves_nothing(self, monkeypatch):
+        scope = make_scope(entities=[Entity(kind="host", value="h1"), Entity(kind="host", value="h2"),
+                                     Entity(kind="file_name", value="svcupdate.dat")])
+        (found, _), queries = self._count(monkeypatch, [[{"count": "40"}], [{"count": "0"}]],
+                                          match=("svcupdate.dat",), scope=scope)
+        assert (found, len(queries)) == (None, 2)
+
+    def test_no_template_or_no_host_is_none_without_a_query(self, monkeypatch):
+        no_host = make_scope(entities=[Entity(kind="file_name", value='svc"update.dat')])
+        for kwargs in ({"match": ("other.dat",)}, {"category": "registry_events"}, {"scope": no_host}):
+            (found, _), queries = self._count(monkeypatch, [], **kwargs)
+            assert (found, queries) == (None, [])
