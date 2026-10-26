@@ -113,6 +113,74 @@ def _rows_of(payload: Any) -> list[dict[str, Any]] | None:
     return None
 
 
+def _cap_of(payload: Any) -> tuple[bool, int | None]:
+    """(truncated, Splunk's total before the cap) from the same envelope `_rows_of`
+    reads. On the lab, `head 50` capped at 5 says `truncated: True, total_rows: 50`."""
+    if isinstance(payload, dict):
+        if "truncated" in payload or "total_rows" in payload:
+            total = payload.get("total_rows")
+            return bool(payload.get("truncated")), total if isinstance(total, int) and not isinstance(total, bool) else None
+        inner = payload.get("structuredContent")
+        if isinstance(inner, dict):
+            return _cap_of(inner)
+    return False, None
+
+
+# The last transforming command decides what the rows are: `| stats count` is one
+# count, `| stats count by Image` is aggregate rows, no such command means events.
+_TRANSFORMING = re.compile(r"\|\s*(tstats|stats|chart|timechart|top|rare)\b([^|]*)", re.IGNORECASE)
+
+
+def _result_kind(query: str | None, rows: list[dict[str, Any]]) -> str:
+    """Code records what Splunk returned; the agent judges what a count means."""
+    if not query or not query.strip():
+        return "unknown"
+    found = _TRANSFORMING.findall(query)
+    if not found:
+        return "events"
+    command, clause = found[-1]
+    if command.lower() in ("tstats", "stats") and not re.search(r"\bby\b", clause, re.IGNORECASE) and len(rows) <= 1:
+        return "count"
+    return "aggregate"
+
+
+def scalar_count(rows: list[dict[str, Any]] | None) -> int | None:
+    """The number in a lone `{count: N}` row, else None. Shared by the dead-datamodel
+    guard and `_absence_count`: an empty model's `tstats count` is `[{count: "0"}]`,
+    not `[]` (lab, 2026-10-26). Only a non-negative whole number is a count."""
+    if not rows or len(rows) != 1 or len(rows[0]) != 1:
+        return None
+    key, value = next(iter(rows[0].items()))
+    if key.lower() != "count" or isinstance(value, bool) or not str(value).isdecimal():
+        return None
+    return int(value)
+
+
+# IPs and hashes match as whole tokens: `10.0.0.1` must not hit `10.0.0.15`, and a
+# false hit can close a step. Inside a command line or `10.0.0.1:443` it still hits.
+_EXACT_TOKEN = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def row_matches(row: dict[str, Any], match: list[str]) -> bool:
+    """Whether any value of `row` names a match value: the one matcher for attribution
+    and completion. Names and paths match as substrings (`svcupdate.dat.bak`)."""
+    wanted = [m.lower() for m in match if m.strip()]
+    values = [str(v).lower() for v in row.values()]
+    for m in wanted:
+        if _EXACT_TOKEN.fullmatch(m):
+            token = re.compile(rf"(?<![\w.]){re.escape(m)}(?![\w]|\.\w)")
+            if any(token.search(v) for v in values):
+                return True
+        elif any(m in v for v in values):
+            return True
+    return False
+
+
+def event_rows(result_set: ResultSet) -> list[dict[str, Any]]:
+    """The rows that are events: none for a count or aggregate set."""
+    return result_set.rows if result_set.kind in ("events", "unknown") else []
+
+
 def _has_eventcode(q: str, code: int) -> bool:
     """Whether `q` references Windows/Sysmon `EventCode=<code>` exactly.
 
@@ -319,10 +387,14 @@ def project_siem(calls: list[Any], queries_run: list[QueryRun], task_id: str) ->
     for index, call in enumerate(calls):
         decoded = _rows_of(call.payload)
         rows = decoded or []
+        truncated, total = _cap_of(call.payload)
         result_set = ResultSet(
             query=call.query or f"<{call.tool}: query not recoverable from tool input>",
             row_count=len(rows),
             rows=rows,
+            kind=_result_kind(call.query, rows),
+            truncated=truncated,
+            total=total,
             # Index-aligned with `_EvidenceCollector.evidence()`, which mints ids
             # from `enumerate(self.calls)` over this same list. That alignment is
             # the entire basis of the back-reference, so both sides call the one

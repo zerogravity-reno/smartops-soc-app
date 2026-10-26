@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     Discriminator,
     Field,
+    PrivateAttr,
     Tag,
     create_model,
     field_validator,
@@ -795,6 +796,12 @@ class StepOutcome(BaseModel):
     order -- the join from a step to `BrokerReport.results` (O2). `dispatches`
     alone said how many, not which."""
     rows_retrieved: int = 0
+    event_rows: int = 0
+    """The event rows among `rows_retrieved`, each counted once across searches and
+    dispatches: what `completion.min_rows` counts. Aggregate rows naming the target
+    answer the step but are not events (handover h item 3)."""
+    _seen_rows: set[str] = PrivateAttr(default_factory=set)
+    """Keys of the event rows already counted, so a repeated search adds nothing (item 8)."""
     rows_by_category: dict[str, int] = Field(default_factory=dict)
     """`rows_retrieved` per category, cumulative across dispatches. A step naming
     two categories is complete only when each has rows or is in `proven_empty`

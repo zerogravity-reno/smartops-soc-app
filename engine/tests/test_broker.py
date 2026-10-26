@@ -1786,7 +1786,7 @@ class TestDispatchIsBoundToAPlannedStep:
                 status=SubtaskStatus.OK,
                 findings=SiemFindings(
                     processes=[
-                        ResultSet(query="q", row_count=count, rows=[{"p": i} for i in range(count)])
+                        ResultSet(query="q", row_count=count, rows=[{"p": i, "task": mission.task_id} for i in range(count)])
                     ]
                 ),
                 queries_run=[QueryRun(query="q")],
@@ -2563,7 +2563,7 @@ class TestAFailedSubagentIsNotANegativeFinding:
     def test_an_empty_redispatch_does_not_turn_a_step_with_rows_into_no_data(self):
         # B39, 2a71757f T2: rows_retrieved=5 beside status=no_data.
         step = FetchStep(step_id="siem-1", family="siem", objective="Find the file")
-        rows = [{"_time": "t", "host": "h"}] * 5
+        rows = [{"_time": f"t{n}", "host": "h"} for n in range(5)]
         found = SubtaskResult(
             task_id="t1:siem:tu-1",
             status=SubtaskStatus.OK,
@@ -2605,7 +2605,7 @@ class TestAFailedSubagentIsNotANegativeFinding:
             task_id="t1:siem:tu-1",
             status=SubtaskStatus.OK,
             findings=SiemFindings(
-                dns_resolutions=[ResultSet(query="q", row_count=10, rows=[{"query": "x"}] * 10)]
+                dns_resolutions=[ResultSet(query="q", row_count=10, rows=[{"query": "x", "n": n} for n in range(10)])]
             ),
             queries_run=[QueryRun(query="q")],
         )
@@ -2822,7 +2822,7 @@ class TestAStepIsJudgedAgainstItsOwnCategory:
         second = evaluate_step(
             step,
             self._result(
-                SiemFindings(dns_resolutions=[ResultSet(query="q2", row_count=9, rows=[{"a": 1}])])
+                SiemFindings(dns_resolutions=[ResultSet(query="q2", row_count=9, rows=[{"a": 2}])])
             ),
             prior=first,
         )

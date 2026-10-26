@@ -58,6 +58,19 @@ class ResultSet(BaseModel):
     query: str = Field(min_length=1)
     row_count: int = Field(ge=0)
     rows: list[dict[str, Any]] = Field(default_factory=list)
+    kind: Literal["events", "count", "aggregate", "unknown"] = Field(
+        default="events",
+        description=(
+            "What the rows are, read from the SPL by code: events, one scalar count "
+            "(`stats count`), grouped aggregate rows (`stats count by x`), or unknown. "
+            "A count is a count, not a row: only events and unknown fill event quotas "
+            "or prove a search empty."
+        ),
+    )
+    truncated: bool = False
+    total: int | None = Field(
+        default=None, description="Splunk's row total before the cap, when the payload says it."
+    )
     evidence_id: str | None = Field(
         default=None,
         description=(
@@ -242,11 +255,13 @@ class SiemFindings(Findings):
 
         An index listing's rows describe what Splunk holds, not what happened on
         a host, so counting them here would report retrieval that did not occur.
+        Nor a count or aggregate: a `{count: 0}` row is Splunk saying "none".
         """
         return sum(
             rs.row_count
             for bucket in (*get_args(CimCategory), "uncategorised")
             for rs in getattr(self, bucket)
+            if rs.kind in ("events", "unknown")
         )
 
 

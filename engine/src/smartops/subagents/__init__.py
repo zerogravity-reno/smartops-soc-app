@@ -476,10 +476,10 @@ _NOT_A_ROW_FIELD = {"index", "sourcetype", "source", "earliest", "latest", "summ
 
 
 def _matching_rows(rows: list[dict], match: list[str]) -> list[int]:
-    """1-based numbers of the rows naming a match value, as `measure_step` matches."""
-    wanted = [m.lower() for m in match if m.strip()]
-    return [n for n, row in enumerate(rows, 1)
-            if any(m in str(v).lower() for v in row.values() for m in wanted)]
+    """1-based numbers of the rows naming a match value, by `measure_step`'s matcher."""
+    from smartops.projection import row_matches
+
+    return [n for n, row in enumerate(rows, 1) if row_matches(row, match)]
 
 
 def _unseen_filter_fields(query: str | None, earlier: list[_ToolCall]) -> list[str]:
@@ -487,7 +487,7 @@ def _unseen_filter_fields(query: str | None, earlier: list[_ToolCall]) -> list[s
     datamodel held (B52 C). A hint: a field nobody saw is not proven invalid, but a
     filter on a field the source lacks returns 0 rows, not an error (`guards.py`)."""
     from smartops.guards import _TSTATS_WHERE
-    from smartops.projection import _rows_of
+    from smartops.projection import _result_kind, _rows_of
 
     source = _SOURCE.search(query or "")
     if source is None:
@@ -496,9 +496,27 @@ def _unseen_filter_fields(query: str | None, earlier: list[_ToolCall]) -> list[s
     where = _TSTATS_WHERE.search(query) if "tstats" in query.lower() else None
     clause = where.group(1) if where else query.lstrip().lstrip("|").split("|")[0]
     filtered = dict.fromkeys(f for f in _FILTER_FIELD.findall(clause) if f.lower() not in _NOT_A_ROW_FIELD)
+    # Event rows only: an aggregate renames its fields (`count by Image` has no `CommandLine`).
     seen = {k.lower() for call in earlier if (s := _SOURCE.search(call.query or "")) and s.group(2).lower() == key
-            for row in _rows_of(call.payload) or [] for k in row}
+            for rows in [_rows_of(call.payload) or []] if _result_kind(call.query, rows) in ("events", "unknown")
+            for row in rows for k in row}
     return [f for f in filtered if seen and f.lower() not in seen]
+
+
+def _described(sets: list) -> str:
+    """What one bucket of a search holds, by kind: a count reads as its number, not a row."""
+    from smartops.projection import scalar_count
+
+    said = []
+    for rs in sets:
+        if rs.kind == "count":
+            n = scalar_count(rs.rows)
+            said.append(f"a count ({'count=' + str(n) if n is not None else 'not one number'}), not event rows")
+        else:
+            # The call's total goes on the `capped:` part: a split set holds part of the call.
+            said.append(f"{rs.row_count} {'aggregate rows' if rs.kind == 'aggregate' else 'rows'}"
+                        + (" (capped)" if rs.truncated else ""))
+    return ", ".join(said)
 
 
 def _search_line(mission: SubagentMission, calls: list[_ToolCall], so_far: dict[str, list]) -> str:
@@ -515,16 +533,20 @@ def _search_line(mission: SubagentMission, calls: list[_ToolCall], so_far: dict[
         if isinstance(sets, list):
             so_far.setdefault(name, []).extend(sets)
     rows = _rows_of(call.payload) or []
-    got = ", ".join(f"{name} {sum(s.row_count for s in sets)} rows" for name, sets in this
+    got = ", ".join(f"{name} {_described(sets)}" for name, sets in this
                     if isinstance(sets, list) and sets) or "no rows"
     parts = [f"search {len(calls)}: {got}"]
+    capped = next((rs for _, sets in this if isinstance(sets, list) for rs in sets if rs.truncated), None)
+    if capped is not None:
+        parts.append(f"capped: Splunk had {capped.total if capped.total is not None else 'more'} rows, "
+                     f"{len(rows)} came back; rows past the cap are unseen, narrow the search to reach them")
     targets = " or ".join(rule.match)
     # Only rows `_claim_problem` accepts: one call can split across categories.
     in_category = [row for rs in _wanted_sets(this, rule) for row in rs.rows]
     if rule.match and (hits := [n for n in _matching_rows(rows, rule.match) if rows[n - 1] in in_category]):
         listed = ", ".join(map(str, hits[:_ROWS_LISTED])) + (f", +{len(hits) - _ROWS_LISTED} more" if len(hits) > _ROWS_LISTED else "")
         parts.append(f"rows {listed} contain {targets}")
-    if not rows and (unseen := _unseen_filter_fields(call.query, calls[:-1])):
+    if _found_nothing(rows) and (unseen := _unseen_filter_fields(call.query, calls[:-1])):
         parts.append(f"filter fields no earlier row of this source held: {', '.join(unseen)} "
                      "(a hint: unobserved, not proven invalid)")
     if rule.categories or rule.match or rule.min_rows or rule.requires == "rows_required":
@@ -533,7 +555,7 @@ def _search_line(mission: SubagentMission, calls: list[_ToolCall], so_far: dict[
     return " | ".join(parts)
 
 
-def _still_missing(rule: CompletionRule, measured: dict[str, tuple[int, int, bool]]) -> list[str]:
+def _still_missing(rule: CompletionRule, measured: dict[str, tuple[int, int, bool, int]]) -> list[str]:
     """What the step lacks after the searches so far. Mirrors `broker._settle` from the
     subagent's side: a category answers with rows (naming the target, when there is
     one), or, for `rows_or_confirmed_empty`, with a search that came back empty. With
@@ -554,9 +576,9 @@ def _still_missing(rule: CompletionRule, measured: dict[str, tuple[int, int, boo
             missing.append(f"{name} (not searched)")
         elif not answered(*measured[name][:2]):
             missing.append(f"{name} rows containing {targets} (keep the filter)" if rule.match else f"{name} rows")
-    answering = sum(v[1] for v in measured.values())
-    if not missing and answering and answering < rule.min_rows:
-        missing.append(f"{rule.min_rows - answering} more rows (the step needs {rule.min_rows})")
+    answering, events = sum(v[1] for v in measured.values()), sum(v[3] for v in measured.values())
+    if not missing and answering and events < rule.min_rows:
+        missing.append(f"{rule.min_rows - events} more event rows (the step needs {rule.min_rows})")
     return missing
 
 
@@ -602,6 +624,13 @@ def _wanted_sets(projected: list, rule: CompletionRule) -> list:
     return [rs for name, value in projected if name in ok and isinstance(value, list) for rs in value]
 
 
+def _found_nothing(rows: list[dict] | None) -> bool:
+    """No rows, or Splunk's own `{count: 0}`: what an empty search looks like either way."""
+    from smartops.projection import scalar_count
+
+    return not rows or scalar_count(rows) == 0
+
+
 def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> str | None:
     """Why code cannot attribute one `SearchClaim` to the rows, or None (B52 C). The
     attribution only: the search and cited rows exist, sit in a wanted category, and
@@ -619,7 +648,7 @@ def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> 
     if not sets:
         return f"search {claim.search} is not a {asked} search"
     if claim.answers_question == "absence":
-        if rows:
+        if not _found_nothing(rows):
             return f"search {claim.search} returned {len(rows)} rows, not 0"
         # The Broker runs B54's count after this answer; no target proof exists here.
         return f"search {claim.search}: target absence needs the Broker's independent code count" if rule.match else None
@@ -649,7 +678,7 @@ def _claim_problems(answer: Any, calls: list[_ToolCall], rule: CompletionRule | 
         # Never holds and a recheck can only drop it, so `_attributed` drops it without
         # paying a turn (7 of 14 answers on the live run). With rows it can become a yes.
         return (c.answers_question == "absence" and bool(rule.match) and c.search <= len(calls)
-                and not _rows_of(calls[c.search - 1].payload))
+                and _found_nothing(_rows_of(calls[c.search - 1].payload)))
 
     return [f"search {c.search} ({c.answers_question}): {p}" for c in claims
             if not empty_target_absence(c) and (p := _claim_problem(c, calls, rule))]

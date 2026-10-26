@@ -863,6 +863,12 @@ def format_result_set(
     # a model asked for "20 of 4,000" got the 20 by counting lines (P-1).
     if result_set.row_count > len(shown):
         lines.append(f"… {len(shown)} of {result_set.row_count} rows shown")
+    # Splunk's own cap, before any of ours: rows past it were never retrieved.
+    if result_set.truncated:
+        total = f" of {result_set.total}" if result_set.total is not None else ""
+        lines.append(f"… capped by Splunk: {result_set.row_count}{total} rows retrieved")
+    if result_set.kind in ("count", "aggregate"):
+        lines.append(f"… these are {result_set.kind} rows from the search's stats, not events")
 
     # Rendered for EVERY set, not only a truncated one. A capped set needs it
     # because the analyst cannot count rows it was never shown; a fully printed

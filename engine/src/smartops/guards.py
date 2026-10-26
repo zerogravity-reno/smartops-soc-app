@@ -554,7 +554,10 @@ class TstatsDeadEndGuard:
                 return self._result_is_empty(inner)
             rows = result.get("rows", result.get("results"))
             if isinstance(rows, (list, tuple)):
-                return len(rows) == 0
+                # An empty model's unfiltered `tstats count` is `[{count: "0"}]`, not `[]` (lab).
+                from smartops.projection import scalar_count
+
+                return len(rows) == 0 or scalar_count(list(rows)) == 0
             count = result.get("row_count", result.get("total", result.get("count")))
             if isinstance(count, int):
                 return count == 0

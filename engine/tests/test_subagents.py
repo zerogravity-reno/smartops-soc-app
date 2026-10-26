@@ -1238,11 +1238,14 @@ class TestTheSearchLine:
     @pytest.mark.parametrize("match", [[], ["a.exe"]])
     def test_a_row_floor_is_heard_too(self, categories, match):
         rule = CompletionRule(categories=categories, match=match, min_rows=3)
-        call = _call(PROCS, [{"Image": "a.exe"}])
-        lines = _lines(rule, call, call, call)
-        assert lines[0].endswith("still missing: 2 more rows (the step needs 3)")
-        assert lines[1].endswith("still missing: 1 more rows (the step needs 3)")
+        calls = [_call(PROCS, [{"Image": "a.exe", "pid": n}]) for n in range(3)]
+        lines = _lines(rule, *calls)
+        assert lines[0].endswith("still missing: 2 more event rows (the step needs 3)")
+        assert lines[1].endswith("still missing: 1 more event rows (the step needs 3)")
         assert lines[2].endswith("nothing missing: report now")
+        # The same search three times returns the same event three times: one row (item 8).
+        again = _lines(rule, calls[0], calls[0], calls[0])
+        assert again[2].endswith("still missing: 2 more event rows (the step needs 3)")
 
     @pytest.mark.parametrize("categories", [[], ["file_events"]])
     @pytest.mark.parametrize("match", [[], ["svcupdate.dat"]])

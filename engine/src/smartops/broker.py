@@ -518,6 +518,13 @@ def _digest(result: SubtaskResult) -> str:
     if result.queries_run:
         parts.append(f"queries={len(result.queries_run)}")
 
+    # A capped search reads as complete unless it says otherwise (item 4).
+    capped = {item.evidence_id or item.query: item for _, value in result.findings or []
+              if isinstance(value, list) for item in value if getattr(item, "truncated", False)}
+    if capped:
+        totals = ", ".join("?" if item.total is None else str(item.total) for item in capped.values())
+        parts.append(f"capped={len(capped)} search(es), rows past the cap unseen (Splunk totals {totals})")
+
     if result.reason:
         reason = result.reason
         if len(reason) > _DIGEST_REASON_LIMIT:
@@ -554,14 +561,23 @@ def _finding_counts(findings: Any) -> list[tuple[str, int]]:
     for name, value in findings:
         if not isinstance(value, list) or not value:
             continue
-        total = sum(getattr(item, "row_count", 1) for item in value)
+        # A `{count: N}` set is Splunk's number, not a row (handover h item 1).
+        total = sum(getattr(item, "row_count", 1) for item in value if getattr(item, "kind", "events") != "count")
         counts.append((name, total))
     return counts
 
 
-def measure_step(rule: CompletionRule, findings: Any) -> dict[str, tuple[int, int, bool]]:
+def measure_step(
+    rule: CompletionRule, findings: Any, seen: set[str] | None = None
+) -> dict[str, tuple[int, int, bool, int]]:
     """Per category the step counts: (rows, rows that answer it, whether a search of
-    it came back with no rows), for one result. Pure; completion lives in `evaluate_step`.
+    it came back with no rows, answering event rows), for one result. Pure apart from
+    `seen`; completion lives in `evaluate_step`.
+
+    A count is a count, not a row (`ResultSet.kind`): a `{count: 0}` set adds nothing
+    and proves nothing empty. Aggregate rows naming the target answer the step, but
+    only event rows fill `min_rows`. An event row already in `seen` (an earlier search
+    or dispatch returned it) counts once; `seen` gains this result's rows.
 
     Rows and answering rows differ only when the step names `completion.match`
     (B48): a row answers it only if one of its values contains a match value, so a
@@ -575,28 +591,44 @@ def measure_step(rule: CompletionRule, findings: Any) -> dict[str, tuple[int, in
     file search that ran and found nothing. Whether it filtered on a target the SPL
     cannot show (B54); that takes `_absence_count`.
     """
+    from smartops.projection import row_matches
+
     wanted = set(rule.categories)
-    match = [m.lower() for m in rule.match if m.strip()]
-    measured: dict[str, tuple[int, int, bool]] = {}
+    seen = set() if seen is None else seen
+    measured: dict[str, tuple[int, int, bool, int]] = {}
     for name, value in findings or []:
         if (not isinstance(value, list) or not value or name in _NOT_RETRIEVAL
                 or name == "uncategorised" or (wanted and name not in wanted)):
             continue
-        rows, answering, empty = measured.get(name, (0, 0, False))
+        rows, answering, empty, events = measured.get(name, (0, 0, False, 0))
         for item in value:
-            count = getattr(item, "row_count", 1)
-            rows += count
-            empty = empty or count == 0
-            if not match:
-                answering += count
-            else:
-                # ponytail: counts the rows kept on the ResultSet, not `row_count`; a
-                # capped set under-counts matches, which can only leave a step open.
-                answering += sum(
-                    1 for row in getattr(item, "rows", [])
-                    if any(m in str(v).lower() for v in row.values() for m in match)
-                )
-        measured[name] = (rows, answering, empty)
+            kind = getattr(item, "kind", "events")
+            if kind == "count":
+                continue
+            is_events = kind in ("events", "unknown")
+            # Counts the rows kept on the ResultSet, not `row_count`; they are equal
+            # as `project_siem` builds them, and the rows are what dedupe can key.
+            kept = getattr(item, "rows", [])
+            count = getattr(item, "row_count", len(kept))
+            empty = empty or (is_events and count == 0)
+            # Rows counted but not kept (a hand-built set; `project_siem` keeps them all):
+            # nothing to match or key, so they count as before.
+            unkept = max(0, count - len(kept))
+            rows += unkept
+            if not rule.match:
+                answering += unkept
+                events += unkept if is_events else 0
+            for row in kept:
+                if is_events:
+                    key = json.dumps(row, sort_keys=True, default=str)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                rows += 1
+                if not rule.match or row_matches(row, rule.match):
+                    answering += 1
+                    events += is_events
+        measured[name] = (rows, answering, empty, events)
     return measured
 
 
@@ -648,11 +680,12 @@ def evaluate_step(
     # show the step's question was answered. A subagent cut off before its answer
     # puts every row there, and on c7dbf51d 74 fallback-scan rows closed T1 (F7).
     # With `completion.match`, only rows naming the step's target count (B48).
-    measured = measure_step(step.completion, result.findings)
-    in_categories = sum(rows for rows, _, _ in measured.values())
-    rows_retrieved = sum(answering for _, answering, _ in measured.values())
+    measured = measure_step(step.completion, result.findings, outcome._seen_rows)
+    in_categories = sum(v[0] for v in measured.values())
+    rows_retrieved = sum(v[1] for v in measured.values())
     outcome.rows_retrieved += rows_retrieved
-    for name, (_, answering, _) in measured.items():
+    outcome.event_rows += sum(v[3] for v in measured.values())
+    for name, (_, answering, _, _) in measured.items():
         if answering:
             outcome.rows_by_category[name] = outcome.rows_by_category.get(name, 0) + answering
 
@@ -751,7 +784,9 @@ def _settle(step: FetchStep, outcome: StepOutcome) -> None:
         )
     else:
         covered = True
-    enough = outcome.rows_retrieved >= max(1, rule.min_rows) or (either and outcome.confirmed_empty)
+    # Any answering row opens the door; only event rows fill `min_rows` (a count is not a row).
+    enough = (outcome.rows_retrieved >= 1 and outcome.event_rows >= rule.min_rows) or (
+        either and outcome.confirmed_empty)
     outcome.completed = covered and enough
 
 
@@ -785,6 +820,7 @@ def _absence_count(category: str, match: list[str], scope: Scope) -> tuple[int |
     here. Accepted, not chased: rows come from arbitrary SPL (B54 known limit).
     """
     from smartops.context import _spl_escape, run_query
+    from smartops.projection import scalar_count
 
     def basename(value: str) -> str:
         return value.replace("\\", "/").rsplit("/", 1)[-1]
@@ -813,15 +849,13 @@ def _absence_count(category: str, match: list[str], scope: Scope) -> tuple[int |
         try:
             rows = run_query(query, earliest_time=str(start.timestamp()),
                              latest_time=str(end.timestamp()), row_limit=1)
-            value = rows[0]["count"]
         except Exception:
             logger.warning("absence count failed: %s", query, exc_info=True)
             return None
         # Only a non-negative whole number is a count; `int(0.75)` or `int(False)` is a false 0.
-        if isinstance(value, bool) or not str(value).isdecimal():
-            logger.warning("absence count not a count: %r from %s", value, query)
-            return None
-        return int(value)
+        if (value := scalar_count(rows)) is None:
+            logger.warning("absence count not a count: %r from %s", rows, query)
+        return value
 
     if not host_field:
         return (count(f" ({target})") if count("") else None), datamodel
@@ -891,7 +925,7 @@ def _remember(task: AnalystTask, step: FetchStep, outcome: StepOutcome,
         queries=tuple((item.query, item.row_count, item.evidence_id)
                       for name, value in result.findings or [] if isinstance(value, list)
                       and name not in _NOT_RETRIEVAL for item in value if getattr(item, "query", None)),
-        rows=tuple((n, c, measured.get(n, (0, 0, False))[1])
+        rows=tuple((n, c, measured.get(n, (0, 0, False, 0))[1])
                    for n, c in _finding_counts(result.findings) if n not in _NOT_RETRIEVAL),
         proven_empty=tuple(sorted(outcome.proven_empty.items())),
         completed=outcome.completed, repeat_reason=repeat_reason,
@@ -990,7 +1024,7 @@ def _step_state(req: BrokerRequest, step: FetchStep) -> str:
         match = step.completion.match
         state = f"missing {', '.join(missing)}" + (f" containing {' or '.join(match)}" if match else "")
     else:
-        state = f"incomplete, {outcome.rows_retrieved} of {max(1, step.completion.min_rows)} rows"
+        state = f"incomplete, {outcome.event_rows} of {max(1, step.completion.min_rows)} event rows"
     if step.family in req.refused:
         return f"{step.step_id} {state}, {step.family} rejected"
     if outcome is not None and outcome.refused_for_budget:
@@ -1219,9 +1253,9 @@ async def _dispatch_step(family: ToolFamily, question: str, step_id: str, ctx: T
     record_result_status(result)
     digest = _digest(result)
     measured = measure_step(step.completion, result.findings)
-    in_categories = sum(rows for rows, _, _ in measured.values())
+    in_categories = sum(v[0] for v in measured.values())
     targets = " or ".join(match)
-    if not outcome.completed and match and in_categories and not sum(a for _, a, _ in measured.values()):
+    if not outcome.completed and match and in_categories and not sum(v[1] for v in measured.values()):
         # B48: the search came back, but with rows about something else. Counts, not
         # content, so the Broker can re-dispatch filtered on the target or accept the miss.
         digest += (f" | step {step.step_id} missed: {in_categories} {'/'.join(wanted) or family} rows, "
