@@ -1222,6 +1222,14 @@ class TestTheSearchLine:
     def test_an_empty_filtered_search_is_the_answer(self):
         assert _lines(FILE_STEP, _call(FILTERED, []))[-1].endswith("nothing missing: report now")
 
+    def test_only_target_rows_in_the_asked_category_are_listed(self):
+        # L2-T4 proc_host: one call split by EventCode into connections and processes.
+        rows = [{"EventCode": "3", "DestinationIp": "192.168.40.211"},
+                {"EventCode": "1", "Image": "a.exe", "CommandLine": "x 192.168.40.211"}]
+        rule = CompletionRule(categories=["processes"], match=["192.168.40.211"])
+        line = _lines(rule, _call("search index=main sourcetype=XmlWinEventLog 192.168.40.211", rows))[-1]
+        assert "rows 2 contain 192.168.40.211" in line
+
     def test_another_category_leaves_the_asked_one_unsearched(self):
         line = _lines(FILE_STEP, _call(PROCS, [{"Image": "a.exe"}]))[-1]
         assert line == "search 1: processes 1 rows | still missing: file_events (not searched)"
@@ -1344,7 +1352,8 @@ class TestASearchClaimIsAttributed:
     def test_empty_searches_cannot_claim_target_absence(self, filter):
         call = _call(f"{UNFILTERED.split('|')[0]} {filter}", [])
         answer = _siem_answer([SearchClaim(search=1, answers_question="absence", reason="target absent")])
-        assert "independent code count" in subagents._claim_problems(answer, [call], FILE_STEP)[0]
+        assert "independent code count" in subagents._claim_problem(answer.assessment.results[0], [call], FILE_STEP)
+        assert subagents._claim_problems(answer, [call], FILE_STEP) == []  # no recheck: it can only drop it
         assert subagents._attributed(answer, [call], FILE_STEP).assessment.results == []
 
     def test_an_empty_category_search_can_claim_absence_without_a_target(self):
@@ -1385,6 +1394,31 @@ class TestASearchClaimIsAttributed:
         assert len(prompts) == 2 and prompts[1][1]["limits"]["turns"] == 1
         assert "- search 1 (yes): search 1 row 1 does not contain svcupdate.dat" in prompts[1][0]
         assert result.structured_output is fixed
+
+    async def test_a_target_absence_claim_costs_no_recheck(self, monkeypatch):
+        prompts = []
+        answer = _siem_answer([SearchClaim(search=2, answers_question="absence", reason="r")])
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            async def invoke_async(self, prompt, **kwargs):
+                prompts.append(prompt)
+                return _Result(answer)
+
+        monkeypatch.setattr("strands.Agent", _FakeAgent)
+        monkeypatch.setattr(ModelChoice, "build", lambda self: "fake-model")
+        collector = subagents._EvidenceCollector()
+        collector.calls.extend(self.CALLS)
+
+        result = await subagents._build_agent_and_invoke(
+            "prompt", mission=_step_mission(), model=MODEL, tools=[], turns=4,
+            max_output_tokens=100, collector=collector,
+        )
+
+        assert prompts == ["prompt"]
+        assert subagents._attributed(result.structured_output, self.CALLS, FILE_STEP).assessment.results == []
 
 
 class TestThePromptCarriesTheStep:

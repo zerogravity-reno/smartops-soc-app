@@ -184,7 +184,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- When the mission names values the rows must contain, keep that filter at EVERY stage of the fallback. Never drop it to show the category holds data: rows about other files or users answer nothing. Search the category itself, filtered: a file name is `EventCode IN (11,15,29) TargetFilename=\"*<name>*\"`, not a bare keyword search, which no category can claim. That search returning 0 rows is the answer.\n"
         "- In `queries_run`, tag every query with its `category`, one of: 'dns_resolutions', 'connections', 'processes', 'auth_events', 'file_events', 'registry_events', 'script_blocks'.\n"
         "- After each search, code adds a `search N:` line to its result: the category and rows it returned, the rows naming the values the mission asks about, and what the step still misses. When it says `nothing missing: report now`, report.\n"
-        "- In `assessment.results`, for each search that bears on the question: its number N, `answers_question` (yes: its rows answer the question; absence: a search of the asked category returned 0 rows and the step has no target values; no: it does not answer it), a one-line reason, and for yes the row numbers its `search N:` line lists. Empty searches cannot prove target absence: the Broker checks that with an independent code count. Code checks each claim against the rows.\n"
+        "- In `assessment.results`, for each search that bears on the question: its number N, `answers_question` (yes: its rows answer the question; absence: a search of the asked category returned 0 rows and the step has no target values; no: it does not answer it), a one-line reason, and for yes the row numbers its `search N:` line lists. Empty searches cannot prove target absence: the Broker checks that with an independent code count, so on a step with target values mark an empty search `no`, reason 'empty search'. Code checks each claim against the rows.\n"
     ),
     "edr": (
         "EDR SPECIALIZATION (Endpoint Telemetry):\n"
@@ -519,7 +519,9 @@ def _search_line(mission: SubagentMission, calls: list[_ToolCall], so_far: dict[
                     if isinstance(sets, list) and sets) or "no rows"
     parts = [f"search {len(calls)}: {got}"]
     targets = " or ".join(rule.match)
-    if rule.match and (hits := _matching_rows(rows, rule.match)):
+    # Only rows `_claim_problem` accepts: one call can split across categories.
+    in_category = [row for rs in _wanted_sets(this, rule) for row in rs.rows]
+    if rule.match and (hits := [n for n in _matching_rows(rows, rule.match) if rows[n - 1] in in_category]):
         listed = ", ".join(map(str, hits[:_ROWS_LISTED])) + (f", +{len(hits) - _ROWS_LISTED} more" if len(hits) > _ROWS_LISTED else "")
         parts.append(f"rows {listed} contain {targets}")
     if not rows and (unseen := _unseen_filter_fields(call.query, calls[:-1])):
@@ -592,11 +594,19 @@ class _SearchProgress:
             event.result = {**result, "content": [*(result.get("content") or []), {"text": line}]}
 
 
+def _wanted_sets(projected: list, rule: CompletionRule) -> list:
+    """The result sets of a projection that sit in a category the step asks for."""
+    from smartops.projection import _CIM_BUCKETS
+
+    ok = set(rule.categories) or set(_CIM_BUCKETS)
+    return [rs for name, value in projected if name in ok and isinstance(value, list) for rs in value]
+
+
 def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> str | None:
     """Why code cannot attribute one `SearchClaim` to the rows, or None (B52 C). The
     attribution only: the search and cited rows exist, sit in a wanted category, and
     name the target. Whether they mean what the claim says is the Broker's review."""
-    from smartops.projection import _CIM_BUCKETS, _rows_of
+    from smartops.projection import _rows_of
 
     if claim.answers_question == "no":
         return None
@@ -604,9 +614,7 @@ def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> 
         return f"search {claim.search} does not exist; {len(calls)} search(es) returned"
     call = calls[claim.search - 1]
     rows = _rows_of(call.payload) or []
-    ok = set(rule.categories) or set(_CIM_BUCKETS)
-    sets = [rs for name, value in project("siem", [call], [], "claim")
-            if name in ok and isinstance(value, list) for rs in value]
+    sets = _wanted_sets(project("siem", [call], [], "claim"), rule)
     asked = "/".join(rule.categories) or "a CIM category"
     if not sets:
         return f"search {claim.search} is not a {asked} search"
@@ -634,8 +642,11 @@ def _claim_problem(claim: Any, calls: list[_ToolCall], rule: CompletionRule) -> 
 def _claim_problems(answer: Any, calls: list[_ToolCall], rule: CompletionRule | None) -> list[str]:
     claims = getattr(getattr(answer, "assessment", None), "results", None) or []
     rule = rule or CompletionRule()
+    # A target-absence claim never holds and a recheck can only drop it, so
+    # `_attributed` drops it without paying a turn (7 of 14 answers on the live run).
     return [f"search {c.search} ({c.answers_question}): {p}" for c in claims
-            if (p := _claim_problem(c, calls, rule))]
+            if not (c.answers_question == "absence" and rule.match)
+            and (p := _claim_problem(c, calls, rule))]
 
 
 def _attributed(answer: Any, calls: list[_ToolCall], rule: CompletionRule | None) -> Any:
