@@ -154,7 +154,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
 | B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Fixed (`a6b698a`): 11 saved 400s re-projected, none counted; live re-run `20592fea-L2-T5` showed no regression |
 | B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Open. Candidate (Codex): keep the narrative for audit, send synthesis code-owned evidence instead; decouple `name_expansions` from narrative text first. Changes what the Analyst reads: needs Yousef |
-| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. Branch `fix/broker-run-memory` |
+| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. Branch `fix/broker-run-memory`: A and B done (unpushed); C–F next |
 | B53 | Broker | A step with several categories completes when only one of them has rows | High | Open (part of B52 plan A) |
 | B54 | Broker | "Looked and empty" accepts any empty search in the category, even one that never filtered on the target | High | Open (part of B52 plan A): absence proven only by a code-run count query |
 | B55 | Broker | VT is dispatched on the alert's hash for questions that aren't about reputation, and repeated across rounds | High | Open (part of B52 plan F). Seen on Yousef's runs `deb8195a`, `2ae9b697`, `9495f122` |
@@ -1001,6 +1001,16 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
   - E: sub-analyst presence claims checked against their cited rows (one batched call per finding, cheapest tier, budget-reserved). Sub-analysts stay blind to the question.
   - F: VT as a direct Broker tool, once per observable per run.
 - **Plan file:** see `docs/handover-2026-10-26b.md`.
+- **Step B done (10-26, branch `fix/broker-run-memory`, unpushed):**
+  - **Run ledger:** a process-wide record per run, keyed by the run id in the task id. It isn't Strands `AgentState`: each task builds its own Broker agent, so nothing would share that state.
+    - A task sees only earlier rounds, never a sibling in its own round.
+    - Each entry holds the collector's real queries, rows and evidence ids, the rows that name the target, and any absence proof with its dataset.
+    - At most 8 runs are held. Dropping a run when it ends would need a hook in `analyst.py`, which isn't ours.
+  - **Prompt:** the Broker's prompt shows "Already fetched in this run" for entries that share an entity with the task.
+  - **Plan progress:** every dispatch and refusal ends with the plan's progress: each step complete, missing X, or not attempted, with dispatches left.
+  - **Repeat warning:** an exact repeat of an earlier round's fetch (same family, entities, window, categories and match) is returned unrun, unless the Broker gives `repeat_reason`.
+  - **Finish check:** `FinishCheck` resumes the Broker once when a step is still open and turns and output tokens are left. A resume stays inside the same invocation's caps. If the resume ends without an answer, the first answer is kept.
+  - **Checked:** full suite 1,396 passed. Codex review: round 1 found 2 issues (resume with no output tokens left; a ledger entry hid whether rows or a code count closed the step), both fixed; round 2 ACCEPT. A live check on `c75abeae` needs Mohammed's OK.
 
 **B53. A multi-category step completes on one category.** *High. Open.*
 - **Evidence:** `evaluate_step` sums rows across all the step's categories (`broker.py:689-694`), so a [processes, file_events] step closes on process rows alone. Found by Codex in the B52 review.

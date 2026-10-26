@@ -185,3 +185,24 @@ class TestPlanFetchRefusesLegiblyThroughTheFramework:
 
         assert result["status"] == "error"
         assert req.plan is None
+
+
+async def test_repeat_reason_reaches_the_dispatch(monkeypatch):
+    """B52: the one optional dispatch argument survives Strands' input validation,
+    and leaving it out still dispatches."""
+    from smartops import broker
+
+    seen = []
+
+    async def fake_dispatch(family, question, step_id, ctx, repeat_reason=None):
+        seen.append(repeat_reason)
+        return "ok"
+
+    monkeypatch.setattr(broker, "_dispatch", fake_dispatch)
+    req = BrokerRequest(task=_task())
+    tool = broker.TOOL_BY_FAMILY["siem"]
+    for extra in ({"repeat_reason": "new events since round 2"}, {}):
+        result = await _call(tool, {"question": "q", "step_id": "siem-1", **extra}, req)
+        assert result["status"] == "success", result["content"]
+
+    assert seen == ["new events since round 2", None]

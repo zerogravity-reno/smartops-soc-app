@@ -273,10 +273,12 @@ class TestDispatch:
         assert run.missions[0].scope == task.scope
         assert "question" in TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]
         # `step_id` joined `question` when dispatch became bound to a planned
-        # step. Both are model-authored; neither can widen scope.
+        # step, and `repeat_reason` with the run ledger (B52). All model-authored;
+        # none can widen scope.
         assert set(TOOL_BY_FAMILY["siem"].tool_spec["inputSchema"]["json"]["properties"]) == {
             "question",
             "step_id",
+            "repeat_reason",
         }
 
     async def test_one_family_failing_leaves_the_others_dispatched(self):
@@ -3051,7 +3053,7 @@ class TestAStepIsAskedForItsCategories:
         )
 
         assert goals == ["was svcupdate.dat written?\n\nThis step is complete only with rows in: file_events."]
-        assert digest.endswith("| step file_write incomplete: no file_events rows")
+        assert digest.endswith("| plan progress: file_write missing file_events, 1 dispatch(es) left")
 
 
 class TestAStepAboutANamedValueNeedsRowsNamingIt:
@@ -3134,7 +3136,7 @@ class TestAStepAboutANamedValueNeedsRowsNamingIt:
         assert digest.endswith(
             "| step file_write missed: 10 file_events rows, none contain svcupdate.dat"
             " | file_events: absence of svcupdate.dat not shown"
-            " | step file_write incomplete: no file_events rows containing svcupdate.dat"
+            " | plan progress: file_write missing file_events containing svcupdate.dat, 1 dispatch(es) left"
         )
 
     @pytest.mark.parametrize("found, completed, line", [
@@ -3326,3 +3328,203 @@ class TestAbsenceCount:
         for kwargs in ({"match": ("other.dat",)}, {"category": "registry_events"}, {"scope": no_host}):
             (found, _), queries = self._count(monkeypatch, [], **kwargs)
             assert (found, queries) == (None, [])
+
+
+# ── B52 step B: run ledger, prior-fetch warning, plan progress, finish check ──
+CONN = FetchStep(step_id="conn", family="siem", objective="connections to 10.0.0.9",
+                 completion=CompletionRule(categories=["connections"]))
+PROCS = FetchStep(step_id="procs", family="siem", objective="processes on host-1",
+                  completion=CompletionRule(categories=["processes"]))
+
+
+def _connections(mission):
+    # `queries_run` is the subagent's own account; the ledger must show the collector's.
+    return SubtaskResult(
+        task_id=mission.task_id, status=SubtaskStatus.OK,
+        findings=SiemFindings(connections=[ResultSet(
+            query="index=net dest=10.0.0.9", row_count=3, rows=[{"dest": "10.0.0.9"}] * 3,
+            evidence_id="ev-1")]),
+        queries_run=[QueryRun(query="model says it searched everything")],
+    )
+
+
+async def _fetch(task_id, *steps, step_id="conn", runner=None, scope=None, **tool_args):
+    task = make_task(task_id=task_id, hypothesis_id=task_id, **({"scope": scope} if scope else {}))
+    request = BrokerRequest(task=task, run_subagent=runner or runner_returning(_connections))
+    with_plan(request, *(steps or (CONN,)))
+    text = await TOOL_BY_FAMILY["siem"](
+        question="q", step_id=step_id,
+        tool_context=FakeToolContext(tool_use={"toolUseId": "tu-1"}, invocation_state={"smartops": request}),
+        **tool_args,
+    )
+    return request, text
+
+
+class TestTheRunLedger:
+    """B52: c75abeae FU2 re-ran two round-2 searches; nothing told it they had run."""
+
+    async def test_a_later_round_sees_what_an_earlier_one_fetched(self):
+        await _fetch("run1-L2-T4")
+        prompt = broker_module._prompt_for(make_task(task_id="run1-L3-G1", hypothesis_id="g"))
+
+        assert "Already fetched in this run" in prompt
+        assert 'L2-T4 siem step conn "connections to 10.0.0.9"' in prompt
+        assert "connections 3 rows (complete; evidence ev-1)" in prompt
+        assert "queries: index=net dest=10.0.0.9 (3 rows)" in prompt
+        assert "model says" not in prompt
+
+    @pytest.mark.parametrize("task_id", ["run1-L2-T5", "run2-L3-T1", "t1"])
+    async def test_a_sibling_another_run_or_no_run_sees_nothing(self, task_id):
+        await _fetch("run1-L2-T4")
+        prompt = broker_module._prompt_for(make_task(task_id=task_id, hypothesis_id="h"))
+        assert "Already fetched" not in prompt
+
+    async def test_a_task_sharing_no_entity_is_not_shown_it(self):
+        await _fetch("run1-L2-T4")
+        other = make_scope(entities=[Entity(kind="host", value="host-9")])
+        prompt = broker_module._prompt_for(make_task(task_id="run1-L3-G1", hypothesis_id="g", scope=other))
+        assert "Already fetched" not in prompt
+
+    async def test_a_task_with_no_run_id_records_nothing(self):
+        await _fetch("t1")
+        assert not broker_module._RUN_STATE
+
+    async def test_the_oldest_run_is_dropped_past_the_cap(self):
+        for n in range(broker_module._RUNS_HELD + 1):
+            await _fetch(f"run{n}-L2-T1")
+        assert "run0" not in broker_module._RUN_STATE
+        assert f"run{broker_module._RUNS_HELD}" in broker_module._RUN_STATE
+
+
+class TestAPriorFetchWarning:
+    async def test_an_identical_fetch_is_warned_and_nothing_is_spent(self):
+        await _fetch("run1-L2-T4")
+        runner = runner_returning(_connections)
+        request, text = await _fetch("run1-L3-G1", runner=runner)
+
+        assert text.startswith("status=warning | L2-T4 already ran this fetch, so nothing was dispatched")
+        assert runner.missions == [] and request.dispatched == []
+        assert text.endswith("plan progress: conn not attempted, 2 dispatch(es) left")
+
+    async def test_a_stated_reason_dispatches_it_and_is_recorded(self):
+        await _fetch("run1-L2-T4")
+        runner = runner_returning(_connections)
+        await _fetch("run1-L3-G1", runner=runner, repeat_reason="new events since round 2")
+
+        assert len(runner.missions) == 1
+        assert broker_module._RUN_STATE["run1"][-1].repeat_reason == "new events since round 2"
+
+    @pytest.mark.parametrize("change", ["match", "categories", "window"])
+    async def test_a_different_fetch_is_not_warned(self, change):
+        await _fetch("run1-L2-T4")
+        step, scope = CONN, None
+        if change == "match":
+            step = CONN.model_copy(update={"completion": CompletionRule(categories=["connections"], match=["10.0.0.9"])})
+        elif change == "categories":
+            step = CONN.model_copy(update={"completion": CompletionRule(categories=["dns_resolutions"])})
+        else:
+            now = datetime(2026, 8, 12, tzinfo=UTC)
+            scope = make_scope(time_window=(now - timedelta(hours=1), now))
+        runner = runner_returning(_connections)
+        _, text = await _fetch("run1-L3-G1", step, runner=runner, scope=scope)
+
+        assert not text.startswith("status=warning") and len(runner.missions) == 1
+
+
+class TestPlanProgress:
+    async def test_every_dispatch_and_refusal_says_where_the_plan_stands(self):
+        _, text = await _fetch("t1", CONN, PROCS)
+        assert text.endswith("| plan progress: conn complete; procs not attempted, 2 dispatch(es) left")
+
+        _, refused = await _fetch("t1", CONN, PROCS, step_id="nope")
+        assert refused.startswith("status=refused")
+        assert refused.endswith(
+            "| plan progress: conn not attempted, 2 dispatch(es) left; procs not attempted, 2 dispatch(es) left")
+
+
+class TestALedgerEntry:
+    async def test_an_entry_says_whether_rows_or_a_code_count_closed_it(self):
+        """Codex: a target step closed by a code count read "complete; evidence ev-1",
+        and ev-1 held only another file."""
+        step = FetchStep(step_id="conn", family="siem", objective="target.dat writes",
+                         completion=CompletionRule(categories=["file_events"], match=["target.dat"]))
+        task = make_task(task_id="run1-L2-T4", hypothesis_id="h")
+        result = SubtaskResult(
+            task_id="r", status=SubtaskStatus.OK, queries_run=[QueryRun(query="q")],
+            findings=SiemFindings(file_events=[ResultSet(
+                query="index=sysmon other.dat", row_count=1, rows=[{"f": "other.dat"}], evidence_id="ev-1")]),
+        )
+        outcome = StepOutcome(step=step, completed=True, proven_empty={"file_events": "Endpoint.Filesystem"})
+        broker_module._remember(task, step, outcome, result, None)
+        prompt = broker_module._prompt_for(make_task(task_id="run1-L3-G1", hypothesis_id="g"))
+
+        assert ("file_events 1 rows, 0 containing target.dat; code count over Endpoint.Filesystem "
+                "finds no target.dat in file_events (complete; evidence ev-1)") in prompt
+
+
+def _after(request, *, stop_reason="end_turn", cycles=2, output=0, result=True):
+    from types import SimpleNamespace as NS
+
+    invocation = NS(cycles=[None] * cycles, usage={"outputTokens": output})
+    return NS(
+        invocation_state={"smartops": request}, resume=None,
+        result=NS(stop_reason=stop_reason, structured_output="first answer") if result else None,
+        agent=NS(event_loop_metrics=NS(latest_agent_invocation=invocation)),
+    )
+
+
+def _finish_check():
+    return broker_module.FinishCheck(DEFAULT_BROKER_TURNS, DEFAULT_BROKER_OUTPUT_TOKENS)
+
+
+class TestTheFinishCheck:
+    def _request(self):
+        request = BrokerRequest(task=make_task())
+        with_plan(request, CONN, PROCS)
+        request.step_outcomes["conn"].completed = True
+        return request
+
+    def test_an_open_step_sends_the_broker_back_once(self):
+        request, check = self._request(), _finish_check()
+        first, second = _after(request), _after(request)
+        check.on_after_invocation(first)
+        check.on_after_invocation(second)
+
+        assert first.resume.startswith(
+            "Before you finish, these planned steps are still open: procs not attempted, 2 dispatch(es) left.")
+        assert "conn" not in first.resume
+        assert second.resume is None
+        assert request.answer_before_resume == "first answer"
+
+    async def test_a_resume_that_ends_without_an_answer_keeps_the_first_one(self):
+        """Codex: a resume that hit the output cap returned no structured output, and
+        the Broker's own classification was replaced by a synthesized one."""
+        answer = TaskClassification(tool_families=["siem"], rationale="the first answer")
+
+        async def invoke(prompt, request):
+            request.resumed, request.answer_before_resume = True, answer
+            return FakeInvokerResult(structured_output=None)
+
+        outcome = await broker_task(make_task(), Budget.from_usd(1.0), model=MODEL, invoke=invoke)
+        assert outcome.classification == answer
+
+    @pytest.mark.parametrize("case", ["all complete", "limit_turns", "no turns left", "no output left",
+                                      "rejected", "no result"])
+    def test_nothing_to_act_on_finishes(self, case):
+        request = self._request()
+        kwargs = {}
+        if case == "all complete":
+            request.step_outcomes["procs"].completed = True
+        elif case == "limit_turns":
+            kwargs["stop_reason"] = "limit_turns"
+        elif case == "no turns left":
+            kwargs["cycles"] = DEFAULT_BROKER_TURNS - 2
+        elif case == "no output left":
+            kwargs["output"] = DEFAULT_BROKER_OUTPUT_TOKENS - 100
+        elif case == "rejected":
+            request.refused["siem"] = "no index"
+        else:
+            kwargs["result"] = False
+        event = _after(request, **kwargs)
+        _finish_check().on_after_invocation(event)
+        assert event.resume is None and request.answer_before_resume is None

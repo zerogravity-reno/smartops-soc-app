@@ -35,6 +35,14 @@ def _fresh_vt_cache():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_run_ledger():
+    """The Broker's run ledger is process-wide; no test may see another's fetches."""
+    from smartops import broker
+
+    broker._RUN_STATE.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_mcp_registry(tmp_path, monkeypatch):
     """Start every test with no MCP clients registered, and no real servers to load.
 

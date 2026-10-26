@@ -222,13 +222,13 @@ class TestGeneratedTools:
             # in `available_broker_tools()`, not baked into the static tools.
             assert described.splitlines()[0] in DOMAINS[family].description
 
-    def test_question_and_step_id_are_the_models_only_parameters(self):
+    def test_question_step_id_and_repeat_reason_are_the_models_only_parameters(self):
         from smartops.broker import TOOL_BY_FAMILY
 
         for tool in TOOL_BY_FAMILY.values():
             # tool_context is injected by the framework, never by the model.
             properties = tool.tool_spec["inputSchema"]["json"]["properties"]
-            assert set(properties) == {"question", "step_id"}
+            assert set(properties) == {"question", "step_id", "repeat_reason"}
 
     def test_both_model_facing_parameters_are_described_and_required(self):
         from smartops.broker import TOOL_BY_FAMILY
@@ -248,7 +248,7 @@ class TestGeneratedTools:
 
         seen: list[str] = []
 
-        async def fake_dispatch(family, question, step_id, ctx):
+        async def fake_dispatch(family, question, step_id, ctx, repeat_reason=None):
             seen.append(family)
             return "ok"
 
@@ -288,7 +288,7 @@ class TestAddingADomainIsOneEntry:
 
         assert tool.tool_name == "investigate_edr"
         assert "Fictional domain" in tool.tool_spec["description"]
-        assert set(tool.tool_spec["inputSchema"]["json"]["properties"]) == {"question", "step_id"}
+        assert set(tool.tool_spec["inputSchema"]["json"]["properties"]) == {"question", "step_id", "repeat_reason"}
 
     def test_a_new_spec_carries_its_own_prompt_shape(self):
         from smartops.subagents import _system_prompt_for
