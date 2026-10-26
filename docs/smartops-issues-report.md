@@ -1010,7 +1010,8 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
   - **Plan progress:** every dispatch and refusal ends with the plan's progress: each step complete, missing X, or not attempted, with dispatches left.
   - **Repeat warning:** an exact repeat of an earlier round's fetch (same family, entities, window, categories and match) is returned unrun, unless the Broker gives `repeat_reason`.
   - **Finish check:** `FinishCheck` resumes the Broker once when a step is still open and turns and output tokens are left. A resume stays inside the same invocation's caps. If the resume ends without an answer, the first answer is kept.
-  - **Checked:** full suite 1,396 passed. Codex review: round 1 found 2 issues (resume with no output tokens left; a ledger entry hid whether rows or a code count closed the step), both fixed; round 2 ACCEPT. A live check on `c75abeae` needs Mohammed's OK.
+  - **Checked:** full suite 1,396 passed. Codex review: round 1 found 2 issues (resume with no output tokens left; a ledger entry hid whether rows or a code count closed the step), both fixed; round 2 ACCEPT.
+  - **Live (10-26, Broker replay of `c75abeae` L2→L3, $1.66):** all L3 prompts showed the L2 record. FU2 reused it and made 1 dispatch, where the original run made 12 searches with 2 exact repeats. FU1 and FU3 dispatched nothing and were marked unanswerable. The repeat warning and the finish check didn't fire, because no repeat was attempted and no open step had dispatches left.
 
 **B53. A multi-category step completes on one category.** *High. Open.*
 - **Evidence:** `evaluate_step` sums rows across all the step's categories (`broker.py:689-694`), so a [processes, file_events] step closes on process rows alone. Found by Codex in the B52 review.
@@ -1028,6 +1029,23 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
   - `9495f122`: the same hash went to VT 10 times across loops 3–7.
   - The hash is in every task's scope because `to_task_file` adds the alert's entities; the Broker chose VT anyway.
 - **Fix (B52 F):** a direct `vt_lookup` tool, allowed for an observable named in the question or found in this task's rows; the alert's own hash is allowed once per run with a reason; repeats return the earlier task and verdict.
+
+**B56. Code judged Splunk results it can't read.** *High. Fixed (10-26).*
+- **Evidence (code audit, Codex-reviewed):**
+  - `project_siem` stored every row as an event, so `{count: 0}` read as 1 row, "not empty", and turned NO_DATA into OK.
+  - Aggregate rows filled `min_rows`.
+  - The dead-datamodel guard missed `[{count: "0"}]`, which is what an empty model returns on the lab.
+  - A capped result read as complete.
+  - `10.0.0.1` matched `10.0.0.15`.
+  - A repeated search counted the same events twice.
+  - The empty-search hint read aggregate field names.
+- **Fix:**
+  - `ResultSet` records `kind` (events, count, aggregate, unknown), `truncated` and `total`.
+  - Only event rows fill `min_rows` or prove a search empty. Aggregate rows naming the target still answer.
+  - One count decoder (`scalar_count`) serves the guard and `_absence_count`. One matcher (`row_matches`) uses exact tokens for IPs and hashes.
+  - Event rows dedupe across searches and dispatches.
+  - The cap shows on the search line, digest and exhibits.
+- **Checked:** `engine/tests/test_result_kind.py`; full suite 1,447 passed. Lab: an empty model's `tstats count` returns `[{count: "0"}]`; `total_rows` is the total before the cap.
 
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
