@@ -1,0 +1,4 @@
+# Every pull request needs a review from the code owner. The owner's own pull
+# requests merge through the review ruleset's bypass team instead, since GitHub
+# never lets an author approve their own pull request (see CONTRIBUTING.md).
+*    @mrahmy-reno
