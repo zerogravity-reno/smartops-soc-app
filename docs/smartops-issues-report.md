@@ -181,6 +181,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | G10 | Gate | Scores are not validated: unknown ids, a single score and values over 100 pass | High | Open (Analyst) |
 | G11 | Gate | Passing scores override the model's REQUIRES_INVESTIGATION and erase its follow-ups and named gaps | High | Open (Analyst) |
 | G12 | Gate | An empty or unparseable answer is replaced by JSON pulled from the model's reasoning, unchecked | Medium | Open (Analyst) |
+| G13 | Gate | Since 10-26 the Loop 1 call answers in the evaluation format (scores and a verdict, no hypotheses or tasks), so every run ends with a direct verdict and no Broker round | High | Open (Analyst), #16 to Yousef. 4 of 4 runs since 10-26; 26 earlier runs planned. Same context, code and prompt as `c75abeae`, which planned |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -1192,6 +1193,11 @@ It no longer reads refs, which still settles G1, G3 and T25. The rest of this se
 **G12. An unparseable answer is replaced by JSON from the reasoning.** *Medium. Open (Analyst).*
 - **Evidence:** `:492` (planning) and `:569` (synthesis): when the answer is empty or doesn't parse, `extract_json` runs over the model's reasoning text. Its first `{…}` with any expected key is accepted as the output, without a schema or completeness check. AR6 adds that it can also return a non-dict.
 - **Fix:** validate the parsed object (required keys and types). Otherwise treat the round as cut off (T15) rather than act on a draft.
+
+**G13. The planning call answers in the evaluation format.** *High. Open (Analyst; issue #16, Yousef).*
+- **Evidence:** every saved run from 10-12 to 10-25 (26 runs, the last `c75abeae`) returned a plan. Every run since 10-26 (`08590c74`, `cc991548`, `e3f62789`, `f497dca4`) returned `status`, `verdict`, `hypothesis_scores` and `follow_up_tasks`, with no `hypotheses` or `tasks`. Its reasoning treats the alert as "broker findings". G7's branch then emits the verdict. `f497dca4` sent the same context as `c75abeae`; `analyst.py`, the prompt, `model.py` and `.env` are unchanged between them.
+- **Open question:** which checkout `c75abeae` ran from, and whether the model changed. PR #11's longer evaluation section is a suspect; an A/B planning call (prompt before and after #11) would settle it.
+- **Fix:** code checks the Loop 1 answer is a plan (hypotheses and tasks); if not, it tells the model and asks once more, and never accepts a verdict before evidence. Closes G7 for this path.
 
 ## Cost
 
