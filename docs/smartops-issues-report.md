@@ -154,9 +154,9 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
 | B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Fixed (`a6b698a`): 11 saved 400s re-projected, none counted; live re-run `20592fea-L2-T5` showed no regression |
 | B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Open. Candidate (Codex): keep the narrative for audit, send synthesis code-owned evidence instead; decouple `name_expansions` from narrative text first. Changes what the Analyst reads: needs Yousef |
-| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. Branch `fix/broker-run-memory`: A and B done (unpushed); C–F next |
-| B53 | Broker | A step with several categories completes when only one of them has rows | High | Open (part of B52 plan A) |
-| B54 | Broker | "Looked and empty" accepts any empty search in the category, even one that never filtered on the target | High | Open (part of B52 plan A): absence proven only by a code-run count query |
+| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. A–D done on PR #15 (`broker-memory`); E and F next |
+| B53 | Broker | A step with several categories completes when only one of them has rows | High | Fixed (`e65c3e6`, B52 A), on PR #15 |
+| B54 | Broker | "Looked and empty" accepts any empty search in the category, even one that never filtered on the target | High | Fixed (`e65c3e6`, B52 A): absence proven only by a code-run count query; on PR #15 |
 | B55 | Broker | VT is dispatched on the alert's hash for questions that aren't about reputation, and repeated across rounds | High | Open (part of B52 plan F). Seen on Yousef's runs `deb8195a`, `2ae9b697`, `9495f122` |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
@@ -987,7 +987,7 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
 - **Class:** B40's (a `-` placeholder counted as a value), on the rendering side. B11's `events=` fix held on the same rows.
 - **Proposed fix:** leave empty fields out of the rendered row instead of writing `-`.
 
-**B52. Retrieval is never checked.** *High. Open; plan agreed 2026-10-26.*
+**B52. Retrieval is never checked.** *High. A–D fixed (10-26/27, PR #15); E and F open.*
 - **Evidence:**
   - `c75abeae` L3-FU2 (allowlist question about one IP): 12 searches, 2 exact repeats of round 2 (a data count on the host), 2 on entities the question didn't ask about. Nothing told the Broker these had already run.
   - Yousef's runs (B55) repeat the same VT lookup across rounds.
@@ -1012,12 +1012,25 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
   - **Finish check:** `FinishCheck` resumes the Broker once when a step is still open and turns and output tokens are left. A resume stays inside the same invocation's caps. If the resume ends without an answer, the first answer is kept.
   - **Checked:** full suite 1,396 passed. Codex review: round 1 found 2 issues (resume with no output tokens left; a ledger entry hid whether rows or a code count closed the step), both fixed; round 2 ACCEPT.
   - **Live (10-26, Broker replay of `c75abeae` L2→L3, $1.66):** all L3 prompts showed the L2 record. FU2 reused it and made 1 dispatch, where the original run made 12 searches with 2 exact repeats. FU1 and FU3 dispatched nothing and were marked unanswerable. The repeat warning and the finish check didn't fire, because no repeat was attempted and no open step had dispatches left.
+- **Step C done (10-26, `ad47e9c`, `d19ebd6`, `9d235e6`, `f5c626f`):** the siem agent hears the step's rule, a code line after each search, and what earlier rounds searched; it claims which rows answer, and code checks the attribution. Live replay of `c75abeae` ($1.48) found three defects and a cost leak, all fixed; see handover g.
+- **Step D done (10-27):**
+  - **Review card:** every dispatch returns a code-built card: the step, each search the collector ran with its row count, and the siem agent's attributed claims with up to 5 cited rows. With nothing cited, it shows the first 5 rows, target rows first. The card is fenced, escaped and named untrusted in the Broker's prompt.
+  - **`review_step` tool:** the Broker records `accepted`, `re-asked` or `limitation` with a reason, and for `accepted` the rows it relies on (required when the result holds rows). Later rounds see the decision and reason in the run memory. Code refuses an acceptance the rows don't support, a re-ask with no dispatch left, a missing reason and a cited row that doesn't exist.
+  - **Completion:** `StepOutcome.facts_met` is the code half; `completed` is `facts_met` and an accepted review. A re-dispatch or a reworded step clears the review. The review stays in the Broker's report and run memory; the Analyst gets only `completed`, as before.
+  - **Row gate with a limit (Mohammed, 10-27):** nobody controls how many rows exist. `min_rows` holds while the step has a dispatch left; after its second dispatch the gate is exhausted, and the rows it has go to the Broker's review as they are ("row gate exhausted after 2 dispatches: 3 of 10 rows, ready for review"). At least one answering row is still needed.
+  - **Re-ask:** the Broker's re-ask takes that result's rows and proofs back out, so rows it rejected never complete the step.
+  - **Order:** the Broker's tool calls run in the order it sent them (Strands `SequentialToolExecutor`), so a re-ask lands before the re-dispatch batched with it.
+  - **Finish check:** a step whose code facts hold and that has no review counts as open, even with no dispatch left, so `FinishCheck` sends the Broker back once to review it.
+  - **Turns:** 11 → 12. The prompt asks for each review in the same turn as the next dispatch; unbatched, a six-step plan would need 17.
+  - **Scripted runs** review on code facts, so bench runs still complete steps.
+  - **Checked:** Codex round 1: 5 issues (card not named untrusted; a re-plan carried an acceptance to a new question; truncated queries unmarked; turns; thin retry tests), all fixed. Round 2: 2 issues (later rounds saw a rejected fetch as complete; acceptance without seeing or citing rows). Round 3: a re-plan kept facts from the old rule. Rounds 4–5: rows from a re-asked result still counted. Round 6: a re-dispatch could overtake its re-ask. All fixed; full suite 1,474 passed.
+  - **Not checked live.** The live replay should show whether the Broker batches its reviews and how many turns a run takes.
 
-**B53. A multi-category step completes on one category.** *High. Open.*
+**B53. A multi-category step completes on one category.** *High. Fixed (`e65c3e6`).*
 - **Evidence:** `evaluate_step` sums rows across all the step's categories (`broker.py:689-694`), so a [processes, file_events] step closes on process rows alone. Found by Codex in the B52 review.
 - **Fix (B52 A):** every named category needs rows, or its own proof that it is empty.
 
-**B54. Absence can be "proved" by the wrong search.** *High. Open.*
+**B54. Absence can be "proved" by the wrong search.** *High. Fixed (`e65c3e6`).*
 - **Evidence:** `_step_rows` (`broker.py:563-590`) counts any zero-row set in the category as "looked and empty", even a search that never filtered on `completion.match`. An unrelated empty file search can confirm `svcupdate.dat` isn't there. Search text can't prove a filter either (`NOT x`, `x OR y`).
 - **Fix (B52 A):** code runs one fixed count query from an allowlisted template (category, target kind), escaped, `summariesonly=f`, host and window explicit. 0 means absent within that dataset; anything unknown means "not shown", never absent.
 - **Known limit:** the count searches only the template's fields, while a row answers if the target appears in any field. A target only in another field (e.g. a `cmd.exe` command line naming `svcupdate.dat`) can be counted absent. Accepted: rows come from arbitrary SPL, so no field list can match them; `proven_empty` records the datamodel the proof holds in.
