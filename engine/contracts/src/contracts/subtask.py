@@ -790,6 +790,15 @@ class StepOutcome(BaseModel):
 
     step: FetchStep
     completed: bool = False
+    """`facts_met` and the Broker's current review `accepted` it (B52 D)."""
+    facts_met: bool = False
+    """The code half of `completed`: the rows, or the proof of absence, the step's
+    completion rule asks for, with the `min_rows` gate exhausted once the step's
+    dispatches are spent. Set only by `broker._settle`."""
+    review: Literal["accepted", "re-asked", "limitation"] | None = None
+    """The Broker's decision on the step's latest result, through `review_step`.
+    A re-dispatch clears it: only the latest result can be accepted."""
+    review_reason: str | None = None
     dispatches: int = 0
     result_ids: list[str] = Field(default_factory=list)
     """The `SubtaskResult.task_id` of each dispatch that served this step, in
@@ -802,6 +811,9 @@ class StepOutcome(BaseModel):
     answer the step but are not events (handover h item 3)."""
     _seen_rows: set[str] = PrivateAttr(default_factory=set)
     """Keys of the event rows already counted, so a repeated search adds nothing (item 8)."""
+    _before: dict[str, Any] | None = PrivateAttr(default=None)
+    """The counts before the latest result was added, so a `re-asked` review can take
+    that result back out (B52 D): rows the Broker rejected must not complete the step."""
     rows_by_category: dict[str, int] = Field(default_factory=dict)
     """`rows_retrieved` per category, cumulative across dispatches. A step naming
     two categories is complete only when each has rows or is in `proven_empty`

@@ -69,9 +69,9 @@ def test_item_3_aggregate_rows_answer_but_do_not_fill_min_rows():
     rows = [{"Image": "a.exe", "count": 500}, {"Image": "b.exe", "count": 3}]
     findings = _project(_call(BY_IMAGE, rows))
     floor = evaluate_step(_step(categories=["processes"], min_rows=2), _result(findings))
-    assert (floor.rows_retrieved, floor.event_rows, floor.completed) == (2, 0, False)
+    assert (floor.rows_retrieved, floor.event_rows, floor.facts_met) == (2, 0, False)
     target = evaluate_step(_step(categories=["processes"], match=["a.exe"]), _result(findings))
-    assert target.completed is True
+    assert target.facts_met is True
 
 
 def test_item_4_a_capped_search_says_so():
@@ -100,8 +100,10 @@ def test_item_8_a_repeated_search_counts_once():
     call = _call(EVENTS, [{"Image": "a.exe", "_time": "t1"}, {"Image": "b.exe", "_time": "t2"}])
     step = _step(min_rows=3)
     first = evaluate_step(step, _result(_project(call)))
+    assert first.facts_met is False
     again = evaluate_step(step, _result(_project(call, call)), prior=first)
-    assert (again.event_rows, again.completed) == (2, False)
+    # Two rows, not four; the row gate of 3 is exhausted after the second dispatch.
+    assert (again.event_rows, again.facts_met) == (2, True)
 
 
 def test_item_6_the_field_hint_ignores_aggregate_rows():
