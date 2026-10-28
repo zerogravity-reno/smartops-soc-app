@@ -54,10 +54,12 @@ def _prompt(claims: list[tuple[str, str]]) -> str:
 
 async def _invoke(choice: Any, prompt: str) -> Any:
     from strands import Agent
+    from strands.types.agent import Limits
 
     agent = Agent(model=choice.build(), system_prompt=_SYSTEM, structured_output_model=Verdicts,
                   callback_handler=None)
-    return await agent.invoke_async(prompt)
+    # Held to what `verify` reserved: `Limits` is cumulative over the invocation.
+    return await agent.invoke_async(prompt, limits=Limits(turns=2, output_tokens=_MAX_OUTPUT_TOKENS))
 
 
 def claim_verifier(choice: Any, budget: Budget, *, invoke=None) -> ClaimVerifier:

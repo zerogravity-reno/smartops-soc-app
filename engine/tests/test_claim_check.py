@@ -91,7 +91,7 @@ def test_lines_citing_only_empty_sets_are_never_sent():
 
 def test_a_misread_line_is_corrected_by_the_one_reask():
     fixed = "HOST-1 ran powershell.exe with Invoke-WebRequest writing svcupdate.dat. [processes#1]"
-    model = _Model(f"<think>x</think>\n- {fixed}")
+    model = _Model(f"<think>x</think>\n1: {fixed}")
     verifier = _Verifier({BAD}, set())
     out = _run(_finding(GOOD, BAD), model, verifier)
     assert "row shows powershell.exe" in model.users[0] and BAD in model.users[0]
@@ -101,7 +101,7 @@ def test_a_misread_line_is_corrected_by_the_one_reask():
 
 
 def test_a_line_still_unsupported_after_the_reask_is_dropped_and_audited():
-    model = _Model(f"- {BAD}")
+    model = _Model(f"1: {BAD}")
     verifier = _Verifier({BAD}, {BAD})
     out = _run(_finding(GOOD, BAD), model, verifier)
     assert out.observations == [GOOD]
@@ -110,14 +110,14 @@ def test_a_line_still_unsupported_after_the_reask_is_dropped_and_audited():
 
 def test_a_withdrawn_line_is_dropped_without_a_second_check():
     verifier = _Verifier({BAD})
-    out = _run(_finding(GOOD, BAD), _Model("WITHDRAWN"), verifier)
+    out = _run(_finding(GOOD, BAD), _Model("1: WITHDRAWN"), verifier)
     assert out.observations == [GOOD]
     assert out.unsupported == [f"{BAD} -- row shows powershell.exe"]
     assert len(verifier.calls) == 1
 
 
-def test_a_correction_citing_a_set_it_was_not_shown_is_not_kept():
-    model = _Model("- HOST-1 wrote a.bin. [file_events#9]")
+def test_a_correction_citing_a_set_without_rows_is_not_kept():
+    model = _Model("1: HOST-1 wrote a.bin. [file_events#1]")
     verifier = _Verifier({BAD})
     out = _run(_finding(GOOD, BAD), model, verifier)
     assert out.observations == [GOOD]
@@ -187,3 +187,57 @@ def test_traces_json_carries_the_check(tmp_path):
     _persist_reasoning_traces("T1", "H1", [finding], run_dir=tmp_path)
     trace = json.loads((tmp_path / "traces.json").read_text(encoding="utf-8"))["traces"][0]
     assert trace["unsupported"] == ["x -- y"] and trace["claim_check"] == "checked"
+
+
+def test_equal_lines_are_separate_claims():
+    """Two copies of one line: the verifier rules on each position on its own."""
+    fixed = "HOST-1 ran powershell.exe. [processes#1]"
+    verifier = _Verifier({BAD}, set())
+    model = _Model(f"1: {fixed}\n2: WITHDRAWN")
+    out = _run(_finding(BAD, BAD), model, verifier)
+    assert out.observations == [fixed]
+    assert len(out.unsupported) == 1
+
+
+def test_an_incomplete_verdict_list_is_a_skipped_check():
+    class _Partial(_Verifier):
+        async def __call__(self, claims):
+            self.calls.append(claims)
+            return []
+
+    out = _run(_finding(GOOD, BAD), _Model("unused"), _Partial())
+    assert out.observations == [GOOD, BAD]
+    assert out.claim_check.startswith("skipped")
+
+
+def test_a_skipped_recheck_lets_neither_the_line_nor_its_fix_cross():
+    class _SkipSecond(_Verifier):
+        async def __call__(self, claims):
+            if self.calls:
+                self.calls.append(claims)
+                return None
+            return await super().__call__(claims)
+
+    out = _run(_finding(GOOD, BAD), _Model("1: HOST-1 ran powershell.exe. [processes#1]"), _SkipSecond({BAD}))
+    assert out.observations == [GOOD]
+    assert out.claim_check == "checked; re-check skipped, fixes dropped"
+
+
+def test_a_fix_is_rechecked_against_the_rows_it_cites():
+    rows2 = [{"host": "HOST-1", "process": "rundll32.exe"}]
+    slice_ = DomainSlice(domain="endpoint", siem_sets=[
+        ("processes", ResultSet(query="q", row_count=1, rows=_ROWS)),
+        ("processes", ResultSet(query="q3", row_count=1, rows=rows2)),
+    ])
+    line = "HOST-1 ran cmd.exe. [processes#1] [processes#2]"
+    fix = "HOST-1 ran powershell.exe. [processes#1]"
+    verifier = _Verifier({line}, set())
+    finding = DomainFinding(domain="endpoint", narrative="n", observations=[line], citations=["processes#1", "processes#2"])
+    out = asyncio.run(_check_claims(finding, slice_, _Model(f"1: {fix}"), verifier))
+    assert out.observations == [fix]
+    assert "rundll32" in verifier.calls[0][0][1] and "rundll32" not in verifier.calls[1][0][1]
+
+
+def test_an_answer_given_twice_does_not_stand():
+    out = _run(_finding(GOOD, BAD), _Model("1: HOST-1 ran powershell.exe. [processes#1]\n1: WITHDRAWN"), _Verifier({BAD}))
+    assert out.observations == [GOOD]

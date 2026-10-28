@@ -395,15 +395,21 @@ def facts_system_prompt(domain: AnalystDomain) -> str:
 
 
 # B52 E: a line the claim check found its rows do not state goes back once, with the
-# rows and the checker's reason. Same system prompt as the first ask, so the rules hold.
+# rows and the checker's reason. Its own short system prompt: the facts body demands a
+# whole NARRATIVE/OBSERVATIONS block, which is not what this reply is.
+def claim_reask_system_prompt() -> str:
+    return f"{METIS_PREAMBLE}\n\n{_DESCRIBE_ONLY_BLOCK}"
+
+
 CLAIM_REASK = """\
-A checker compared some of your OBSERVATIONS with the rows they cite, and found the rows
-do not state them. Each is below with its rows and the checker's reason.
-For each one, in order, reply with exactly one line:
-- the observation rewritten so the rows state it, citing only the sets shown with it
-  in brackets, e.g. `[processes#1]`, or
-- WITHDRAWN, if the rows do not support it at all.
-Reply with those lines only."""
+A checker compared some of your observations with the rows they cite, and found the rows
+do not state them. Each is below, numbered, with its rows and the checker's reason.
+Reply with one line per number, and nothing else:
+  <number>: <the observation rewritten so its rows state it, citing only the sets shown
+  with it, in brackets, e.g. [processes#1]>
+or
+  <number>: WITHDRAWN
+when the rows do not support it at all."""
 
 
 def build_facts_user_turn(scope: Scope, evidence_text: str) -> str:

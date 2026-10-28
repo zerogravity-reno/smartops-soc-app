@@ -113,16 +113,17 @@ from .packing import (
     exhibits_for,
     pack_evidence,
 )
-from .parse import FindingParseError, parse_finding, split_reasoning
+from .parse import FindingParseError, _expand_bare_ids, parse_finding, split_reasoning
 from .prompts import (
     CLAIM_REASK,
+    claim_reask_system_prompt,
     _ANSWER_RULES,
     _NARRATIVE_ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
 )
 from .routing import DomainSlice, domains_for_family, route
-from .verify import ClaimVerifier
+from .verify import ClaimVerifier, Verdict
 
 logger = logging.getLogger(__name__)
 
@@ -1085,41 +1086,69 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
 
 @dataclass
 class _Claim:
+    pos: int  # its index in `finding.observations`: equal lines are separate claims
     line: str
     rows: str
-    cited: set[str]
+    shown: set[str]  # the cited sets that have rows, the only ones a fix may cite
     reason: str = ""
 
 
+def _cited(line: str) -> set[str]:
+    return {c.lower() for c in _OBSERVATION_CITE_RE.findall(_expand_bare_ids(line))}
+
+
+def _shown_rows(ids: set[str], slice_: DomainSlice) -> tuple[str, set[str]]:
+    """The text of the cited sets that have rows, and their ids."""
+    shown = [b for b in exhibits_for(slice_, sorted(ids)) if b.row_count]
+    return "\n".join(b.text for b in shown), {b.header_id.lower() for b in shown}
+
+
 def _presence_claims(observations: list[str], slice_: DomainSlice) -> list[_Claim]:
-    """Observations citing at least one set with rows, each with those rows' text.
-    A line citing only empty sets is an absence claim, which code already checks
-    against the empty blocks (`_as_record`)."""
+    """Observations citing at least one set with rows. A line citing only empty
+    sets is an absence claim, which code already checks against the empty blocks."""
     claims = []
-    for line in observations:
-        cited = {c.lower() for c in _OBSERVATION_CITE_RE.findall(line)}
-        shown = [b for b in exhibits_for(slice_, sorted(cited)) if b.row_count]
+    for pos, line in enumerate(observations):
+        rows, shown = _shown_rows(_cited(line), slice_)
         if shown:
-            claims.append(_Claim(line, "\n".join(b.text for b in shown), cited))
+            claims.append(_Claim(pos, line, rows, shown))
     return claims
+
+
+async def _judge(verify: ClaimVerifier, pairs: list[tuple[str, str]]) -> dict[int, Verdict] | None:
+    """Exactly one verdict per claim, or None: a skipped or incomplete check."""
+    verdicts = await verify(pairs)
+    if verdicts is None:
+        return None
+    by = {v.index: v for v in verdicts}
+    if len(by) != len(verdicts) or set(by) != set(range(len(pairs))):
+        logger.warning("claim check: %d verdicts for %d claims, treated as skipped", len(verdicts), len(pairs))
+        return None
+    return by
+
+
+_REPLY_RE = re.compile(r"^\s*-?\s*(\d+)\s*[:.)]\s*(.+?)\s*$")
 
 
 def _reask_claims(model: AnalystModel, domain: AnalystDomain, slice_: DomainSlice, bad: list[_Claim]) -> list[str | None]:
     """One re-ask for every unsupported line: its fix, or None when withdrawn,
-    unparseable, citing a set it was not shown, or failing the figure gate."""
+    missing, answered twice, citing a set it was not shown, or failing the figure gate."""
     user = CLAIM_REASK + "\n\n" + "\n\n".join(
-        f"OBSERVATION {i}: {c.line}\nREASON: {c.reason}\nROWS:\n{c.rows}" for i, c in enumerate(bad, 1)
+        f"{i}: {c.line}\nREASON: {c.reason}\nROWS:\n{c.rows}" for i, c in enumerate(bad, 1)
     )
     try:
-        _, answer = split_reasoning(model.invoke(facts_system_prompt(domain), user).generation)
+        _, answer = split_reasoning(model.invoke(claim_reask_system_prompt(), user).generation)
     except Exception:
         logger.warning("domain=%s | claim re-ask failed; dropping the unsupported lines", domain, exc_info=True)
         return [None] * len(bad)
-    replies = [ln.strip().removeprefix("- ").strip() for ln in answer.splitlines() if ln.strip()]
+    replies: dict[int, str | None] = {}
+    for m in filter(None, map(_REPLY_RE.match, answer.splitlines())):
+        n = int(m.group(1))
+        replies[n] = None if n in replies else m.group(2)  # answered twice: neither stands
     fixes: list[str | None] = []
-    for c, reply in zip(bad, replies + [""] * len(bad)):
-        cited = {x.lower() for x in _OBSERVATION_CITE_RE.findall(reply)}
-        ok = reply.upper() != "WITHDRAWN" and cited and cited <= c.cited
+    for i, c in enumerate(bad, 1):
+        reply = _expand_bare_ids(replies.get(i) or "")
+        cited = _cited(reply)
+        ok = reply.upper() != "WITHDRAWN" and cited and cited <= c.shown
         fixes.append(reply if ok and _drop_unsupported_figures([reply], slice_, domain) else None)
     return fixes
 
@@ -1131,38 +1160,41 @@ async def _check_claims(
 
     `_finalize_finding` knows a citation resolves and its figures are in the rows;
     it cannot see a line that misreads them. An unsupported line goes back to the
-    sub-analyst once; its fix is checked again, and a line still unsupported leaves
-    `observations` for `unsupported` (traces.json). A skipped check changes nothing."""
+    sub-analyst once; its fix is checked against the rows IT cites, and a line not
+    shown to hold leaves `observations` for `unsupported` (traces.json). A skipped
+    first check changes nothing but the audit mark."""
     claims = _presence_claims(finding.observations, slice_)
     if not claims:
         return finding
-    verdicts = await verify([(c.line, c.rows) for c in claims])
+    verdicts = await _judge(verify, [(c.line, c.rows) for c in claims])
     if verdicts is None:
-        return finding.model_copy(update={"claim_check": "skipped: verifier unavailable"})
+        return finding.model_copy(update={"claim_check": "skipped: verifier unavailable or incomplete"})
     bad = []
-    for v in verdicts:
-        if not v.supported and 0 <= v.index < len(claims) and claims[v.index] not in bad:
-            claims[v.index].reason = v.reason
-            bad.append(claims[v.index])
-    replaced: dict[str, str | None] = {c.line: None for c in bad}
+    for i, c in enumerate(claims):
+        if not verdicts[i].supported:
+            c.reason = verdicts[i].reason
+            bad.append(c)
+    kept: dict[int, str | None] = {c.pos: None for c in bad}
+    check = "checked"
     if bad:
         fixes = await asyncio.to_thread(_reask_claims, model, finding.domain, slice_, bad)
-        retry = [(c, fix) for c, fix in zip(bad, fixes) if fix]
-        again = await verify([(fix, c.rows) for c, fix in retry]) if retry else []
-        # A skipped second check keeps the fixes: they passed the citation and figure gates.
-        held = {v.index for v in again or [] if not v.supported}
-        for i, (c, fix) in enumerate(retry):
-            replaced[c.line] = None if i in held else fix
-    unsupported = [f"{c.line} -- {c.reason}" for c in bad if replaced[c.line] is None]
-    observations = [replaced.get(line, line) for line in finding.observations]
-    for c in bad:
-        if replaced[c.line] is None:
-            logger.warning("domain=%s | claim check dropped an observation its rows do not state: %s",
-                           finding.domain, c.line)
+        retry = [(c, fix, _shown_rows(_cited(fix), slice_)[0]) for c, fix in zip(bad, fixes) if fix]
+        again = await _judge(verify, [(fix, rows) for _, fix, rows in retry]) if retry else {}
+        if again is None:
+            # The line was found unsupported and its fix is unchecked: neither crosses.
+            check = "checked; re-check skipped, fixes dropped"
+        for i, (c, fix, _) in enumerate(retry):
+            if again and again[i].supported:
+                kept[c.pos] = fix
+    unsupported = [f"{c.line} -- {c.reason}" for c in bad if kept[c.pos] is None]
+    for line in unsupported:
+        logger.warning("domain=%s | claim check dropped an observation its rows do not state: %s",
+                       finding.domain, line)
+    observations = [kept.get(pos, line) for pos, line in enumerate(finding.observations)]
     return finding.model_copy(update={
         "observations": [o for o in observations if o is not None],
         "unsupported": unsupported,
-        "claim_check": "checked",
+        "claim_check": check,
     })
 
 
