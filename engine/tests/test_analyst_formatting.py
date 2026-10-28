@@ -24,6 +24,16 @@ class TestFieldProjection:
         assert "action=failure" in line
         assert "dest=BSTOLL-L" in line
 
+    def test_windows_logon_keeps_both_accounts(self):
+        # B49: on 20592fea these rows rendered with no account, so a SYSTEM service
+        # logon read as the user the task asked about.
+        logon = format_row("auth_events", {"EventCode": "4624", "TargetUserName": "SYSTEM",
+                                           "SubjectUserName": "AR-F6EDDB5B-DF6$", "LogonType": "5"})
+        assert "user=SYSTEM" in logon
+        assert "subject=AR-F6EDDB5B-DF6$" in logon
+        privileges = format_row("auth_events", {"EventCode": "4672", "SubjectUserName": "SYSTEM"})
+        assert "user=SYSTEM" in privileges
+
     def test_missing_field_is_not_rendered_as_telemetry(self):
         line = format_row("auth_events", {"user": "bostoll"})
         assert "user=bostoll" in line
@@ -35,6 +45,18 @@ class TestFieldProjection:
         assert "bytes=" not in line
         assert "uri=" not in line
         assert "action=" not in line
+
+    def test_a_connection_with_no_source_draws_no_arrow(self):
+        # B11: `-→10.0.10.20:5353` was narrated as 10.0.10.20 connecting to itself.
+        line = format_row("connections", {"DestinationIp": "10.0.10.20", "DestinationPort": "5353", "count": "9"})
+        assert "→" not in line
+        assert "dest=10.0.10.20:5353" in line
+        assert "src=" not in line
+
+    def test_auth_event_codes_are_named_by_code(self):
+        # B11: 20592fea called 4672 an "audit logon event".
+        line = format_row("auth_events", {"EventCode": "4672", "SubjectUserName": "SYSTEM"})
+        assert "event_code=4672 (special privileges assigned to new logon)" in line
 
     def test_dash_placeholder_does_not_mask_later_key(self):
         # B40: `Hashes=-` hid the real `sha256`, so another file's hash got used.
@@ -392,6 +414,18 @@ class TestComputedAggregate:
     command lines" -- the three figures in the endpoint prompt's own worked
     example, appearing nowhere in the rows.
     """
+
+    def test_a_field_some_rows_lack_is_counted_as_absent(self):
+        # B11: `logon_type: -=10, 5 (Service)=10` was narrated as type 5 on every row.
+        rows = [{"EventCode": "4624", "LogonType": "5"}, {"EventCode": "4672"}]
+        summary = summarise_rows("auth_events", rows)
+        assert "logon_type: 2 distinct — (absent)=1, 5 (Service)=1" in summary
+        assert "event_code: 2 distinct — 4624 (logon)=1" in summary
+
+    def test_auth_summary_counts_the_subject_account(self):
+        # B11: three replays said "the subject is SYSTEM" on every row; half were the machine account.
+        rows = [{"EventCode": "4624", "SubjectUserName": "HOST$"}, {"EventCode": "4672", "SubjectUserName": "SYSTEM"}]
+        assert "subject: 2 distinct — HOST$=1, SYSTEM=1" in summarise_rows("auth_events", rows)
 
     def test_totals_weight_by_the_count_column(self):
         # A `| stats count by ...` set: 3 rows standing for 100+55+7 = 162

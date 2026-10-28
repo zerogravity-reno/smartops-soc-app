@@ -274,6 +274,13 @@ def _check_observations(observations: list[str], domain: AnalystDomain) -> None:
     round trip.
     """
     for observation in observations:
+        # d6b48ef0/L2/T3's only observation was `[processes#1] [processes#2] …`: tags, no claim (B51).
+        if not re.search(r"\w", re.sub(r"#\d+", "", _FULL_ID_SEARCH_RE.sub("", observation))):
+            raise FindingParseError(
+                f"{domain} analyst wrote an observation that states nothing but its citations "
+                f"({observation.strip()!r}); each observation states one thing the rows show, "
+                f"then the header id(s) it rests on"
+            )
         if _PLACEHOLDER_OBSERVATION_RE.match(observation.strip()):
             raise FindingParseError(
                 f"{domain} analyst wrote a placeholder observation "

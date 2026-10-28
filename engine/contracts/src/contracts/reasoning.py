@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
@@ -197,6 +198,18 @@ class DomainFinding(BaseModel):
         default=None,
         description="The model's <think> chain. Persisted for audit, never re-fed.",
     )
+    unsupported: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Observations the claim check (B52 E) found their cited rows do not state, "
+            "after one re-ask, each with the verifier's reason. Dropped from "
+            "`observations`; persisted for audit in traces.json, never sent on."
+        ),
+    )
+    claim_check: str = Field(
+        default="",
+        description="'checked', 'skipped: <why>', or '' when no check ran. Audit only.",
+    )
     prompt_tokens: int = Field(default=0, ge=0)
     generation_tokens: int = Field(default=0, ge=0)
 
@@ -357,7 +370,7 @@ class StepSummary(BaseModel):
     """What became of one planned fetch step, as the Analyst Agent needs to see it.
 
     A projection of `contracts.subtask.StepOutcome`, code-assembled, carrying the
-    four facts that change how a judgement should be weighed and nothing else.
+    facts that change how a judgement should be weighed and nothing else.
     Dropped: `dispatches`, `refused_for_budget`, `status`, `reason` and the full
     `FetchStep` -- dispatch counts and budget refusals are our operational
     concern, not an input to reasoning about evidence.
@@ -375,6 +388,9 @@ class StepSummary(BaseModel):
     evaluated: bool = True
     confirmed_empty: bool = False
     rows_retrieved: int = Field(default=0, ge=0)
+    proven_empty: dict[str, str] = Field(default_factory=dict)
+    """Category -> what showed it holds no answer: the datamodel a code count
+    searched (absence holds only within it), or `"empty search"`."""
 
 
 class DomainGap(BaseModel):
@@ -777,6 +793,14 @@ class AnalystPayload(BaseModel):
             "was found. Never trimmed for size."
         ),
     )
+    no_rows: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Code-worded: the domains this task's results held no rows for, which are "
+            "therefore not in `findings`. Not 'searched and found nothing': no row "
+            "belonged there. Domains a not_searched line covers are not repeated here."
+        ),
+    )
 
 
 # Code wording per `DomainGap.reason`; `detail` (raw refusal text) never reaches synthesis.
@@ -807,39 +831,168 @@ HASHES_FOOTER = "File hashes in these rows, rarest first:"
 # Not "VirusTotal holds no reputation": aab8e000 and 204888fd read that aside as a VirusTotal result (B43).
 ADDRESSES_FOOTER = "Private addresses in these rows and this task (not internet-routable):"
 _FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
-# Least needed first: an empty search is a count; a command line is in report.json.
-# Names, decoded text, hashes and addresses are what a narrative cannot recover, so they always cross.
-_FACTS_DROPPED_FIRST = (NO_ROWS_FOOTER, COMMANDS_FOOTER)
+# Between a command line's count and parent and its text, which the packer shortens.
+COMMAND_MARK = "; command: "
+NARRATIVE_OMITTED = "narrative omitted for size (full in findings.json)"
+# Still holds win-agent, svcupdate, Invoke-WebRequest and -OutFile on d6b48ef0 (offsets 80-181).
+_SHORT_COMMAND = 200
+_CONTRIBUTIONS = re.compile(r"^~ (\d+) row contributions")
+_OMITTED = re.compile(r"^(?:~ )?… (\d+) .* omitted for size \(full in findings\.json\)$")
 
 
-def _fact_blocks(facts: list[str]) -> list[list[str]]:
-    """`facts` split into its blocks, each starting at its header line."""
-    blocks: list[list[str]] = []
-    for line in facts:
-        if line in _FACT_HEADERS or not blocks:
-            blocks.append([])
-        blocks[-1].append(line)
-    return blocks
+def rendered_len(payloads: list[AnalystPayload]) -> int:
+    """Characters the Analyst reads: `analyst.py:566` re-renders the batch with
+    `json.dumps(indent=2)`, so `\\` doubles and `…` is six characters."""
+    # ponytail: a stand-in envelope with a 40-character batch_id; real ids are shorter.
+    envelope = {"schema_version": 1, "batch_id": "b" * 40, "created_at": "2026-01-01T00:00:00.000000Z"}
+    return len(json.dumps({**envelope, "payloads": [p.model_dump(mode="json") for p in payloads]}, indent=2))
+
+
+def _real(lines: list[str]) -> list[int]:
+    """Indexes of the lines that carry content, not a count of what was left out."""
+    return [i for i, x in enumerate(lines) if not x.startswith(("… ", "~ … "))]
+
+
+def _drop(lines: list[str], i: int, label: str, prefix: str = "") -> None:
+    """Remove `lines[i]`, counting it in the one trailing omission note."""
+    n = 1
+    if lines and (m := _OMITTED.match(lines[-1])):
+        n += int(m.group(1))
+        lines.pop()
+    del lines[i]
+    lines.append(f"{prefix}… {n} {label} omitted for size (full in findings.json)")
+
+
+def _block(facts: list[str], header: str) -> slice | None:
+    """Where the lines under `header` sit in `facts`."""
+    if header not in facts:
+        return None
+    start = facts.index(header) + 1
+    return slice(start, next((i for i in range(start, len(facts)) if facts[i] in _FACT_HEADERS), len(facts)))
+
+
+def _drop_fact(narrative: DomainNarrative, header: str, pick, label: str) -> bool:
+    """Drop the line `pick` chooses under `header`; False when it holds none."""
+    where = _block(narrative.facts, header)
+    lines = narrative.facts[where] if where else []
+    if not _real(lines):
+        return False
+    _drop(lines, pick(lines), label, "~ ")
+    narrative.facts[where] = lines
+    return True
+
+
+def _weight(lines: list[str]) -> int:
+    return sum(len(json.dumps(lines[i])) for i in _real(lines))
+
+
+def _trim(payloads: list[AnalystPayload], budget: int) -> None:
+    """Cut until the batch fits, model prose first and code evidence last (B51).
+
+    d6b48ef0: the narratives crossed whole while the code facts holding the
+    `Invoke-WebRequest … -OutFile svcupdate.dat` download were cut, and the
+    verdict was BENIGN 95%. Re-measured after every cut, so counts are exact."""
+    domains = [n for p in payloads for n in p.findings]
+
+    def fits() -> bool:
+        return rendered_len(payloads) <= budget
+
+    # 0. Summaries, from the tail of the domain holding the most: they only ever had
+    # the room left over, and cutting the biggest first meets the smallest need whole.
+    while not fits() and (held := [n for n in domains if _real(n.summaries)]):
+        n = max(held, key=lambda n: _weight(n.summaries))
+        _drop(n.summaries, _real(n.summaries)[-1], "set summaries")
+    # 1. Whole narratives, longest first.
+    for n in sorted(domains, key=lambda n: len(n.narrative), reverse=True):
+        if fits():
+            return
+        if len(n.narrative) > len(NARRATIVE_OMITTED):
+            n.narrative = NARRATIVE_OMITTED
+    # 2. Observations, from the tail of the domain holding the most.
+    while not fits() and (held := [n for n in domains if _real(n.observations)]):
+        n = max(held, key=lambda n: _weight(n.observations))
+        _drop(n.observations, _real(n.observations)[-1], "observations")
+    # 3. Empty searches, then 4. command lines: shortened all at once; then the lesser
+    # copy of a command another task also holds, so each is said once; then one at a
+    # time from the domain holding the most, the least-repeated line first. A beacon
+    # repeats by design: d6b48ef0's download ran 16 times in T3 and went first.
+    def lesser_copy() -> tuple[int, DomainNarrative, int] | None:
+        held: dict[str, list[tuple[int, DomainNarrative, int]]] = {}
+        for n in domains:
+            if w := _block(n.facts, COMMANDS_FOOTER):
+                lines = n.facts[w]
+                for i in _real(lines):
+                    if cmd := lines[i].partition(COMMAND_MARK)[2]:
+                        held.setdefault(cmd, []).append((_contributions(lines[i]), n, i))
+        return min((c for cs in held.values() if len(cs) > 1 for c in cs), key=lambda c: c[0], default=None)
+
+    def heaviest(header: str) -> DomainNarrative | None:
+        held = [n for n in domains if (w := _block(n.facts, header)) and _real(n.facts[w])]
+        return max(held, key=lambda n: (len(_real(n.facts[_block(n.facts, header)])), _weight(n.facts)), default=None)
+
+    while not fits() and (n := heaviest(NO_ROWS_FOOTER)):
+        _drop_fact(n, NO_ROWS_FOOTER, lambda lines: _real(lines)[-1], "lines")
+    if not fits():
+        for n in domains:
+            n.facts = [_shorten(line) for line in n.facts]
+    while not fits() and (copy := lesser_copy()):
+        _, n, i = copy
+        _drop_fact(n, COMMANDS_FOOTER, lambda lines: i, "command lines")
+        if not _real(n.facts[where := _block(n.facts, COMMANDS_FOOTER)]):
+            # Every line was another task's, and the batch says them there: no header, no note.
+            del n.facts[where.start - 1:where.stop]
+    while not fits() and (n := heaviest(COMMANDS_FOOTER)):
+        _drop_fact(n, COMMANDS_FOOTER, lambda lines: min(_real(lines), key=lambda i: _contributions(lines[i])),
+                   "command lines")
+    # 5. Last resort: the names, decoded commands, hashes and addresses, tail first
+    # from the heaviest block, rather than shipping over budget.
+    while not fits():
+        blocks = [(n, h) for n in domains for h in _FACT_HEADERS
+                  if (w := _block(n.facts, h)) and _real(n.facts[w])]
+        if not blocks:
+            break
+        n, header = max(blocks, key=lambda nh: _weight(nh[0].facts[_block(nh[0].facts, nh[1])]))
+        _drop_fact(n, header, lambda lines: _real(lines)[-1], "lines")
+    if not fits():
+        logger.error("analyst payload: its structure alone exceeds the %d-character budget", budget)
+
+
+def _contributions(line: str) -> int:
+    return int(m.group(1)) if (m := _CONTRIBUTIONS.match(line)) else 0
+
+
+def _shorten(line: str) -> str:
+    head, mark, cmd = line.partition(COMMAND_MARK)
+    return head + mark + cmd[:_SHORT_COMMAND] + "…" if mark and len(cmd) > _SHORT_COMMAND + 1 else line
+
+
+def _says_something(f: DomainRecord) -> bool:
+    return bool(f.narrative or f.observations or f.summaries or f.facts)
+
+
+def _no_rows(h: HypothesisFindings) -> list[str]:
+    """One line for the domains left out as empty, bar those a not_searched line already explains."""
+    explained = {d for g in (h.retrieval.gaps if h.retrieval else []) for d in g.unanswered_domains}
+    empty = [f.domain for f in h.findings if not _says_something(f) and f.domain not in explained]
+    return [f"No rows in this task's results belong to {', '.join(empty)}."] if empty else []
 
 
 def pack_for_analyst(
     findings: list[HypothesisFindings], max_chars: int | None = None
 ) -> list[AnalystPayload]:
-    """Project several tasks onto the wire under ONE size budget (B1, B9).
+    """Project several tasks onto the wire under ONE size budget (B1, B9, B51).
 
-    The model's narratives always cross; code `facts` and then observations give
-    way when the batch is over budget (B14). The space left is water-filled
-    across every domain holding summaries, in every task: the smallest need is
-    met first, and what it leaves flows to the larger ones. Each domain keeps its
-    summaries in order (cited sets first) while its allocation lasts, and says
-    how many it omitted. `None` sends every summary.
+    Over budget (`_trim`): summaries go first, from the tail of the domain holding
+    the most, so the smallest need stays whole; then whole narratives, then
+    observations, then empty searches, then command lines. The model's prose
+    gives way before code's evidence. The size is measured as the Analyst reads
+    it (`rendered_len`), and the batch never ships over it. Every cut is counted
+    in a note. `None` sends everything.
 
     One budget for the batch, not an even split per task and then per domain:
     on `ded5cac1` that split left T3 2.3k characters it never used while T5,
     whose narratives filled its own share, sent none of its 31 summaries.
     """
-    # ponytail: sizes are measured per payload, not inside the batch wrapper,
-    # whose extra nesting HANDOFF_CHAR_BUDGET's margin absorbs.
     payloads = [
         AnalystPayload(
             task_id=h.task_id,
@@ -854,77 +1007,18 @@ def pack_for_analyst(
             not_searched=[
                 _not_searched(g) for g in (h.retrieval.gaps if h.retrieval else []) if g.unanswered_domains
             ],
+            # A domain with nothing to say is not sent; one line names it (B51).
             findings=[
-                DomainNarrative(domain=f.domain, narrative=f.narrative,
-                                observations=list(f.observations), facts=list(f.facts))
-                for f in h.findings
+                DomainNarrative(domain=f.domain, narrative=f.narrative, observations=list(f.observations),
+                                summaries=list(f.summaries), facts=list(f.facts))
+                for f in h.findings if _says_something(f)
             ],
+            no_rows=_no_rows(h),
         )
         for h in findings
     ]
-    def cost(line: str) -> int:
-        return len(json.dumps(line)) + 8  # the indent, quotes and comma it costs on the wire
-
-    # Only the model's prose always crosses. Over budget, code facts give way first
-    # (empty searches, then command lines), then observations from the tail of the
-    # domain holding the most. On 874ab334 the facts sat inside the narratives, so
-    # 0 of 42 observations crossed and the batch still shipped 7k over (B14).
     if max_chars is not None:
-        # Plus the omission note each summary-holding domain may add below.
-        notes = 90 * sum(1 for h in findings for f in h.findings if f.summaries)
-        over = sum(len(p.model_dump_json(indent=2)) for p in payloads) + notes - max_chars
-        for header in _FACTS_DROPPED_FIRST:
-            while over > 0:
-                held = [(n, b) for p in payloads for n in p.findings
-                        for b in _fact_blocks(n.facts) if b[0] == header and len(b) > 2]
-                if not held:
-                    break
-                # The header stays, so the reader still sees the block existed.
-                narrative, block = max(held, key=lambda nb: sum(cost(x) for x in nb[1]))
-                note = f"~ … {len(block) - 1} lines omitted for size (full in findings.json)"
-                narrative.facts = [x for b in _fact_blocks(narrative.facts)
-                                   for x in ([header, note] if b == block else b)]
-                over -= sum(cost(x) for x in block[1:]) - cost(note)
-        trimmed: dict[int, list] = {}
-        while over > 0:
-            heavy = [n for p in payloads for n in p.findings if n.observations]
-            if not heavy:
-                logger.warning("analyst payload: narratives alone exceed the %d-character budget by %d", max_chars, over)
-                break
-            biggest = max(heavy, key=lambda n: sum(cost(o) for o in n.observations))
-            if id(biggest) not in trimmed:
-                trimmed[id(biggest)] = [biggest, 0]
-                over += 90  # its omission note
-            over -= cost(biggest.observations.pop())
-            trimmed[id(biggest)][1] += 1
-        for narrative, n in trimmed.values():
-            narrative.observations.append(f"… {n} observations omitted for size (full in findings.json)")
-    units = [
-        (narrative, f)
-        for payload, h in zip(payloads, findings, strict=True)
-        for narrative, f in zip(payload.findings, h.findings, strict=True)
-        if f.summaries
-    ]
-    remaining = None
-    if max_chars is not None:
-        # -90 per domain keeps room for its omission note.
-        remaining = max(max_chars - sum(len(p.model_dump_json(indent=2)) for p in payloads) - 90 * len(units), 0)
-    # Smallest need first, each taking at most an even share of what is left; what
-    # it does not use -- including the crumbs whole summaries leave -- flows on.
-    by_need = sorted(units, key=lambda u: sum(cost(s) for s in u[1].summaries))
-    for left, (narrative, f) in zip(range(len(by_need), 0, -1), by_need):
-        share = None if remaining is None else remaining // left
-        used = 0
-        for summary in f.summaries:
-            if share is not None and used + cost(summary) > share:
-                break
-            narrative.summaries.append(summary)
-            used += cost(summary)
-        if remaining is not None:
-            remaining -= used
-        omitted = len(f.summaries) - len(narrative.summaries)
-        if omitted:
-            narrative.summaries.append(f"… {omitted} set summaries omitted for size (full in findings.json)")
+        _trim(payloads, max_chars)
     return payloads
 
 

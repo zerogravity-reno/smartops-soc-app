@@ -257,7 +257,9 @@ class TestSubagentMission:
 
     def test_mission_carries_no_preauthored_tool_call(self):
         # the contract must never grow fields that let upstream code pre-author
-        # the exact tool action/parameters -- only goal + scope are allowed.
+        # the exact tool action/parameters -- only goal + scope are allowed, plus
+        # code-rendered context and the step's completion rule (categories and
+        # values, never a query).
         assert set(SubagentMission.model_fields) == {
             "schema_version",
             "task_id",
@@ -266,6 +268,7 @@ class TestSubagentMission:
             "goal",
             "scope",
             "context",
+            "completion",
             "budget_cost",
         }
 

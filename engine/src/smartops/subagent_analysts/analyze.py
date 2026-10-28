@@ -89,6 +89,7 @@ from smartops.tools.native.decoder import commands_in, encoded_in, hashes_in, pr
 
 from contracts.reasoning import (
     ADDRESSES_FOOTER,
+    COMMAND_MARK,
     COMMANDS_FOOTER,
     ENCODED_FOOTER,
     HASHES_FOOTER,
@@ -99,7 +100,6 @@ from contracts.reasoning import (
 from .formatting import NO_TIME_MARKER, _middle, _truncate, name_expansions
 
 ENCODED_LINE_CAP = 8
-COMMAND_LINE_CAP = 8
 COMMAND_CHAR_CAP = 400
 NO_ROWS_LINE_CAP = 3
 HASH_LINE_CAP = 8
@@ -113,14 +113,17 @@ from .packing import (
     exhibits_for,
     pack_evidence,
 )
-from .parse import FindingParseError, parse_finding, split_reasoning
+from .parse import FindingParseError, _expand_bare_ids, parse_finding, split_reasoning
 from .prompts import (
+    CLAIM_REASK,
+    claim_reask_system_prompt,
     _ANSWER_RULES,
     _NARRATIVE_ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
 )
 from .routing import DomainSlice, domains_for_family, route
+from .verify import ClaimVerifier, Verdict
 
 logger = logging.getLogger(__name__)
 
@@ -703,6 +706,18 @@ _FIGURE_RE = re.compile(r"(?<![\w.-])(\d{2,})(?![\w.-])")
 _TIME_CLAIM_RE = re.compile(r"\d{1,2}:\d{2}")
 
 
+# A protocol is a closed set of names, so like a figure it can be checked against
+# the rows: 20592fea's network replay said "used UDP port 5353" over rows carrying
+# no protocol, read off the port (B11).
+_PROTOCOL_RE = re.compile(r"\b(tcp|udp|icmp)\b", re.I)
+
+
+def _unsupported_protocols(text: str, shown: str) -> list[str]:
+    """Protocol names `text` states that `shown` never prints."""
+    printed = {p.lower() for p in _PROTOCOL_RE.findall(shown)}
+    return sorted({p.lower() for p in _PROTOCOL_RE.findall(text)} - printed)
+
+
 def _figures(text: str) -> set[str]:
     """Multi-digit figures an observation asserts, less its citations and times."""
     stripped = _TIME_TOKEN_RE.sub(" ", _CITATION_DIGITS_RE.sub(" ", text))
@@ -799,8 +814,9 @@ def _drop_unsupported_figures(
         # from both and therefore unchecked; that is a narrow, deliberate hole,
         # and it fails open rather than dropping a sound line.
         asserted = _figures(observation)
-        supported_by_rows = _figures(" ".join(b.text for b in blocks))
-        unsupported = sorted(asserted - supported_by_rows)
+        cited_text = " ".join(b.text for b in blocks)
+        supported_by_rows = _figures(cited_text)
+        unsupported = sorted(asserted - supported_by_rows) + _unsupported_protocols(observation, cited_text)
         if unsupported:
             # Both halves, deliberately. The unsupported figures say WHY the line
             # went; the supported ones say how much of it was sound, which is the
@@ -911,7 +927,7 @@ def _drop_unsupported_sentences(narrative: str, slice_: DomainSlice, domain: str
         bare = _CITATION_DIGITS_RE.sub(" ", sentence)
         unsupported = sorted(_figures(sentence) - shown_figures) + [
             t for t in _TIME_CLAIM_RE.findall(bare) if t not in shown
-        ]
+        ] + _unsupported_protocols(sentence, shown)
         if unsupported:
             logger.warning(
                 "domain=%s | dropped a narrative sentence asserting %s, which no "
@@ -1004,14 +1020,19 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
         ]
         if len(ranked) > ENCODED_LINE_CAP:
             facts.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
-    # And the plain ones: interpreter/LOLBin command lines, rarest first, capped.
-    # The download on 148b0e69 sat in four tasks' rows and reached no narrative.
-    commands = list(commands_in(row for _, rs in sets for row in rs.rows).items())
+    # And the plain ones: interpreter/LOLBin command lines, rarest first, each with
+    # its parent. The download on 148b0e69 sat in four tasks' rows and reached no
+    # narrative. Not capped here: on d6b48ef0 an 8-line cap put the 16x download
+    # last, so `pack_for_analyst` decides what fits (B51).
+    commands = commands_in(row for _, rs in sets for row in rs.rows)
     if commands:
         facts.append(COMMANDS_FOOTER)
-        facts += [f"~ {n} events: {_truncate(cmd, COMMAND_CHAR_CAP)}" for cmd, n in commands[:COMMAND_LINE_CAP]]
-        if len(commands) > COMMAND_LINE_CAP:
-            facts.append(f"~ … {len(commands) - COMMAND_LINE_CAP} more command lines not shown (rows in report.json)")
+        facts += [
+            f"~ {e['events']} row contributions"
+            + (", parent " + ", ".join(f"{_middle(p)}={n}" for p, n in sorted(e["parents"].items())) if e["parents"] else "")
+            + f"{COMMAND_MARK}{_truncate(cmd, COMMAND_CHAR_CAP)}"
+            for cmd, e in commands.items()
+        ]
     values = [e.value.lower() for e in scope.entities] if scope else []
     # Each file's SHA256, the scope's own files first (B22): OneDrive.exe's hash sat in
     # c90ca5f9's rows and never reached the Analyst, so no task asked VirusTotal.
@@ -1063,6 +1084,120 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
     )
 
 
+@dataclass
+class _Claim:
+    pos: int  # its index in `finding.observations`: equal lines are separate claims
+    line: str
+    rows: str
+    shown: set[str]  # the cited sets that have rows, the only ones a fix may cite
+    reason: str = ""
+
+
+def _cited(line: str) -> set[str]:
+    return {c.lower() for c in _OBSERVATION_CITE_RE.findall(_expand_bare_ids(line))}
+
+
+def _shown_rows(ids: set[str], slice_: DomainSlice) -> tuple[str, set[str]]:
+    """The text of the cited sets that have rows, and their ids."""
+    shown = [b for b in exhibits_for(slice_, sorted(ids)) if b.row_count]
+    return "\n".join(b.text for b in shown), {b.header_id.lower() for b in shown}
+
+
+def _presence_claims(observations: list[str], slice_: DomainSlice) -> list[_Claim]:
+    """Observations citing at least one set with rows. A line citing only empty
+    sets is an absence claim, which code already checks against the empty blocks."""
+    claims = []
+    for pos, line in enumerate(observations):
+        rows, shown = _shown_rows(_cited(line), slice_)
+        if shown:
+            claims.append(_Claim(pos, line, rows, shown))
+    return claims
+
+
+async def _judge(verify: ClaimVerifier, pairs: list[tuple[str, str]]) -> dict[int, Verdict] | None:
+    """Exactly one verdict per claim, or None: a skipped or incomplete check."""
+    verdicts = await verify(pairs)
+    if verdicts is None:
+        return None
+    by = {v.index: v for v in verdicts}
+    if len(by) != len(verdicts) or set(by) != set(range(len(pairs))):
+        logger.warning("claim check: %d verdicts for %d claims, treated as skipped", len(verdicts), len(pairs))
+        return None
+    return by
+
+
+_REPLY_RE = re.compile(r"^\s*-?\s*(\d+)\s*[:.)]\s*(.+?)\s*$")
+
+
+def _reask_claims(model: AnalystModel, domain: AnalystDomain, slice_: DomainSlice, bad: list[_Claim]) -> list[str | None]:
+    """One re-ask for every unsupported line: its fix, or None when withdrawn,
+    missing, answered twice, citing a set it was not shown, or failing the figure gate."""
+    user = CLAIM_REASK + "\n\n" + "\n\n".join(
+        f"{i}: {c.line}\nREASON: {c.reason}\nROWS:\n{c.rows}" for i, c in enumerate(bad, 1)
+    )
+    try:
+        _, answer = split_reasoning(model.invoke(claim_reask_system_prompt(), user).generation)
+    except Exception:
+        logger.warning("domain=%s | claim re-ask failed; dropping the unsupported lines", domain, exc_info=True)
+        return [None] * len(bad)
+    replies: dict[int, str | None] = {}
+    for m in filter(None, map(_REPLY_RE.match, answer.splitlines())):
+        n = int(m.group(1))
+        replies[n] = None if n in replies else m.group(2)  # answered twice: neither stands
+    fixes: list[str | None] = []
+    for i, c in enumerate(bad, 1):
+        reply = _expand_bare_ids(replies.get(i) or "")
+        cited = _cited(reply)
+        ok = reply.upper() != "WITHDRAWN" and cited and cited <= c.shown
+        fixes.append(reply if ok and _drop_unsupported_figures([reply], slice_, domain) else None)
+    return fixes
+
+
+async def _check_claims(
+    finding: DomainFinding, slice_: DomainSlice, model: AnalystModel, verify: ClaimVerifier
+) -> DomainFinding:
+    """B52 E: each presence line checked against the rows it cites.
+
+    `_finalize_finding` knows a citation resolves and its figures are in the rows;
+    it cannot see a line that misreads them. An unsupported line goes back to the
+    sub-analyst once; its fix is checked against the rows IT cites, and a line not
+    shown to hold leaves `observations` for `unsupported` (traces.json). A skipped
+    first check changes nothing but the audit mark."""
+    claims = _presence_claims(finding.observations, slice_)
+    if not claims:
+        return finding
+    verdicts = await _judge(verify, [(c.line, c.rows) for c in claims])
+    if verdicts is None:
+        return finding.model_copy(update={"claim_check": "skipped: verifier unavailable or incomplete"})
+    bad = []
+    for i, c in enumerate(claims):
+        if not verdicts[i].supported:
+            c.reason = verdicts[i].reason
+            bad.append(c)
+    kept: dict[int, str | None] = {c.pos: None for c in bad}
+    check = "checked"
+    if bad:
+        fixes = await asyncio.to_thread(_reask_claims, model, finding.domain, slice_, bad)
+        retry = [(c, fix, _shown_rows(_cited(fix), slice_)[0]) for c, fix in zip(bad, fixes) if fix]
+        again = await _judge(verify, [(fix, rows) for _, fix, rows in retry]) if retry else {}
+        if again is None:
+            # The line was found unsupported and its fix is unchecked: neither crosses.
+            check = "checked; re-check skipped, fixes dropped"
+        for i, (c, fix, _) in enumerate(retry):
+            if again and again[i].supported:
+                kept[c.pos] = fix
+    unsupported = [f"{c.line} -- {c.reason}" for c in bad if kept[c.pos] is None]
+    for line in unsupported:
+        logger.warning("domain=%s | claim check dropped an observation its rows do not state: %s",
+                       finding.domain, line)
+    observations = [kept.get(pos, line) for pos, line in enumerate(finding.observations)]
+    return finding.model_copy(update={
+        "observations": [o for o in observations if o is not None],
+        "unsupported": unsupported,
+        "claim_check": check,
+    })
+
+
 async def gather(
     report: BrokerReport,
     scope: Scope,
@@ -1072,6 +1207,7 @@ async def gather(
     hypothesis_id: str | None = None,
     hypothesis: str | None = None,
     trace_sink: Callable[[list[DomainFinding]], None] | None = None,
+    verifier: ClaimVerifier | None = None,
 ) -> HypothesisFindings:
     """Run the three blind analysts and attach their findings to the hypothesis.
 
@@ -1112,12 +1248,19 @@ async def gather(
     behaviour -- discard -- explicit at the call site rather than implicit here.
     Exceptions from it are not caught: a caller that asked for its traces to be
     written and had that fail should hear about it.
+
+    **`verifier`** (B52 E) checks each finding's presence lines against their
+    cited rows (`_check_claims`); `None` skips the check.
     """
     routed = route(report, scope)
     slices = routed.slices()
     findings = await asyncio.gather(
         *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
     )
+    if verifier is not None:  # B52 E
+        findings = await asyncio.gather(
+            *(_check_claims(f, s, model, verifier) for f, s in zip(findings, slices, strict=True))
+        )
     # Before `_as_record` below drops `reasoning_trace`, which is the last
     # point at which anything can.
     if trace_sink is not None:
@@ -1305,6 +1448,7 @@ def _retrieval_summary(
                 evaluated=outcome.evaluated,
                 confirmed_empty=outcome.confirmed_empty,
                 rows_retrieved=outcome.rows_retrieved,
+                proven_empty=dict(outcome.proven_empty),
             )
             for outcome in report.step_outcomes
         ],

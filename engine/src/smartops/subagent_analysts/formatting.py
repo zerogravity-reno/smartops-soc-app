@@ -117,8 +117,13 @@ def _count_suffix(row: dict[str, Any]) -> str:
 _FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
     "auth_events": {
         "time": ("time", "_time", "timestamp"),
-        "user": ("user", "src_user", "Account_Name", "AccountName", "userPrincipalName"),
-        "src": ("src", "src_ip", "Source_Network_Address", "ipAddress", "Workstation_Name"),
+        # Raw Windows Security events name two accounts (B49): `TargetUserName` is the one
+        # logged on (4624), `SubjectUserName` the one asking -- or, on 4672, the one granted.
+        "user": ("user", "src_user", "Account_Name", "AccountName", "userPrincipalName",
+                 "TargetUserName", "SubjectUserName"),
+        "subject": ("SubjectUserName",),
+        "src": ("src", "src_ip", "Source_Network_Address", "ipAddress", "IpAddress",
+                "Workstation_Name", "WorkstationName"),
         "dest": ("dest", "dest_host", "Computer", "host"),
         "action": ("action", "status", "signature", "failureReason"),
         # `code`/`logon_type` are the discriminating pair: without them, a
@@ -295,11 +300,21 @@ _LOGON_TYPES = {
 interactive" (it is a service logon) when given the bare number (B11)."""
 
 
+_AUTH_EVENTS = {
+    "4624": "logon", "4625": "failed logon", "4634": "logoff", "4647": "user-initiated logoff",
+    "4648": "logon with explicit credentials", "4672": "special privileges assigned to new logon",
+}
+"""Windows Security auth event names, written by code: 20592fea called 4672 an "audit
+logon event" and read the 4624 rows' logon type as every row's (B11)."""
+
+
 def _field(row: dict[str, Any], category: str, name: str, default: str = "-") -> str:
     """Resolve one named field for `category` through `_FIELDS`."""
     value = _first(row, *_FIELDS[category][name], default=default)
     if name == "logon_type" and str(value) in _LOGON_TYPES:
         return f"{value} ({_LOGON_TYPES[str(value)]})"
+    if category == "auth_events" and name == "event_code" and str(value) in _AUTH_EVENTS:
+        return f"{value} ({_AUTH_EVENTS[str(value)]})"
     return value
 
 
@@ -307,6 +322,7 @@ def _format_auth_event(row: dict[str, Any]) -> str:
     return (
         f"{_field(row, 'auth_events', 'time')} "
         f"user={_field(row, 'auth_events', 'user')} "
+        f"subject={_field(row, 'auth_events', 'subject')} "
         f"src={_field(row, 'auth_events', 'src')} "
         f"dest={_field(row, 'auth_events', 'dest')} "
         f"action={_field(row, 'auth_events', 'action')} "
@@ -336,6 +352,12 @@ def _format_connection(row: dict[str, Any]) -> str:
     dest_port = _field(row, "connections", "dest_port", default="")
     src_full = f"{src}:{src_port}" if src_port not in ("", "-") else src
     dest_full = f"{dest}:{dest_port}" if dest_port not in ("", "-") else dest
+    # The arrow only between two known ends. `-→10.0.10.20:5353` (a `stats count by
+    # DestinationIp` row) was narrated as 10.0.10.20 connecting to itself (B11).
+    if src == "-" or dest == "-":
+        ends = f"src={src_full} dest={dest_full}"
+    else:
+        ends = f"{src_full}→{dest_full}"
     # Both directions, never one. `bytes_in` and `bytes_out` co-occur on real
     # rows, and collapsing them to whichever candidate matched first rendered
     # `bytes=12` for a row carrying 900,000 inbound -- inverting the very
@@ -350,7 +372,7 @@ def _format_connection(row: dict[str, Any]) -> str:
     ) or f"bytes={_field(row, 'connections', 'bytes')}"
     return (
         f"{_field(row, 'connections', 'time')} "
-        f"{src_full}→{dest_full} "
+        f"{ends} "
         f"proto={_field(row, 'connections', 'proto')} "
         f"{volume} "
         f"uri={_truncate(_field(row, 'connections', 'uri'), 120)} "
@@ -518,7 +540,7 @@ def _event_total(rows: Sequence[dict[str, Any]]) -> int | None:
 # near-unique per row, so a distribution over them is a list of the rows with
 # extra steps, and it is the wide field that would spend the budget.
 _SUMMARY_DIMENSIONS: dict[str, tuple[str, ...]] = {
-    "auth_events": ("user", "src", "dest", "action", "logon_type"),
+    "auth_events": ("user", "subject", "src", "dest", "action", "event_code", "logon_type"),
     "dns_resolutions": ("src", "query", "answer", "rtype", "rcode"),
     "connections": ("src", "dest", "dest_port", "proto", "action"),
     "processes": ("host", "user", "process", "parent"),
@@ -714,8 +736,10 @@ def summarise_rows(
                     f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
                     for value, count in rare
                 )
+        # `-=10` beside `5 (Service)=10` read as one more value, and the rows without a
+        # logon type were narrated as having one (20592fea, B11).
         rendered = ", ".join(
-            f"{_truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
+            f"{'(absent)' if value == '-' else _truncate(_sanitise(value), _SUMMARY_VALUE_LIMIT)}={count}"
             for value, count in ranked[:_TOP_N]
         )
         lines.append(f"  {name}: {len(tally)} distinct — {rendered}{more}")
@@ -839,6 +863,12 @@ def format_result_set(
     # a model asked for "20 of 4,000" got the 20 by counting lines (P-1).
     if result_set.row_count > len(shown):
         lines.append(f"… {len(shown)} of {result_set.row_count} rows shown")
+    # Splunk's own cap, before any of ours: rows past it were never retrieved.
+    if result_set.truncated:
+        total = f" of {result_set.total}" if result_set.total is not None else ""
+        lines.append(f"… capped by Splunk: {result_set.row_count}{total} rows retrieved")
+    if result_set.kind in ("count", "aggregate"):
+        lines.append(f"… these are {result_set.kind} rows from the search's stats, not events")
 
     # Rendered for EVERY set, not only a truncated one. A capped set needs it
     # because the analyst cannot count rows it was never shown; a fully printed

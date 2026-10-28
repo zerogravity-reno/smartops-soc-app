@@ -101,13 +101,14 @@ _INTERPRETERS = frozenset(
 _RAW_CMDLINE = re.compile(r"<Data Name='CommandLine'>(.*?)</Data>", re.S)
 
 
-def commands_in(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
-    """Plain interpreter/LOLBin command lines in `rows`: command -> events, rarest first.
+def commands_in(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Plain interpreter/LOLBin command lines in `rows`: `{command: {events, parents}}`, rarest first.
 
     On 148b0e69 four tasks held `Invoke-WebRequest … -OutFile $env:TEMP\\svcupdate.dat`
     and no narrative named it. Lines with an encoded blob are left to `encoded_in`;
-    a bare image path carries no arguments and says nothing."""
-    found: dict[str, int] = {}
+    a bare image path carries no arguments and says nothing. `events` sums row
+    weights, so a set overlapping another counts the same event twice."""
+    found: dict[str, dict[str, Any]] = {}
     for row in rows:
         cmd = _field(row, "processes", "cmdline").strip()
         if cmd == "-" and (m := _RAW_CMDLINE.search(str(row.get("_raw", "")))):
@@ -115,8 +116,13 @@ def commands_in(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
         image, _, args = cmd[1:].partition('"') if cmd.startswith('"') else cmd.partition(" ")
         if re.split(r"[\\/]", image)[-1].lower().removesuffix(".exe") not in _INTERPRETERS or not args.strip() or encoded(cmd):
             continue
-        found[cmd] = found.get(cmd, 0) + _row_weight(row)
-    return dict(sorted(found.items(), key=lambda kv: kv[1]))
+        entry = found.setdefault(cmd, {"events": 0, "parents": {}})
+        weight = _row_weight(row)
+        entry["events"] += weight
+        parent = _field(row, "processes", "parent")
+        if parent != "-":
+            entry["parents"][parent] = entry["parents"].get(parent, 0) + weight
+    return dict(sorted(found.items(), key=lambda kv: kv[1]["events"]))
 
 
 def encoded_in(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:

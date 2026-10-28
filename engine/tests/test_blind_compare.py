@@ -161,7 +161,7 @@ class TestPackOnly:
         by_domain = {d.domain: d.evidence for d in report.domains}
         assert set(by_domain) == {"identity", "network", "endpoint"}
         # The discriminating pair the whole re-test exists to check.
-        assert "code=4624 logon_type=11" in by_domain["identity"].evidence_text
+        assert "code=4624 (logon) logon_type=11" in by_domain["identity"].evidence_text
         assert "auth_events#1" in by_domain["identity"].valid_citation_ids
         assert by_domain["network"].has_evidence is False
 
@@ -553,7 +553,7 @@ class TestArtifactWriting:
 
         assert json.loads(json_path.read_text(encoding="utf-8"))["run_id"] == "case-1"
         assert md_path.name == "compare.md"
-        assert "code=4624 logon_type=11" in md_path.read_text(encoding="utf-8")
+        assert "code=4624 (logon) logon_type=11" in md_path.read_text(encoding="utf-8")
 
 
 def _sample(arm: str, index: int, observations: list[str], citations: list[str]) -> ArmSample:

@@ -583,6 +583,26 @@ class TestTheParserRejectsWhatDestroysGrounding:
         with pytest.raises(FindingParseError, match="cited no evidence in any"):
             parse_finding(out, domain="identity")
 
+    def test_an_observation_of_citation_tags_only_is_rejected(self):
+        # d6b48ef0/L2/T3's only observation was its tags, with no claim (B51).
+        out = (
+            "</think>NARRATIVE: processes#1 shows PowerShell started by OneDrive.exe on one "
+            "host, several times over two days, with a download among the commands.\n"
+            "OBSERVATIONS:\n- [processes#1] [processes#2], #3 [script_blocks#1].\n"
+            "CITATIONS: processes#1"
+        )
+        with pytest.raises(FindingParseError, match="states nothing"):
+            parse_finding(out, domain="endpoint")
+
+    def test_a_short_claim_with_its_citation_is_not_rejected(self):
+        out = (
+            "</think>NARRATIVE: processes#1 shows PowerShell started by OneDrive.exe on one "
+            "host, several times over two days, with a download among the commands.\n"
+            "OBSERVATIONS:\n- PowerShell ran twice [processes#1]\n"
+            "CITATIONS: processes#1"
+        )
+        assert parse_finding(out, domain="endpoint").observations == ["PowerShell ran twice [processes#1]"]
+
     def test_one_uncited_line_among_cited_ones_is_not_a_parse_error(self):
         """Deliberately NOT raised here.
 
