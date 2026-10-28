@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -1713,8 +1714,19 @@ def _vt_line(result: SubtaskResult) -> str:
     ) or _digest(result)
 
 
+# Lookups serialised per event loop: the free tier is ~4 a minute, and each round
+# runs on its own loop, so one module-level asyncio.Lock would bind to the first.
+_VT_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _vt_norm(kind: str, value: str) -> str:
+    """Case only where VirusTotal ignores it: a URL's path and query keep theirs."""
+    return value if kind == "url" else value.lower()
+
+
 async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, call_id: str) -> str:
-    from smartops.tools.native.virustotal import _LOOKUP_LOCK, queryable_entities
+    from smartops.projection import row_matches
+    from smartops.tools.native.virustotal import queryable_entities
 
     if not reason.strip():
         return "status=refused | vt_lookup needs a reason: why this indicator's reputation answers the question."
@@ -1725,19 +1737,23 @@ async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, cal
     one = Scope(entities=[entity], time_window=req.task.scope.time_window)
     if not queryable_entities(one):
         return f"status=refused | VirusTotal holds nothing for {kind} {entity.value} (a private address or an unqueryable kind)."
-    named = entity.value.lower() in req.task.goal.lower()
-    in_scope = any((e.kind, e.value.lower()) == (kind, entity.value.lower()) for e in req.task.scope.entities)
+    norm = _vt_norm(kind, entity.value)
+    # Whole tokens for IPs and hashes, as for rows: 18.8.4.40 does not name 8.8.4.4.
+    named = row_matches({"goal": req.task.goal}, [entity.value])
+    in_scope = any((e.kind, _vt_norm(e.kind, e.value)) == (kind, norm) for e in req.task.scope.entities)
     if not (named or in_scope or _in_retrieved_rows(req, entity.value)):
         return (f"status=refused | {kind} {entity.value} is not named in the question, in this task's scope, "
                 "or in a row this task retrieved, so it is not looked up.")
 
     run_key, label = _vt_run(req.task)
-    key = (kind, entity.value.lower())
+    key = (kind, norm)
     with _RUN_LOCK:
         seen = _VT_SEEN.setdefault(run_key, {})
         _VT_SEEN.move_to_end(run_key)
-        while len(_VT_SEEN) > _RUNS_HELD:
-            _VT_SEEN.popitem(last=False)
+        # Oldest finished runs first: a run with a lookup in flight keeps its record.
+        for old in [k for k, v in _VT_SEEN.items() if k != run_key and not any(
+                x.endswith(_IN_FLIGHT) for x in v.values())][:max(0, len(_VT_SEEN) - _RUNS_HELD)]:
+            del _VT_SEEN[old]
         earlier = seen.get(key)
         if earlier is None:
             seen[key] = label + _IN_FLIGHT
@@ -1749,7 +1765,7 @@ async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, cal
     mission = SubagentMission(task_id=f"{req.task.task_id}:vt:{call_id}", hypothesis_id=req.task.hypothesis_id,
                               tool_family="vt", goal=reason, scope=one)
     try:
-        async with _LOOKUP_LOCK:
+        async with _VT_LOCKS.setdefault(asyncio.get_running_loop(), asyncio.Lock()):
             result = await enrich_mission(mission, enricher_for("vt"))
     except BaseException:
         with _RUN_LOCK:

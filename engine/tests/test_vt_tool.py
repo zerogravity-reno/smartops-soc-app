@@ -176,3 +176,38 @@ def test_a_scripted_run_with_vt_looks_up_the_scope(lookups):
     req = BrokerRequest(task=_task())
     asyncio.run(broker._scripted_invoker(["vt"])("prompt", req))
     assert calls == [HASH] and req.plan is None
+
+
+def test_a_partial_ip_in_the_question_does_not_name_another(lookups):
+    calls, _ = lookups
+    assert _ask(BrokerRequest(task=_task(goal="did host-1 reach 18.8.4.40?")), "ip", "8.8.4.4").startswith("status=refused")
+    assert calls == []
+
+
+def test_urls_differing_only_in_path_case_are_separate_lookups(lookups):
+    calls, _ = lookups
+    goal = "were https://example.com/A and https://example.com/a fetched?"
+    _ask(BrokerRequest(task=_task("run1-L2-T1", goal=goal)), "url", "https://example.com/A")
+    _ask(BrokerRequest(task=_task("run1-L2-T2", goal=goal)), "url", "https://example.com/a")
+    assert calls == ["https://example.com/A", "https://example.com/a"]
+
+
+def test_lookups_in_successive_rounds_on_their_own_loops_do_not_collide(lookups):
+    calls, _ = lookups
+
+    async def round_(n):
+        return await asyncio.gather(*(
+            _vt_lookup(BrokerRequest(task=_task(f"run{n}-L2-T{i}", goal=f"is {h} bad?")), "file_hash", h, "r", f"c{i}")
+            for i, h in enumerate((HASH, OTHER))
+        ))
+
+    asyncio.run(round_(1))
+    asyncio.run(round_(2))  # a fresh loop: a lock bound to the first would raise here
+    assert len(calls) == 4
+
+
+def test_eviction_keeps_a_run_with_a_lookup_in_flight(lookups):
+    broker._VT_SEEN["busy"] = {("file_hash", HASH): "L2-T1" + broker._IN_FLIGHT}
+    for n in range(broker._RUNS_HELD + 2):
+        _ask(BrokerRequest(task=_task(f"r{n}-L2-T1")), "file_hash", HASH)
+    assert "busy" in broker._VT_SEEN
