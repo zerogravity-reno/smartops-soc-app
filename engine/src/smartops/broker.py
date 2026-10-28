@@ -37,7 +37,6 @@ import logging
 import os
 import re
 import threading
-import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -1716,7 +1715,21 @@ def _vt_line(result: SubtaskResult) -> str:
 
 # Lookups serialised per event loop: the free tier is ~4 a minute, and each round
 # runs on its own loop, so one module-level asyncio.Lock would bind to the first.
-_VT_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_VT_LOCKS: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+
+
+def _vt_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    for closed in [k for k in _VT_LOCKS if k.is_closed()]:
+        del _VT_LOCKS[closed]  # a lock holds its loop: drop finished rounds'
+    return _VT_LOCKS.setdefault(loop, asyncio.Lock())
+
+
+def _named_in(goal: str, kind: str, value: str) -> bool:
+    """`value` is a whole word of the question: 18.8.4.40 does not name 8.8.4.4, nor
+    notexample.com example.com, nor .../AB .../A. A URL's case counts."""
+    words = {w.strip(".,;:!?()[]{}<>\"'`") for w in goal.split()}
+    return _vt_norm(kind, value) in {_vt_norm(kind, w) for w in words}
 
 
 def _vt_norm(kind: str, value: str) -> str:
@@ -1725,7 +1738,6 @@ def _vt_norm(kind: str, value: str) -> str:
 
 
 async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, call_id: str) -> str:
-    from smartops.projection import row_matches
     from smartops.tools.native.virustotal import queryable_entities
 
     if not reason.strip():
@@ -1738,8 +1750,7 @@ async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, cal
     if not queryable_entities(one):
         return f"status=refused | VirusTotal holds nothing for {kind} {entity.value} (a private address or an unqueryable kind)."
     norm = _vt_norm(kind, entity.value)
-    # Whole tokens for IPs and hashes, as for rows: 18.8.4.40 does not name 8.8.4.4.
-    named = row_matches({"goal": req.task.goal}, [entity.value])
+    named = _named_in(req.task.goal, kind, entity.value)
     in_scope = any((e.kind, _vt_norm(e.kind, e.value)) == (kind, norm) for e in req.task.scope.entities)
     if not (named or in_scope or _in_retrieved_rows(req, entity.value)):
         return (f"status=refused | {kind} {entity.value} is not named in the question, in this task's scope, "
@@ -1765,7 +1776,7 @@ async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, cal
     mission = SubagentMission(task_id=f"{req.task.task_id}:vt:{call_id}", hypothesis_id=req.task.hypothesis_id,
                               tool_family="vt", goal=reason, scope=one)
     try:
-        async with _VT_LOCKS.setdefault(asyncio.get_running_loop(), asyncio.Lock()):
+        async with _vt_lock():
             result = await enrich_mission(mission, enricher_for("vt"))
     except BaseException:
         with _RUN_LOCK:
