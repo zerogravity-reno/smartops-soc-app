@@ -128,28 +128,31 @@ FIXTURE = Path(__file__).parent / "fixtures" / "d6b48ef0_L2.json"
 DOWNLOAD = ("win-agent-2.4.1.bin", "svcupdate", "Invoke-WebRequest", r"OneDrive\OneDrive.exe")
 
 
-def _d6b48ef0(sparse: bool) -> list[HypothesisFindings]:
+def test_d6b48ef0_keeps_the_download_within_budget():
+    # The batch went out at 18,088 of 13,272 chars with no download in it (B51).
     tasks = [HypothesisFindings.model_validate(t) for t in json.loads(FIXTURE.read_text(encoding="utf-8"))]
-    if sparse:  # what Yousef's sparse handoff (B51 item 3) would leave
-        for t in tasks:
-            t.findings = [f for f in t.findings if f.narrative or f.observations or f.summaries or f.facts]
-    return tasks
 
-
-def _download_crosses(payloads) -> bool:
-    return any(all(s in line for s in DOWNLOAD) for p in payloads for f in p.findings for line in f.facts)
-
-
-def test_d6b48ef0_keeps_the_download_within_budget_once_empty_domains_are_left_out():
-    payloads = pack_for_analyst(_d6b48ef0(sparse=True), HANDOFF_CHAR_BUDGET)
+    payloads = pack_for_analyst(tasks, HANDOFF_CHAR_BUDGET)
 
     assert len(_sent(payloads)) <= HANDOFF_CHAR_BUDGET
-    assert _download_crosses(payloads)
+    assert any(all(s in line for s in DOWNLOAD) for p in payloads for f in p.findings for line in f.facts)
 
 
-@pytest.mark.xfail(strict=True, reason="needs Yousef's sparse handoff (B51 item 3): 14 empty domains cost ~2.2k")
-def test_d6b48ef0_keeps_the_download_within_budget_as_sent_today():
-    payloads = pack_for_analyst(_d6b48ef0(sparse=False), HANDOFF_CHAR_BUDGET)
+def test_a_domain_with_nothing_to_say_is_not_sent_but_named_in_one_line():
+    # d6b48ef0: 14 of 21 domains crossed as empty blocks, ~2.2k of the budget (B51).
+    from contracts import DomainGap, RetrievalSummary
 
-    assert len(_sent(payloads)) <= HANDOFF_CHAR_BUDGET
-    assert _download_crosses(payloads)
+    task = HypothesisFindings(
+        task_id="t1", run_id="r", hypothesis_id="t1", hypothesis="h",
+        findings=[DomainRecord(domain="identity"), DomainRecord(domain="network"),
+                  DomainRecord(domain="endpoint", narrative="PowerShell ran.")],
+    )
+    sent = pack_for_analyst([task])[0]
+
+    assert [f.domain for f in sent.findings] == ["endpoint"]
+    assert sent.no_rows == ["No rows in this task's results belong to identity, network."]
+
+    # A domain left empty because its source was down is already said by not_searched.
+    down = DomainGap(family="siem", reason="no_tools_resolved", served_domains=["network"], unanswered_domains=["network"])
+    sent = pack_for_analyst([task.model_copy(update={"retrieval": RetrievalSummary(gaps=[down])})])[0]
+    assert sent.no_rows == ["No rows in this task's results belong to identity."]

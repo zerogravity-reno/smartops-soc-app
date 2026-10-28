@@ -781,6 +781,14 @@ class AnalystPayload(BaseModel):
             "was found. Never trimmed for size."
         ),
     )
+    no_rows: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Code-worded: the domains this task's results held no rows for, which are "
+            "therefore not in `findings`. Not 'searched and found nothing': no row "
+            "belonged there. Domains a not_searched line covers are not repeated here."
+        ),
+    )
 
 
 # Code wording per `DomainGap.reason`; `detail` (raw refusal text) never reaches synthesis.
@@ -818,7 +826,6 @@ NARRATIVE_OMITTED = "narrative omitted for size (full in findings.json)"
 _SHORT_COMMAND = 200
 _CONTRIBUTIONS = re.compile(r"^~ (\d+) row contributions")
 _OMITTED = re.compile(r"^(?:~ )?… (\d+) .* omitted for size \(full in findings\.json\)$")
-_NOTE_ROOM = 100  # a summary omission note, plus `[]` opening into a list
 
 
 def rendered_len(payloads: list[AnalystPayload]) -> int:
@@ -878,6 +885,11 @@ def _trim(payloads: list[AnalystPayload], budget: int) -> None:
     def fits() -> bool:
         return rendered_len(payloads) <= budget
 
+    # 0. Summaries, from the tail of the domain holding the most: they only ever had
+    # the room left over, and cutting the biggest first meets the smallest need whole.
+    while not fits() and (held := [n for n in domains if _real(n.summaries)]):
+        n = max(held, key=lambda n: _weight(n.summaries))
+        _drop(n.summaries, _real(n.summaries)[-1], "set summaries")
     # 1. Whole narratives, longest first.
     for n in sorted(domains, key=lambda n: len(n.narrative), reverse=True):
         if fits():
@@ -920,19 +932,28 @@ def _shorten(line: str) -> str:
     return head + mark + cmd[:_SHORT_COMMAND] + "…" if mark and len(cmd) > _SHORT_COMMAND + 1 else line
 
 
+def _says_something(f: DomainRecord) -> bool:
+    return bool(f.narrative or f.observations or f.summaries or f.facts)
+
+
+def _no_rows(h: HypothesisFindings) -> list[str]:
+    """One line for the domains left out as empty, bar those a not_searched line already explains."""
+    explained = {d for g in (h.retrieval.gaps if h.retrieval else []) for d in g.unanswered_domains}
+    empty = [f.domain for f in h.findings if not _says_something(f) and f.domain not in explained]
+    return [f"No rows in this task's results belong to {', '.join(empty)}."] if empty else []
+
+
 def pack_for_analyst(
     findings: list[HypothesisFindings], max_chars: int | None = None
 ) -> list[AnalystPayload]:
     """Project several tasks onto the wire under ONE size budget (B1, B9, B51).
 
-    Over budget, the model's prose gives way before code's evidence: whole
-    narratives first, then observations, then empty searches, then command lines
-    (`_trim`). The size is measured as the Analyst reads it (`rendered_len`), and
-    the batch never ships over it. The space left is water-filled across every
-    domain holding summaries, in every task: the smallest need is met first, and
-    what it leaves flows to the larger ones. Each domain keeps its summaries in
-    order (cited sets first) while its allocation lasts, and says how many it
-    omitted. `None` sends every summary.
+    Over budget (`_trim`): summaries go first, from the tail of the domain holding
+    the most, so the smallest need stays whole; then whole narratives, then
+    observations, then empty searches, then command lines. The model's prose
+    gives way before code's evidence. The size is measured as the Analyst reads
+    it (`rendered_len`), and the batch never ships over it. Every cut is counted
+    in a note. `None` sends everything.
 
     One budget for the batch, not an even split per task and then per domain:
     on `ded5cac1` that split left T3 2.3k characters it never used while T5,
@@ -952,50 +973,18 @@ def pack_for_analyst(
             not_searched=[
                 _not_searched(g) for g in (h.retrieval.gaps if h.retrieval else []) if g.unanswered_domains
             ],
+            # A domain with nothing to say is not sent; one line names it (B51).
             findings=[
-                DomainNarrative(domain=f.domain, narrative=f.narrative,
-                                observations=list(f.observations), facts=list(f.facts))
-                for f in h.findings
+                DomainNarrative(domain=f.domain, narrative=f.narrative, observations=list(f.observations),
+                                summaries=list(f.summaries), facts=list(f.facts))
+                for f in h.findings if _says_something(f)
             ],
+            no_rows=_no_rows(h),
         )
         for h in findings
     ]
-    def cost(line: str) -> int:
-        return len(json.dumps(line)) + 14  # its indent, quotes, comma and newline in the rendered batch
-
-    units = [
-        (narrative, f)
-        for payload, h in zip(payloads, findings, strict=True)
-        for narrative, f in zip(payload.findings, h.findings, strict=True)
-        if f.summaries
-    ]
-    remaining = None
     if max_chars is not None:
-        # Each summary-holding domain keeps room for its omission note.
-        _trim(payloads, max_chars - _NOTE_ROOM * len(units))
-        remaining = max(max_chars - rendered_len(payloads) - _NOTE_ROOM * len(units), 0)
-    # Smallest need first, each taking at most an even share of what is left; what
-    # it does not use -- including the crumbs whole summaries leave -- flows on.
-    by_need = sorted(units, key=lambda u: sum(cost(s) for s in u[1].summaries))
-    for left, (narrative, f) in zip(range(len(by_need), 0, -1), by_need):
-        share = None if remaining is None else remaining // left
-        used = 0
-        for summary in f.summaries:
-            if share is not None and used + cost(summary) > share:
-                break
-            narrative.summaries.append(summary)
-            used += cost(summary)
-        if remaining is not None:
-            remaining -= used
-        omitted = len(f.summaries) - len(narrative.summaries)
-        if omitted:
-            narrative.summaries.append(f"… {omitted} set summaries omitted for size (full in findings.json)")
-    # The per-line costs above are close, not exact: whatever still overshoots goes from the tail.
-    while max_chars is not None and rendered_len(payloads) > max_chars and (
-        held := [n for p in payloads for n in p.findings if _real(n.summaries)]
-    ):
-        n = max(held, key=lambda n: _weight(n.summaries))
-        _drop(n.summaries, _real(n.summaries)[-1], "set summaries")
+        _trim(payloads, max_chars)
     return payloads
 
 
