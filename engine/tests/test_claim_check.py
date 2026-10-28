@@ -241,3 +241,33 @@ def test_a_fix_is_rechecked_against_the_rows_it_cites():
 def test_an_answer_given_twice_does_not_stand():
     out = _run(_finding(GOOD, BAD), _Model("1: HOST-1 ran powershell.exe. [processes#1]\n1: WITHDRAWN"), _Verifier({BAD}))
     assert out.observations == [GOOD]
+
+
+def test_each_verify_request_is_capped_within_the_reservation(monkeypatch):
+    import strands
+
+    from smartops.subagent_analysts import verify
+
+    class _Model:
+        config: dict = {}
+
+        def update_config(self, **kw):
+            self.config.update(kw)
+
+    class _Agent:
+        def __init__(self, model, **_):
+            self.model = model
+
+        async def invoke_async(self, prompt, limits):
+            return SimpleNamespace(limits=limits, model=self.model)
+
+    class _Choice:
+        provider = None
+
+        def build(self):
+            return _Model()
+
+    monkeypatch.setattr(strands, "Agent", _Agent)
+    out = asyncio.run(verify._invoke(_Choice(), "p"))
+    assert out.model.config["max_tokens"] * out.limits["turns"] <= verify._MAX_OUTPUT_TOKENS
+    assert out.limits["output_tokens"] == verify._MAX_OUTPUT_TOKENS

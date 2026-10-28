@@ -18,12 +18,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from smartops.budget import Budget, call_usages, usage_from
+from smartops.budget import Budget, Provider, call_usages, usage_from
 
 logger = logging.getLogger(__name__)
 
 VERIFY_ROLE = "verify"
-_MAX_OUTPUT_TOKENS = 2_000
+_MAX_OUTPUT_TOKENS = 4_000
+_TURNS = 2
 _CHARS_PER_TOKEN = 4
 
 _SYSTEM = """\
@@ -56,10 +57,16 @@ async def _invoke(choice: Any, prompt: str) -> Any:
     from strands import Agent
     from strands.types.agent import Limits
 
-    agent = Agent(model=choice.build(), system_prompt=_SYSTEM, structured_output_model=Verdicts,
-                  callback_handler=None)
-    # Held to what `verify` reserved: `Limits` is cumulative over the invocation.
-    return await agent.invoke_async(prompt, limits=Limits(turns=2, output_tokens=_MAX_OUTPUT_TOKENS))
+    # Held to what `verify` reserved. `Limits` is checked only between turns, so each
+    # request is capped too: two turns (the structured-output fallback) at half each.
+    model = choice.build()
+    per_call = _MAX_OUTPUT_TOKENS // _TURNS
+    if choice.provider is Provider.DEEPSEEK:
+        model.update_config(params={**(model.config.get("params") or {}), "max_tokens": per_call})
+    else:
+        model.update_config(max_tokens=per_call)
+    agent = Agent(model=model, system_prompt=_SYSTEM, structured_output_model=Verdicts, callback_handler=None)
+    return await agent.invoke_async(prompt, limits=Limits(turns=_TURNS, output_tokens=_MAX_OUTPUT_TOKENS))
 
 
 def claim_verifier(choice: Any, budget: Budget, *, invoke=None) -> ClaimVerifier:
