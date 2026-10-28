@@ -900,8 +900,20 @@ def _trim(payloads: list[AnalystPayload], budget: int) -> None:
     while not fits() and (held := [n for n in domains if _real(n.observations)]):
         n = max(held, key=lambda n: _weight(n.observations))
         _drop(n.observations, _real(n.observations)[-1], "observations")
-    # 3. Empty searches, then 4. command lines: shortened all at once, then one at a
-    # time from the domain holding the most, the most-repeated line first.
+    # 3. Empty searches, then 4. command lines: shortened all at once; then the lesser
+    # copy of a command another task also holds, so each is said once; then one at a
+    # time from the domain holding the most, the least-repeated line first. A beacon
+    # repeats by design: d6b48ef0's download ran 16 times in T3 and went first.
+    def lesser_copy() -> tuple[int, DomainNarrative, int] | None:
+        held: dict[str, list[tuple[int, DomainNarrative, int]]] = {}
+        for n in domains:
+            if w := _block(n.facts, COMMANDS_FOOTER):
+                lines = n.facts[w]
+                for i in _real(lines):
+                    if cmd := lines[i].partition(COMMAND_MARK)[2]:
+                        held.setdefault(cmd, []).append((_contributions(lines[i]), n, i))
+        return min((c for cs in held.values() if len(cs) > 1 for c in cs), key=lambda c: c[0], default=None)
+
     def heaviest(header: str) -> DomainNarrative | None:
         held = [n for n in domains if (w := _block(n.facts, header)) and _real(n.facts[w])]
         return max(held, key=lambda n: (len(_real(n.facts[_block(n.facts, header)])), _weight(n.facts)), default=None)
@@ -911,9 +923,15 @@ def _trim(payloads: list[AnalystPayload], budget: int) -> None:
     if not fits():
         for n in domains:
             n.facts = [_shorten(line) for line in n.facts]
+    while not fits() and (copy := lesser_copy()):
+        _, n, i = copy
+        _drop_fact(n, COMMANDS_FOOTER, lambda lines: i, "command lines")
+        if not _real(n.facts[where := _block(n.facts, COMMANDS_FOOTER)]):
+            # Every line was another task's, and the batch says them there: no header, no note.
+            del n.facts[where.start - 1:where.stop]
     while not fits() and (n := heaviest(COMMANDS_FOOTER)):
-        _drop_fact(n, COMMANDS_FOOTER, lambda lines: max(
-            _real(lines), key=lambda i: int(m.group(1)) if (m := _CONTRIBUTIONS.match(lines[i])) else 0), "command lines")
+        _drop_fact(n, COMMANDS_FOOTER, lambda lines: min(_real(lines), key=lambda i: _contributions(lines[i])),
+                   "command lines")
     # 5. Last resort: the names, decoded commands, hashes and addresses, tail first
     # from the heaviest block, rather than shipping over budget.
     while not fits():
@@ -925,6 +943,10 @@ def _trim(payloads: list[AnalystPayload], budget: int) -> None:
         _drop_fact(n, header, lambda lines: _real(lines)[-1], "lines")
     if not fits():
         logger.error("analyst payload: its structure alone exceeds the %d-character budget", budget)
+
+
+def _contributions(line: str) -> int:
+    return int(m.group(1)) if (m := _CONTRIBUTIONS.match(line)) else 0
 
 
 def _shorten(line: str) -> str:

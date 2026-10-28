@@ -98,7 +98,20 @@ def test_empty_searches_go_before_command_lines_and_commands_shorten_before_any_
     assert len(_sent([pack_for_analyst([task], budget)[0]])) <= budget
 
 
-def test_the_fallback_drops_the_most_repeated_line_from_the_domain_holding_the_most_commands():
+def test_a_command_another_task_also_holds_goes_before_any_other_line_its_lesser_copy_first():
+    # d6b48ef0: T6's three command lines were all T3's, at 2 contributions against T3's 16.
+    t3 = _task("t3", "n" * 20, facts=[COMMANDS_FOOTER, _cmd(8, "uptime " + "u" * 150), _cmd(16, "download " + "d" * 150)])
+    t6 = _task("t6", "n" * 20, facts=[COMMANDS_FOOTER, _cmd(2, "download " + "d" * 150)])
+    budget = len(_sent(pack_for_analyst([t3, t6]))) - 150
+
+    payloads = pack_for_analyst([t3, t6], budget)
+
+    assert len([f for f in payloads[0].findings[0].facts if "; command: " in f]) == 2
+    assert COMMANDS_FOOTER not in payloads[1].findings[0].facts  # all T3's: said there, no empty block
+    assert len(_sent(payloads)) <= budget
+
+
+def test_the_fallback_drops_the_least_repeated_line_from_the_domain_holding_the_most_commands():
     few = _task("t1", "n" * 20, facts=[COMMANDS_FOOTER, *(_cmd(1, f"few {i} " + "f" * 150) for i in range(2))])
     many = _task("t2", "n" * 20, facts=[COMMANDS_FOOTER, _cmd(3, "many a " + "m" * 150), _cmd(40, "many b " + "m" * 150),
                                        _cmd(2, "many c " + "m" * 150), _cmd(5, "many d " + "m" * 150)])
@@ -108,7 +121,8 @@ def test_the_fallback_drops_the_most_repeated_line_from_the_domain_holding_the_m
 
     assert len([f for f in payloads[0].findings[0].facts if "; command: " in f]) == 2
     kept = [f for f in payloads[1].findings[0].facts if "; command: " in f]
-    assert [f.split("; command: ")[1][:6] for f in kept] == ["many a", "many c", "many d"]  # 40 went first
+    # A beacon repeats by design: the 2 went first, the 40 stays.
+    assert [f.split("; command: ")[1][:6] for f in kept] == ["many a", "many b", "many d"]
     assert any(f.startswith("~ … 1 command lines omitted") for f in payloads[1].findings[0].facts)
     assert len(_sent(payloads)) <= budget
 
@@ -135,7 +149,9 @@ def test_d6b48ef0_keeps_the_download_within_budget():
     payloads = pack_for_analyst(tasks, HANDOFF_CHAR_BUDGET)
 
     assert len(_sent(payloads)) <= HANDOFF_CHAR_BUDGET
-    assert any(all(s in line for s in DOWNLOAD) for p in payloads for f in p.findings for line in f.facts)
+    # In T3's own facts: T6's copy only crossed by max() tie-breaking among its 2-contribution lines.
+    t3 = next(p for p in payloads if p.task_id.endswith("-T3"))
+    assert any(all(s in line for s in DOWNLOAD) for f in t3.findings for line in f.facts)
 
 
 def test_a_domain_with_nothing_to_say_is_not_sent_but_named_in_one_line():
