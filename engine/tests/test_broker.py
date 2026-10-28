@@ -131,11 +131,17 @@ def fake_invoker(
     was actually dispatched, which is the whole point of tracking both.
     """
     calls: list[str] = []
+    # B52 F: "vt" is the `vt_lookup` tool, never a step: each occurrence looks up the
+    # scope's queryable indicators, as a Broker calling the tool would.
     step_ids = {
-        family: f"step-{index + 1}" for index, family in enumerate(dict.fromkeys(dispatch))
+        family: f"step-{index + 1}"
+        for index, family in enumerate(dict.fromkeys(f for f in dispatch if f != "vt"))
     }
 
     async def invoke(prompt: str, request: BrokerRequest) -> FakeInvokerResult:
+        from smartops.broker import _vt_lookup
+        from smartops.tools.native.virustotal import queryable_entities
+
         calls.append(prompt)
         if plan and step_ids:
             await plan_fetch(
@@ -150,6 +156,10 @@ def fake_invoker(
                 ),
             )
         for index, family in enumerate(dispatch):
+            if family == "vt":
+                for e in queryable_entities(request.task.scope):
+                    await _vt_lookup(request, e.kind, e.value, "fake invoker", f"tu-{index}")
+                continue
             question = (questions or {}).get(family, request.task.goal)
             await _TOOL_BY_FAMILY[family](
                 question=question,
@@ -214,11 +224,11 @@ class TestDispatch:
             Budget.from_usd(1.0),
             model=MODEL,
             run_subagent=run,
-            invoke=fake_invoker(["siem", "vt"]),
+            invoke=fake_invoker(["siem", "edr"]),
         )
 
-        assert outcome.dispatched == ["siem", "vt"]
-        assert [m.tool_family for m in run.missions] == ["siem", "vt"]
+        assert outcome.dispatched == ["siem", "edr"]
+        assert [m.tool_family for m in run.missions] == ["siem", "edr"]
         assert len(outcome.results) == 2
 
     async def test_repeat_dispatch_of_one_family_yields_distinct_task_ids(self):
@@ -292,13 +302,13 @@ class TestDispatch:
             Budget.from_usd(1.0),
             model=MODEL,
             run_subagent=runner_returning(result_for),
-            invoke=fake_invoker(["siem", "vt"]),
+            invoke=fake_invoker(["siem", "edr"]),
         )
 
         by_family = {r.task_id.split(":")[1]: r for r in outcome.results}
         assert by_family["siem"].status == SubtaskStatus.ERROR
         assert "siem exploded" in by_family["siem"].error
-        assert by_family["vt"].status == SubtaskStatus.NO_DATA
+        assert by_family["edr"].status == SubtaskStatus.NO_DATA
 
     async def test_gaps_are_carried_through_to_the_result(self):
         run = runner_returning(lambda m: ok_result(m, gaps=["edr"]))
@@ -440,7 +450,7 @@ class TestClassificationAndDispatchAreIndependent:
         # Evidence and killed the process. The rationale is lost; the results and
         # the observed dispatch list are not.
         run = runner_returning(lambda m: ok_result(m, reason="found something real"))
-        dispatching_invoker = fake_invoker(["siem", "vt"])
+        dispatching_invoker = fake_invoker(["siem", "edr"])
 
         async def invoke(prompt, request):
             await dispatching_invoker(prompt, request)  # drives the real tools
@@ -452,11 +462,11 @@ class TestClassificationAndDispatchAreIndependent:
 
         assert len(outcome.results) == 2
         assert [r.reason for r in outcome.results] == ["found something real"] * 2
-        assert outcome.dispatched == ["siem", "vt"]
+        assert outcome.dispatched == ["siem", "edr"]
         # The classification is synthesized and says so, rather than passing
         # itself off as the model's reasoning.
         assert "SYNTHESIZED" in outcome.classification.rationale
-        assert outcome.classification.tool_families == ["siem", "vt"]
+        assert outcome.classification.tool_families == ["siem", "edr"]
         assert "no structured_output" in caplog.text
 
     async def test_missing_structured_output_does_not_lose_the_budget_settlement(self):
@@ -772,9 +782,9 @@ class TestDefaultInvoker:
         assert [t.tool_name for t in kwargs["tools"]] == [
             "plan_fetch",
             "review_step",
+            "vt_lookup",  # B52 F: a direct tool, not a family dispatch
             "investigate_siem",
             "investigate_edr",
-            "investigate_vt",
             "investigate_ndr",
         ]
         assert kwargs["structured_output_model"] is TaskClassification
@@ -931,7 +941,7 @@ class TestRedispatchCap:
             Budget.from_usd(5.0),
             model=MODEL,
             run_subagent=run,
-            invoke=fake_invoker(["siem", "siem", "vt", "vt"]),
+            invoke=fake_invoker(["siem", "siem", "edr", "edr"]),
         )
 
         assert len(outcome.results) == 4
@@ -1061,7 +1071,7 @@ class TestRejectionIsTerminal:
             Budget.from_usd(5.0),
             model=MODEL,
             run_subagent=run,
-            invoke=fake_invoker(["vt", "vt", "vt"]),
+            invoke=fake_invoker(["edr", "edr", "edr"]),
         )
 
         assert len(run.missions) == 1
@@ -1096,7 +1106,7 @@ class TestRejectionIsTerminal:
 
     async def test_a_successful_family_is_not_blocked_by_another_rejection(self):
         async def by_family(mission):
-            if mission.tool_family == "vt":
+            if mission.tool_family == "edr":
                 return self.rejected(mission)
             return SubtaskResult(
                 task_id=mission.task_id, status=SubtaskStatus.OK, reason="found logs"
@@ -1107,12 +1117,12 @@ class TestRejectionIsTerminal:
             Budget.from_usd(5.0),
             model=MODEL,
             run_subagent=by_family,
-            invoke=fake_invoker(["vt", "siem", "vt", "siem"]),
+            invoke=fake_invoker(["edr", "siem", "edr", "siem"]),
         )
 
-        # vt once (rejected, then refused), siem twice (the re-dispatch cap).
+        # edr once (rejected, then refused), siem twice (the re-dispatch cap).
         statuses = [(r.task_id.split(":")[1], r.status) for r in outcome.results]
-        assert statuses.count(("vt", SubtaskStatus.REJECTED)) == 1
+        assert statuses.count(("edr", SubtaskStatus.REJECTED)) == 1
         assert statuses.count(("siem", SubtaskStatus.OK)) == 2
 
     async def test_an_error_result_is_still_retryable(self):
@@ -1230,10 +1240,10 @@ class TestTelemetryIsActuallyWired:
             Budget.from_usd(1.0),
             model=MODEL,
             run_subagent=runner_returning(ok_result),
-            invoke=fake_invoker(["siem", "vt"]),
+            invoke=fake_invoker(["siem", "edr"]),
         )
 
-        assert [r.task_id.split(":")[1] for r in seen] == ["siem", "vt"]
+        assert [r.task_id.split(":")[1] for r in seen] == ["siem", "edr"]
 
     async def test_the_broker_charge_is_mirrored_onto_the_span(self, monkeypatch):
         # broker_task settles after invoke() returns, so it sits outside every
@@ -1828,7 +1838,7 @@ class TestDispatchIsBoundToAPlannedStep:
             Budget.from_usd(1.0),
             model=MODEL,
             run_subagent=runner_returning(ok_result),
-            invoke=fake_invoker(["siem", "vt"], plan=False),
+            invoke=fake_invoker(["siem", "edr"], plan=False),
         )
 
         assert outcome.results == []
@@ -1859,7 +1869,7 @@ class TestDispatchIsBoundToAPlannedStep:
         with_plan(
             request,
             FetchStep(step_id="siem-auth", family="siem", objective="auth events"),
-            FetchStep(step_id="vt-rep", family="vt", objective="reputation"),
+            FetchStep(step_id="vt-rep", family="edr", objective="reputation"),
         )
 
         digest = await TOOL_BY_FAMILY["siem"](
@@ -1875,7 +1885,7 @@ class TestDispatchIsBoundToAPlannedStep:
         # The vt step must not be credited a dispatch it never received.
         assert request.step_outcomes["vt-rep"].dispatches == 0
         assert "refused" in digest
-        assert "investigate_vt" in digest
+        assert "investigate_edr" in digest
 
     async def test_two_dispatches_naming_the_same_step_both_land_on_it(self):
         """The regression test for gap 2.
@@ -1943,7 +1953,7 @@ class TestPlanFetchHandsBackItsStepIds:
         request = BrokerRequest(task=make_task())
         steps = [
             FetchStep(step_id="siem-auth", family="siem", objective="auth events"),
-            FetchStep(step_id="vt-rep", family="vt", objective="reputation"),
+            FetchStep(step_id="vt-rep", family="edr", objective="reputation"),
         ]
 
         res = await plan_fetch(
@@ -2001,7 +2011,7 @@ class TestAPlannedStepIsNotAJudgedStep:
         objective="Retrieve at least 3 auth events",
         completion=CompletionRule(requires="rows_required", min_rows=3),
     )
-    _VT = FetchStep(step_id="vt-1", family="vt", objective="Retrieve reputation")
+    _VT = FetchStep(step_id="vt-1", family="edr", objective="Retrieve reputation")
 
     async def test_planned_but_never_dispatched_is_unknown_not_fell_short(self):
         request = BrokerRequest(task=make_task(), run_subagent=runner_returning(ok_result))
@@ -2043,7 +2053,7 @@ class TestDuplicateStepIdsAreRefusedAtPlanTime:
 
     _COLLIDING = (
         FetchStep(step_id="step-1", family="siem", objective="auth events"),
-        FetchStep(step_id="step-1", family="vt", objective="reputation"),
+        FetchStep(step_id="step-1", family="edr", objective="reputation"),
     )
 
     async def test_a_colliding_plan_is_not_recorded_and_the_message_names_the_id(self):
@@ -2074,12 +2084,12 @@ class TestDuplicateStepIdsAreRefusedAtPlanTime:
         await plan_via_tool(
             request,
             FetchStep(step_id="siem-1", family="siem", objective="auth events"),
-            FetchStep(step_id="vt-1", family="vt", objective="reputation"),
+            FetchStep(step_id="vt-1", family="edr", objective="reputation"),
         )
-        digest = await dispatch(request, "vt", "vt-1")
+        digest = await dispatch(request, "edr", "vt-1")
 
         assert "refused" not in digest
-        assert request.dispatched == ["vt"]
+        assert request.dispatched == ["edr"]
 
     async def test_a_colliding_re_plan_leaves_the_working_plan_in_place(self):
         # Refusing must not also destroy what the Broker already had, or one bad
@@ -2301,7 +2311,7 @@ class TestAnOmittedStepIdIsRefusedLikeEveryOtherBadDispatch:
         await plan_via_tool(
             request,
             FetchStep(step_id="siem-auth", family="siem", objective="auth events"),
-            FetchStep(step_id="vt-rep", family="vt", objective="reputation"),
+            FetchStep(step_id="vt-rep", family="edr", objective="reputation"),
         )
         event = self._event(request)
 
@@ -2407,8 +2417,8 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
         names = {t.tool_spec["name"] for t in broker_module.available_broker_tools()}
 
         # vt keeps its native VirusTotal tool, so it stays available even with
-        # no MCP server at all -- gating on `server_count` alone would drop it.
-        assert "investigate_vt" in names
+        # no MCP server at all -- as `vt_lookup` since B52 F.
+        assert "vt_lookup" in names and "investigate_vt" not in names
         assert "investigate_ndr" not in names
         assert "investigate_edr" not in names
 
@@ -2448,7 +2458,7 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
         )
 
         family = offered.tool_spec["inputSchema"]["json"]["$defs"]["FetchStep"]["properties"]["family"]
-        assert family["enum"] == ["siem", "vt"]
+        assert family["enum"] == ["siem"]  # B52 F: vt is `vt_lookup`, never a plan step
         # The shared module-level tool keeps the full enum.
         assert "edr" in json.dumps(broker_module.plan_fetch.tool_spec)
 
@@ -2494,12 +2504,12 @@ class TestAnUnconfiguredFamilyIsNotOfferedToThePlanner:
 
         res = await plan_fetch(
             steps=[FetchStep(step_id="siem-1", family="siem", objective="x"),
-                   FetchStep(step_id="vt-1", family="vt", objective="x")],
+                   FetchStep(step_id="ndr-1", family="ndr", objective="x")],
             rationale="r",
             tool_context=context,
         )
 
-        assert res.startswith("status=refused") and "file_hash" in res
+        assert res.startswith("status=refused") and "ip" in res
         assert request.plan is None
 
 

@@ -55,6 +55,7 @@ from contracts import (
     BrokerReport,
     CompletionRule,
     CostSummary,
+    Entity,
     Evidence,
     FetchPlan,
     FetchStep,
@@ -163,7 +164,9 @@ HOW TO DECOMPOSE:
   own step_id. A step is then judged on the data it asked for and nothing else.
 - Only name categories the goal genuinely needs. A step naming a category nobody retrieves
   stays incomplete, which is the correct outcome and not something to plan around.
-- `vt` findings are not bucketed this way: leave `completion.categories` empty for them.
+- VirusTotal is not a plan step: call `vt_lookup` directly, only when the question is about an
+  indicator's reputation, for a value named in the question, in scope, or in rows you
+  retrieved. Each indicator is looked up once per run; a repeat returns the earlier result.
 - When a step asks about a named file, hash, user, domain or IP, put that bare value in
   `completion.match` (`svcupdate.dat`, not its full path): only rows containing it then
   count, and if the search returns rows about something else you are told it missed.
@@ -198,7 +201,8 @@ A question that needs a source or an observable no offered specialist holds goes
 the source (`asset inventory`) or, when an offered specialist could answer once it had an
 observable, that observable (`file hash`). The reason is not evidence: never describe what
 other tools hold or what the data shows. Do NOT plan substitute searches for it. Nothing offered holds: asset inventory or CMDB records, patch
-management, change or maintenance records, forensic disk or memory images, or the data of
+management, change or maintenance records, forensic disk or memory images, the contents of
+files, or the data of
 any product whose tool is not offered to you. A plan whose every question is unanswerable
 has no steps: record it and dispatch nothing.
 
@@ -246,6 +250,7 @@ class BrokerRequest:
     resumed: bool = False
     """`FinishCheck` has sent the Broker back once; it never does twice."""
     answer_before_resume: TaskClassification | None = None
+    vt_lookups: list[str] = field(default_factory=list)  # B52 F, for the progress line
     """The answer `FinishCheck` sent back, kept in case the resumed call ends without one."""
 
 
@@ -1128,9 +1133,10 @@ def _open_steps(req: BrokerRequest) -> list[FetchStep]:
 
 
 def _progress(req: BrokerRequest) -> str:
+    vt = f"; vt lookups: {', '.join(req.vt_lookups)}" if req.vt_lookups else ""
     if req.plan is None:
-        return ""
-    return "; ".join(_step_state(req, s) for s in req.plan.steps)
+        return vt.removeprefix("; ")
+    return "; ".join(_step_state(req, s) for s in req.plan.steps) + vt
 
 
 async def _dispatch(family: ToolFamily, question: str, step_id: str, ctx: ToolContext,
@@ -1538,9 +1544,16 @@ async def plan_fetch(
     # it planned `edr` and called `investigate_edr` three times ("tool not found
     # in registry"), then reported EDR as a failed call. Refused here, before it
     # is recorded, the model re-plans with the families it actually has.
+    # B52 F: VirusTotal is the `vt_lookup` tool, called directly, never a step.
+    if any(s.family == "vt" for s in plan.steps):
+        logger.warning("task_id=%s | fetch plan refused: a vt step", req.task.task_id)
+        return (
+            "status=refused | the fetch plan was NOT recorded: VirusTotal is not a plan step. "
+            "Call vt_lookup directly for an indicator's reputation, and plan_fetch again without the vt step."
+        )
     unserved = sorted({s.family for s in plan.steps if not _plannable(s.family)})
     if unserved:
-        served = [f for f in TOOL_BY_FAMILY if _plannable(f)]
+        served = [f for f in TOOL_BY_FAMILY if f != "vt" and _plannable(f)]
         logger.warning(
             "task_id=%s | fetch plan refused, unconfigured families: %s",
             req.task.task_id,
@@ -1665,9 +1678,125 @@ def make_investigate_tool(spec: DomainSpec):
     return investigate
 
 
+# ── VirusTotal as a Broker tool (B52 F) ───────────────────────────────────────
+# A run id (else the task's own id) -> (kind, value) -> "L2-T3: <verdict line>", or
+# "L2-T3 (in flight)" while a lookup runs. One lookup per indicator per run: on
+# 9495f122 one hash went to the vt subagent 10 times across loops 3-7.
+_VT_SEEN: OrderedDict[str, dict[tuple[str, str], str]] = OrderedDict()
+_IN_FLIGHT = " (in flight)"
+
+
+def _vt_run(task: AnalystTask) -> tuple[str, str]:
+    """(run key, this task's label)."""
+    run = _TASK_ROUND.match(task.task_id)
+    return (run[1], task.task_id[run.end(1) + 1:]) if run else (f"task:{task.task_id}", task.task_id)
+
+
+def _in_retrieved_rows(req: BrokerRequest, value: str) -> bool:
+    """A pivot: `value` sits in a row this task retrieved, never a discovery set."""
+    from smartops.projection import row_matches
+
+    return any(
+        row_matches(row, [value])
+        for result in req.collected for name, sets in result.findings or []
+        if name not in _NOT_RETRIEVAL and isinstance(sets, list)
+        for rs in sets for row in getattr(rs, "rows", None) or []
+    )
+
+
+def _vt_line(result: SubtaskResult) -> str:
+    verdicts = result.findings.verdicts if isinstance(result.findings, VtFindings) else []
+    return "; ".join(
+        f"{v.kind} {v.value}: " + (f"malicious {v.malicious}, suspicious {v.suspicious}, harmless {v.harmless}, "
+                                   f"undetected {v.undetected}" if v.found else "not known to VirusTotal")
+        for v in verdicts
+    ) or _digest(result)
+
+
+async def _vt_lookup(req: BrokerRequest, kind: str, value: str, reason: str, call_id: str) -> str:
+    from smartops.tools.native.virustotal import _LOOKUP_LOCK, queryable_entities
+
+    if not reason.strip():
+        return "status=refused | vt_lookup needs a reason: why this indicator's reputation answers the question."
+    try:
+        entity = Entity(kind=kind, value=value.strip())
+    except ValidationError:
+        return f"status=refused | {kind} {value!r} is not a value VirusTotal can be asked about."
+    one = Scope(entities=[entity], time_window=req.task.scope.time_window)
+    if not queryable_entities(one):
+        return f"status=refused | VirusTotal holds nothing for {kind} {entity.value} (a private address or an unqueryable kind)."
+    named = entity.value.lower() in req.task.goal.lower()
+    in_scope = any((e.kind, e.value.lower()) == (kind, entity.value.lower()) for e in req.task.scope.entities)
+    if not (named or in_scope or _in_retrieved_rows(req, entity.value)):
+        return (f"status=refused | {kind} {entity.value} is not named in the question, in this task's scope, "
+                "or in a row this task retrieved, so it is not looked up.")
+
+    run_key, label = _vt_run(req.task)
+    key = (kind, entity.value.lower())
+    with _RUN_LOCK:
+        seen = _VT_SEEN.setdefault(run_key, {})
+        _VT_SEEN.move_to_end(run_key)
+        while len(_VT_SEEN) > _RUNS_HELD:
+            _VT_SEEN.popitem(last=False)
+        earlier = seen.get(key)
+        if earlier is None:
+            seen[key] = label + _IN_FLIGHT
+    if earlier is not None:
+        if earlier.endswith(_IN_FLIGHT):
+            return f"status=warning | {earlier.removesuffix(_IN_FLIGHT)} is looking up {kind} {entity.value} now; its result reaches the Analyst."
+        return f"status=warning | already looked up in this run by {earlier}. Not looked up again."
+
+    mission = SubagentMission(task_id=f"{req.task.task_id}:vt:{call_id}", hypothesis_id=req.task.hypothesis_id,
+                              tool_family="vt", goal=reason, scope=one)
+    try:
+        async with _LOOKUP_LOCK:
+            result = await enrich_mission(mission, enricher_for("vt"))
+    except BaseException:
+        with _RUN_LOCK:
+            seen.pop(key, None)
+        raise
+    req.collected.append(result)
+    req.dispatched.append("vt")
+    req.vt_lookups.append(f"{kind} {entity.value}")
+    with _RUN_LOCK:
+        if result.status in (SubtaskStatus.ERROR, SubtaskStatus.REJECTED):
+            seen.pop(key, None)  # not an answer: the next ask tries again
+        else:
+            seen[key] = f"{label}: {_vt_line(result)}"
+    logger.info("task_id=%s | vt_lookup %s %s (%s): %s", req.task.task_id, kind, entity.value, reason, result.status.value)
+    return f"{_digest(result)} | {_vt_line(result)}"
+
+
+@tool(
+    name="vt_lookup",
+    description=(
+        "Look up one indicator's reputation on VirusTotal: a file hash, a public IP, a domain or a URL. "
+        "Use it only when the question is about that indicator's reputation, for a value named in the "
+        "question, in this task's scope, or in rows you retrieved. Each indicator is looked up once per run; "
+        "a repeat returns the earlier result. Not a plan step."
+    ),
+    context=True,
+)
+async def vt_lookup(
+    kind: Literal["file_hash", "ip", "domain", "url"],
+    value: str,
+    reason: str,
+    tool_context: ToolContext,
+) -> str:
+    """Look up one indicator on VirusTotal.
+
+    Args:
+        kind: The indicator's kind.
+        value: The indicator itself, exactly as the question, scope or row gives it.
+        reason: Why this indicator's reputation answers the question.
+    """
+    return await _vt_lookup(tool_context.invocation_state["smartops"], kind, value, reason,
+                            tool_context.tool_use["toolUseId"])
+
+
 TOOL_BY_FAMILY = {spec.family: make_investigate_tool(spec) for spec in DOMAINS.values()}
 FAMILY_TOOLS = list(TOOL_BY_FAMILY.values())
-BROKER_TOOLS = [plan_fetch, review_step] + FAMILY_TOOLS
+BROKER_TOOLS = [plan_fetch, review_step, vt_lookup] + FAMILY_TOOLS
 
 
 def _plannable(family: ToolFamily) -> bool:
@@ -1680,9 +1809,11 @@ def _plannable(family: ToolFamily) -> bool:
 
 
 def _offered_families(scope=None) -> list[ToolFamily]:
-    """Families the Broker is offered: configured, and able to query `scope`."""
+    """Families the Broker can plan and dispatch: configured, and able to query
+    `scope`. Not vt, which is the `vt_lookup` tool (B52 F)."""
     return [
-        f for f in DOMAINS if family_is_configured(f) and (scope is None or scope_gap(f, scope) is None)
+        f for f in DOMAINS
+        if f != "vt" and family_is_configured(f) and (scope is None or scope_gap(f, scope) is None)
     ]
 
 
@@ -1710,7 +1841,8 @@ def available_broker_tools(scope=None) -> list:
     EDR existed and steered host questions away from Splunk on run `cecd266a`.
     """
     configured = _offered_families(scope)
-    return [_plan_fetch_for(configured), review_step] + [
+    vt = [vt_lookup] if family_is_configured("vt") else []
+    return [_plan_fetch_for(configured), review_step, *vt] + [
         make_investigate_tool(replace(spec, description=describe(spec, family_is_configured)))
         for spec in (DOMAINS[family] for family in configured)
     ]
@@ -1740,7 +1872,7 @@ def _classification_model(scope=None) -> type[TaskClassification]:
     engaged". A subclass under the same name, so Strands' answer tool keeps its
     name and every consumer still sees a `TaskClassification`.
     """
-    configured = tuple(_offered_families(scope))
+    configured = tuple(_offered_families(scope)) + (("vt",) if family_is_configured("vt") else ())
     # `Literal[()]` is not a type; with nothing offered, the plain model stands.
     if not configured or len(configured) == len(DOMAINS):
         return TaskClassification
@@ -2312,12 +2444,20 @@ def _scripted_invoker(families: list[ToolFamily]):
     # step-N id twice -- a plan `FetchPlan` now rejects outright, and for good
     # reason. `_parse_families` de-dupes today, so this is a guard rather than a
     # live bug; the test helper in `test_broker.py` has always had it.
+    # B52 F: vt is the `vt_lookup` tool, not a step: every queryable scope entity once.
+    lookups = "vt" in families
+    planned = [f for f in families if f != "vt"]
     step_ids = {
-        family: f"step-{index + 1}" for index, family in enumerate(dict.fromkeys(families))
+        family: f"step-{index + 1}" for index, family in enumerate(dict.fromkeys(planned))
     }
 
     async def invoke(prompt: str, request: BrokerRequest) -> _ScriptedResult:
-        if families:
+        from smartops.tools.native.virustotal import queryable_entities
+
+        if lookups:
+            for index, e in enumerate(queryable_entities(request.task.scope)):
+                await _vt_lookup(request, e.kind, e.value, "scripted run (no model call)", f"cli-vt-{index}")
+        if planned:
             # `FetchPlan` requires at least one step, and `--families ""` asks for
             # no dispatch at all -- there is nothing to plan, so skip it.
             await plan_fetch(
@@ -2327,7 +2467,7 @@ def _scripted_invoker(families: list[ToolFamily]):
                         family=family,
                         objective=f"Retrieve {family} evidence for the goal",
                     )
-                    for family in families
+                    for family in planned
                 ],
                 rationale="scripted fetch plan, one step per requested family (no model call)",
                 tool_context=_ScriptedToolContext(
@@ -2335,7 +2475,7 @@ def _scripted_invoker(families: list[ToolFamily]):
                     invocation_state={"smartops": request},
                 ),
             )
-        for index, family in enumerate(families):
+        for index, family in enumerate(planned):
             context = _ScriptedToolContext(
                 tool_use={"toolUseId": f"cli-{index}"},
                 invocation_state={"smartops": request},

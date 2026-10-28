@@ -65,13 +65,13 @@ _MODEL_PLAN = {
     "steps": [
         {
             "step_id": "vt_domain_rep",
-            "family": "vt",
+            "family": "siem",  # B52 F: vt is `vt_lookup`, never a step
             "objective": "external reputation for coinhive.com",
             "completion": {"requires": "rows_or_confirmed_empty", "categories": []},
         },
         {
             "step_id": "vt_ip_rep",
-            "family": "vt",
+            "family": "siem",
             "objective": "external reputation for 217.182.164.14",
             "completion": {"requires": "rows_or_confirmed_empty", "categories": []},
         },
@@ -130,7 +130,7 @@ class TestPlanFetchAcceptsWhatAModelActuallySends:
             plan_fetch,
             {
                 "rationale": "r",
-                "steps": [{"step_id": "vt-1", "family": "vt", "objective": "rep"}],
+                "steps": [{"step_id": "vt-1", "family": "siem", "objective": "rep"}],
             },
             req,
         )

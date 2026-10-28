@@ -40,6 +40,7 @@ def _fresh_run_ledger():
     from smartops import broker
 
     broker._RUN_STATE.clear()
+    broker._VT_SEEN.clear()
 
 
 @pytest.fixture(autouse=True)
