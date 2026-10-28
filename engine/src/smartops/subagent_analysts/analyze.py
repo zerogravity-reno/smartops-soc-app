@@ -89,6 +89,7 @@ from smartops.tools.native.decoder import commands_in, encoded_in, hashes_in, pr
 
 from contracts.reasoning import (
     ADDRESSES_FOOTER,
+    COMMAND_MARK,
     COMMANDS_FOOTER,
     ENCODED_FOOTER,
     HASHES_FOOTER,
@@ -99,7 +100,6 @@ from contracts.reasoning import (
 from .formatting import NO_TIME_MARKER, _middle, _truncate, name_expansions
 
 ENCODED_LINE_CAP = 8
-COMMAND_LINE_CAP = 8
 COMMAND_CHAR_CAP = 400
 NO_ROWS_LINE_CAP = 3
 HASH_LINE_CAP = 8
@@ -1017,14 +1017,19 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
         ]
         if len(ranked) > ENCODED_LINE_CAP:
             facts.append(f"~ … {len(ranked) - ENCODED_LINE_CAP} more encoded commands not shown (rows in report.json)")
-    # And the plain ones: interpreter/LOLBin command lines, rarest first, capped.
-    # The download on 148b0e69 sat in four tasks' rows and reached no narrative.
-    commands = list(commands_in(row for _, rs in sets for row in rs.rows).items())
+    # And the plain ones: interpreter/LOLBin command lines, rarest first, each with
+    # its parent. The download on 148b0e69 sat in four tasks' rows and reached no
+    # narrative. Not capped here: on d6b48ef0 an 8-line cap put the 16x download
+    # last, so `pack_for_analyst` decides what fits (B51).
+    commands = commands_in(row for _, rs in sets for row in rs.rows)
     if commands:
         facts.append(COMMANDS_FOOTER)
-        facts += [f"~ {n} events: {_truncate(cmd, COMMAND_CHAR_CAP)}" for cmd, n in commands[:COMMAND_LINE_CAP]]
-        if len(commands) > COMMAND_LINE_CAP:
-            facts.append(f"~ … {len(commands) - COMMAND_LINE_CAP} more command lines not shown (rows in report.json)")
+        facts += [
+            f"~ {e['events']} row contributions"
+            + (", parent " + ", ".join(f"{_middle(p)}={n}" for p, n in sorted(e["parents"].items())) if e["parents"] else "")
+            + f"{COMMAND_MARK}{_truncate(cmd, COMMAND_CHAR_CAP)}"
+            for cmd, e in commands.items()
+        ]
     values = [e.value.lower() for e in scope.entities] if scope else []
     # Each file's SHA256, the scope's own files first (B22): OneDrive.exe's hash sat in
     # c90ca5f9's rows and never reached the Analyst, so no task asked VirusTotal.
