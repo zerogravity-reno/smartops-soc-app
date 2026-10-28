@@ -115,12 +115,14 @@ from .packing import (
 )
 from .parse import FindingParseError, parse_finding, split_reasoning
 from .prompts import (
+    CLAIM_REASK,
     _ANSWER_RULES,
     _NARRATIVE_ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
 )
 from .routing import DomainSlice, domains_for_family, route
+from .verify import ClaimVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -1081,6 +1083,89 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
     )
 
 
+@dataclass
+class _Claim:
+    line: str
+    rows: str
+    cited: set[str]
+    reason: str = ""
+
+
+def _presence_claims(observations: list[str], slice_: DomainSlice) -> list[_Claim]:
+    """Observations citing at least one set with rows, each with those rows' text.
+    A line citing only empty sets is an absence claim, which code already checks
+    against the empty blocks (`_as_record`)."""
+    claims = []
+    for line in observations:
+        cited = {c.lower() for c in _OBSERVATION_CITE_RE.findall(line)}
+        shown = [b for b in exhibits_for(slice_, sorted(cited)) if b.row_count]
+        if shown:
+            claims.append(_Claim(line, "\n".join(b.text for b in shown), cited))
+    return claims
+
+
+def _reask_claims(model: AnalystModel, domain: AnalystDomain, slice_: DomainSlice, bad: list[_Claim]) -> list[str | None]:
+    """One re-ask for every unsupported line: its fix, or None when withdrawn,
+    unparseable, citing a set it was not shown, or failing the figure gate."""
+    user = CLAIM_REASK + "\n\n" + "\n\n".join(
+        f"OBSERVATION {i}: {c.line}\nREASON: {c.reason}\nROWS:\n{c.rows}" for i, c in enumerate(bad, 1)
+    )
+    try:
+        _, answer = split_reasoning(model.invoke(facts_system_prompt(domain), user).generation)
+    except Exception:
+        logger.warning("domain=%s | claim re-ask failed; dropping the unsupported lines", domain, exc_info=True)
+        return [None] * len(bad)
+    replies = [ln.strip().removeprefix("- ").strip() for ln in answer.splitlines() if ln.strip()]
+    fixes: list[str | None] = []
+    for c, reply in zip(bad, replies + [""] * len(bad)):
+        cited = {x.lower() for x in _OBSERVATION_CITE_RE.findall(reply)}
+        ok = reply.upper() != "WITHDRAWN" and cited and cited <= c.cited
+        fixes.append(reply if ok and _drop_unsupported_figures([reply], slice_, domain) else None)
+    return fixes
+
+
+async def _check_claims(
+    finding: DomainFinding, slice_: DomainSlice, model: AnalystModel, verify: ClaimVerifier
+) -> DomainFinding:
+    """B52 E: each presence line checked against the rows it cites.
+
+    `_finalize_finding` knows a citation resolves and its figures are in the rows;
+    it cannot see a line that misreads them. An unsupported line goes back to the
+    sub-analyst once; its fix is checked again, and a line still unsupported leaves
+    `observations` for `unsupported` (traces.json). A skipped check changes nothing."""
+    claims = _presence_claims(finding.observations, slice_)
+    if not claims:
+        return finding
+    verdicts = await verify([(c.line, c.rows) for c in claims])
+    if verdicts is None:
+        return finding.model_copy(update={"claim_check": "skipped: verifier unavailable"})
+    bad = []
+    for v in verdicts:
+        if not v.supported and 0 <= v.index < len(claims) and claims[v.index] not in bad:
+            claims[v.index].reason = v.reason
+            bad.append(claims[v.index])
+    replaced: dict[str, str | None] = {c.line: None for c in bad}
+    if bad:
+        fixes = await asyncio.to_thread(_reask_claims, model, finding.domain, slice_, bad)
+        retry = [(c, fix) for c, fix in zip(bad, fixes) if fix]
+        again = await verify([(fix, c.rows) for c, fix in retry]) if retry else []
+        # A skipped second check keeps the fixes: they passed the citation and figure gates.
+        held = {v.index for v in again or [] if not v.supported}
+        for i, (c, fix) in enumerate(retry):
+            replaced[c.line] = None if i in held else fix
+    unsupported = [f"{c.line} -- {c.reason}" for c in bad if replaced[c.line] is None]
+    observations = [replaced.get(line, line) for line in finding.observations]
+    for c in bad:
+        if replaced[c.line] is None:
+            logger.warning("domain=%s | claim check dropped an observation its rows do not state: %s",
+                           finding.domain, c.line)
+    return finding.model_copy(update={
+        "observations": [o for o in observations if o is not None],
+        "unsupported": unsupported,
+        "claim_check": "checked",
+    })
+
+
 async def gather(
     report: BrokerReport,
     scope: Scope,
@@ -1090,6 +1175,7 @@ async def gather(
     hypothesis_id: str | None = None,
     hypothesis: str | None = None,
     trace_sink: Callable[[list[DomainFinding]], None] | None = None,
+    verifier: ClaimVerifier | None = None,
 ) -> HypothesisFindings:
     """Run the three blind analysts and attach their findings to the hypothesis.
 
@@ -1130,12 +1216,19 @@ async def gather(
     behaviour -- discard -- explicit at the call site rather than implicit here.
     Exceptions from it are not caught: a caller that asked for its traces to be
     written and had that fail should hear about it.
+
+    **`verifier`** (B52 E) checks each finding's presence lines against their
+    cited rows (`_check_claims`); `None` skips the check.
     """
     routed = route(report, scope)
     slices = routed.slices()
     findings = await asyncio.gather(
         *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
     )
+    if verifier is not None:  # B52 E
+        findings = await asyncio.gather(
+            *(_check_claims(f, s, model, verifier) for f, s in zip(findings, slices, strict=True))
+        )
     # Before `_as_record` below drops `reasoning_trace`, which is the last
     # point at which anything can.
     if trace_sink is not None:

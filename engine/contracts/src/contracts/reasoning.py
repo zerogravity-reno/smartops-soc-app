@@ -198,6 +198,18 @@ class DomainFinding(BaseModel):
         default=None,
         description="The model's <think> chain. Persisted for audit, never re-fed.",
     )
+    unsupported: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Observations the claim check (B52 E) found their cited rows do not state, "
+            "after one re-ask, each with the verifier's reason. Dropped from "
+            "`observations`; persisted for audit in traces.json, never sent on."
+        ),
+    )
+    claim_check: str = Field(
+        default="",
+        description="'checked', 'skipped: <why>', or '' when no check ran. Audit only.",
+    )
     prompt_tokens: int = Field(default=0, ge=0)
     generation_tokens: int = Field(default=0, ge=0)
 

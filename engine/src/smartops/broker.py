@@ -2223,6 +2223,7 @@ from contracts import (  # noqa: E402
     pack_for_analyst,
 )
 from smartops.budget import PROVIDER_ENV_VAR, loop_output_tokens, model_choices_from_env  # noqa: E402
+from smartops.subagent_analysts.verify import claim_verifier  # noqa: E402
 from smartops.domains import ALL_FAMILIES  # noqa: E402
 import smartops.subagent_analysts.analyze as analysis  # noqa: E402
 from smartops.subagent_analysts.model import analyst_model_from_env  # noqa: E402
@@ -2577,6 +2578,9 @@ def _persist_reasoning_traces(
                 "prompt_tokens": finding.prompt_tokens,
                 "generation_tokens": finding.generation_tokens,
                 "reasoning_trace": finding.reasoning_trace,
+                # B52 E: lines the claim check dropped, and whether it ran.
+                "unsupported": finding.unsupported,
+                "claim_check": finding.claim_check,
             }
             for finding in findings
         ],
@@ -2639,6 +2643,7 @@ async def _analyse_one(
     *,
     analyst_model,
     max_chars: int | None = None,
+    verifier=None,
 ) -> HypothesisFindings:
     """The BLIND analysis path for one fetched task: three domain judgements.
 
@@ -2691,6 +2696,7 @@ async def _analyse_one(
                 domain_findings,
                 run_dir=run_dir,
             ),
+            verifier=verifier,
         )
     _persist_findings(task.task_id, findings, run_dir=run_dir, max_chars=max_chars)
     return findings
@@ -2755,6 +2761,7 @@ async def _analyse_all(
     *,
     analyst_model,
     task_count: int,
+    verifier=None,
 ) -> tuple[int, list[HypothesisFindings]]:
     """PHASE B -- analyse every fetched task at once.
 
@@ -2812,6 +2819,7 @@ async def _analyse_all(
                 analyst_model=analyst_model,
                 # One round's handoff budget, split across the file's tasks.
                 max_chars=HANDOFF_CHAR_BUDGET // max(task_count, 1),
+                verifier=verifier,
             )
             for task, hypothesis, outcome in analysable
         ),
@@ -3138,8 +3146,10 @@ async def _round(
             else:
                 fetched.append(item)
 
+    # B52 E: sub-analyst lines checked against their rows, on the cheapest role's model.
+    verifier = claim_verifier(choices["vt"], budget) if choice is not None and analyst_model is not None else None
     analysis_failures, findings = await _analyse_all(
-        fetched, analyst_model=analyst_model, task_count=len(tasks)
+        fetched, analyst_model=analyst_model, task_count=len(tasks), verifier=verifier
     )
     failures += analysis_failures
     unreachable = _nothing_searched(findings)
