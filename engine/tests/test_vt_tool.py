@@ -235,3 +235,9 @@ def test_finished_rounds_loops_are_not_held(lookups):
         asyncio.run(_vt_lookup(BrokerRequest(task=_task(f"q{n}-L2-T1")), "file_hash", HASH, "r", "c"))
     asyncio.run(_vt_lookup(BrokerRequest(task=_task("q9-L2-T1")), "file_hash", HASH, "r", "c"))
     assert len(broker._VT_LOCKS) <= 1  # only the last round's loop is left
+
+
+def test_a_url_ending_in_punctuation_is_named_as_written(lookups):
+    calls, _ = lookups
+    _ask(BrokerRequest(task=_task(goal="was https://example.com/A! fetched?")), "url", "https://example.com/A!")
+    assert calls == ["https://example.com/A!"]

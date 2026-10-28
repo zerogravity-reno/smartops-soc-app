@@ -1728,7 +1728,10 @@ def _vt_lock() -> asyncio.Lock:
 def _named_in(goal: str, kind: str, value: str) -> bool:
     """`value` is a whole word of the question: 18.8.4.40 does not name 8.8.4.4, nor
     notexample.com example.com, nor .../AB .../A. A URL's case counts."""
-    words = {w.strip(".,;:!?()[]{}<>\"'`") for w in goal.split()}
+    # ponytail: prose can't say where a URL ends; "…/A!" names both /A! and /A. Both are
+    # once-per-run lookups the Broker asked for with a reason; a URL parser if it matters.
+    words = set(goal.split())
+    words |= {w.strip(".,;:!?()[]{}<>\"'`") for w in words}
     return _vt_norm(kind, value) in {_vt_norm(kind, w) for w in words}
 
 
