@@ -259,9 +259,11 @@ _HANDOFF_CHARS_PER_TOKEN = 3.5
 round 3's synthesis prompt grew 4,789 tokens for round 3's 17,985 characters."""
 
 _ANALYST_GENERATION_RESERVE = 16_384
-"""The Analyst's own `max_gen_len` (`analyst.MAX_GEN_LEN`),
-not the sub-analysts' `_GENERATION_RESERVE`: at 4,096 its synthesis thinking ran
-out before the JSON on 78cd60ec (T15). `tests/test_verdict_gate.py` holds the two equal."""
+"""The Analyst's own `max_gen_len` (`analyst.MAX_GEN_LEN`, the Analyst owner's value),
+not the sub-analysts' `_GENERATION_RESERVE`. It mirrors that value; the Broker never
+sets it. At 16,384 the handoff below dropped all 27 observations on 20592fea, whose
+synthesis wrote 1.8k tokens (B14): the payload must fit, not the reserve shrink.
+`tests/test_verdict_gate.py` holds the two equal."""
 
 HANDOFF_CHAR_BUDGET = int(
     (_CONTEXT_WINDOW - _ANALYST_GENERATION_RESERVE - _ANALYST_PROMPT_RESERVE
@@ -270,7 +272,7 @@ HANDOFF_CHAR_BUDGET = int(
     * _HANDOFF_CHARS_PER_TOKEN
 )
 """Characters one round's whole payload batch may take, split across its tasks by
-the caller."""
+the caller: 13,272 at the 16,384 reserve."""
 
 
 @dataclass(frozen=True)

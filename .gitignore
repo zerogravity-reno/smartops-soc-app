@@ -39,3 +39,12 @@ scratch_*.py
 
 # Frontend
 node_modules/
+
+# Local run artifacts and tool state (lab telemetry stays off the public repo)
+scratchpad/
+docs/trace-*.html
+docs/run-*.md
+frontend/playwright-report/
+frontend/test-results/
+.codex/
+.integration-worktree/

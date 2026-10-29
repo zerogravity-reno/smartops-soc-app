@@ -1,6 +1,6 @@
 # SmartOps Issues Report
 
-**As of:** 2026-10-12 eve (through run `16386362`; Broker rows re-checked on `aab8e000`, `204888fd`, `75984491`, `c8dd42cf`). **Code:** branch `broker-a818-fixes` (PR #6; before it `smartops-loop-fix`, since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
+**As of:** 2026-10-25: a code audit of `main` @ `010108b` (PRs #7, #8, #10, #11 merged since 10-13; `code-review` at high effort, cross-checked by Codex) for the gate rewrite in PR #11. Before that, 2026-10-14, a targeted comparison of run `20592fea` (details in [run review](run-20592fea-review.md)), checked out at `e2eaac0`; the run does not record its Git revision. Earlier baseline through 2026-10-12 remains below. Earlier baseline: branch `broker-a818-fixes` (PR #6; before it `smartops-loop-fix`, since 2026-10-06; the earlier line is `post-analyst-update-integration`, cut from `main` at `8b07441`, plus the hand port of the teammate's analyst branch `330d1bc`).
 
 **Scope:** the whole pipeline: context pipeline, Analyst (plan and synthesis), Tool Broker and sub-analysts, webapp integration, cost, audit trail, security and architecture. Items that also appear in `docs/analyst-bug-report.md` keep their IDs there (A#, C#) and are cross-referenced here.
 
@@ -58,9 +58,17 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 ## Summary
 
+**2026-10-26 delta:** B52–B55 logged. Yousef's four runs confirmed VT on unrelated questions and repeated across rounds (B55). A review with Codex and Antigravity found two completion bugs (B53, B54) and agreed a plan for B52: memory between rounds, feedback loops for the Broker and the siem agent, a Broker review of each result, a check on sub-analyst claims, and VT as a direct tool. Two live runs on the `20592fea` alert (`08590c74`, `cc991548`) gave a verdict at planning with no Broker round (G7).
+
+**2026-10-25 (b) delta (`broker-fixes`: `a6b698a`, `67128bc`, `b1511bc`):** B11 and B50 fixed. B50: a payload with no row list (a Splunk 400) is filed as discovery, not as an empty search; 11 saved 400s re-projected, none counted, and a live 400 today came back as an error reply, which was never evidence. B11: the 20592fea misreads are gone on a live sub-analyst replay of the same evidence (no source invented, 4624 and 4672 told apart); a protocol the rows don't carry is dropped; the auth summary counts event code and subject; counts and times are scoped to observations in the prompt. Residual small-model wording (spelled-out counts, an odd interpretation) is left to B51, which takes the narrative out of synthesis.
+
+**2026-10-25 delta (PR #11, `4016a5c`..`db9d90f`, read on `main` @ `010108b`):** `verdict_gate` enforces 85/20 in code again, and nothing else. It checks no refs, evidence or step outcomes. It no longer calls the unknown-evidence guard from `0e341d0` (G4). It doesn't validate the scores it gates on (G8, G10), and passing scores override the model's own REQUIRES_INVESTIGATION (G11). New G4–G12 and T28–T30, all Analyst code, routed. G1, G3 and T25 stay removed. G2 is still open.
+
+**2026-10-14 delta (`20592fea`):** B46 and B47 verified fixed; B14 reopened (27 observations omitted); B11 field interpretation recurred. New B48 (named-file step completes on unrelated files) and B49 (Windows authentication usernames lost in projection). Reference blocking was deliberately removed from the current gate, so T25/G1/G3 no longer block, while T1's older reference-validation guarantee no longer applies. Full evidence and unexercised cases: [run review](run-20592fea-review.md). Historical issue descriptions below retain their original chronology.
+
 | ID | Area | Issue | Severity | Status |
 |---|---|---|---|---|
-| T1 | Triage | Verdict accepted without meeting the stop rule (no code gate) | High | Fixed on `smartops-loop-fix`: refs checked against findings and steps |
+| T1 | Triage | Verdict accepted without meeting the stop rule (no code gate) | High | Partly: the 85/20 score gate is in code (`db9d90f`); reference validation removed by design. `20592fea` accepted empty `T2:endpoint`. Evidence integrity open: G4, G6, G7, G10, G11 |
 | T2 | Triage | Scores unstable on the same input; first evaluation flips | High | Open (A2) |
 | T3 | Triage | Planning framing decides the outcome when evidence is thin | High | Open |
 | T4 | Triage | Parent process judged by name, not path; masquerade missed | High | Open (A5) |
@@ -84,7 +92,10 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T22 | Triage | Synthesis describes rounds and tasks that never ran | Medium | Open (Analyst) |
 | T23 | Triage | The evaluation header never states the event time | Low | Open (Analyst) |
 | T24 | Triage | Task questions and row counts cited as findings ("CrowdStrike telemetry", "execution of svcupdate.dat") | High | Open (Analyst) |
-| T25 | Triage | Verdicts that meet the score rule are refused on one bad ref or a malformed ref format | High | Open (decision pending) |
+| T25 | Triage | Verdicts that meet the score rule are refused on one bad ref or a malformed ref format | High | Removed by design: refs informational in current gate; verified on `20592fea`; still so on `db9d90f`. Does not establish evidence quality |
+| T28 | Triage | `evidence_gaps` returned as a string becomes one Broker task per character | Medium | Open (Analyst) |
+| T29 | Triage | Two follow-ups with the same `task_id` end the run after the handoff is emitted | Medium | Open (Analyst) |
+| T30 | Triage | A model `task_id` becomes a directory name unsanitised; `../../x` writes outside the run folder | Medium | Open (Analyst + `broker.save_run_artifacts`) |
 | T26 | Triage | Synthesis reads gap tasks G1–G3 as hypotheses H1–H3 and copies scores from an evaluation that never ran | High | Open (Analyst + W8 compaction) |
 | T27 | Triage | The first evaluation leans non-malicious: H2/H3 restate the telemetry, H1 claims what telemetry can't show | High | Open (Analyst planning + scoring) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning (decision pending) |
@@ -93,25 +104,25 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | P4 | Context | OpenCTI lookups use wrong types; unrelated intel added | Medium | Open |
 | P5 | Context | ESCU matcher scores rule names only | Medium | Open (C5) |
 | B1 | Broker | Observations drop the parent path, so it never reaches synthesis | High | Fixed (`e475a84`, narrative names on this branch); live re-run pending |
-| B2 | Broker | Narrow task windows miss the activity | Medium | Open, Analyst side (follows P1: the windows are planned there) |
+| B2 | Broker | Narrow task windows miss the activity | Medium | Not reproduced on live run `c75abeae` (2026-10-25): task windows are widened to at least the event ±1 h, and every window held the activity. Closed |
 | B3 | Broker | Planned steps for families with no tool (`investigate_edr`) | Medium | Fixed in `58d39c3` |
 | B4 | Broker | Sub-analyst misread a `+03:00` row as outside a `Z` window | High | Fixed in `58d39c3` |
 | B5 | Broker | Subagent hit its output-token cap; recovery produced no answer | Medium | Closed: not reproduced since 2026-09-30 (20+ runs); logged if it recurs |
-| B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open, Analyst side: the follow-ups must name their task (B20); no Broker work left |
+| B6 | Broker | Follow-up tasks inherit every entity and the widest window | Medium | Open, Analyst side. Still seen on `c75abeae`: every round-3 follow-up got all round-2 entities and the widest window (1–7 Oct). GitHub #14 (Yousef) |
 | B7 | Broker | Unconnected families (edr, ndr) named in what the models read; host questions steered off Splunk | Medium | Fixed on this branch |
 | B8 | Broker | `tstats` unreliable: non-CIM fields return 0 rows; one filtered empty result killed a data model | Medium | Fixed on this branch |
 | B9 | Broker | Handoff to the Analyst had no size limit; B1's summaries would overflow its window | High | Fixed (`e475a84`, batch water-fill on this branch); overran again on 874ab334 (B14) |
 | B10 | Broker | Encoded PowerShell fetched but never decoded; a "decode" follow-up came back unanswered | High | Fixed (B10c, verified live on `dce405e5`; decoded block capped at 8 lines, `ENCODED_LINE_CAP`) |
-| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Fixed (`0430974`): grouped rows render `events=`, not `count=`; judging words 2 in 29 domains on 10-12; held live on `ae7d41b0` and `b7359eab`. The "child of itself" parent misread is a known 8B limit; `-` placeholders read as values split out as B47 |
+| B11 | Broker | Sub-analyst narratives judge ("suspicious"), misread fields (paths as endpoints, events as destinations), and present ES notable/risk records as telemetry | Medium | Fixed (`0430974`, `a6b698a`, `67128bc`, `b1511bc`); held on a live replay of `20592fea` T5. Residual narrative wording is B51 |
 | B12 | Broker | A sub-analyst cut off twice loses its whole domain | Medium | Fixed on `smartops-loop-fix` |
 | B13 | Broker | The siem subagent probes indexes one by one | Medium | Fixed on `smartops-loop-fix` |
-| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Fixed on `smartops-loop-fix`: budget re-measured, 16,480 → 27,608 characters; replayed on `89674d75`, 0 → 43/51, 59/59, 52/52 observations; live check pending |
+| B14 | Broker | Code footers inside narratives push every observation out; payload ships over budget | High | Open again (10-27): `ed27070` fixed it by lowering the Analyst's `MAX_GEN_LEN` 16,384 → 12,288, which is Analyst code, not ours. Reverted to the owner's 16,384, so the budget is 13,272 again. Needs a Broker-side fix: the payload must fit the budget |
 | B15 | Broker | Endpoint sub-analyst cut off on both calls; the raw answer is lost | Medium | Fixed (`18f7719`): the example sentence was the loop seed, removed in every domain. Held live on `2a71757f` (0 cut-offs, 15/15 domains) |
 | B16 | Broker | VirusTotal re-queries the same indicator in every task; tasks run one after another | Medium | Fixed: cache on `smartops-loop-fix`; tasks fetch in parallel, at most 3 at a time (`cfab611`); held live on `b7359eab` |
 | B17 | Broker | `process=powershell.exe (PID 12345)` sent as one value | Low | Fixed on `smartops-loop-fix` |
 | B18 | Broker | VirusTotal queried for a private IP, and the result read as clean | High | Fixed on `smartops-loop-fix` |
 | B19 | Handoff | Lookup tasks with a zero-length or no window are dropped | High | Fixed on `smartops-loop-fix`; held on `89674d75` |
-| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" fixed on `broker-a818-fixes` (`plan_fetch` `unanswerable`, `01877a9`); held live on `451334ad` and `ea38cb13`; scoping is Analyst-side |
+| B20 | Broker | Follow-ups repeat the round's searches; questions no source can answer are fetched anyway | Medium | "Can't answer" holds on `c75abeae` (FU1, FU3 not searched). Repeats remain: FU2 re-ran round 2's searches because it carried every entity (B6). GitHub #14 (Yousef) |
 | B21 | Broker | A private address isn't stated as one; the Analyst called it external | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
 | B22 | Broker | The parent process's hash never reaches the Analyst, so no task asks VT about the parent | Medium | Fixed on `smartops-loop-fix` (hashes in `facts`); live check pending |
 | B23 | Broker | Row times reach the sub-analysts in several zones and formats | Medium | Fixed on `smartops-loop-fix`; held on `89674d75` |
@@ -137,8 +148,16 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B43 | Broker | The private-address footer names VirusTotal, and synthesis reads it as a VirusTotal judgement | Medium | Fixed (`ad5afe6`): header reads "(not internet-routable)"; held live on `ae7d41b0` |
 | B44 | Broker | A `file_events` step's first siem dispatch searches the file name as a keyword, gets only process and script-block rows, and stops; the step costs a second dispatch or ends incomplete | High | Fixed (`5b75365`): the mission names the step's categories; an incomplete step's digest names the missing ones; held live on `ae7d41b0` and `b7359eab` |
 | B45 | Broker | From round 2, httpx clients from the previous round's closed event loop log "Event loop is closed" tracebacks | Low | Fixed (`28ca7f7`): `run_round` collects its clients before its loop closes; held live on `ae7d41b0` and `b7359eab` |
-| B46 | Broker | A step that searched its categories and found nothing is marked incomplete when an empty `uncategorised` set came back with it | Medium | Proposed, waiting on Mohammed: block `confirmed_empty` only when `uncategorised` holds rows |
-| B47 | Broker | Empty fields render as `bytes=- uri=- action=-`, and a sub-analyst reads the placeholders as values | Medium | Proposed, waiting on Mohammed: leave empty fields out of the rendered row |
+| B46 | Broker | A step that searched its categories and found nothing is marked incomplete when an empty `uncategorised` set came back with it | Medium | Fixed (`3d5cd88`); verified live on `20592fea` T4 `reg_task_gpo_keys`: zero registry rows plus empty uncategorised set, completed and confirmed_empty. Focused test passed |
+| B47 | Broker | Empty fields render as `bytes=- uri=- action=-`, and a sub-analyst reads the placeholders as values | Medium | Fixed (`3d5cd88`); verified live on `20592fea` network exhibits: missing fields omitted, no equal-byte claim. Focused tests passed; direction hallucination remains B11 |
+| B48 | Broker | Named-file retrieval completes on unrelated file events | High | Fixed (`ed27070`): `completion.match` names the target; only rows naming it count, and an empty search of each named category confirms absence. siem's prompt and mission keep the filter at every stage. Held on T3 re-run: one filtered EventCode 11/15/29 search, confirmed empty |
+| B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
+| B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Fixed (`a6b698a`): 11 saved 400s re-projected, none counted; live re-run `20592fea-L2-T5` showed no regression |
+| B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Open. Candidate (Codex): keep the narrative for audit, send synthesis code-owned evidence instead; decouple `name_expansions` from narrative text first. Changes what the Analyst reads: needs Yousef |
+| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. A–D done on PR #15 (`broker-memory`); E and F next |
+| B53 | Broker | A step with several categories completes when only one of them has rows | High | Fixed (`e65c3e6`, B52 A), on PR #15 |
+| B54 | Broker | "Looked and empty" accepts any empty search in the category, even one that never filtered on the target | High | Fixed (`e65c3e6`, B52 A): absence proven only by a code-run count query; on PR #15 |
+| B55 | Broker | VT is dispatched on the alert's hash for questions that aren't about reputation, and repeated across rounds | High | Open (part of B52 plan F). Seen on Yousef's runs `deb8195a`, `2ae9b697`, `9495f122` |
 | W1 | Webapp | Two different plans per investigation; the UI shows the one not executed | High | Removed: `/api/analyst/start` went with AR1, `webapp/` with AR11; one plan per run |
 | W2 | Webapp | Stale run fed to the Analyst; exit code ignored | Critical | Fixed in `58d39c3` |
 | W3 | Webapp | Tasks passed as `--entity` kinds the engine rejects | High | Fixed in `58d39c3` |
@@ -150,9 +169,19 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | W9 | Frontend | The browser falls back to the notable time when the event time didn't resolve | Medium | Fixed (`3978b9f`): an unresolved event time stays unset |
 | W10 | Webapp | Gap statements become tasks verbatim, so a round can repeat the last one exactly | Medium | Repeat filter on `smartops-loop-fix`; gap wording open (Analyst) |
 | W11 | Webapp | The webapp opened its own Splunk MCP client beside the backend's | Medium | Fixed on `broker-k4-ab-fixes`: `smartops.tools.registry.call_tool` |
-| G1 | Gate | A block cited inside a multi-id bracket is refused | High | Open (Analyst: `verdict_gate` lives in `analyst.py`) |
-| G2 | Gate | A verdict blocked on its scores records no reason | Medium | Open (Analyst) |
-| G3 | Gate | A ref to a lost domain refuses the round, and the re-ask loses it again | High | Open (Analyst; with T25) |
+| G1 | Gate | A block cited inside a multi-id bracket is refused | High | Removed by design with reference blocking in current gate; multi-id parsing itself not exercised on `20592fea` |
+| G2 | Gate | A verdict blocked on its scores records no reason | Medium | Open (Analyst); still so on `db9d90f` |
+| G3 | Gate | A ref to a lost domain refuses the round, and the re-ask loses it again | High | Removed by design with reference blocking; `20592fea` accepted an empty-domain ref. Domain quality remains separate |
+| G4 | Gate | The unknown-evidence guard (`unsupported_unanswerable_claims`, `0e341d0`) has no caller after PR #11 | High | Open (Analyst) |
+| G5 | Gate | A passing gate whose top hypothesis has no plan label defaults to TRUE_POSITIVE; generated follow-ups name hypotheses by id only | Medium | Open (Analyst) |
+| G6 | Gate | The gate needs only scores: no evidence or step check; `payloads`, `runs` and `all_runs` unused | High | Open (Analyst) |
+| G7 | Gate | A Loop 1 plan with VERDICT_REACHED and no tasks is emitted with no gate, scores or Broker round | High | Open (Analyst); predates PR #11 |
+| G8 | Gate | Scores like `"85%"` or `"85.5"` read as 0; a JSON `Infinity` aborts the run | Medium | Open (Analyst) |
+| G9 | Gate | The prompts still ask the model to apply 85/20, which code now decides | Low | Open (Analyst): breaks the no-model-arithmetic rule, not a runtime defect |
+| G10 | Gate | Scores are not validated: unknown ids, a single score and values over 100 pass | High | Open (Analyst) |
+| G11 | Gate | Passing scores override the model's REQUIRES_INVESTIGATION and erase its follow-ups and named gaps | High | Open (Analyst) |
+| G12 | Gate | An empty or unparseable answer is replaced by JSON pulled from the model's reasoning, unchecked | Medium | Open (Analyst) |
+| G13 | Gate | Since 10-26 the Loop 1 call answers in the evaluation format (scores and a verdict, no hypotheses or tasks), so every run ends with a direct verdict and no Broker round | High | Open (Analyst), #16 to Yousef. 4 of 4 runs since 10-26; 26 earlier runs planned. Same context, code and prompt as `c75abeae`, which planned |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -170,7 +199,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | AR3 | Architecture | A global boto3 monkeypatch in `main.py` duplicates `AnalystModel`'s scoped bearer auth | Medium | Fixed (`7d6fb77`): patch deleted; the Analyst authenticates with `SMARTOPS_ANALYST_API_KEY` on its own client (verified with and without `smartops.main`; a bogus key is rejected) |
 | AR4 | Architecture | Four engine symbols only tests use | Low | Fixed on `broker-a818-fixes`: three deleted; `output_tokens_remaining` is live (`subagents/__init__.py:673`), kept |
 | AR5 | Architecture | The runs-root lookup is written out 7 times | Low | Fixed: `run_trace.py` is gone; the Analyst and telemetry use `broker.runs_root()` |
-| AR6 | Architecture | `extract_json` scans braces by hand | Low | Open |
+| AR6 | Architecture | `extract_json` scans braces by hand | Low | Open; on `010108b` it can also return a non-dict, which ends the run (TypeError) |
 | AR7 | Architecture | `bench._pinned_skills` only delegates | Low | Fixed on `broker-a818-fixes` |
 | AR8 | Architecture | Two launchers on different ports; one re-parses `.env` | Low | Fixed (AR11): `start_server.bat` deleted; `start.ps1` runs `smartops.main:app` on :8013, `.env` loaded once by the server |
 | AR9 | Architecture | `mcp` and `botocore` declared by the root package, imported by neither | Low | Fixed on `broker-a818-fixes`: moved to the engine, which imports both directly |
@@ -413,6 +442,20 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
   - Before scoring, synthesis states what each parent spawned, as one sequence (T21).
   - Decide what the scores mean (T9). Mutually exclusive scores remove the two-against-one effect.
 
+The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line numbers are in `engine/src/smartops/analyst.py` there. None has been seen in a run yet.
+
+**T28. A string `evidence_gaps` becomes one Broker task per character.** *Medium. Open (Analyst).*
+- **Evidence:** with no usable `follow_up_tasks`, `follow_up_tasks` (`:227–239`) iterates `gaps`. If synthesis writes `"evidence_gaps": "Who ran svcupdate.dat?"`, each non-space character becomes a task (`G1`=`W`, `G2`=`h`, …), and each one is a paid Broker fetch.
+- **Fix:** treat a string as a one-item list, or reject anything that isn't a list of strings.
+
+**T29. Duplicate follow-up `task_id`s end the run.** *Medium. Open (Analyst).*
+- **Evidence:** `to_task_file` (`:193–198`) builds `run-Ln-<task_id>` from the model's id and reuses it as `hypothesis_id`. `TaskInputFile` refuses a duplicate `task_id` (`contracts/task_input.py:173–180`) at `:639`, after the handoff event is emitted (`:632`). Nothing in `_broker_round` catches it, so the run ends on the generic error at `:606`.
+- **Fix:** number the tasks in code (`T{n}`) and keep the model's id as a label only.
+
+**T30. A model `task_id` is used as a directory name unsanitised.** *Medium. Open (Analyst + `broker.save_run_artifacts`).*
+- **Evidence:** `to_task_file` keeps the model's id as is (`:193`), and `TaskInput.task_id` only requires it to be non-empty. `broker.py:1264` writes to `Path(out) / report.task_id.rsplit("-", 1)[-1]`, so `../../x` lands outside the run folder. An id containing `:` also breaks the family split in `broker_runs`. No overwrite of an existing file has been shown.
+- **Fix:** the same as T29, because code-numbered ids close it. The broker can also check that the folder resolves inside `out`.
+
 ## Context pipeline
 
 **P1. `event_time` is the detection time, not the activity time.** *High. Partly fixed (C6).*
@@ -539,6 +582,13 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Logon type (`3bf5fce8`, 2026-10-11):** "five successful remote interactive logons … logon type 5 (remote interactive)". Type 5 is a service logon. Fixed on `broker-k4-ab-fixes`: `formatting._field` writes `logon_type=5 (Service)` from the Windows table, so the model quotes a name it was given.
 - **Fixed (`0430974`, 2026-10-12):** judging is nearly gone after B15's prompt rewrite (2 hedging words in 29 domains on `aab8e000`, `204888fd`, `c8dd42cf`, `2a71757f`). What remained was field misreads, and the clearest class was the aggregate count: "269 bytes" (B35) and "1,633 allowed actions" (`c8dd42cf` T3 network). `_count_suffix` now renders `events=N`, matching the set header's `events=`, and the two prompt lines describing grouped rows follow. Left as a known 8B limit: `aab8e000` T2 read PowerShell spawned by PowerShell as "child processes of themselves".
 - **Held live (`ae7d41b0`, `b7359eab`):** no count read as bytes or actions; grouped rows render `events=7`. A neighbouring misread remains and is split out as B47: empty fields render as `bytes=- uri=- action=-`, and `b7359eab` T4 network wrote "All six connections had equal byte transfers and no recorded actions" over 3 rows and 21 events.
+- **Fixed (2026-10-25, `a6b698a`, `67128bc`, `b1511bc`):** the `20592fea` recurrences, each now stated by code.
+  - A connection row missing an end renders `dest=…`, never `-→dest`; the self-connection and multicast claims are gone.
+  - Auth event codes carry their names (`4672 (special privileges assigned to new logon)`); the summary counts `event_code` and `subject`, and a field some rows lack reads `(absent)`, not `-`.
+  - A narrative sentence or observation naming TCP/UDP/ICMP that no row prints is dropped (the replay guessed UDP from port 5353).
+  - The prompt scopes counts and times to observations, and says print order is not time order.
+  - **Held:** live sub-analyst replays of `20592fea` T5 (one before the prompt change, three after). No invented source or protocol reaches the payload; identity tells 4624 from 4672 and no longer reads 20 rows as "20 sequences". No judging words, no parent path read as an endpoint, no `notable`/`risk` query.
+  - **Not fixed by design:** narratives still carry spelled-out counts and an occasional interpretation ("scanning" for `Test-NetConnection`). A quantity filter was tried and reverted: it emptied a narrative and dropped true counts. The lever is B51.
 
 **B12. A sub-analyst cut off twice loses its whole domain.** *Medium. Fixed on `smartops-loop-fix`.*
 - **Evidence (`78cd60ec`):** T1 endpoint's first reply and its re-ask both hit `max_gen_len`, and the payload carried "endpoint analyst produced no parseable finding after a re-ask" in place of the domain's narrative. The narrative itself had been written.
@@ -938,6 +988,79 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Class:** B40's (a `-` placeholder counted as a value), on the rendering side. B11's `events=` fix held on the same rows.
 - **Proposed fix:** leave empty fields out of the rendered row instead of writing `-`.
 
+**B52. Retrieval is never checked.** *High. A–D fixed (10-26/27, PR #15); E and F open.*
+- **Evidence:**
+  - `c75abeae` L3-FU2 (allowlist question about one IP): 12 searches, 2 exact repeats of round 2 (a data count on the host), 2 on entities the question didn't ask about. Nothing told the Broker these had already run.
+  - Yousef's runs (B55) repeat the same VT lookup across rounds.
+  - Today the siem agent hears its goal once, as text. Step progress is computed only after the whole dispatch, and only the Broker hears it, as row counts. Nobody checks whether the rows answer the question or whether a search was wrong. Sub-analyst output passes only the grounding gate (citations, figures, protocols exist in the shown rows).
+- **Cause:** each task gets a fresh Broker agent with no record of earlier rounds; no step reviews a result against its question.
+- **Plan (agreed by Claude, Codex and Antigravity over 5 + 2 review rounds):**
+  - A: a pure row measurement, plus B53 and B54.
+  - B: a run ledger shared by the run's Broker agents (Strands `AgentState`), shown as "already fetched by L2-T4: …"; plan progress after each dispatch; a repeat warning; one finish check through `AfterInvocationEvent.resume`.
+  - C: the siem agent hears progress after each search and what was already searched; it claims which rows answer, and code checks the attribution.
+  - D: the Broker reviews each result on a code-built card (question, real searches, counts, cited rows) through a `review_step` tool. A step is complete only when code facts hold and the Broker accepted it.
+  - E: sub-analyst presence claims checked against their cited rows (one batched call per finding, cheapest tier, budget-reserved). Sub-analysts stay blind to the question.
+  - F: VT as a direct Broker tool, once per observable per run.
+- **Plan file:** see `docs/handover-2026-10-26b.md`.
+- **Step B done (10-26, branch `fix/broker-run-memory`, unpushed):**
+  - **Run ledger:** a process-wide record per run, keyed by the run id in the task id. It isn't Strands `AgentState`: each task builds its own Broker agent, so nothing would share that state.
+    - A task sees only earlier rounds, never a sibling in its own round.
+    - Each entry holds the collector's real queries, rows and evidence ids, the rows that name the target, and any absence proof with its dataset.
+    - At most 8 runs are held. Dropping a run when it ends would need a hook in `analyst.py`, which isn't ours.
+  - **Prompt:** the Broker's prompt shows "Already fetched in this run" for entries that share an entity with the task.
+  - **Plan progress:** every dispatch and refusal ends with the plan's progress: each step complete, missing X, or not attempted, with dispatches left.
+  - **Repeat warning:** an exact repeat of an earlier round's fetch (same family, entities, window, categories and match) is returned unrun, unless the Broker gives `repeat_reason`.
+  - **Finish check:** `FinishCheck` resumes the Broker once when a step is still open and turns and output tokens are left. A resume stays inside the same invocation's caps. If the resume ends without an answer, the first answer is kept.
+  - **Checked:** full suite 1,396 passed. Codex review: round 1 found 2 issues (resume with no output tokens left; a ledger entry hid whether rows or a code count closed the step), both fixed; round 2 ACCEPT.
+  - **Live (10-26, Broker replay of `c75abeae` L2→L3, $1.66):** all L3 prompts showed the L2 record. FU2 reused it and made 1 dispatch, where the original run made 12 searches with 2 exact repeats. FU1 and FU3 dispatched nothing and were marked unanswerable. The repeat warning and the finish check didn't fire, because no repeat was attempted and no open step had dispatches left.
+- **Step C done (10-26, `ad47e9c`, `d19ebd6`, `9d235e6`, `f5c626f`):** the siem agent hears the step's rule, a code line after each search, and what earlier rounds searched; it claims which rows answer, and code checks the attribution. Live replay of `c75abeae` ($1.48) found three defects and a cost leak, all fixed; see handover g.
+- **Step D done (10-27):**
+  - **Review card:** every dispatch returns a code-built card: the step, each search the collector ran with its row count, and the siem agent's attributed claims with up to 5 cited rows. With nothing cited, it shows the first 5 rows, target rows first. The card is fenced, escaped and named untrusted in the Broker's prompt.
+  - **`review_step` tool:** the Broker records `accepted`, `re-asked` or `limitation` with a reason, and for `accepted` the rows it relies on (required when the result holds rows). Later rounds see the decision and reason in the run memory. Code refuses an acceptance the rows don't support, a re-ask with no dispatch left, a missing reason and a cited row that doesn't exist.
+  - **Completion:** `StepOutcome.facts_met` is the code half; `completed` is `facts_met` and an accepted review. A re-dispatch or a reworded step clears the review. The review stays in the Broker's report and run memory; the Analyst gets only `completed`, as before.
+  - **Row gate with a limit (Mohammed, 10-27):** nobody controls how many rows exist. `min_rows` holds while the step has a dispatch left; after its second dispatch the gate is exhausted, and the rows it has go to the Broker's review as they are ("row gate exhausted after 2 dispatches: 3 of 10 rows, ready for review"). At least one answering row is still needed.
+  - **Re-ask:** the Broker's re-ask takes that result's rows and proofs back out, so rows it rejected never complete the step.
+  - **Order:** the Broker's tool calls run in the order it sent them (Strands `SequentialToolExecutor`), so a re-ask lands before the re-dispatch batched with it.
+  - **Finish check:** a step whose code facts hold and that has no review counts as open, even with no dispatch left, so `FinishCheck` sends the Broker back once to review it.
+  - **Turns:** 11 → 12. The prompt asks for each review in the same turn as the next dispatch; unbatched, a six-step plan would need 17.
+  - **Scripted runs** review on code facts, so bench runs still complete steps.
+  - **Checked:** Codex round 1: 5 issues (card not named untrusted; a re-plan carried an acceptance to a new question; truncated queries unmarked; turns; thin retry tests), all fixed. Round 2: 2 issues (later rounds saw a rejected fetch as complete; acceptance without seeing or citing rows). Round 3: a re-plan kept facts from the old rule. Rounds 4–5: rows from a re-asked result still counted. Round 6: a re-dispatch could overtake its re-ask. All fixed; full suite 1,474 passed.
+  - **Not checked live.** The live replay should show whether the Broker batches its reviews and how many turns a run takes.
+
+**B53. A multi-category step completes on one category.** *High. Fixed (`e65c3e6`).*
+- **Evidence:** `evaluate_step` sums rows across all the step's categories (`broker.py:689-694`), so a [processes, file_events] step closes on process rows alone. Found by Codex in the B52 review.
+- **Fix (B52 A):** every named category needs rows, or its own proof that it is empty.
+
+**B54. Absence can be "proved" by the wrong search.** *High. Fixed (`e65c3e6`).*
+- **Evidence:** `_step_rows` (`broker.py:563-590`) counts any zero-row set in the category as "looked and empty", even a search that never filtered on `completion.match`. An unrelated empty file search can confirm `svcupdate.dat` isn't there. Search text can't prove a filter either (`NOT x`, `x OR y`).
+- **Fix (B52 A):** code runs one fixed count query from an allowlisted template (category, target kind), escaped, `summariesonly=f`, host and window explicit. 0 means absent within that dataset; anything unknown means "not shown", never absent.
+- **Known limit:** the count searches only the template's fields, while a row answers if the target appears in any field. A target only in another field (e.g. a `cmd.exe` command line naming `svcupdate.dat`) can be counted absent. Accepted: rows come from arbitrary SPL, so no field list can match them; `proven_empty` records the datamodel the proof holds in.
+
+**B55. VT on unrelated questions, repeated across rounds.** *High. Open.*
+- **Evidence (Yousef's runs, 26 Oct):**
+  - `deb8195a`: 6 of 15 round-2 tasks plus L3-FU2 sent the alert's hash to VT, for questions such as "Is Mariam's account involved in privileged operations?".
+  - `2ae9b697` L2-T3, "What is the parent process (PID 2900) executing?", went to siem and VT.
+  - `9495f122`: the same hash went to VT 10 times across loops 3–7.
+  - The hash is in every task's scope because `to_task_file` adds the alert's entities; the Broker chose VT anyway.
+- **Fix (B52 F):** a direct `vt_lookup` tool, allowed for an observable named in the question or found in this task's rows; the alert's own hash is allowed once per run with a reason; repeats return the earlier task and verdict.
+
+**B56. Code judged Splunk results it can't read.** *High. Fixed (10-26).*
+- **Evidence (code audit, Codex-reviewed):**
+  - `project_siem` stored every row as an event, so `{count: 0}` read as 1 row, "not empty", and turned NO_DATA into OK.
+  - Aggregate rows filled `min_rows`.
+  - The dead-datamodel guard missed `[{count: "0"}]`, which is what an empty model returns on the lab.
+  - A capped result read as complete.
+  - `10.0.0.1` matched `10.0.0.15`.
+  - A repeated search counted the same events twice.
+  - The empty-search hint read aggregate field names.
+- **Fix:**
+  - `ResultSet` records `kind` (events, count, aggregate, unknown), `truncated` and `total`.
+  - Only event rows fill `min_rows` or prove a search empty. Aggregate rows naming the target still answer.
+  - One count decoder (`scalar_count`) serves the guard and `_absence_count`. One matcher (`row_matches`) uses exact tokens for IPs and hashes.
+  - Event rows dedupe across searches and dispatches.
+  - The cap shows on the search line, digest and exhibits.
+- **Checked:** `engine/tests/test_result_kind.py`; full suite 1,447 passed. Lab: an empty model's `tstats count` returns `[{count: "0"}]`; `total_rows` is the total before the cap.
+
 **Not reproduced:** `ConnectionResetError 10054` in all three siem subagents (seen once on 2026-09-30, before `cecd266a`). It hasn't recurred in the 5 runs since.
 
 ## Webapp integration
@@ -1022,6 +1145,59 @@ None of the four rounds in `e8d949af` and `942115f7` (2026-10-11) reached VERDIC
   - `942115f7` round 2: `T3:script_blocks#1` was refused because T3's endpoint was lost.
 - **Effect:** while B15 recurs, any verdict that cites an endpoint domain is refused, and the follow-up repeats the question that loses it.
 - **Fix candidates:** refuse a ref to a domain the payload marks as failed ("produced no parseable finding") with that reason, instead of "neither a domain with observations…", and don't turn it into a follow-up that reruns the same retrieval. Or T25's "keep the verdict when enough refs hold".
+
+**The gate after PR #11 (2026-10-25).** `verdict_gate` (`analyst.py:293` on `010108b`) went through six commits that day, from `4016a5c` to `db9d90f`. The 85/20 rule went from code to prompt-only and back. The gate that shipped does three things:
+- It ranks the scores, and if 85/20 holds it sets VERDICT_REACHED with the plan's label for the top hypothesis.
+- Otherwise it forces REQUIRES_INVESTIGATION.
+- If the model gave neither follow-ups nor gaps, it generates FU1/FU2.
+
+It no longer reads refs, which still settles G1, G3 and T25. The rest of this section is from a `code-review` audit at high effort of `02b368f..main`, re-checked on `main` and cross-checked by Codex. Line numbers are in `analyst.py` on `010108b`. `tests/test_verdict_gate.py:32–49, 75–90` assert the weaker behaviour: uncited verdicts and unanswerable-source reasoning pass. Fixing G4, G6 and G11 means changing those tests.
+
+**G4. The unknown-evidence guard is no longer called.** *High. Open (Analyst).*
+- **Evidence:** `0e341d0` added `unsupported_unanswerable_claims`. It refuses a verdict whose reasoning cites a source the Broker marked unanswerable as a negative finding ("no record in the CMDB"). The function is still defined at `:275`. `5ac1f64` restored it and `219e87b` dropped it again, and from `219e87b` on nothing calls it.
+- **Effect:** "unknown" can decide a verdict again. `evaluation_limits` (`:263`) still tells the model, but code no longer checks.
+- **Fix:** call it before the score check. When it fires, the note shouldn't go into `evidence_gaps`, because `follow_up_tasks` would send that sentence to the Broker as a question.
+
+**G5. The TRUE_POSITIVE default, and follow-ups by id only.** *Medium. Open (Analyst).*
+- **Evidence:**
+  - `:327–334`: if the top hypothesis has no `verdict` in the plan, and the model's verdict is empty, REQUIRES_INVESTIGATION or UNKNOWN, the verdict becomes TRUE_POSITIVE.
+  - `:345–363`: the generated FU1/FU2 ask to "differentiate between hypotheses H1, H2" or "corroborate hypothesis H1". The task inherits the round's entities and window (`:230–237`), but the Broker never learns what H1 claims.
+- **Fix:** leave the verdict unset (REQUIRES_INVESTIGATION) when no label exists, and put the hypothesis text in the generated question.
+
+**G6. The gate needs only scores.** *High. Open (Analyst).*
+- **Evidence:** `payloads` and `runs` are accepted and never read. `all_runs` is collected at `:506`, with the comment "for the verdict gate's step check", and passed at `:570`, but nothing uses it. Nothing produces `refused_refs` any more. `compact_round` (`:258`) and `frontend/src/components/Cards.tsx:259` still render it if the model writes one.
+- **Context:** the gate had no step check before PR #11 either. What PR #11 removed was G4's pre-check. Overlaps T1 and G4.
+- **Fix:** decide what evidence a verdict needs (at least one cited domain with observations), then delete the unused parameters or use them.
+
+**G7. A Loop 1 verdict skips the gate.** *High. Open (Analyst; predates PR #11).*
+- **Evidence:** `:499–504`: when the plan has no tasks and `status: VERDICT_REACHED`, the code emits the plan's verdict and returns. There are no scores, no Broker round and no `verdict_gate`.
+- **Fix:** send a direct verdict through the gate as well, or refuse it without evidence.
+
+**G8. Scores that aren't plain integers.** *Medium. Open (Analyst).*
+- **Evidence:** `:311–315`: `int("85%")` and `int("85.5")` raise ValueError, and the score becomes 0. A JSON `Infinity` raises OverflowError, which isn't caught here. The run ends on `:606`'s error; the server stays up.
+- **Fix:** parse with `float()`, then range-check (G10).
+
+**G9. The prompts still ask the model to apply 85/20.** *Low. Open (Analyst).*
+- **Evidence:** the eval header (`:548`) and `prompts/analyst_system_prompt.txt:30–39` tell the model to check `top_score >= 85` and the lead, and to set `status`. Code now decides `status`, and the model's value is only recorded as `model_status`.
+- **Note:** the prompt and the code agree, so this isn't a runtime defect (Codex). It breaks the rule that prompts never ask a model to calculate.
+- **Fix:** have the prompt ask for scores and gaps, and leave status to code.
+
+**G10. The scores the gate decides on are not validated.** *High. Open (Analyst).*
+- **Evidence (`:311–322`, reproduced by Codex):** each of `{"FAKE": 95, "H1": 10}`, `{"H1": 85}` (no runner-up, so a lead of 85) and `{"H1": 1000, "H2": 900}` passes. A missing or unparseable competitor counts as 0, which widens the lead.
+- **Fix:** require exactly the plan's hypothesis ids, each 0–100. Otherwise the round is REQUIRES_INVESTIGATION, with the reason recorded (G2).
+
+**G11. Passing scores override the model's own REQUIRES_INVESTIGATION.** *High. Open (Analyst).*
+- **Evidence:** `:324–335`: when 85/20 holds, the gate sets VERDICT_REACHED and clears `follow_up_tasks`, even when the model said REQUIRES_INVESTIGATION and its `evidence_gaps` name missing material evidence. The prompt defines those gaps as "unanswered questions that materially limit a conclusion" (`:545`). It also tells the model to set REQUIRES_INVESTIGATION when an unknown is material to the top score (`:550–552`), and code then overrides exactly that choice.
+- **Fix:** 85/20 is necessary, not sufficient. Keep the model's REQUIRES_INVESTIGATION and its follow-ups when it gives them.
+
+**G12. An unparseable answer is replaced by JSON from the reasoning.** *Medium. Open (Analyst).*
+- **Evidence:** `:492` (planning) and `:569` (synthesis): when the answer is empty or doesn't parse, `extract_json` runs over the model's reasoning text. Its first `{…}` with any expected key is accepted as the output, without a schema or completeness check. AR6 adds that it can also return a non-dict.
+- **Fix:** validate the parsed object (required keys and types). Otherwise treat the round as cut off (T15) rather than act on a draft.
+
+**G13. The planning call answers in the evaluation format.** *High. Open (Analyst; issue #16, Yousef).*
+- **Evidence:** every saved run from 10-12 to 10-25 (26 runs, the last `c75abeae`) returned a plan. Every run since 10-26 (`08590c74`, `cc991548`, `e3f62789`, `f497dca4`) returned `status`, `verdict`, `hypothesis_scores` and `follow_up_tasks`, with no `hypotheses` or `tasks`. Its reasoning treats the alert as "broker findings". G7's branch then emits the verdict. `f497dca4` sent the same context as `c75abeae`; `analyst.py`, the prompt, `model.py` and `.env` are unchanged between them.
+- **Open question:** which checkout `c75abeae` ran from, and whether the model changed. PR #11's longer evaluation section is a suspect; an A/B planning call (prompt before and after #11) would settle it.
+- **Fix:** code checks the Loop 1 answer is a plan (hypotheses and tasks); if not, it tells the model and asks once more, and never accepts a verdict before evidence. Closes G7 for this path.
 
 ## Cost
 
@@ -1148,6 +1324,7 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 **AR6. `extract_json` scans braces by hand.** *Low. Open.*
 - **Evidence:** `webapp/services/llm_service.py:101` has a nested depth-counting loop with a bare `except:`.
 - **Fix:** try `json.JSONDecoder().raw_decode(text, i)` at each `{` (~-15 lines). Merge it into AR2's fix if that lands.
+- **2026-10-25 (`main` @ `010108b`):** the function now lives at `analyst.py:48`. It still has the bare `except` (`:75`) and re-imports `re`/`json` locally (`:49`). Its first `json.loads` returns whatever type the text holds, so an answer of `85` or `[1]` raises TypeError at `:493` and ends the run. See G12.
 
 **AR7. `bench._pinned_skills` only delegates.** *Low. Open.*
 - **Evidence:** `engine/src/smartops/bench.py:67` wraps `pinned_skills_enabled()` and yields `skills_enabled()`, under a 15-line docstring.
@@ -1234,27 +1411,28 @@ From the 2026-10-11 over-engineering and duplication audit (`AR`, not `A`: `A#` 
 
 ## Priorities
 
-**Where things stand (2026-10-13 live validation; implementation counts unchanged from 10-12 close).** The lists below this one are history.
+**Where things stand (2026-10-25: `20592fea` from 10-14, plus the code audit of `main` @ `010108b`).** The counts are the 10-13 counts adjusted by the deltas in the Summary. The lists below this one are history.
 
 | Area | Fixed | Partly | Open | Open items |
 |---|---|---|---|---|
-| Broker | 40 | 1 | 4 | B46 and B47 proposed, waiting on Mohammed. B2, B6 and B20's scoping wait on the Analyst's follow-ups |
+| Broker | 46 | 1 | 6 | B52–B55 new (10-26, plan agreed); B51 (needs Yousef); B6/B20 with Yousef (#14) |
 | Architecture / integration | 13 | 0 | 1 | AR6 (in `analyst.py`, out of our scope) |
-| Triage (Analyst) | 1 | 2 | 24 | T2–T27 |
-| Gate (Analyst) | 0 | 0 | 3 | G1–G3 |
+| Triage (Analyst) | 0 | 3 | 26 | T1 partly; T2–T24, T26–T30 (T25 removed by design) |
+| Gate (Analyst) | 0 | 0 | 10 | G2, G4–G12 (G1, G3 removed by design) |
 | Context | 2 | 0 | 3 | P2, P4, P5: out of our scope |
 | Webapp | 9 | 1 | 0 | W1 and W7 removed with AR1/AR11 |
 | Frontend | 1 | 0 | 0 | W9 fixed with P3 |
 | Cost, audit, security, handoff | 14 | 0 | 0 | None |
 
-- **Broker:** B1–B45 are fixed except B2, B6 and B20's scoping, which wait on the Analyst's follow-ups. Two new ones from `ae7d41b0` and `b7359eab` are proposed: B46 (an empty `uncategorised` set blocks `confirmed_empty`) and B47 (`-` placeholders read as values).
+- **Broker (ours), next:** B11 and B50 fixed (`a6b698a`, `67128bc`, `b1511bc`). Next: the Broker owner's reply on PR #9, which is also where B51 (narrative out of synthesis) belongs. B6 and B20's scoping still wait on the Analyst's follow-ups.
 - **Held live:** AR12, AR3, B43 on `ae7d41b0`; B11, B44, B45 on `ae7d41b0` and `b7359eab`; B16 on `b7359eab`.
 - **Live checks (10-13):** AR13 Broker handoff and AR14 Broker failure passed with client-local outages; full Analyst behavior remains untested. B24 session-loss detection/reset fired, but step termination and successful re-dispatch remain unverified because the runner did not capture a final result. See `docs/mcp-ar13-ar14-live-2026-10-13.md`.
-- **Decisions (Mohammed):** B46 and B47; the B15 safety net; T25 (one bad ref blocks a verdict); T20; P1's raw time fields.
+- **Decisions (Mohammed):** the B15 safety net; T20; P1's raw time fields.
 - **Analyst owner, routed:**
+  - **PR #11 gate (10-25), first:** G10 and G11 (scores pass without validation, and override the model's own REQUIRES_INVESTIGATION), G4 (unknown-evidence guard unwired), G6 and G7 (no evidence check; a Loop 1 verdict skips the gate). Then G5, G8, G12, T28–T30, G9 and AR6. `tests/test_verdict_gate.py` will need changing with G4, G6 and G11.
   - B42's `maxLength: 60`.
   - AR13's `not_searched` field.
-  - G1–G3, T8 (`16386362` reasoned from the silence), T15 (cut off while listing refs `T1` … `T51`), and the rest of T*.
+  - G2, T8 (`16386362` reasoned from the silence), T15 (cut off while listing refs `T1` … `T51`), and the rest of T*.
 - **Owner action:** delete `FS8B_API_KEY` from your local `.env` (nothing reads it since AR3); S1, confirm the `33ccf52` keys were rotated.
 
 **For the Analyst owner, from 2026-10-09** (the Broker side of each is done or not needed):

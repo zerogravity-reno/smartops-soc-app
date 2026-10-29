@@ -58,6 +58,19 @@ class ResultSet(BaseModel):
     query: str = Field(min_length=1)
     row_count: int = Field(ge=0)
     rows: list[dict[str, Any]] = Field(default_factory=list)
+    kind: Literal["events", "count", "aggregate", "unknown"] = Field(
+        default="events",
+        description=(
+            "What the rows are, read from the SPL by code: events, one scalar count "
+            "(`stats count`), grouped aggregate rows (`stats count by x`), or unknown. "
+            "A count is a count, not a row: only events and unknown fill event quotas "
+            "or prove a search empty."
+        ),
+    )
+    truncated: bool = False
+    total: int | None = Field(
+        default=None, description="Splunk's row total before the cap, when the payload says it."
+    )
     evidence_id: str | None = Field(
         default=None,
         description=(
@@ -121,6 +134,27 @@ class Findings(BaseModel):
     """Base for the code-assembled per-family payload."""
 
 
+class SearchClaim(BaseModel):
+    """The siem subagent's claim about one search: does it answer the question?
+
+    Model-authored. Code checks the **attribution** only (B52 C): the search and its
+    cited rows exist, sit in a category the step wants, and name its target when it
+    has one. Whether the rows mean what the claim says is the Broker's review.
+    """
+
+    search: int = Field(ge=1, description="The number on the search's 'search N' line.")
+    answers_question: Literal["yes", "no", "absence"] = Field(
+        description="yes: rows answer it; absence: a search of the asked category "
+        "returned 0 rows and the step has no target values (target absence needs "
+        "the Broker's independent code count); no: it does not bear on it.",
+    )
+    reason: str = Field(max_length=200, description="One line: why.")
+    rows: list[int] = Field(
+        default_factory=list,
+        description="For yes: the row numbers that answer, as the 'search N' line lists them.",
+    )
+
+
 class SiemAssessment(Assessment):
     """What the SIEM subagent asserts about its own retrieval.
 
@@ -150,6 +184,11 @@ class SiemAssessment(Assessment):
             "Categories asked for but not retrieved, including ones that returned "
             "nothing. An empty result is a finding, not a failure."
         ),
+    )
+    results: list[SearchClaim] = Field(
+        default_factory=list,
+        description="Per search that bears on the question: whether it answers it. "
+        "Claims code could not attribute are dropped.",
     )
 
 
@@ -216,11 +255,13 @@ class SiemFindings(Findings):
 
         An index listing's rows describe what Splunk holds, not what happened on
         a host, so counting them here would report retrieval that did not occur.
+        Nor a count or aggregate: a `{count: 0}` row is Splunk saying "none".
         """
         return sum(
             rs.row_count
             for bucket in (*get_args(CimCategory), "uncategorised")
             for rs in getattr(self, bucket)
+            if rs.kind in ("events", "unknown")
         )
 
 

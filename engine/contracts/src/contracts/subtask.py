@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     Discriminator,
     Field,
+    PrivateAttr,
     Tag,
     create_model,
     field_validator,
@@ -304,7 +305,18 @@ class SubagentMission(BaseModel):
     tool_family: ToolFamily
     goal: str = Field(min_length=1)
     scope: Scope
-    context: str | None = None
+    context: str | None = Field(
+        default=None,
+        description="Code-rendered: what earlier dispatches in this run already searched (B52 C).",
+    )
+    completion: CompletionRule | None = Field(
+        default=None,
+        description=(
+            "The fetch step's completion rule, so the subagent hears its goal after each "
+            "search (B52 C). A goal, not a pre-authored query: it names categories and "
+            "values, never how to search for them."
+        ),
+    )
     budget_cost: int = Field(
         default=1,
         ge=0,
@@ -674,6 +686,16 @@ class CompletionRule(BaseModel):
             "false-completion problem back where it was."
         ),
     )
+    match: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Values a row must contain to answer this step -- the file name, hash, "
+            "user, domain or IP it asks about. When set, only rows containing one "
+            "(case-insensitive) count, so a step about svcupdate.dat is not closed "
+            "by ten other files a broadened search returned (B48). Empty, the "
+            "default, counts every row in `categories`: a host-wide sweep."
+        ),
+    )
 
 
 class FetchStep(BaseModel):
@@ -768,12 +790,38 @@ class StepOutcome(BaseModel):
 
     step: FetchStep
     completed: bool = False
+    """`facts_met` and the Broker's current review `accepted` it (B52 D)."""
+    facts_met: bool = False
+    """The code half of `completed`: the rows, or the proof of absence, the step's
+    completion rule asks for, with the `min_rows` gate exhausted once the step's
+    dispatches are spent. Set only by `broker._settle`."""
+    review: Literal["accepted", "re-asked", "limitation"] | None = None
+    """The Broker's decision on the step's latest result, through `review_step`.
+    A re-dispatch clears it: only the latest result can be accepted."""
+    review_reason: str | None = None
     dispatches: int = 0
     result_ids: list[str] = Field(default_factory=list)
     """The `SubtaskResult.task_id` of each dispatch that served this step, in
     order -- the join from a step to `BrokerReport.results` (O2). `dispatches`
     alone said how many, not which."""
     rows_retrieved: int = 0
+    event_rows: int = 0
+    """The event rows among `rows_retrieved`, each counted once across searches and
+    dispatches: what `completion.min_rows` counts. Aggregate rows naming the target
+    answer the step but are not events (handover h item 3)."""
+    _seen_rows: set[str] = PrivateAttr(default_factory=set)
+    """Keys of the event rows already counted, so a repeated search adds nothing (item 8)."""
+    _before: dict[str, Any] | None = PrivateAttr(default=None)
+    """The counts before the latest result was added, so a `re-asked` review can take
+    that result back out (B52 D): rows the Broker rejected must not complete the step."""
+    rows_by_category: dict[str, int] = Field(default_factory=dict)
+    """`rows_retrieved` per category, cumulative across dispatches. A step naming
+    two categories is complete only when each has rows or is in `proven_empty`
+    (B53); the total alone closed it on one."""
+    proven_empty: dict[CimCategory, str] = Field(default_factory=dict)
+    """Categories shown to hold no answer, each with what showed it: for a step with
+    `completion.match`, the datamodel a code-run count on the target searched (B54),
+    since absence holds only within that dataset; without one, `"empty search"`."""
     confirmed_empty: bool = False
     status: SubtaskStatus | None = None
     reason: str | None = None

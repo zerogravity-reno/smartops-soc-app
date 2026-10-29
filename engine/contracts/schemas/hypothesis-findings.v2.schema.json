@@ -262,7 +262,7 @@
       "type": "object"
     },
     "StepSummary": {
-      "description": "What became of one planned fetch step, as the Analyst Agent needs to see it.\n\nA projection of `contracts.subtask.StepOutcome`, code-assembled, carrying the\nfour facts that change how a judgement should be weighed and nothing else.\nDropped: `dispatches`, `refused_for_budget`, `status`, `reason` and the full\n`FetchStep` -- dispatch counts and budget refusals are our operational\nconcern, not an input to reasoning about evidence.\n\n`evaluated` is here and is load-bearing: `completed=False, evaluated=False`\nmeans nobody ever judged this step, which is a different fact from\n`completed=False, evaluated=True` (\"ran and fell short\"). See\n`StepOutcome.evaluated`.",
+      "description": "What became of one planned fetch step, as the Analyst Agent needs to see it.\n\nA projection of `contracts.subtask.StepOutcome`, code-assembled, carrying the\nfacts that change how a judgement should be weighed and nothing else.\nDropped: `dispatches`, `refused_for_budget`, `status`, `reason` and the full\n`FetchStep` -- dispatch counts and budget refusals are our operational\nconcern, not an input to reasoning about evidence.\n\n`evaluated` is here and is load-bearing: `completed=False, evaluated=False`\nmeans nobody ever judged this step, which is a different fact from\n`completed=False, evaluated=True` (\"ran and fell short\"). See\n`StepOutcome.evaluated`.",
       "properties": {
         "completed": {
           "default": false,
@@ -293,6 +293,13 @@
           "minLength": 1,
           "title": "Objective",
           "type": "string"
+        },
+        "proven_empty": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Proven Empty",
+          "type": "object"
         },
         "rows_retrieved": {
           "default": 0,

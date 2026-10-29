@@ -170,13 +170,21 @@ class TestRowExtraction:
 
         assert findings.uncategorised[0].row_count == 1
 
-    def test_an_unrecognised_payload_reports_zero_rather_than_guessing(self):
+    def test_an_unrecognised_payload_is_kept_but_not_offered_as_a_search(self):
         """Giving up honestly beats reshaping an unknown envelope into something
-        wrong -- a zero-row result set is visible, a mangled one is not."""
+        wrong -- and an undecodable payload is not an empty search either (B50), so
+        it is kept in `discovery`, which no completion rule or analyst reads."""
         findings = project_siem([_ToolCall("t", "index=botsv3 | head 1", "some opaque string")], [], task_id="t")
 
-        assert findings.uncategorised[0].row_count == 0
-        assert findings.uncategorised[0].rows == []
+        assert findings.uncategorised == []
+        assert findings.discovery[0].row_count == 0
+
+    def test_a_splunk_error_is_not_an_empty_search_of_its_category(self):
+        error = {"structuredContent": {"status_code": 400, "content": "Error parsing Splunk query"}}
+        findings = project_siem([_ToolCall("t", "index=w EventCode=11 TargetFilename=*x*", error)], [], task_id="t")
+
+        assert findings.file_events == []
+        assert len(findings.discovery) == 1
 
 
 class TestFamilies:
@@ -426,7 +434,7 @@ class TestTheModelsOwnAnswerIsNotEvidence:
         return [
             _Event(
                 {"name": name, "input": {"query": query} if query else {}},
-                {"status": "success", "content": [{"json": {"results": [{"user": "bostoll"}]}}]},
+                {"status": "success", "structuredContent": {"results": [{"user": "bostoll", "EventCode": query[-4:]}]}},
             )
             for name, query in names_and_queries
         ]

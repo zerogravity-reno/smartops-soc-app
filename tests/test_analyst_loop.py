@@ -16,7 +16,7 @@ PAYLOAD = {"payloads": [{"task_id": "r1-L2-T1", "findings": [{"domain": "endpoin
 class FakeModel:
     """Answers in order; each is (json, stop_reason) or a raw generation string."""
 
-    max_gen_len = 16_384
+    max_gen_len = 12_288
 
     def __init__(self, *answers):
         self.answers = iter(answers)
@@ -76,8 +76,8 @@ def test_a_cut_off_synthesis_ends_the_run_as_a_model_failure_not_a_verdict(run):
 
     assert [e["type"] for e in events][-2:] == ["synthesis", "error"]  # no gated synthesis, no verdict
     end = events[-1]
-    assert end["message"] == "Loop 2 synthesis was cut off at 16,384 tokens (stop_reason=length)"
-    assert end["cut_off"] == {"stage": "synthesis", "loop": 2, "max_gen_len": 16384, "prompt_tokens": 6877}
+    assert end["message"] == "Loop 2 synthesis was cut off at 12,288 tokens (stop_reason=length)"
+    assert end["cut_off"] == {"stage": "synthesis", "loop": 2, "max_gen_len": 12288, "prompt_tokens": 6877}
 
 
 def test_a_cut_off_plan_records_its_whole_generation_and_sends_nothing(run):
@@ -87,7 +87,7 @@ def test_a_cut_off_plan_records_its_whole_generation_and_sends_nothing(run):
     [cut] = records
     assert cut["step"] == "cut_off" and cut["loop"] == 1 and cut["stage"] == "planning"
     assert (cut["reasoning"], cut["answer"], cut["think_closed"]) == ("x" * 40, '{"hypotheses": [', True)
-    assert (cut["stop_reason"], cut["max_gen_len"], cut["generation_tokens"]) == ("length", 16384, 100)
+    assert (cut["stop_reason"], cut["max_gen_len"], cut["generation_tokens"]) == ("length", 12288, 100)
 
 
 def test_synthesis_prompt_closes_with_the_output_shape_rule(run):

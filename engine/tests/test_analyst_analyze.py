@@ -949,7 +949,8 @@ class TestGatherCarriesTheRetrievalRecord:
             hypothesis_id="h-42",
             plan=FetchPlan(steps=[step_done, step_unplanned], rationale="r"),
             step_outcomes=[
-                StepOutcome(step=step_done, completed=True, rows_retrieved=3, evaluated=True),
+                StepOutcome(step=step_done, completed=True, rows_retrieved=3, evaluated=True,
+                            proven_empty={"file_events": "Endpoint.Filesystem"}),
                 # Planned, never dispatched: `completed=False, evaluated=False`.
                 StepOutcome(step=step_unplanned, completed=False, evaluated=False),
             ],
@@ -969,6 +970,8 @@ class TestGatherCarriesTheRetrievalRecord:
         assert by_id["siem-1"].completed is True
         assert by_id["siem-1"].evaluated is True
         assert by_id["siem-1"].rows_retrieved == 3
+        # The dataset an absence proof holds in reaches the Analyst (B54).
+        assert by_id["siem-1"].proven_empty == {"file_events": "Endpoint.Filesystem"}
         # The distinction `StepOutcome.evaluated` exists for: nobody judged this
         # one, which is not the same fact as "ran and fell short".
         assert by_id["siem-2"].completed is False
@@ -1547,3 +1550,17 @@ def test_narrative_sentences_with_figures_no_summary_prints_are_dropped():
 
     assert kept == r"Host ran C:\Edge\154.0.4258.62\setup.exe. Nothing else ran."
     assert _drop_unsupported_sentences("Host ran setup.exe.", slice_, "endpoint") == "Host ran setup.exe."
+
+
+def test_a_protocol_the_rows_do_not_carry_is_dropped():
+    # B11, 20592fea replay: "used UDP port 5353" over rows grouped by address and port only.
+    def network(row):
+        return DomainSlice(domain="network", siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[row]))])
+
+    narrative = "Traffic went to 224.0.0.251:5353. These connections used UDP port 5353."
+    dest_only = network({"DestinationIp": "224.0.0.251", "DestinationPort": "5353"})
+    assert _drop_unsupported_sentences(narrative, dest_only, "network") == "Traffic went to 224.0.0.251:5353."
+    assert _drop_unsupported_figures(["Used UDP to port 5353 [connections#1]"], dest_only, "network") == []
+
+    with_proto = network({"DestinationIp": "224.0.0.251", "DestinationPort": "5353", "transport": "udp"})
+    assert _drop_unsupported_sentences(narrative, with_proto, "network") == narrative
