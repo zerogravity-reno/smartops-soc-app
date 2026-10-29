@@ -648,7 +648,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 "  verdict_reasoning: string explanation\n"
                 "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
                 "  evidence_gaps: list of unanswered questions that materially limit a conclusion\n"
-                "  follow_up_tasks: list of atomic follow-up questions when status is REQUIRES_INVESTIGATION (can specify 'follows' to inherit task scope/window, or explicit 'entity' and 'time_window')\n"
+                "  follow_up_tasks: list of atomic follow-up questions when status is REQUIRES_INVESTIGATION (can specify 'follows' to inherit task scope/window, or explicit 'entity' and 'time_window', or null if not applicable)\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
                 "CRITICAL VERDICT GATE: Declare VERDICT_REACHED ONLY if (top_score >= 85 AND top_score - runner_up >= 20). If either condition fails, you MUST set status='REQUIRES_INVESTIGATION', verdict='REQUIRES_INVESTIGATION', and provide non-empty follow_up_tasks to close the gap. When VERDICT_REACHED, the 'verdict' field MUST match the verdict type of the winning hypothesis with highest score (e.g. if H3 won and H3 is BENIGN, verdict MUST be BENIGN).\n"
                 "Task questions state what was asked, never what happened. Treat only broker findings as evidence. "
