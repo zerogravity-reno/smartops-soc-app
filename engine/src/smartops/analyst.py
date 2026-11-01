@@ -11,6 +11,7 @@ import re
 from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from contracts import TaskInputFile
 from smartops import telemetry
@@ -25,7 +26,8 @@ FULL_ROUNDS = 2  # rounds synthesis reads in full; packing._ANALYST_ROUNDS must 
 MAX_GEN_LEN = 16_384  # = packing._ANALYST_GENERATION_RESERVE, which sizes the handoff around it
 
 _EVAL_CLOSE = (
-    "\n\nOutput ONLY the EVALUATION JSON object specified above: no preamble, "
+    "\n\nKeep reasoning concise: do NOT repeat thoughts or deliberate endlessly on formatting. "
+    "Output ONLY the EVALUATION JSON object specified above: no preamble, "
     "no markdown fences, no reasoning outside the JSON. evidence_refs entries "
     "have the form <task_id>:<domain>, for example T1:endpoint, naming the "
     "broker findings above."
@@ -209,35 +211,138 @@ def _task_key(task: dict) -> tuple:
     return " ".join(str(task.get("question", "")).lower().split()), entities, window.get("start"), window.get("end")
 
 
-def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None, asked: list | None = None) -> list:
+def _find_followed_task(follows: Any, sent: list[dict]) -> dict | None:
+    if not follows or not sent:
+        return None
+    target = str(follows).strip().lower().lstrip("#")
+    for t in sent:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("task_id", "")).strip().lower()
+        if not tid:
+            continue
+        if tid == target:
+            return t
+        parts = tid.split("-")
+        last = parts[-1]
+        if last == target:
+            return t
+        if target.startswith("t") and (last == target or last == target.lstrip("t")):
+            return t
+        if last.startswith("t") and (last == target or last.lstrip("t") == target):
+            return t
+    return None
+
+
+def _normalize_task_entities(raw: Any) -> list[dict]:
+    if not raw:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    res = []
+    for item in items:
+        if isinstance(item, dict) and item.get("type") and item.get("value"):
+            res.append({"type": str(item["type"]), "value": item["value"]})
+    return res
+
+
+def _normalize_task_window(raw: Any) -> dict | None:
+    if isinstance(raw, dict) and raw.get("start") and raw.get("end"):
+        s = _instant(raw["start"])
+        e = _instant(raw["end"])
+        if s and e and s < e:
+            return {
+                "start": s.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end": e.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+    return None
+
+
+def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None, asked: list | None = None,
+                    event_time: str | None = None, alert_scope: list | None = None) -> list:
     """Synthesis follow-ups as tasks for the next broker round.
 
-    Follow-ups carry only a question, so they inherit every entity and the whole
-    window of the tasks just sent. With no follow-ups, each evidence gap becomes
-    one (T17): a gap left unasked ended the run with the gap unexamined.
+    Each follow-up can declare:
+    - 'follows': task_id of a previous task (e.g. 'T1') whose entity and window are inherited.
+    - 'entity': explicit entity or entities for this follow-up.
+    - 'time_window': explicit time window {'start': ..., 'end': ...}.
+
+    If neither explicit scoping nor a followed task is present, the follow-up falls
+    back to `alert_scope` and `event_time +/- 1h` (if provided), avoiding cross-task
+    entity pollution and unbounded time windows (B6). If neither is provided, it falls
+    back to the legacy union of entities and widest window.
 
     A follow-up identical to a task in `asked` (every task already sent, any
-    round) is dropped (W10): on 89674d75 the same three gaps came back and round 4
-    re-ran round 3 unchanged. Nothing new left means the run ends.
+    round) is dropped (W10). Nothing new left means the run ends.
     """
-    # ponytail: union of entities + widest window; per-follow-up scoping needs the
-    # synthesis prompt to emit entity/time_window, which is the main Analyst's side.
     if not sent:
         return []
     if not any(isinstance(f, dict) and f.get("question") for f in follow_ups or []):
         follow_ups = [{"task_id": f"G{n}", "question": g}
                       for n, g in enumerate((g for g in gaps or [] if isinstance(g, str) and g.strip()), 1)]
-    entities = list({(e["type"], e["value"]): e for t in sent for e in t["entity"]}.values())
-    starts = [t["time_window"]["start"] for t in sent]
-    ends = [t["time_window"]["end"] for t in sent]
-    # Every window here already passed `to_task_file`, so `_instant` never returns None.
-    window = {"start": min(starts, key=_instant), "end": max(ends, key=_instant)}
+
+    # Compute fallbacks once
+    legacy_entities = list({(e["type"], e["value"]): e for t in sent for e in t.get("entity", [])}.values())
+    starts = [t["time_window"]["start"] for t in sent if isinstance(t.get("time_window"), dict) and t["time_window"].get("start")]
+    ends = [t["time_window"]["end"] for t in sent if isinstance(t.get("time_window"), dict) and t["time_window"].get("end")]
+    legacy_window = {"start": min(starts, key=_instant), "end": max(ends, key=_instant)} if starts and ends else None
+
+    event = _instant(event_time) if event_time else None
+    if event:
+        s_dt = event - _EVENT_MARGIN
+        e_dt = min(event + _EVENT_MARGIN, datetime.now(UTC))
+        event_window = {
+            "start": s_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": e_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    else:
+        event_window = None
+
     seen = {_task_key(t) for t in asked or []}
-    tasks = [
-        {"task_id": f.get("task_id"), "question": f["question"], "entity": entities, "time_window": window}
-        for f in follow_ups
-        if isinstance(f, dict) and f.get("question")
-    ]
+    tasks = []
+
+    for f in follow_ups:
+        if not (isinstance(f, dict) and f.get("question")):
+            continue
+
+        followed = _find_followed_task(f.get("follows"), sent)
+
+        # Entity resolution:
+        # 1. Explicit entity on the follow-up task
+        # 2. Inherited from the followed task
+        # 3. Alert scope
+        # 4. Legacy fallback (union of sent entities)
+        explicit_entities = _normalize_task_entities(f.get("entity"))
+        if explicit_entities:
+            task_entities = explicit_entities
+        elif followed and followed.get("entity"):
+            task_entities = [dict(e) for e in followed["entity"]]
+        elif alert_scope:
+            task_entities = [dict(e) for e in alert_scope]
+        else:
+            task_entities = legacy_entities
+
+        # Time window resolution:
+        # 1. Explicit window on the follow-up task
+        # 2. Inherited from the followed task
+        # 3. Event time +/- 1h
+        # 4. Legacy fallback (widest window from sent tasks)
+        explicit_window = _normalize_task_window(f.get("time_window"))
+        if explicit_window:
+            task_window = explicit_window
+        elif followed and isinstance(followed.get("time_window"), dict):
+            task_window = dict(followed["time_window"])
+        elif event_window:
+            task_window = event_window
+        else:
+            task_window = legacy_window
+
+        tasks.append({
+            "task_id": f.get("task_id"),
+            "question": f["question"],
+            "entity": task_entities,
+            "time_window": task_window,
+        })
+
     return [t for t in tasks if _task_key(t) not in seen]
 
 
@@ -459,7 +564,7 @@ def _ask(system: str, user: str, stage: str) -> dict:
     global _model
     if _model is None:
         # The Analyst's own sampling, not the sub-analysts' SMARTOPS_ANALYST_* settings.
-        _model = AnalystModel(temperature=0.0, top_p=0.95, max_gen_len=MAX_GEN_LEN)
+        _model = AnalystModel(temperature=0.2, top_p=0.95, max_gen_len=MAX_GEN_LEN)
     r = _model.invoke(system, user)
     reasoning, think, answer = r.generation.partition("</think>")
     if not think:
@@ -543,7 +648,7 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 "  verdict_reasoning: string explanation\n"
                 "  evidence_refs: the <task_id>:<domain> of each broker finding the verdict rests on\n"
                 "  evidence_gaps: list of unanswered questions that materially limit a conclusion\n"
-                "  follow_up_tasks: list of atomic source-answerable questions when status is REQUIRES_INVESTIGATION\n"
+                "  follow_up_tasks: list of atomic follow-up questions when status is REQUIRES_INVESTIGATION (can specify 'follows' to inherit task scope/window, or explicit 'entity' and 'time_window', or null if not applicable)\n"
                 "  status: VERDICT_REACHED or REQUIRES_INVESTIGATION\n"
                 "CRITICAL VERDICT GATE: Declare VERDICT_REACHED ONLY if (top_score >= 85 AND top_score - runner_up >= 20). If either condition fails, you MUST set status='REQUIRES_INVESTIGATION', verdict='REQUIRES_INVESTIGATION', and provide non-empty follow_up_tasks to close the gap. When VERDICT_REACHED, the 'verdict' field MUST match the verdict type of the winning hypothesis with highest score (e.g. if H3 won and H3 is BENIGN, verdict MUST be BENIGN).\n"
                 "Task questions state what was asked, never what happened. Treat only broker findings as evidence. "
@@ -586,7 +691,9 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 break
             asked += link["tasks"]
             tasks = follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"],
-                                    synth.get("evidence_gaps"), asked)
+                                    synth.get("evidence_gaps"), asked,
+                                    event_time=(alert_context.get("normalized_seed") or {}).get("event_time"),
+                                    alert_scope=alert_entities(alert_context))
             if not tasks:
                 emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"},
                      message="No new follow-up tasks (none given, or all already asked)")
