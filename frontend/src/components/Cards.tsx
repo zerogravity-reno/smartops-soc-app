@@ -2,7 +2,7 @@
 // influenced), and React escapes it; nothing here uses dangerouslySetInnerHTML.
 import type { ReactNode } from 'react';
 import type { Contract } from '../contract';
-import { CODE_HEADERS, domState, explain, plural, shortId, VERDICT_COLOR, type DomState } from '../format';
+import { CODE_HEADERS, WITHHELD, domState, explain, plural, shortId, VERDICT_COLOR, type DomState } from '../format';
 import type { Item } from '../run';
 import type { BrokerRun, CtiResult, DomainFinding, EscuResult, Handoff, Handshake, Plan, PayloadBatch, Step, Synthesis, Tokens } from '../types';
 
@@ -223,7 +223,8 @@ function Finding({ f }: { f: DomainFinding }) {
   const obs = f.observations || [], sums = f.summaries || [];
   return (
     <div className="dom"><b>{f.domain}</b><div>
-      <P cls={st === 'bad' ? 'bad' : ''}>{prose}</P>
+      {prose ? <P cls={st === 'bad' ? 'bad' : ''}>{prose}</P> : null}
+      {(f.facts || []).filter(x => WITHHELD.test(x)).map((x, i) => <div className="code-lines" key={i} title="Computed by code">{x}</div>)}
       {code ? <div className="code-lines" title="Computed by code from the rows, not written by the model">{code}</div> : null}
       <Details label={'Observations (' + obs.length + ') and row summaries (' + sums.length + ')'}>{obs.length || sums.length ? <>
         {obs.length ? <div className="xr-mono">{obs.join('\n')}</div> : null}

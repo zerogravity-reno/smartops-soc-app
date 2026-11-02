@@ -2751,6 +2751,10 @@ def _persist_reasoning_traces(
                 # B52 E: lines the claim check dropped, and whether it ran.
                 "unsupported": finding.unsupported,
                 "claim_check": finding.claim_check,
+                # B51: the narrative's own check, and what it dropped or withheld.
+                "narrative_check": finding.narrative_check,
+                "narrative_unsupported": finding.narrative_unsupported,
+                "narrative_original": finding.narrative_original,
             }
             for finding in findings
         ],

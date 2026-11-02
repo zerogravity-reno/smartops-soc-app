@@ -23,7 +23,7 @@ from smartops.budget import Budget, Provider, call_usages, usage_from
 logger = logging.getLogger(__name__)
 
 VERIFY_ROLE = "verify"
-_MAX_OUTPUT_TOKENS = 4_000
+_MAX_OUTPUT_TOKENS = 8_000  # B51: 4_000 (2_000 a request) hit MaxTokensReached re-judging a rerun narrative
 _TURNS = 2
 _CHARS_PER_TOKEN = 4
 
@@ -33,7 +33,8 @@ For each claim, decide only this: do the rows state what the claim says? A claim
 names a value, process, account, address, command or action the rows do not contain is
 unsupported. Do not judge whether the activity is good or bad, and do not weigh what it
 means; wording and order do not matter, only whether the rows say it.
-For an unsupported claim, the reason quotes the part of the row that differs."""
+For an unsupported claim, the reason quotes the part of the row that differs.
+For a supported claim, leave the reason empty."""
 
 
 class Verdict(BaseModel):
@@ -50,7 +51,15 @@ ClaimVerifier = Callable[[list[tuple[str, str]]], Awaitable[list[Verdict] | None
 
 
 def _prompt(claims: list[tuple[str, str]]) -> str:
-    return "\n\n".join(f"CLAIM {i}: {line}\nROWS:\n{rows}" for i, (line, rows) in enumerate(claims))
+    """Identical rows are printed once; later claims point back at the first (B51: a
+    narrative's sentences share the same rows, which would otherwise repeat per claim)."""
+    first: dict[str, int] = {}
+    out = []
+    for i, (line, rows) in enumerate(claims):
+        out.append(f"CLAIM {i}: {line}\nROWS: same as claim {first[rows]}" if rows in first
+                   else f"CLAIM {i}: {line}\nROWS:\n{rows}")
+        first.setdefault(rows, i)
+    return "\n\n".join(out)
 
 
 async def _invoke(choice: Any, prompt: str) -> Any:

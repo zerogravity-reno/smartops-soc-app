@@ -210,6 +210,22 @@ class DomainFinding(BaseModel):
         default="",
         description="'checked', 'skipped: <why>', or '' when no check ran. Audit only.",
     )
+    narrative_check: str = Field(
+        default="",
+        description=(
+            "B51: the narrative checked against the rows it was read from. 'checked', "
+            "'checked; N sentence(s) dropped', 'skipped: <why>; narrative withheld', or '' when "
+            "no check ran. Audit only."
+        ),
+    )
+    narrative_unsupported: list[str] = Field(
+        default_factory=list,
+        description="Narrative sentences the rows do not state, each with the verifier's reason. Audit only.",
+    )
+    narrative_original: str = Field(
+        default="",
+        description="The narrative as first written, kept when the check changed, reran or withheld it. Audit only.",
+    )
     prompt_tokens: int = Field(default=0, ge=0)
     generation_tokens: int = Field(default=0, ge=0)
 
@@ -834,6 +850,8 @@ _FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, 
 # Between a command line's count and parent and its text, which the packer shortens.
 COMMAND_MARK = "; command: "
 NARRATIVE_OMITTED = "narrative omitted for size (full in findings.json)"
+# A fact line, not narrative text: an empty narrative must not read as "looked, nothing there".
+NARRATIVE_WITHHELD = "narrative withheld: the check of it against the rows did not run (full in traces.json)"
 # Still holds win-agent, svcupdate, Invoke-WebRequest and -OutFile on d6b48ef0 (offsets 80-181).
 _SHORT_COMMAND = 200
 _CONTRIBUTIONS = re.compile(r"^~ (\d+) row contributions")

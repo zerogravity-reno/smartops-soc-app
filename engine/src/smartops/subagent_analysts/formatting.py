@@ -496,7 +496,19 @@ def format_row(category: str, row: dict[str, Any]) -> str:
     if formatter is None:
         return _format_generic(row)
     line = _omit_empty_fields(formatter(row))
-    return _format_generic(row) if _projection_is_empty(line) else line
+    if _projection_is_empty(line):
+        return _format_generic(row)
+    # Query aliases can hold evidence even when other columns match the schema.
+    known = {key.lower() for keys in _FIELDS[category].values() for key in keys}
+    known.update(key.lower() for key in _COUNT_FIELD)
+    extra = " ".join(
+        f"{_sanitise(str(key))}={_truncate(_sanitise(str(value)), _CMDLINE_LIMIT)}"
+        for key, value in row.items()
+        if str(key).lower() not in known
+        and str(key).lower().rpartition(".")[2] not in known
+        and value is not None and str(value).strip() not in ("", "-")
+    )
+    return f"{line} {extra}" if extra else line
 
 
 def _event_total(rows: Sequence[dict[str, Any]]) -> int | None:
@@ -897,6 +909,7 @@ def format_vt_verdicts(verdicts: Iterable[VtVerdict], *, index: int = 1) -> str:
         f"{v.kind}={v.value} "
         f"{'FOUND' if v.found else 'unknown'} "
         f"mal={v.malicious} susp={v.suspicious} harmless={v.harmless} "
+        f"undetected={v.undetected} "
         f"rep={v.reputation if v.reputation is not None else '-'}"
         for v in ordered
     ]

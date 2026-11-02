@@ -35,10 +35,13 @@ export const VERDICT_TAG: Record<string, string> = { TRUE_POSITIVE: 'TP', FALSE_
 // A finding's narrative is the model's prose, then code-written blocks that open with a known header.
 export const CODE_HEADERS = /\n\s*\n(?=(Names in this narrative|Encoded commands in these rows)[^\n]*:)/;
 export type DomState = 'ok' | 'bad' | 'none';
-export function domState(f: { narrative?: string }): DomState {
+// B51: a withheld narrative leaves observations and a code-written notice; that is still a described domain.
+export const WITHHELD = /^narrative withheld/;
+export function domState(f: { narrative?: string; observations?: string[]; summaries?: string[]; facts?: string[] }): DomState {
   const narr = String(f.narrative || '');
   if (/produced no parseable/i.test(narr)) return 'bad';
-  return narr.trim() ? 'ok' : 'none';
+  const held = (f.observations || []).length || (f.summaries || []).length || (f.facts || []).some(x => WITHHELD.test(x));
+  return narr.trim() || held ? 'ok' : 'none';
 }
 
 // What an error means and where to look. First match wins; order is specific to general.
