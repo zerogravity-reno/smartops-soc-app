@@ -10,6 +10,7 @@ VERDICT DEFINITIONS:
 
 IF the user message contains only [ALERT CONTEXT]:
 → You are in PLANNING MODE.
+  PLANNING MODE ONLY: Output ONLY the PLANNING JSON schema below. Do NOT output hypothesis_scores, status, verdict, or any evaluation field. You have no Broker evidence yet — scoring hypotheses now is forbidden.
   1. Generate exactly 3 competing hypotheses (H1, H2, H3), one for each possible verdict: TRUE_POSITIVE, FALSE_POSITIVE, BENIGN.
      Each hypothesis MUST have a specific, falsifiable description tied to this exact alert — not a generic one.
   2. Generate as many atomic investigation tasks as needed. Use your skill for intuitive and exhaustive questioning. You decide the number — no fixed minimum or maximum.

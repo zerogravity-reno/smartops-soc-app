@@ -602,10 +602,31 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
 
         # LOOPS 2..N: Broker + Synthesis
         tasks = plan.get("tasks", [])
-        # A verdict already in Loop 1 (the context was unambiguous) skips the broker.
-        if not tasks and plan.get("status") == "VERDICT_REACHED":
-            emit(q, "verdict", plan, message="VERDICT (direct): " + str(plan.get("verdict", "?")))
-            q.put({"type": "done", "message": "Investigation complete"})
+        # G13: if the model answered in evaluation format instead of planning
+        # (no tasks, no hypotheses, but has verdict/scores), correct it once before aborting.
+        _looks_like_eval = (
+            not tasks
+            and not plan.get("hypotheses")
+            and (plan.get("status") == "VERDICT_REACHED" or plan.get("hypothesis_scores"))
+        )
+        if _looks_like_eval:
+            reask_msg = (
+                user_msg
+                + "\n\n[SYSTEM] Your previous response was in EVALUATION format. "
+                "You are in PLANNING MODE: no Broker evidence has been collected yet. "
+                "Output ONLY the PLANNING JSON schema with hypotheses and tasks. "
+                "Do NOT include status, verdict, hypothesis_scores, or evidence_refs."
+            )
+            checkpoint()
+            r1b = _ask(system_prompt, reask_msg, "planning")
+            plan = extract_json(r1b["answer"]) or extract_json(r1b["reasoning"]) or {}
+            plan["reasoning"] = r1b["reasoning"]
+            tokens1b = {"prompt_tokens": r1b["prompt_tokens"], "generation_tokens": r1b["generation_tokens"], "stop_reason": r1b["stop_reason"]}
+            emit(q, "analyst", plan, message="Loop 1 re-ask complete (G13 correction)", tokens=tokens1b)
+            telemetry.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1b, context=clean_context)
+            tasks = plan.get("tasks", [])
+        if not tasks and not plan.get("hypotheses"):
+            q.put({"type": "error", "message": "Loop 1: Analyst returned no tasks and no hypotheses after re-ask — aborting."})
             return
         all_findings = {}
         all_runs = []  # every round's broker runs, for the verdict gate's step check
