@@ -597,37 +597,32 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
         plan = extract_json(r1["answer"]) or extract_json(r1["reasoning"]) or {}
         plan["reasoning"] = r1["reasoning"]
         tokens1 = {"prompt_tokens": r1["prompt_tokens"], "generation_tokens": r1["generation_tokens"], "stop_reason": r1["stop_reason"]}
-        emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
-        telemetry.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1, context=clean_context)
 
         # LOOPS 2..N: Broker + Synthesis
         tasks = plan.get("tasks", [])
-        # G13: if the model answered in evaluation format instead of planning
-        # (no tasks, no hypotheses, but has verdict/scores), correct it once before aborting.
-        _looks_like_eval = (
-            not tasks
-            and not plan.get("hypotheses")
-            and (plan.get("status") == "VERDICT_REACHED" or plan.get("hypothesis_scores"))
-        )
-        if _looks_like_eval:
+        # G13: If the first response has no tasks (whether evaluation-shaped or
+        # hypotheses-only without tasks), re-ask once before emitting or recording.
+        if not tasks:
             reask_msg = (
                 user_msg
-                + "\n\n[SYSTEM] Your previous response was in EVALUATION format. "
-                "You are in PLANNING MODE: no Broker evidence has been collected yet. "
-                "Output ONLY the PLANNING JSON schema with hypotheses and tasks. "
-                "Do NOT include status, verdict, hypothesis_scores, or evidence_refs."
+                + "\n\n[PLANNING INSTRUCTION] Output ONLY the PLANNING JSON schema with 'hypotheses' "
+                "and at least one atomic investigation task in 'tasks' for the Broker to fetch evidence. "
+                "Tasks must include 'task_id', 'question', 'entity', and 'time_window'."
             )
             checkpoint()
             r1b = _ask(system_prompt, reask_msg, "planning")
             plan = extract_json(r1b["answer"]) or extract_json(r1b["reasoning"]) or {}
             plan["reasoning"] = r1b["reasoning"]
-            tokens1b = {"prompt_tokens": r1b["prompt_tokens"], "generation_tokens": r1b["generation_tokens"], "stop_reason": r1b["stop_reason"]}
-            emit(q, "analyst", plan, message="Loop 1 re-ask complete (G13 correction)", tokens=tokens1b)
-            telemetry.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1b, context=clean_context)
+            tokens1 = {"prompt_tokens": r1b["prompt_tokens"], "generation_tokens": r1b["generation_tokens"], "stop_reason": r1b["stop_reason"]}
             tasks = plan.get("tasks", [])
-        if not tasks and not plan.get("hypotheses"):
-            q.put({"type": "error", "message": "Loop 1: Analyst returned no tasks and no hypotheses after re-ask — aborting."})
+
+        # Abort if after re-ask there are still no tasks for the Broker to fetch.
+        if not tasks:
+            q.put({"type": "error", "message": "Loop 1: Analyst returned no tasks after re-ask — aborting."})
             return
+
+        emit(q, "analyst", plan, message="Loop 1 complete", tokens=tokens1)
+        telemetry.record(run_id, "analyst_plan", 1, plan=plan, tokens=tokens1, context=clean_context)
         all_findings = {}
         all_runs = []  # every round's broker runs, for the verdict gate's step check
         evaluations = {}  # round label -> the gated synthesis that read it
