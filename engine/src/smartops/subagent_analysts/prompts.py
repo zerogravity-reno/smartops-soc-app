@@ -412,6 +412,19 @@ or
 when the rows do not support it at all."""
 
 
+# B51: the comment on a rerun. The evidence is already in the turn; this only says which
+# sentences the rows do not state. Wording is translation only: no verdict, no relevance.
+def narrative_feedback(unsupported: list[tuple[str, str]]) -> str:
+    lines = "\n".join(f"{i}: {s}\nREASON: {r}" for i, (s, r) in enumerate(unsupported, 1))
+    return (
+        "\n\nA checker compared your previous answer with the rows above and found the rows "
+        "do not state these sentences of your narrative. Each is numbered, with the checker's reason:\n"
+        f"{lines}\n"
+        "Write the whole answer again in the same format. Every sentence of the narrative, and every "
+        "observation, must be stated by the rows above; leave out anything the rows do not state."
+    )
+
+
 def build_facts_user_turn(scope: Scope, evidence_text: str) -> str:
     """Assemble the hypothesis-blind user turn: fenced scope and evidence only.
 

@@ -153,8 +153,8 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | B48 | Broker | Named-file retrieval completes on unrelated file events | High | Fixed (`ed27070`): `completion.match` names the target; only rows naming it count, and an empty search of each named category confirms absence. siem's prompt and mission keep the filter at every stage. Held on T3 re-run: one filtered EventCode 11/15/29 search, confirmed empty |
 | B49 | Broker | Windows authentication projection drops target and subject account names | High | Fixed (`ed27070`): auth rows read `TargetUserName`/`SubjectUserName` as `user=`/`subject=`. Held on T5 re-run: "SYSTEM is the user and AR-F6EDDB5B-DF6$ is the subject" |
 | B50 | Broker | An unrecognised Splunk payload is projected as a zero-row result set, so a decoding failure can read as "searched, found nothing" and confirm absence | Medium | Fixed (`a6b698a`): 11 saved 400s re-projected, none counted; live re-run `20592fea-L2-T5` showed no regression |
-| B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Open. Candidate (Codex): keep the narrative for audit, send synthesis code-owned evidence instead; decouple `name_expansions` from narrative text first. Changes what the Analyst reads: needs Yousef |
-| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. A–D done on PR #15 (`broker-memory`); E and F next |
+| B51 | Broker / Analyst interface | The sub-analyst narrative always reaches synthesis, and it is where attribution misreads live (which account, which process, what an action means); code-written summaries, facts and rows would carry the same facts without them | Medium | Fixed (11-02, PR #17). Each narrative is checked against its rows; an unsupported sentence goes back to the sub-analyst with the reason (up to 3 reruns), then is dropped. If the check can't run, the narrative is withheld and a notice says so. Live: `4cb82d35`, `e0798f30`, `7d7f76f3`: 0 flagged sentences reached the Analyst, none withheld. Narratives may be shorter |
+| B52 | Broker | Retrieval is never checked: no memory between rounds, no feedback to the siem agent per search, nobody judges whether rows answer the question, sub-analyst claims unchecked against their rows | High | Open. Plan agreed (Claude, Codex, Antigravity, 10-26): run ledger, Broker and siem feedback loops, Broker review per step, claim-support check, VT as a direct tool. A–E done on PR #15 (`broker-memory`); E's narrative gap closed by B51 (PR #17); F next |
 | B53 | Broker | A step with several categories completes when only one of them has rows | High | Fixed (`e65c3e6`, B52 A), on PR #15 |
 | B54 | Broker | "Looked and empty" accepts any empty search in the category, even one that never filtered on the target | High | Fixed (`e65c3e6`, B52 A): absence proven only by a code-run count query; on PR #15 |
 | B55 | Broker | VT is dispatched on the alert's hash for questions that aren't about reputation, and repeated across rounds | High | Open (part of B52 plan F). Seen on Yousef's runs `deb8195a`, `2ae9b697`, `9495f122` |
@@ -988,7 +988,7 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
 - **Class:** B40's (a `-` placeholder counted as a value), on the rendering side. B11's `events=` fix held on the same rows.
 - **Proposed fix:** leave empty fields out of the rendered row instead of writing `-`.
 
-**B52. Retrieval is never checked.** *High. A–D fixed (10-26/27, PR #15); E and F open.*
+**B52. Retrieval is never checked.** *High. A–E fixed (10-26/27, PR #15; E completed by B51, PR #17); F open.*
 - **Evidence:**
   - `c75abeae` L3-FU2 (allowlist question about one IP): 12 searches, 2 exact repeats of round 2 (a data count on the host), 2 on entities the question didn't ask about. Nothing told the Broker these had already run.
   - Yousef's runs (B55) repeat the same VT lookup across rounds.
@@ -1026,6 +1026,11 @@ The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line n
   - **Scripted runs** review on code facts, so bench runs still complete steps.
   - **Checked:** Codex round 1: 5 issues (card not named untrusted; a re-plan carried an acceptance to a new question; truncated queries unmarked; turns; thin retry tests), all fixed. Round 2: 2 issues (later rounds saw a rejected fetch as complete; acceptance without seeing or citing rows). Round 3: a re-plan kept facts from the old rule. Rounds 4–5: rows from a re-asked result still counted. Round 6: a re-dispatch could overtake its re-ask. All fixed; full suite 1,474 passed.
   - **Not checked live.** The live replay should show whether the Broker batches its reviews and how many turns a run takes.
+- **Step E done (PR #15, completed 11-02 on PR #17):**
+  - **Claim check:** each observation is checked against the rows it cites; an unsupported one is removed (`claim_check`, `unsupported` in traces.json).
+  - **Gap:** the removed claim could stay in the narrative. Old code, 3 runs: 6 of 9 removed claims were repeated there.
+  - **Closed by B51:** the narrative gets the same check, with up to 3 reruns, then unsupported sentences are dropped. The verifier's output limit went from 4,000 to 8,000 tokens after a recheck hit it.
+  - **Checked live (11-02):** `4cb82d35`, `e0798f30` (Broker round), `7d7f76f3`: 25 narratives checked, 0 flagged sentences reached the Analyst, none withheld, no output-limit errors.
 
 **B53. A multi-category step completes on one category.** *High. Fixed (`e65c3e6`).*
 - **Evidence:** `evaluate_step` sums rows across all the step's categories (`broker.py:689-694`), so a [processes, file_events] step closes on process rows alone. Found by Codex in the B52 review.
