@@ -118,3 +118,10 @@ async def test_translate_findings_runs_the_sub_analysts_once(monkeypatch):
     again = await broker_module.translate_findings(tool_context=ctx)
     assert calls == ["T1"] and "nothing to review" in out and again == out
     assert list(req.translations) == ["identity", "network", "endpoint"]
+
+
+async def test_rows_fetched_after_translation_make_it_stale(monkeypatch):
+    req = _request([CLEAR])
+    req.collected.append(object())  # a vt_lookup result, say, after translate_findings ran
+    assert _translations_open(req) == ["rows were fetched after translate_findings; call it again"]
+    assert (await _review(req, "accepted")).startswith("status=refused | rows were fetched")
