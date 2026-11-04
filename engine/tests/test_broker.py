@@ -782,6 +782,8 @@ class TestDefaultInvoker:
         assert [t.tool_name for t in kwargs["tools"]] == [
             "plan_fetch",
             "review_step",
+            "translate_findings",  # B14
+            "review_translation",
             "vt_lookup",  # B52 F: a direct tool, not a family dispatch
             "investigate_siem",
             "investigate_edr",

@@ -122,6 +122,7 @@ from .prompts import (
     _ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
+    translation_feedback,
 )
 from .routing import DomainSlice, domains_for_family, route
 from .verify import ClaimVerifier, Verdict
@@ -1207,6 +1208,46 @@ async def _check_claims(
     })
 
 
+# B14: the one code-worded observation. A domain with rows the Analyst gets no account
+# of (a failed translation, a Broker limitation) says so instead of arriving silent.
+UNTRANSLATED = "Explanation incomplete for {domain}: evidence remains untranslated."
+
+
+def _said(finding: DomainFinding, slice_: DomainSlice) -> DomainFinding:
+    if slice_.has_evidence() and not finding.observations:
+        return finding.model_copy(update={"observations": [UNTRANSLATED.format(domain=finding.domain)]})
+    return finding
+
+
+async def translate(
+    report: BrokerReport, scope: Scope, model: AnalystModel, verifier: ClaimVerifier | None = None
+) -> list[DomainFinding]:
+    """One finding per routed slice, in `route`'s fixed order: each sub-analyst run,
+    then B52 E's check of its presence lines against their rows."""
+    slices = route(report, scope).slices()
+    findings = await asyncio.gather(*(asyncio.to_thread(gather_finding, model, scope, s) for s in slices))
+    if verifier is not None:  # B52 E
+        findings = await asyncio.gather(*(_check_claims(f, s, model, verifier) for f, s in zip(findings, slices, strict=True)))
+    return list(findings)
+
+
+async def retranslate(
+    finding: DomainFinding, slice_: DomainSlice, scope: Scope, model: AnalystModel,
+    verifier: ClaimVerifier | None, reason: str,
+) -> DomainFinding:
+    """B14: the one repair the Broker's review allows. The sub-analyst writes again with
+    the reviewer's reason; B52 E checks the new lines. Token counts add up."""
+    rerun = await asyncio.to_thread(
+        gather_finding, model, scope, slice_, translation_feedback(list(finding.observations), reason)
+    )
+    if verifier is not None:
+        rerun = await _check_claims(rerun, slice_, model, verifier)
+    return rerun.model_copy(update={
+        "prompt_tokens": finding.prompt_tokens + rerun.prompt_tokens,
+        "generation_tokens": finding.generation_tokens + rerun.generation_tokens,
+    })
+
+
 async def gather(
     report: BrokerReport,
     scope: Scope,
@@ -1217,6 +1258,7 @@ async def gather(
     hypothesis: str | None = None,
     trace_sink: Callable[[list[DomainFinding]], None] | None = None,
     verifier: ClaimVerifier | None = None,
+    translated: list[DomainFinding] | None = None,
 ) -> HypothesisFindings:
     """Run the three blind analysts and attach their findings to the hypothesis.
 
@@ -1260,16 +1302,15 @@ async def gather(
 
     **`verifier`** (B52 E) checks each finding's presence lines against their
     cited rows (`_check_claims`); `None` skips the check.
+
+    **`translated`** (B14): findings the Broker already translated and reviewed
+    (`translate`, `retranslate`), one per routed slice in `route`'s order. When
+    given, no model is called here.
     """
-    routed = route(report, scope)
-    slices = routed.slices()
-    findings = await asyncio.gather(
-        *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
-    )
-    if verifier is not None:  # B52 E
-        findings = await asyncio.gather(
-            *(_check_claims(f, s, model, verifier) for f, s in zip(findings, slices, strict=True))
-        )
+    slices = route(report, scope).slices()
+    # B14: the Broker translated and reviewed these inside its loop; reuse them.
+    findings = translated if translated is not None else await translate(report, scope, model, verifier)
+    findings = [_said(f, s) for f, s in zip(findings, slices, strict=True)]
     # Before `_as_record` below drops `reasoning_trace`, which is the last
     # point at which anything can.
     if trace_sink is not None:
