@@ -63,7 +63,7 @@ def _report() -> BrokerReport:
     )
 
 
-def test_uncited_sets_summaries_reach_the_payload():
+def test_uncited_sets_summaries_stay_in_the_record():
     scope = Scope(
         entities=[Entity(kind="user", value="bostoll")],
         time_window=(datetime(2018, 8, 20, tzinfo=UTC), datetime(2018, 8, 21, tzinfo=UTC)),
@@ -77,8 +77,9 @@ def test_uncited_sets_summaries_reach_the_payload():
     assert "auth_events#2" in identity.summaries[1]
     assert "203.0.113.9" in identity.summaries[1]  # never cited, still there
 
+    # B14: the record keeps them for the Broker's review; the Analyst gets the observations.
     wire = next(f for f in findings.for_analyst().findings if f.domain == "identity")
-    assert wire.summaries == identity.summaries
+    assert not hasattr(wire, "summaries") and wire.observations == identity.observations
 
 
 class _CitesOnlyTheSecondSet(_CitesOnlyTheFirstSet):

@@ -111,7 +111,7 @@ class TestTheAnalystTierIsTraced:
 
         a = _by_name(spans)["smartops.analyst.identity"].attributes
 
-        assert a["analyst.narrative_chars"] == len("repeated failures for one account.")
+        assert a["analyst.observation_chars"] == len("a burst of failures [auth_events#1]")
         assert a["analyst.citation_count"] == 1
         assert a["analyst.observation_count"] == 1
         # OTel GenAI semantic-convention names, so a collector that already reads
