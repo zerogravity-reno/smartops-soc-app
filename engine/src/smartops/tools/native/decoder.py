@@ -23,8 +23,13 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from smartops.subagent_analysts.formatting import _CMDLINE_LIMIT, _field, _first, _row_weight, _sanitise, _truncate
+from smartops.subagent_analysts.formatting import _field, _first, _row_weight, _sanitise, _truncate
 from smartops.tools.native.virustotal import is_private_ip
+
+# A command line that fetches from a URL or writes a file: what a download looks like (B14).
+FETCHES = re.compile(r"[a-z]+://|-OutFile\b|Out-File\b|DownloadFile|DownloadString|-urlcache", re.I)
+# Decoded text reaches the translator whole enough to name a URL and an output path (B14).
+_DECODED_LIMIT = 400
 
 # `-e`, `-ec`, `-enc`, `-encodedcommand` and every prefix PowerShell accepts, with
 # `-` or `/`. The argument check below, not this pattern, rejects `-ExecutionPolicy`.
@@ -135,7 +140,7 @@ def encoded_in(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         for blob, plain in blobs.items():
             entry = found.setdefault(
                 signature(blob),
-                {"blob": blob, "plain": _truncate(_sanitise(_unnest(plain)), _CMDLINE_LIMIT), "events": 0, "parents": {}},
+                {"blob": blob, "plain": _truncate(_sanitise(_unnest(plain)), _DECODED_LIMIT), "events": 0, "parents": {}},
             )
             weight = _row_weight(row)
             entry["events"] += weight

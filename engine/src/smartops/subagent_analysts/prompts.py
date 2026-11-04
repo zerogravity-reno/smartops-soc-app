@@ -34,7 +34,7 @@ guarantee, and it is structural rather than a promise about callers.
 from __future__ import annotations
 
 from contracts import AnalystDomain, Scope
-from smartops.guards import fenced
+from smartops.guards import escape_untrusted, fenced
 from smartops.subagent_analysts.formatting import to_utc
 
 # Verbatim from the imported model's tokenizer_config.json chat_template (the
@@ -98,18 +98,18 @@ SECURITY CONSTRAINTS
 # which rows deserve listing: over the ceiling, group more coarsely rather than
 # dropping a set.
 
-_NARRATIVE_ANSWER_BLOCK = """\
-NARRATIVE: <plain English: what these rows show, naming the hosts, accounts,
-addresses and processes. Group like rows. No quantities and no times: code attaches
-those. Identifiers (event codes, ports, addresses) are fine. What happened, not what
-it means.>
+_ANSWER_BLOCK = """\
 OBSERVATIONS:
-- <one distinct thing the rows state> [header_id]
+- <what one group of rows shows: the hosts, accounts, processes and addresses, and what it does> [header_id]
 - <one line per distinct thing; repeat as many times as you have>
 CITATIONS: <comma-separated full header ids you actually used, e.g. auth_events#1>"""
-"""The exact block every reply must end with, NARRATIVE first.
+"""The exact block every reply must end with.
 
-Defined once so the first-ask instruction (`_NARRATIVE_FOOTER`, below) and the
+B14 (2026-11-04): the NARRATIVE field went. The observations are the whole account the
+Analyst reads; code evidence no longer travels beside them, so a line must say what the
+rows do rather than leave it to a code list.
+
+Defined once so the first-ask instruction (`_ANSWER_FOOTER`, below) and the
 re-ask `analyze._invoke_with_one_reask` sends on an unparseable first reply
 cannot state two different field sets or orders. Both consumers must read THIS
 constant rather than restate it: a second hand-written copy drifted out of step
@@ -122,16 +122,14 @@ _ANSWER_RULES = """\
 HOW TO WRITE EACH LINE. Every rule below fixes something a real reply got wrong on the
 2026-09-05 run; follow them exactly.
 
-1. NARRATIVE is PROSE. No numbered lists, no "First… Second… Sixth…", no headings.
-   Name the sets you describe by their header id as you go — prose naming no set cannot
-   be checked against anything. (How long, and how the paragraphs map to sets, is
-   already set out above; this rule is about the prose, not the grouping.)
+1. YOUR OBSERVATIONS ARE THE WHOLE ACCOUNT. Nothing else you write reaches the reader,
+   and no list from code travels beside them. Every set with rows appears in some line.
+   A line about a command says what it does: the program, any URL or address it contacts
+   and any file it writes, each copied exactly as printed.
 
 2. Each OBSERVATIONS line ends with the header id(s) it rests on, in brackets, each
    carrying its full category prefix: `[auth_events#6] [auth_events#9]`, never
    `[auth_events#6, #9]` and never a bare `#9`.
-
-Rules 3 to 5 are for OBSERVATIONS. The NARRATIVE states no times and no counts at all.
 
 3. TIMES ARE COPIED, NEVER CONVERTED. Take the range verbatim from the set's computed
    summary — if it reads `2018-08-20T13:35:34Z`, write exactly that. Do not re-render it
@@ -148,14 +146,14 @@ Rules 3 to 5 are for OBSERVATIONS. The NARRATIVE states no times and no counts a
    three distinct anything-else. Quote the field name the summary used."""
 """Rules both the first ask and the re-ask must state identically.
 
-Separate from `_NARRATIVE_ANSWER_BLOCK`, which is the literal shape of the block, and
-included by BOTH `_NARRATIVE_FOOTER` and `analyze._FINDING_REASK` for the reason that
+Separate from `_ANSWER_BLOCK`, which is the literal shape of the block, and
+included by BOTH `_ANSWER_FOOTER` and `analyze._FINDING_REASK` for the reason that
 constant's own docstring records: a second hand-written copy of what the answer must look
 like drifted out of step once and cost a live run its answer. The rules are as
 divergence-prone as the field list, and the re-ask is the LAST thing the model reads.
 
-Every numbered rule is a defect from the 2026-09-05 replay, in order: identity wrote three
-paragraphs naming no set; two domains of three wrote bare `#N` continuations, which used
+Rule 1 is B14 (2026-11-04): d6b48ef0's endpoint narrative said "update downloads" and
+named no URL or file. The rest are defects from the 2026-09-05 replay, in order: two domains of three wrote bare `#N` continuations, which used
 to be discarded silently; identity rendered the row value `15:35:34+02:00` as
 `11:35:34 AM UTC`, which is not a reformatting but wrong arithmetic; endpoint wrote
 `between unknown and unknown times` seven times because the prompt forbade inventing a
@@ -167,7 +165,7 @@ Rule 4 is the load-bearing one for rule 3's prohibition. A prohibition with no p
 alternative is what produced `unknown and unknown` -- the model had a slot, no value, and
 no sanctioned way to say so."""
 
-_NARRATIVE_FOOTER = f"""\
+_ANSWER_FOOTER = f"""\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
 used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
 `dns_resolutions#1`, `processes#1`, `file_events#1`, `reputation#1`, or `uncategorised#3` — cite
@@ -184,28 +182,25 @@ CRITICAL CITATION RULES:
 - Cite EVERY set a statement rests on. A sentence taking its count from one set and its
   times from another, or spanning `processes#2` through `processes#6`, cites all of them.
 - A set whose header says `rows=0` holds NOTHING. Never attach a host, address, account,
-  time or count to it. Code already lists every empty search for the reader, so leave
-  `rows=0` sets out of your reply entirely.
+  time or count to it. Leave `rows=0` sets out of your reply entirely.
 
 NUMBERS AND TIMES ARE NEVER CALCULATED BY YOU. Code has already counted every set and
-found its time range; those figures reach the reader without you. So:
-- NARRATIVE carries no quantities and no times at all. Say what happened and who and
-  what was involved; leave how many and when to the code. Identifiers such as event
-  codes, ports and addresses are not quantities and may be named.
-- An OBSERVATION may carry a number or a time only by copying it exactly as printed in a
-  header (`rows=`, `events=`) or a computed summary. Never count lines, add a row's `events=`
-  values, subtract, split a total, or work out a range from the printed rows.
+found its time range, in each set's computed summary. An observation may carry a number
+or a time only by copying it exactly as printed in a header (`rows=`, `events=`), a
+computed summary or the <computed> block. Never count lines, add a row's `events=`
+values, subtract, split a total, or work out a range from the printed rows.
 
-HOW LONG THE NARRATIVE SHOULD BE: one short paragraph per KIND of activity, in the order
-the sets are printed — sets showing the same kind of rows share one paragraph, cited to
-each of them. Every set with rows must appear in it; never drop one to make room. Never
-retype a long value: a command line, script or URL is named by its first few words and
-cited, because code passes the full text on. Keep the whole narrative under 400 words,
-however many sets you were given.
+WHAT TO COVER: one line per KIND of activity, in the order the sets are printed — sets
+showing the same kind of rows share one line, cited to each of them. Every set with rows
+must appear in some line; never drop one to make room. A long value (a command line,
+script or URL) is not retyped whole: say what it does, and copy exactly the parts that
+say so — the program, any URL or address it contacts, any file it writes, and its parent.
+Each entry of the <computed> block (decoded commands, command lines, file hashes, private
+addresses) belongs in the line describing the rows it came from.
 
 UNTAGGED SETS: a header reading `uncategorised#N` is a set whose query no category could
 be inferred from, so it MAY HOLD ANOTHER DOMAIN'S DATA, or estate bookkeeping rather than
-investigation rows. Give each one a single sentence saying what it contains, cited — do
+investigation rows. Give each one a single line saying what it contains, cited — do
 not elaborate on it, and do not attribute what it holds to your own domain.
 
 {_ANSWER_RULES}
@@ -222,7 +217,7 @@ whole set, or several sets, cited to each of them — rather than deciding which
 deserve a line and dropping the rest.
 
 Reason step by step, then end your reply with EXACTLY this block and nothing after it:
-{_NARRATIVE_ANSWER_BLOCK}"""
+{_ANSWER_BLOCK}"""
 
 # B11 / live run dce405e5: the 8B analysts still called commands "suspicious", called
 # `splunkd.exe` parent paths "endpoints", and reported 10,849 events as "10,849
@@ -233,8 +228,9 @@ Reason step by step, then end your reply with EXACTLY this block and nothing aft
 # VALUE came from. The test that bans judgement vocabulary strips this block first,
 # because naming the banned words here is the point of it.
 _DESCRIBE_ONLY_BLOCK = """\
-DESCRIBE ONLY. Say what the rows state and stop. Never characterise it, never say what
-it means, never suggest what it could be.
+DESCRIBE ONLY. Say what the rows state and what each event does ("downloads a file from
+<url> to <path>", "decodes to a command that …"), then stop. Never judge it: never say
+what it means, never suggest what it could be.
 - Never write any of these words or phrases: suspicious, malicious, benign, normal,
   abnormal, unusual, anomalous, legitimate, expected, concerning, notable, likely,
   possibly, probably, may indicate, could be, consistent with, suggests, indicative of.
@@ -278,9 +274,9 @@ has no time range and you must not state one."""
 def _grouping_block(kinds: str, fields: str, per: str) -> str:
     return f"""\
 COMPRESS BY GROUPING, NEVER BY SELECTING. There will usually be far more rows than you
-can retype. Describe each KIND of set ({kinds}) in one or two sentences: name the values
+can retype. Describe each KIND of set ({kinds}) in one or two lines: name the values
 its computed summary lists first for {fields}, and cite the set. Never write one
-sentence per {per}: code passes the full lists on.
+line per {per}: group them.
 Never drop a set because it looks uninteresting — say what it contains."""
 
 
@@ -312,7 +308,7 @@ GROUNDING RULES (do not hallucinate)
 
 {_FACTS_SECURITY_BLOCK}
 
-{_NARRATIVE_FOOTER}"""
+{_ANSWER_FOOTER}"""
 
 _NETWORK_FACTS_BODY = f"""\
 Your task in this investigation is to act as the network detection and response
@@ -345,7 +341,7 @@ GROUNDING RULES (do not hallucinate)
 
 {_FACTS_SECURITY_BLOCK}
 
-{_NARRATIVE_FOOTER}"""
+{_ANSWER_FOOTER}"""
 
 _ENDPOINT_FACTS_BODY = f"""\
 Your task in this investigation is to act as the endpoint and host-forensics analyst.
@@ -376,7 +372,7 @@ GROUNDING RULES (do not hallucinate)
 
 {_FACTS_SECURITY_BLOCK}
 
-{_NARRATIVE_FOOTER}"""
+{_ANSWER_FOOTER}"""
 
 _FACTS_BODY_BY_DOMAIN: dict[AnalystDomain, str] = {
     "identity": _IDENTITY_FACTS_BODY,
@@ -396,7 +392,7 @@ def facts_system_prompt(domain: AnalystDomain) -> str:
 
 # B52 E: a line the claim check found its rows do not state goes back once, with the
 # rows and the checker's reason. Its own short system prompt: the facts body demands a
-# whole NARRATIVE/OBSERVATIONS block, which is not what this reply is.
+# whole OBSERVATIONS block, which is not what this reply is.
 def claim_reask_system_prompt() -> str:
     return f"{METIS_PREAMBLE}\n\n{_DESCRIBE_ONLY_BLOCK}"
 
@@ -412,30 +408,42 @@ or
 when the rows do not support it at all."""
 
 
-# B51: the comment on a rerun. The evidence is already in the turn; this only says which
-# sentences the rows do not state. Wording is translation only: no verdict, no relevance.
-def narrative_feedback(unsupported: list[tuple[str, str]]) -> str:
-    lines = "\n".join(f"{i}: {s}\nREASON: {r}" for i, (s, r) in enumerate(unsupported, 1))
+# B14: the Broker's comment on a translation it re-asked. The evidence is already in the
+# turn; this says what the previous observations left unexplained. The reason is written
+# by a model that read attacker-influenced rows, so it is fenced and escaped.
+def translation_feedback(previous: list[str], reason: str) -> str:
     return (
-        "\n\nA checker compared your previous answer with the rows above and found the rows "
-        "do not state these sentences of your narrative. Each is numbered, with the checker's reason:\n"
-        f"{lines}\n"
-        "Write the whole answer again in the same format. Every sentence of the narrative, and every "
-        "observation, must be stated by the rows above; leave out anything the rows do not state."
+        "\n\nA reviewer compared your previous observations with the evidence above and found "
+        "they do not explain all of it. Your previous observations:\n"
+        + fenced("previous_observations", escape_untrusted("\n".join(previous) or "(none)"))
+        + "\nWhat the reviewer found missing:\n"
+        + fenced("review", escape_untrusted(reason))
+        + "\nWrite the whole answer again in the same format. Every observation must be stated "
+        "by the rows above, and every set with rows must be explained."
     )
 
 
-def build_facts_user_turn(scope: Scope, evidence_text: str) -> str:
-    """Assemble the hypothesis-blind user turn: fenced scope and evidence only.
+def build_facts_user_turn(scope: Scope, evidence_text: str, computed: list[str] | None = None) -> str:
+    """Assemble the hypothesis-blind user turn: fenced scope, evidence and computed lines.
 
     No hypothesis is included anywhere in this turn -- that is the entire point
     of the Tier-1 path. Reuses `_render_scope()` and `guards.fenced()`, same as
     `build_user_turn()`.
+
+    `computed` (B14) is what code worked out over every row: decoded commands, full
+    command lines, file hashes and private addresses. The observations are the Analyst's
+    only account, so the translator reads these before it writes, not after.
     """
+    block = (
+        "\n\nComputed by code over every row of the evidence above (decoded, counted and "
+        "complete where the rows are cut short):\n" + fenced("computed", "\n".join(computed))
+        if computed else ""
+    )
     return (
         fenced("scope", _render_scope(scope))
         + "\n\n"
         + fenced("evidence", evidence_text)
+        + block
         + "\n\nDescribe what the evidence above shows, grouping like rows. "
         "Give your reasoning, then the required block."
     )

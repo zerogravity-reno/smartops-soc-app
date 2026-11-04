@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 
 from smartops.subagent_analysts.analyze import (
     _drop_unsupported_figures,
-    _drop_unsupported_sentences,
     _finalize_finding,
     gather,
     gather_finding,
@@ -280,7 +279,7 @@ class TestGatherFinding:
         )
         finding = gather_finding(model, _scope(), slice_)
         assert model.calls == 2
-        assert finding.narrative == "one logon."
+        assert finding.observations
         assert not any(", , ," in o for o in finding.observations)
 
     _LOOP = "Host H ran processes under user U, started by OneDrive.exe; one command line, repeated."
@@ -311,14 +310,9 @@ class TestGatherFinding:
         assert finding.citations == ["auth_events#1"]
         assert finding.narrative.count(self._LOOP) == 1
 
-    def test_a_reply_with_no_narrative_triggers_the_reask(self):
-        """The narrative is the product, so its absence is a parse failure.
-
-        The re-ask's last instruction is `_NARRATIVE_ANSWER_BLOCK` itself, which
-        leads with NARRATIVE -- so this is the path that recovers it rather than
-        the parser quietly substituting `""`.
-        """
-        without = "</think>OBSERVATIONS:\n- x [auth_events#1]\nCITATIONS: auth_events#1"
+    def test_a_reply_with_no_observations_triggers_the_reask(self):
+        """B14: the observations are the product, so their absence is a parse failure."""
+        without = "</think>NARRATIVE: one logon.\nCITATIONS: auth_events#1"
         model = _SequenceModel([without, _finding_gen("one logon.", "x", "auth_events#1")])
         slice_ = DomainSlice(
             domain="identity",
@@ -326,7 +320,7 @@ class TestGatherFinding:
         )
         finding = gather_finding(model, _scope(), slice_)
         assert model.calls == 2
-        assert finding.narrative == "one logon."
+        assert finding.observations == ["x [auth_events#1]"]
 
     def test_both_attempts_unparseable_yields_an_empty_finding_that_says_why(self):
         model = _SequenceModel(["prose one", "prose two"])
@@ -1536,31 +1530,13 @@ class TestTheReaskNamesWhatBroke:
         assert "CITATIONS:" in second
 
 
-def test_narrative_sentences_with_figures_no_summary_prints_are_dropped():
-    # c7dbf51d T5: "18 events under AR-F6EDDB5B-DF6$, 11 under SYSTEM" over rows
-    # whose summaries print neither; the path's version digits are not figures.
-    rows = [{"Processes.process_path": r"C:\Edge\154.0.4258.62\setup.exe", "count": "3"}]
-    slice_ = DomainSlice(domain="endpoint", siem_sets=[("processes", ResultSet(query="q", row_count=1, rows=rows))])
-    narrative = (
-        r"Host ran C:\Edge\154.0.4258.62\setup.exe. "
-        "It accounted for 18 events under SYSTEM and 11 under Mariam.\n\nNothing else ran."
-    )
-
-    kept = _drop_unsupported_sentences(narrative, slice_, "endpoint")
-
-    assert kept == r"Host ran C:\Edge\154.0.4258.62\setup.exe. Nothing else ran."
-    assert _drop_unsupported_sentences("Host ran setup.exe.", slice_, "endpoint") == "Host ran setup.exe."
-
-
 def test_a_protocol_the_rows_do_not_carry_is_dropped():
     # B11, 20592fea replay: "used UDP port 5353" over rows grouped by address and port only.
     def network(row):
         return DomainSlice(domain="network", siem_sets=[("connections", ResultSet(query="q", row_count=1, rows=[row]))])
 
-    narrative = "Traffic went to 224.0.0.251:5353. These connections used UDP port 5353."
     dest_only = network({"DestinationIp": "224.0.0.251", "DestinationPort": "5353"})
-    assert _drop_unsupported_sentences(narrative, dest_only, "network") == "Traffic went to 224.0.0.251:5353."
     assert _drop_unsupported_figures(["Used UDP to port 5353 [connections#1]"], dest_only, "network") == []
 
     with_proto = network({"DestinationIp": "224.0.0.251", "DestinationPort": "5353", "transport": "udp"})
-    assert _drop_unsupported_sentences(narrative, with_proto, "network") == narrative
+    assert _drop_unsupported_figures(["Used UDP to port 5353 [connections#1]"], with_proto, "network") != []

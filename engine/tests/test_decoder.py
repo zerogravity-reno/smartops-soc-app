@@ -2,10 +2,10 @@
 
 import base64
 
-from contracts import AnalystPayloadBatch, DomainFinding, HypothesisFindings, ResultSet, pack_for_analyst
+from contracts import DomainFinding, ResultSet
 
 from contracts.reasoning import ADDRESSES_FOOTER, COMMANDS_FOOTER, ENCODED_FOOTER, HASHES_FOOTER
-from smartops.subagent_analysts.analyze import ENCODED_LINE_CAP, _as_record
+from smartops.subagent_analysts.analyze import ENCODED_LINE_CAP, _as_record, translator_lines
 from smartops.subagent_analysts.routing import DomainSlice
 from smartops.tools.native.decoder import commands_in, encoded, signature
 
@@ -127,26 +127,19 @@ def test_hashes_and_private_addresses_in_the_rows_are_facts():
     assert addresses == ["~ 192.168.40.211: private address, not internet-routable, 1 events"]
 
 
-def test_parent_path_decoded_command_and_hash_survive_the_serialized_handoff():
-    # B1/B10/B22: delivery is complete only when the final Analyst message keeps the facts.
+def test_parent_path_decoded_command_and_hash_reach_the_translator_and_the_record():
+    # B1/B10/B22, and B14: the translator reads them before it writes, and the record
+    # keeps them for the Broker's review. Since B14 they no longer cross to the Analyst.
     rows = [{**ROW, "ParentImage": r"C:\Windows\explorer.exe"},
             {"EventCode": "1", "Image": ONEDRIVE, "ParentImage": DESKTOP,
              "Hashes": f"SHA256={ONEDRIVE_SHA}"}]
     slice_ = DomainSlice(domain="endpoint", siem_sets=[
         ("processes", ResultSet(query="q", row_count=len(rows), rows=rows)),
     ])
-    finding = DomainFinding(domain="endpoint", narrative="splunkd.exe launched PowerShell.",
-                            observations=["PowerShell ran an encoded command [processes#1]."])
-    record = _as_record(finding, slice_)
-    task = HypothesisFindings(task_id="T1", run_id="r", hypothesis_id="T1",
-                              hypothesis="What ran?", findings=[record])
-    batch = AnalystPayloadBatch(batch_id="b", payloads=pack_for_analyst([task], 8000))
-
-    sent = AnalystPayloadBatch.model_validate_json(batch.model_dump_json()).payloads[0].findings[0]
-
-    facts = "\n".join(sent.facts)
+    finding = DomainFinding(domain="endpoint", observations=["splunkd.exe launched PowerShell [processes#1]."])
+    facts = "\n".join(_as_record(finding, slice_).facts)
     assert DESKTOP in facts
-    assert "decodes to: $env:username" in facts
-    assert any(ONEDRIVE_SHA in line and "OneDrive.exe" in line for line in sent.facts)
-    assert sent.observations == finding.observations
-    assert len(batch.model_dump_json(indent=2)) <= 8000
+    assert "decodes to: $env:username" in facts and ONEDRIVE_SHA in facts
+    computed = "\n".join(translator_lines(slice_))
+    assert "decodes to: $env:username" in computed and ONEDRIVE_SHA in computed
+

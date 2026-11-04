@@ -56,7 +56,7 @@ that import and with it `blind_compare`, the harness whose measurements are the
 evidence the blind design rests on."""
 
 # Every label the prompts emit: `_VERDICT_FOOTER` (`shown.py`) for a
-# hypothesis-shown verdict, `_NARRATIVE_ANSWER_BLOCK` (`prompts.py`) for a blind
+# hypothesis-shown verdict, `_ANSWER_BLOCK` (`prompts.py`) for a blind
 # finding. Closed on purpose: the terminator used to be a generic uppercase run,
 # `[A-Z][A-Z ]+:`, which under IGNORECASE matches any ordinary prose line ending
 # in a colon -- so a rationale reading "Note the following: ..." was cut at "Note
@@ -234,7 +234,7 @@ def _parse_citations(answer: str) -> list[str]:
 
 
 class FindingParseError(ValueError):
-    """The generation carried no NARRATIVE, or no OBSERVATIONS and no CITATIONS."""
+    """The generation carried no OBSERVATIONS, or an observation that states nothing."""
 
 
 # An observation that states nothing. The 2026-09-02 consent run's identity
@@ -319,19 +319,12 @@ def _check_observations(observations: list[str], domain: AnalystDomain) -> None:
 def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
     """Parse a hypothesis-blind generation into a `DomainFinding`.
 
-    Two things must be present, and neither is defaulted when it is not:
-
-    - **NARRATIVE**, because it is now the product. This tier's whole job is to
-      turn rows into plain English; a reply without the translation is not a lax
-      finding, it is an empty one. Defaulting it to `""` would be the 2026-08-30
-      defect one field over -- that run defaulted an absent `DISPOSITION` to
-      `inconclusive` and put a verdict no model had formed onto the wire, and a
-      silent `""` would put a silence no model had produced there instead.
-    - **OBSERVATIONS or CITATIONS**, either one. Still an OR, and still laxer
-      than `parse_verdict`, which raises without a stance: a reply that gave
-      grounded observations but no trailing `CITATIONS:` line has read its rows,
-      and `analyze._finalize_finding` recovers the ids from the observations'
-      inline `[header_id]`s anyway.
+    **OBSERVATIONS** must be present: since B14 (2026-11-04) they are the whole
+    translation the Analyst reads, so a reply without them is an empty finding, not
+    a lax one. A missing `CITATIONS:` line is not an error: `analyze._finalize_finding`
+    recovers the ids from the observations' inline `[header_id]`s. A stray
+    `NARRATIVE:` block from the model is kept on the record (audit only) and never
+    required.
 
     Raising is not discarding. `analyze._invoke_with_one_reask` turns a
     `FindingParseError` into one bounded re-ask whose last instruction is the
@@ -344,8 +337,8 @@ def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
     narrative = narrative_match.group(1).strip() if narrative_match else ""
     # `_LABEL_AT_START_RE`: see its own comment. An empty `NARRATIVE:` line
     # followed by the next label captures that label instead of nothing.
-    if not narrative or _LABEL_AT_START_RE.match(narrative):
-        raise FindingParseError(f"no NARRATIVE block found in {domain} analyst output")
+    if _LABEL_AT_START_RE.match(narrative):
+        narrative = ""
 
     observations_match = _FINDING_OBSERVATIONS_RE.search(answer)
     observations = []
@@ -360,10 +353,8 @@ def parse_finding(generation: str, *, domain: AnalystDomain) -> DomainFinding:
                 observations.append(_expand_bare_ids(line))
 
     citations = _parse_citations(answer)
-    if not observations and not citations:
-        raise FindingParseError(
-            f"no OBSERVATIONS or CITATIONS block found in {domain} analyst output"
-        )
+    if not observations:
+        raise FindingParseError(f"no OBSERVATIONS block found in {domain} analyst output")
 
     _check_observations(observations, domain)
 
