@@ -119,6 +119,7 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
     """
     event = _instant(event_time)
     out, dropped = [], []
+    seen_tids = set()
     for n, task in enumerate(tasks, 1):
         if not isinstance(task, dict):
             dropped.append({"task_id": None, "why": "not a task object", "task": task})
@@ -192,7 +193,16 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
             # Sent without them, and said so -- a silently narrowed task reads as the one asked.
             dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
                             "why": f"sent without entities the broker cannot search on: {', '.join(map(str, unusable))}"})
-        task_id = f"{run_id}-L{loop}-{task.get('task_id') or f'T{n}'}"
+        raw_tid = str(task.get('task_id') or f'T{n}').strip()
+        safe_tid = re.sub(r'[^A-Za-z0-9_\-]', '_', raw_tid)
+        candidate_tid = f"{run_id}-L{loop}-{safe_tid}"
+        final_tid = candidate_tid
+        counter = 1
+        while final_tid in seen_tids:
+            counter += 1
+            final_tid = f"{candidate_tid}_{counter}"
+        seen_tids.add(final_tid)
+        task_id = final_tid
         out.append({
             "task_id": task_id,
             # Unique per task, as `TaskInputFile` requires; the plan decouples
@@ -277,6 +287,8 @@ def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None, aske
     if not sent:
         return []
     if not any(isinstance(f, dict) and f.get("question") for f in follow_ups or []):
+        if isinstance(gaps, str):
+            gaps = [gaps]
         follow_ups = [{"task_id": f"G{n}", "question": g}
                       for n, g in enumerate((g for g in gaps or [] if isinstance(g, str) and g.strip()), 1)]
 
@@ -655,8 +667,10 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
             plan_slim = {"hypotheses": plan.get("hypotheses", []), "tasks": tasks[:6],
                          "semantic_alignment": plan.get("semantic_alignment", "")}
             hyp_ids = [h.get("id", "") for h in plan_slim["hypotheses"]] or ["H1", "H2", "H3"]
+            event_time_str = (alert_context.get("normalized_seed") or {}).get("event_time") or "UNKNOWN"
             eval_header = (
                 "YOU ARE NOW IN EVALUATION MODE.\n"
+                f"Incident Event Time: {event_time_str} (UTC)\n"
                 f"The investigation has {len(hyp_ids)} hypotheses with IDs: {', '.join(hyp_ids)}.\n"
                 "Output ONLY the EVALUATION JSON schema. Required fields:\n"
                 "  hypothesis_scores: {" + ", ".join(f'"{h}": <0-100>' for h in hyp_ids) + "}\n"
