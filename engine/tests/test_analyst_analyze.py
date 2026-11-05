@@ -835,19 +835,12 @@ class TestFindingGroundingGate:
         assert out.citations == ["auth_events#1"]
 
 
-class TestEmptyCitedBlocksAreSurfacedNotPunished:
-    async def test_observations_resting_only_on_empty_blocks_warn(self, caplog):
-        """Defect (b): visible, deliberately not removed.
-
-        The warning used to key off `disposition != "inconclusive"` -- "the
-        analyst committed to something". With the disposition gone the same
-        defect is stated directly: this tier commits to something by writing an
-        observation, so an observation standing on nothing but zero-row blocks is
-        the case worth surfacing. An empty result set is legitimate negative
-        evidence, so it is surfaced and not punished; only reading the claim
-        against the rows could tell the two apart, and that is not decidable
-        here.
-        """
+class TestEmptySetsAreNotTranslated:
+    async def test_a_slice_of_only_empty_sets_is_not_sent_to_the_model(self, caplog):
+        """300464d7 T3: shown only `rows=0` headers, without the query that scoped them,
+        the 8B wrote "No network connections were recorded" for searches filtered to
+        one process. An all-empty slice now takes the empty-finding branch; the
+        record's footer still names the empty search."""
         siem = SubtaskResult(
             task_id="t1:siem:1",
             status=SubtaskStatus.OK,
@@ -871,15 +864,8 @@ class TestEmptyCitedBlocksAreSurfacedNotPunished:
             }))
 
         identity = next(f for f in findings.findings if f.domain == "identity")
-        # Surfaced to the consumer...
-        assert identity.exhibits[0].row_count == 0
-        assert any("zero rows" in r.getMessage() for r in caplog.records)
-        # ...but NOT punished: an empty set is legitimate negative evidence, so
-        # the prose and the observation both survive intact; code names the
-        # empty search after it.
-        assert identity.narrative == "The query for bostoll's logons returned no rows."
+        assert (identity.narrative, identity.observations, identity.exhibits) == ("", [], [])
         assert "Searches that returned no rows:" in identity.facts
-        assert identity.observations == ["bostoll logged on [auth_events#1]"]
 
     async def test_a_finding_with_no_observations_does_not_warn(self, caplog):
         """The re-keyed condition needs both halves, or every empty domain warns."""

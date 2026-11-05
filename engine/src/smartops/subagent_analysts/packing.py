@@ -337,8 +337,12 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
                 text=format_vt_verdicts(slice_.vt_verdicts, index=1),
             )
         )
+    # Empty sets are not rendered (see `DomainSlice.has_evidence`); the record's
+    # empty-search footer (`analyze.code_facts`) and report.json keep them.
     seen_per_category: dict[str, int] = {}
     for category, result_set in slice_.siem_sets:
+        if not result_set.row_count:
+            continue
         i = seen_per_category[category] = seen_per_category.get(category, 0) + 1
         out.append(
             Block(
@@ -350,7 +354,7 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
                 summary=summarise_rows(category, result_set.rows, header_id=f"{category}#{i}"),
             )
         )
-    for i, result_set in enumerate(slice_.untagged_sets, start=1):
+    for i, result_set in enumerate((rs for rs in slice_.untagged_sets if rs.row_count), start=1):
         out.append(
             Block(
                 header_id=f"uncategorised#{i}",

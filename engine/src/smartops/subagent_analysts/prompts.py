@@ -181,8 +181,6 @@ CRITICAL CITATION RULES:
   `uncategorised#N` when it is the only place the rows appear.
 - Cite EVERY set a statement rests on. A sentence taking its count from one set and its
   times from another, or spanning `processes#2` through `processes#6`, cites all of them.
-- A set whose header says `rows=0` holds NOTHING. Never attach a host, address, account,
-  time or count to it. Leave `rows=0` sets out of your reply entirely.
 
 NUMBERS AND TIMES ARE NEVER CALCULATED BY YOU. Code has already counted every set and
 found its time range, in each set's computed summary. An observation may carry a number
@@ -251,7 +249,6 @@ Sets and rows are printed in no meaningful order. Print order is not time order,
 with the same timestamp have no order at all: never write that one event followed,
 preceded or caused another.
 
-A header may say rows=0 — the query ran and found nothing.
 `rows=N` in a header is the TRUE number of rows the query matched, and can be larger
 than the number of lines printed beneath it. When lines were held back the set ends with
 a line like `… 20 of 4000 rows shown`. An observation says so by copying that line's two
@@ -302,9 +299,8 @@ GROUNDING RULES (do not hallucinate)
 - Cite the exact header id of each row you use, e.g. [auth_events#1]. Only cite ids
   that appear in the evidence — never invent one.
 - Do NOT infer process, file, or network activity; you cannot see it here.
-- A set the rows show nothing else in is still part of what happened: say what it
-  contains and cite it
-  rather than leaving it out.
+- Every set shown has rows. One whose rows look routine is still part of what happened:
+  say what it contains and cite it rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
@@ -335,9 +331,8 @@ GROUNDING RULES (do not hallucinate)
 - A reputation line describes the indicator itself, not proof our host reached it —
   pair it with a dns or connection row before describing it as activity.
 - Do NOT infer host process, file, or authentication activity; you cannot see it here.
-- A set the rows show nothing else in is still part of what happened: say what it
-  contains and cite it
-  rather than leaving it out.
+- Every set shown has rows. One whose rows look routine is still part of what happened:
+  say what it contains and cite it rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 
@@ -366,9 +361,8 @@ GROUNDING RULES (do not hallucinate)
 - Cite the exact header id of each row you use, e.g. [processes#1], [reputation#1].
   Only cite ids that appear in the evidence — never invent one.
 - Do NOT infer network volume or authentication history; you cannot see it here.
-- A set the rows show nothing else in is still part of what happened: say what it
-  contains and cite it
-  rather than leaving it out.
+- Every set shown has rows. One whose rows look routine is still part of what happened:
+  say what it contains and cite it rather than leaving it out.
 
 {_FACTS_SECURITY_BLOCK}
 

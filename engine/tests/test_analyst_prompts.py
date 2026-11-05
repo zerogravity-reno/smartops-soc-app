@@ -629,8 +629,8 @@ def test_valid_citation_ids_maps_each_header_to_its_evidence():
     slice_ = DomainSlice(
         domain="network",
         siem_sets=[
-            ("connections", ResultSet(query="a", row_count=0, evidence_id="t:siem:x:0")),
-            ("connections", ResultSet(query="b", row_count=0, evidence_id="t:siem:x:1")),
+            ("connections", ResultSet(query="a", row_count=1, rows=[{"dest": "10.0.0.9"}], evidence_id="t:siem:x:0")),
+            ("connections", ResultSet(query="b", row_count=1, rows=[{"dest": "10.0.0.9"}], evidence_id="t:siem:x:1")),
         ],
         vt_verdicts=[VtVerdict(kind="domain", value="x.com", found=True,
                                evidence_id="t:vt:y:0")],
@@ -664,9 +664,9 @@ class TestCitationNumberingIsPerCategory:
             vt_verdicts=[VtVerdict(kind="domain", value="bad.com", found=True, malicious=9)],
             siem_sets=[
                 ("connections", ResultSet(query="c1", row_count=1, rows=[{"src_ip": "1.1.1.1"}])),
-                ("connections", ResultSet(query="c2", row_count=0, rows=[])),
+                ("connections", ResultSet(query="c2", row_count=1, rows=[{"dest": "10.0.0.9"}])),
                 ("dns_resolutions", ResultSet(query="d1", row_count=1, rows=[{"query": "bad.com"}])),
-                ("dns_resolutions", ResultSet(query="d2", row_count=0, rows=[])),
+                ("dns_resolutions", ResultSet(query="d2", row_count=1, rows=[{"query": "x.com"}])),
             ],
         )
 
@@ -698,10 +698,10 @@ class TestCitationNumberingIsPerCategory:
 
         slice_ = DomainSlice(
             domain="endpoint",
-            siem_sets=[("processes", ResultSet(query="p", row_count=0, rows=[]))],
+            siem_sets=[("processes", ResultSet(query="p", row_count=1, rows=[{"dest": "10.0.0.9"}]))],
             untagged_sets=[
-                ResultSet(query="u1", row_count=0, rows=[]),
-                ResultSet(query="u2", row_count=0, rows=[]),
+                ResultSet(query="u1", row_count=1, rows=[{"dest": "10.0.0.9"}]),
+                ResultSet(query="u2", row_count=1, rows=[{"dest": "10.0.0.9"}]),
             ],
         )
 
@@ -725,13 +725,13 @@ class TestTheBlindPromptCarriesNoQuery:
                     "dns_resolutions",
                     ResultSet(
                         query='index=botsv3 sourcetype=stream:dns query="*coinhive*"',
-                        row_count=0,
-                        rows=[],
+                        row_count=1,
+                        rows=[{"query": "x.com"}],
                     ),
                 )
             ],
             untagged_sets=[
-                ResultSet(query='index=botsv3 "*coinhive*" | stats count', row_count=0, rows=[])
+                ResultSet(query='index=botsv3 "*coinhive*" | stats count', row_count=1, rows=[{"count": "3"}])
             ],
         )
 
@@ -745,17 +745,26 @@ class TestTheBlindPromptCarriesNoQuery:
         assert headers
         assert not any("query=" in h for h in headers)
         assert not any("coinhive" in h for h in headers)
-        # Two sets were asked for and both came back empty. That must survive.
-        assert text.count("rows=0") == 2
+        assert len(headers) == 2
+
+    def test_an_empty_set_is_not_shown_to_the_translator(self):
+        """Without its query an empty set reads as "nothing anywhere" (300464d7 T3)."""
+        slice_ = DomainSlice(domain="network", siem_sets=[
+            ("connections", ResultSet(query="q", row_count=0, rows=[])),
+            ("connections", ResultSet(query="q2", row_count=1, rows=[{"dest": "10.0.0.9"}])),
+        ])
+        text, ids, _truncated, _cap = pack_evidence(slice_)
+        assert "rows=0" not in text and list(ids) == ["connections#1"]
+        assert not DomainSlice(domain="network", siem_sets=[slice_.siem_sets[0]]).has_evidence()
 
     def test_the_query_still_reaches_the_analyst_agent(self):
-        """Big A is not blind, and cannot weigh a rows=0 exhibit without it."""
+        """Big A is not blind; the exhibit keeps the query the prompt leaves out."""
         from smartops.subagent_analysts.packing import exhibits_for
 
         query = 'index=botsv3 sourcetype=stream:dns query="*coinhive*"'
         slice_ = DomainSlice(
             domain="network",
-            siem_sets=[("dns_resolutions", ResultSet(query=query, row_count=0, rows=[]))],
+            siem_sets=[("dns_resolutions", ResultSet(query=query, row_count=1, rows=[{"query": "x.com"}]))],
         )
 
         blocks = exhibits_for(slice_, ["dns_resolutions#1"])

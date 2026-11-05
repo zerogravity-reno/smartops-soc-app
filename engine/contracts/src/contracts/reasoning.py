@@ -880,9 +880,10 @@ def _trim(payloads: list[AnalystPayload], budget: int) -> None:
 
 
 def _has_rows(f: DomainRecord) -> bool:
-    """Rows reached this domain: code summarises every set with rows, and keeps
-    the exhibits and facts it computed from them."""
-    return bool(f.summaries or f.exhibits or f.facts)
+    """Rows reached this domain: code summarises every set with rows, and keeps the
+    exhibits it cited. Not `facts`: they name empty searches too, and a domain whose
+    searches all came back empty read as untranslated, not as no rows (300464d7 T3)."""
+    return bool(f.summaries or any(e.row_count for e in f.exhibits))
 
 
 def _no_rows(h: HypothesisFindings) -> list[str]:

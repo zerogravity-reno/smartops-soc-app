@@ -938,34 +938,8 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
         for block in exhibits_for(slice_, finding.citations)
     ]
 
-    # Observations whose every cited block is EMPTY. Warned about, not removed,
-    # and the distinction is the point: an empty result set is legitimate
-    # negative evidence -- "no failed logons in the window" is a true and useful
-    # thing to report -- so penalising it would punish a correct account of an
-    # absence. What it cannot support is a claim that something WAS observed, and
-    # telling those two apart requires reading the claim against the rows, which
-    # is defect (c) and is not decidable here. So this surfaces the case rather
-    # than judging it; `Exhibit.row_count` carries it to the consumer, which now
-    # has the rows and can.
-    #
-    # The test used to be `finding.disposition != "inconclusive"` -- "the analyst
-    # committed to something". With the disposition gone, the same defect is
-    # stated directly: this tier commits to something by writing an observation,
-    # so an observation standing on nothing but zero-row blocks is the case.
-    if finding.observations and exhibits and all(e.row_count == 0 for e in exhibits):
-        logger.warning(
-            "domain=%s | %d observation(s) rest entirely on cited block(s) with "
-            "zero rows: %s",
-            finding.domain,
-            len(finding.observations),
-            ", ".join(e.citation for e in exhibits),
-        )
-    # Beside real rows, empty exhibits are noise: T1 on c7dbf51d cited 26 zero-row
-    # sets and each crossed to the Analyst (F8). The no-rows footer below names
-    # them instead. Kept whole when every exhibit is empty -- that IS the negative
-    # evidence. `citations` is untouched, so the verdict gate sees the same ids.
-    if any(e.row_count for e in exhibits):
-        exhibits = [e for e in exhibits if e.row_count]
+    # No exhibit is empty: `blocks()` renders no empty set, so none can be cited.
+    # Empty searches are named in the record's footer (`code_facts`).
 
     return DomainRecord(
         domain=finding.domain,
