@@ -120,3 +120,36 @@ async def test_1_1_a_session_that_stays_dead_ends_as_error_after_the_retries(mon
     assert len(calls) == 1 + subagents.SESSION_RETRIES
     assert result.status == SubtaskStatus.ERROR
     assert result.reason.startswith(subagents.SESSION_LOST_REASON)
+
+
+async def test_2_3_an_mcp_call_that_never_answers_is_bounded_per_call(monkeypatch):
+    """4b95662c L2 T1-T3, c9611aa4 L3 FU2: an MCP call that never got a response
+    ran until the 900 s mission cap. Strands builds MCP tools with timeout=None,
+    so the call itself had no bound."""
+    from datetime import timedelta
+
+    from mcp.types import Tool as MCPTool
+    from strands.tools.mcp import MCPAgentTool
+
+    from smartops.tools import registry
+
+    seen = {}
+
+    class _Client:
+        async def load_tools(self):
+            return self.tools
+
+        async def call_tool_async(self, **kwargs):
+            seen.update(kwargs)
+            return {"status": "success", "toolUseId": "t", "content": []}
+
+    client = _Client()
+    client.tools = [MCPAgentTool(MCPTool(name="splunk_run_query", inputSchema={"type": "object"}), client)]
+    monkeypatch.setattr(registry, "_clients_by_family", {"siem": [client]})
+
+    (tool,) = await registry.tools_for("siem")
+    async for _ in tool.stream({"toolUseId": "t", "name": "splunk_run_query", "input": {}}, {}):
+        pass
+
+    assert seen["read_timeout_seconds"] == timedelta(seconds=registry.MCP_CALL_TIMEOUT_SECONDS)
+    assert registry.MCP_CALL_TIMEOUT_SECONDS < subagents.MISSION_TIMEOUT_SECONDS
