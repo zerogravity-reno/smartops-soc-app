@@ -90,12 +90,12 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | T20 | Triage | Tasks aren't linked to hypotheses, but the contract's names say they are | Medium | Open (owner decision) |
 | T21 | Triage | A parent is judged by its name, not by what it ran | High | Open (Analyst) |
 | T22 | Triage | Synthesis describes rounds and tasks that never ran | Medium | Open (Analyst) |
-| T23 | Triage | The evaluation header never states the event time | Low | Open (Analyst) |
+| T23 | Triage | The evaluation header never states the event time | Low | Fixed (PR #21): explicit UTC `Incident Event Time` added to `eval_header` |
 | T24 | Triage | Task questions and row counts cited as findings ("CrowdStrike telemetry", "execution of svcupdate.dat") | High | Open (Analyst) |
 | T25 | Triage | Verdicts that meet the score rule are refused on one bad ref or a malformed ref format | High | Removed by design: refs informational in current gate; verified on `20592fea`; still so on `db9d90f`. Does not establish evidence quality |
-| T28 | Triage | `evidence_gaps` returned as a string becomes one Broker task per character | Medium | Open (Analyst) |
-| T29 | Triage | Two follow-ups with the same `task_id` end the run after the handoff is emitted | Medium | Open (Analyst) |
-| T30 | Triage | A model `task_id` becomes a directory name unsanitised; `../../x` writes outside the run folder | Medium | Open (Analyst + `broker.save_run_artifacts`) |
+| T28 | Triage | `evidence_gaps` returned as a string becomes one Broker task per character | Medium | Fixed (PR #21): wrapped to list if string, preventing character splitting |
+| T29 | Triage | Two follow-ups with the same `task_id` end the run after the handoff is emitted | Medium | Fixed (PR #21): duplicate task IDs disambiguated with `_2` suffix in `to_task_file` |
+| T30 | Triage | A model `task_id` becomes a directory name unsanitised; `../../x` writes outside the run folder | Medium | Fixed (PR #21): sanitized via regex `[^A-Za-z0-9_\-]` to safe underscores |
 | T26 | Triage | Synthesis reads gap tasks G1–G3 as hypotheses H1–H3 and copies scores from an evaluation that never ran | High | Open (Analyst + W8 compaction) |
 | T27 | Triage | The first evaluation leans non-malicious: H2/H3 restate the telemetry, H1 claims what telemetry can't show | High | Open (Analyst planning + scoring) |
 | P1 | Context | `event_time` is detection time, not activity time | High | Fixed 10-06 (`firstTime` with `_time`'s offset); five other times still reach planning (decision pending) |
@@ -172,16 +172,16 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 | G1 | Gate | A block cited inside a multi-id bracket is refused | High | Removed by design with reference blocking in current gate; multi-id parsing itself not exercised on `20592fea` |
 | G2 | Gate | A verdict blocked on its scores records no reason | Medium | Open (Analyst); still so on `db9d90f` |
 | G3 | Gate | A ref to a lost domain refuses the round, and the re-ask loses it again | High | Removed by design with reference blocking; `20592fea` accepted an empty-domain ref. Domain quality remains separate |
-| G4 | Gate | The unknown-evidence guard (`unsupported_unanswerable_claims`, `0e341d0`) has no caller after PR #11 | High | Open (Analyst) |
+| G4 | Gate | The unknown-evidence guard (`unsupported_unanswerable_claims`, `0e341d0`) has no caller after PR #11 | High | Fixed (PR #21): wired into `verdict_gate` as pre-check, forcing `REQUIRES_INVESTIGATION` |
 | G5 | Gate | A passing gate whose top hypothesis has no plan label defaults to TRUE_POSITIVE; generated follow-ups name hypotheses by id only | Medium | Open (Analyst) |
 | G6 | Gate | The gate needs only scores: no evidence or step check; `payloads`, `runs` and `all_runs` unused | High | Open (Analyst) |
-| G7 | Gate | A Loop 1 plan with VERDICT_REACHED and no tasks is emitted with no gate, scores or Broker round | High | Open (Analyst); predates PR #11 |
-| G8 | Gate | Scores like `"85%"` or `"85.5"` read as 0; a JSON `Infinity` aborts the run | Medium | Open (Analyst) |
+| G7 | Gate | A Loop 1 plan with VERDICT_REACHED and no tasks is emitted with no gate, scores or Broker round | High | Fixed (PR #19 / `c142988`): Loop 1 direct verdict bypass eliminated, re-asks for valid tasks |
+| G8 | Gate | Scores like `"85%"` or `"85.5"` read as 0; a JSON `Infinity` aborts the run | Medium | Fixed (PR #21): clean string parsing for `%`, safe float-to-int conversion with NaN/Inf guard |
 | G9 | Gate | The prompts still ask the model to apply 85/20, which code now decides | Low | Open (Analyst): breaks the no-model-arithmetic rule, not a runtime defect |
 | G10 | Gate | Scores are not validated: unknown ids, a single score and values over 100 pass | High | Open (Analyst) |
 | G11 | Gate | Passing scores override the model's REQUIRES_INVESTIGATION and erase its follow-ups and named gaps | High | Open (Analyst) |
 | G12 | Gate | An empty or unparseable answer is replaced by JSON pulled from the model's reasoning, unchecked | Medium | Open (Analyst) |
-| G13 | Gate | Since 10-26 the Loop 1 call answers in the evaluation format (scores and a verdict, no hypotheses or tasks), so every run ends with a direct verdict and no Broker round | High | Open (Analyst), #16 to Yousef. 4 of 4 runs since 10-26; 26 earlier runs planned. Same context, code and prompt as `c75abeae`, which planned |
+| G13 | Gate | Since 10-26 the Loop 1 call answers in the evaluation format (scores and a verdict, no hypotheses or tasks), so every run ends with a direct verdict and no Broker round | High | Fixed (PR #19 / `c142988`): Re-ask guard in `analyst.py` + anti-eval prompt rule; verified on 5 consecutive live runs |
 | K1 | Cost | About $5–12 per Broker loop; long results re-sent every turn | Medium | Fixed (`0e82b4c`) |
 | K2 | Cost | Blank `SMARTOPS_LLM_PROVIDER` does not stop Broker model calls | Medium | Fixed on this branch (`none`) |
 | K3 | Cost | SOC3 ran 19 loops on empty input | Medium | Fixed (W2, T1 gate); `max_loops` raised to 15 on 2026-10-08, see W8 |
@@ -364,7 +364,7 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 - **Evidence:** `874ab334` round 2 and `c90ca5f9` round 2 both reasoned over a "Round 3" that hadn't run yet, attributing findings to it. `c90ca5f9` also cited T1, which was dropped at handoff (T14). The payload labels rounds as `[BROKER FINDINGS - Round 2]`; the plan lists every task, run or not.
 - **Fix candidates:** `plan_slim` lists only the tasks that were sent (T14), and the header says which round this is and how many have run.
 
-**T23. The evaluation header never states the event time.** *Low. Open (Analyst).*
+**T23. The evaluation header never states the event time.** *Low. Fixed (PR #21).*
 - **Evidence (`c90ca5f9`):** synthesis gets task windows and row times in UTC `Z`, but nothing in the evaluation prompt says when the alert's event happened. It has to infer it from the windows, which are widened to event ±1h (B19) or reach days back (T18).
 - **Fix (Analyst side):** the evaluation header states it once, labelled: "event 2026-10-06T11:51:16Z, notable 2026-10-06T11:59:55Z", from `normalized_seed.event_time` and the notable's `_time`.
 
@@ -444,15 +444,15 @@ Runs live in `.smartops/runs/<run_id>/`; from 2026-10-09 one folder per investig
 
 The next three come from the 2026-10-25 code audit of `main` @ `010108b`. Line numbers are in `engine/src/smartops/analyst.py` there. None has been seen in a run yet.
 
-**T28. A string `evidence_gaps` becomes one Broker task per character.** *Medium. Open (Analyst).*
+**T28. A string `evidence_gaps` becomes one Broker task per character.** *Medium. Fixed (PR #21).*
 - **Evidence:** with no usable `follow_up_tasks`, `follow_up_tasks` (`:227–239`) iterates `gaps`. If synthesis writes `"evidence_gaps": "Who ran svcupdate.dat?"`, each non-space character becomes a task (`G1`=`W`, `G2`=`h`, …), and each one is a paid Broker fetch.
 - **Fix:** treat a string as a one-item list, or reject anything that isn't a list of strings.
 
-**T29. Duplicate follow-up `task_id`s end the run.** *Medium. Open (Analyst).*
+**T29. Duplicate follow-up `task_id`s end the run.** *Medium. Fixed (PR #21).*
 - **Evidence:** `to_task_file` (`:193–198`) builds `run-Ln-<task_id>` from the model's id and reuses it as `hypothesis_id`. `TaskInputFile` refuses a duplicate `task_id` (`contracts/task_input.py:173–180`) at `:639`, after the handoff event is emitted (`:632`). Nothing in `_broker_round` catches it, so the run ends on the generic error at `:606`.
 - **Fix:** number the tasks in code (`T{n}`) and keep the model's id as a label only.
 
-**T30. A model `task_id` is used as a directory name unsanitised.** *Medium. Open (Analyst + `broker.save_run_artifacts`).*
+**T30. A model `task_id` is used as a directory name unsanitised.** *Medium. Fixed (PR #21).*
 - **Evidence:** `to_task_file` keeps the model's id as is (`:193`), and `TaskInput.task_id` only requires it to be non-empty. `broker.py:1264` writes to `Path(out) / report.task_id.rsplit("-", 1)[-1]`, so `../../x` lands outside the run folder. An id containing `:` also breaks the family split in `broker_runs`. No overwrite of an existing file has been shown.
 - **Fix:** the same as T29, because code-numbered ids close it. The broker can also check that the folder resolves inside `out`.
 
@@ -1153,7 +1153,7 @@ None of the four rounds in `e8d949af` and `942115f7` (2026-10-11) reached VERDIC
 
 It no longer reads refs, which still settles G1, G3 and T25. The rest of this section is from a `code-review` audit at high effort of `02b368f..main`, re-checked on `main` and cross-checked by Codex. Line numbers are in `analyst.py` on `010108b`. `tests/test_verdict_gate.py:32–49, 75–90` assert the weaker behaviour: uncited verdicts and unanswerable-source reasoning pass. Fixing G4, G6 and G11 means changing those tests.
 
-**G4. The unknown-evidence guard is no longer called.** *High. Open (Analyst).*
+**G4. The unknown-evidence guard is no longer called.** *High. Fixed (PR #21).*
 - **Evidence:** `0e341d0` added `unsupported_unanswerable_claims`. It refuses a verdict whose reasoning cites a source the Broker marked unanswerable as a negative finding ("no record in the CMDB"). The function is still defined at `:275`. `5ac1f64` restored it and `219e87b` dropped it again, and from `219e87b` on nothing calls it.
 - **Effect:** "unknown" can decide a verdict again. `evaluation_limits` (`:263`) still tells the model, but code no longer checks.
 - **Fix:** call it before the score check. When it fires, the note shouldn't go into `evidence_gaps`, because `follow_up_tasks` would send that sentence to the Broker as a question.
@@ -1169,11 +1169,11 @@ It no longer reads refs, which still settles G1, G3 and T25. The rest of this se
 - **Context:** the gate had no step check before PR #11 either. What PR #11 removed was G4's pre-check. Overlaps T1 and G4.
 - **Fix:** decide what evidence a verdict needs (at least one cited domain with observations), then delete the unused parameters or use them.
 
-**G7. A Loop 1 verdict skips the gate.** *High. Open (Analyst; predates PR #11).*
+**G7. A Loop 1 verdict skips the gate.** *High. Fixed (PR #19 / `c142988`).*
 - **Evidence:** `:499–504`: when the plan has no tasks and `status: VERDICT_REACHED`, the code emits the plan's verdict and returns. There are no scores, no Broker round and no `verdict_gate`.
 - **Fix:** send a direct verdict through the gate as well, or refuse it without evidence.
 
-**G8. Scores that aren't plain integers.** *Medium. Open (Analyst).*
+**G8. Scores that aren't plain integers.** *Medium. Fixed (PR #21).*
 - **Evidence:** `:311–315`: `int("85%")` and `int("85.5")` raise ValueError, and the score becomes 0. A JSON `Infinity` raises OverflowError, which isn't caught here. The run ends on `:606`'s error; the server stays up.
 - **Fix:** parse with `float()`, then range-check (G10).
 
@@ -1194,7 +1194,7 @@ It no longer reads refs, which still settles G1, G3 and T25. The rest of this se
 - **Evidence:** `:492` (planning) and `:569` (synthesis): when the answer is empty or doesn't parse, `extract_json` runs over the model's reasoning text. Its first `{…}` with any expected key is accepted as the output, without a schema or completeness check. AR6 adds that it can also return a non-dict.
 - **Fix:** validate the parsed object (required keys and types). Otherwise treat the round as cut off (T15) rather than act on a draft.
 
-**G13. The planning call answers in the evaluation format.** *High. Open (Analyst; issue #16, Yousef).*
+**G13. The planning call answers in the evaluation format.** *High. Fixed (PR #19 / `c142988`).*
 - **Evidence:** every saved run from 10-12 to 10-25 (26 runs, the last `c75abeae`) returned a plan. Every run since 10-26 (`08590c74`, `cc991548`, `e3f62789`, `f497dca4`) returned `status`, `verdict`, `hypothesis_scores` and `follow_up_tasks`, with no `hypotheses` or `tasks`. Its reasoning treats the alert as "broker findings". G7's branch then emits the verdict. `f497dca4` sent the same context as `c75abeae`; `analyst.py`, the prompt, `model.py` and `.env` are unchanged between them.
 - **Open question:** which checkout `c75abeae` ran from, and whether the model changed. PR #11's longer evaluation section is a suspect; an A/B planning call (prompt before and after #11) would settle it.
 - **Fix:** code checks the Loop 1 answer is a plan (hypotheses and tasks); if not, it tells the model and asks once more, and never accepts a verdict before evidence. Closes G7 for this path.
