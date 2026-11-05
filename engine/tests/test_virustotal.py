@@ -358,7 +358,7 @@ class TestBrokerIntegration:
         )
         outcome = await broker_task(
             task,
-            Budget.from_usd(1.0),
+            Budget.from_usd(2.0),
             model=ModelChoice(model_id="x", pricing_key="claude-sonnet-4-6"),
             invoke=test_broker.fake_invoker(["vt"]),
         )
@@ -387,7 +387,7 @@ class TestBrokerIntegration:
 
         outcome = await broker_task(
             test_broker.make_task(scope=make_scope(Entity(kind="ip", value="8.8.8.8"))),
-            Budget.from_usd(1.0),
+            Budget.from_usd(2.0),
             model=ModelChoice(model_id="x", pricing_key="claude-sonnet-4-6"),
             invoke=test_broker.fake_invoker(["vt"]),
         )

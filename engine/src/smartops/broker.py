@@ -89,9 +89,10 @@ logger = logging.getLogger(__name__)
 
 BROKER_ROLE = "broker"
 
-# How many dispatches ONE planned step earns: the step itself, plus one
-# re-dispatch, so a subagent's reported `gaps` can still justify one
-# better-aimed follow-up and no more. Enforced per step, against that step's own
+# How many dispatches ONE planned step earns: the step itself, plus two
+# re-dispatches. Two, not one (Mohammed, 11-04): 300464d7 T3's second dispatch
+# was the sweep that found the lead (EID 4100 naming the target IP), and with
+# one re-dispatch there was none left to fetch it. Enforced per step, against that step's own
 # `StepOutcome.dispatches`, not pooled across the family: a family-wide check
 # alone let a three-step siem plan spend its whole allowance re-asking step one,
 # leaving steps two and three at `dispatches=0` -- which is precisely the
@@ -99,18 +100,17 @@ BROKER_ROLE = "broker"
 # metric. It was named MAX_DISPATCHES_PER_FAMILY while it was the ceiling for a
 # family the plan named no steps for; `_dispatch()` refuses an unplanned dispatch
 # outright now, so that reading is gone and the name followed it.
-DISPATCHES_PER_PLANNED_STEP = 2
+DISPATCHES_PER_PLANNED_STEP = 3
 
 # Hard ceiling on dispatches for a family the fetch plan DID name steps for.
-# The Broker earns one dispatch per planned step, plus the same "at most twice"
-# re-dispatch allowance DISPATCHES_PER_PLANNED_STEP grants above -- so
-# `len(planned_steps) * 2` -- but a plan is still Broker-authored, not free, and
+# The Broker earns DISPATCHES_PER_PLANNED_STEP per planned step -- so
+# `len(planned_steps) * 3` -- but a plan is still Broker-authored, not free, and
 # an uncapped multiply would let it recreate the exact runaway re-dispatch this
-# cap exists to stop just by naming more steps. Six is sized for the plan this
-# was built for: three siem steps, each earning one re-dispatch, and it is what
+# cap exists to stop just by naming more steps. Nine is sized for the plan this
+# was built for: three siem steps, each earning its full allowance, and it is what
 # keeps that plan from colliding with the cap the way a flat per-family two
 # alone did. See `_dispatch()`.
-MAX_PLANNED_DISPATCHES_PER_FAMILY = 6
+MAX_PLANNED_DISPATCHES_PER_FAMILY = 9
 
 # The literal `SubtaskResult.error` a domain subagent's budget refusal is
 # reported with (`smartops.subagents.investigate()`, when `budget.reserve()`
@@ -132,7 +132,8 @@ DEFAULT_BROKER_OUTPUT_TOKENS = 4000
 # dispatch; the prompt has it share the turn of the next dispatch, so only the last
 # review costs a turn of its own: 12. Unbatched reviews would need 17. B14 adds
 # translate_findings, one turn reviewing every card, and one repair with its re-review:
-# 16.
+# 16. Three dispatches per step (11-04): that six-step plan can now spend 12 dispatches
+# (three siem steps at three each, plus edr/vt/ndr once), six more turns: 22.
 #
 # The slack is for the refusals this design *depends on*. Every guard in
 # `_dispatch()` -- no plan yet, an unplanned step id, a step id belonging to
@@ -144,7 +145,7 @@ DEFAULT_BROKER_OUTPUT_TOKENS = 4000
 # an omitted `step_id`) meant the run hit its turn limit before emitting
 # `TaskClassification`, losing the classification for a mistake it had already
 # recovered from. Three spare turns cover three such corrections.
-DEFAULT_BROKER_TURNS = 16
+DEFAULT_BROKER_TURNS = 22
 _SYSTEM_PROMPT_TOKEN_FLOOR = 1200
 
 _SYSTEM_PROMPT = """\
@@ -1239,8 +1240,9 @@ async def _dispatch_step(family: ToolFamily, question: str, step_id: str, ctx: T
             f"{', '.join(family_step_ids) or 'none -- it planned no ' + family + ' step'}."
         )
 
-    # Re-dispatching a family is legitimate once -- a subagent's `gaps` can make a
-    # second, better-targeted question worthwhile. Unbounded, it is a cost bug: a
+    # Re-dispatching a step is legitimate up to DISPATCHES_PER_PLANNED_STEP -- a
+    # subagent's `gaps`, or a lead its last search found, can make a better-targeted
+    # question worthwhile. Unbounded, it is a cost bug: a
     # subagent that returns an unsatisfying answer invites the Broker to just ask
     # again, and one observed run spent 85% of its budget calling `siem` three
     # times. The budget gate does eventually stop it, but that is a ceiling, not a
