@@ -72,9 +72,8 @@ def test_evaluation_limits_keep_unanswerable_questions_out_of_evidence():
     assert evaluation_limits([{}]) == ""
 
 
-def test_gate_passes_through_model_verdict_unchanged():
-    # The gate no longer overrides the model — if the model says VERDICT_REACHED it passes,
-    # even when reasoning mentions an unanswerable source. The system prompt handles that.
+def test_gate_rejects_unanswerable_source_claims():
+    # G4: The gate actively blocks a verdict when reasoning cites an unanswerable source as negative evidence
     out = verdict_gate(
         {"hypothesis_scores": {"H1": 95, "H2": 10},
          "verdict": "TRUE_POSITIVE",
@@ -85,9 +84,28 @@ def test_gate_passes_through_model_verdict_unchanged():
             "No connected source holds this: Is 192.168.40.211 registered? (asset inventory)"
         ]}],
     )
-    assert out["status"] == "VERDICT_REACHED"
-    assert out["verdict"] == "TRUE_POSITIVE"
-    assert out["follow_up_tasks"] == []
+    assert out["status"] == "REQUIRES_INVESTIGATION"
+    assert out["verdict"] == "REQUIRES_INVESTIGATION"
+    assert len(out["follow_up_tasks"]) >= 1
+
+
+def test_gate_handles_g8_percentage_and_float_scores():
+    # G8: Scores like "85%" or "85.5" or float values are parsed cleanly
+    out1 = verdict_gate(
+        {"hypothesis_scores": {"H1": "85%", "H2": "10%"},
+         "status": "VERDICT_REACHED"},
+        PLAN,
+    )
+    assert out1["status"] == "VERDICT_REACHED"
+    assert out1["verdict"] == "TRUE_POSITIVE"
+
+    out2 = verdict_gate(
+        {"hypothesis_scores": {"H1": "85.6", "H2": "60.2"},
+         "status": "VERDICT_REACHED"},
+        PLAN,
+    )
+    assert out2["status"] == "VERDICT_REACHED"
+    assert out2["verdict"] == "TRUE_POSITIVE"
 
 
 def test_an_older_round_is_compacted_to_questions_domains_and_its_evaluation():

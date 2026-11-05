@@ -1,3 +1,4 @@
+import math
 """The Analyst agent: plans an investigation from the alert's context, hands its
 tasks to the Tool Broker, and evaluates what comes back until a verdict holds.
 
@@ -423,11 +424,28 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     """
     out = dict(synth)
 
-    # 1. Parse and rank scores dynamically
+    # G4: Reject verdicts that cite unanswerable sources as negative evidence
+    bad_claims = unsupported_unanswerable_claims(synth, payloads)
+    if bad_claims:
+        out["status"] = "REQUIRES_INVESTIGATION"
+        out["verdict"] = "REQUIRES_INVESTIGATION"
+        has_follow_ups = any(isinstance(f, dict) and f.get("question") for f in out.get("follow_up_tasks") or [])
+        if not has_follow_ups:
+            out["follow_up_tasks"] = [{
+                "task_id": "FU1",
+                "question": "Verify source connectivity and gather corroborating evidence without assuming absence from unanswerable sources."
+            }]
+        return out
+
+    # 1. Parse and rank scores dynamically (G8: clean strings like '85%' or '85.5' safely)
     scores = {}
     for h, s in (synth.get("hypothesis_scores") or {}).items():
         try:
-            scores[h] = int(s)
+            cleaned = str(s).replace("%", "").strip()
+            val = float(cleaned)
+            if math.isnan(val) or math.isinf(val):
+                val = 0
+            scores[h] = int(round(val))
         except (TypeError, ValueError):
             scores[h] = 0
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
