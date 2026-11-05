@@ -135,17 +135,15 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
             ],
         )
 
-    def test_it_carries_the_prose_and_the_observations(self):
+    def test_it_carries_the_observations_only(self):
         payload = self._findings().for_analyst()
         assert payload.task_id == "t1"
         assert payload.run_id == "r1"
         assert payload.hypothesis_id == "h1"
         assert payload.hypothesis == "something was compromised"
         assert payload.findings[0].domain == "network"
-        assert payload.findings[0].narrative == "six connections to one address."
-        assert payload.findings[0].observations == ["six connections [connections#4]"]
-        # B1 (2026-10-05): the computed summaries cross too; the narrative can drop rows.
-        assert payload.findings[0].summaries == ["~ connections#4 — computed over all 6 rows:"]
+        # B14 (2026-11-04): the explanation crosses, the code evidence stays in the record.
+        assert payload.findings[0].model_dump() == {"domain": "network", "observations": ["six connections [connections#4]"]}
 
     def test_unanswerable_questions_cross_as_code_worded_lines_even_over_budget(self):
         # B20: the plan's "no connected source holds this" reaches the Analyst untrimmed.
@@ -181,18 +179,16 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
             "not because nothing was found."
         ]
 
-    def test_max_chars_drops_trailing_summaries_and_says_so(self):
+    def test_max_chars_drops_trailing_observations_but_never_the_last(self):
         record = self._findings()
-        record.findings[0].summaries = [f"~ connections#{i} " + "x" * 400 for i in range(10)]
+        record.findings[0].observations = [f"line {i} " + "x" * 400 + " [connections#4]" for i in range(10)]
         budget = len(record.for_analyst().model_dump_json(indent=2)) // 2
 
-        payload = record.for_analyst(budget)
-        wire = payload.findings[0]
-        assert len(payload.model_dump_json(indent=2)) <= budget
-        assert wire.narrative == "six connections to one address."  # prose always crosses
-        assert wire.summaries[0].startswith("~ connections#0")  # kept in order
-        assert wire.summaries[-1].startswith(f"… {11 - len(wire.summaries)} set summaries omitted")
-        assert len(record.for_analyst().findings[0].summaries) == 10  # None sends all
+        wire = record.for_analyst(budget).findings[0]
+        assert wire.observations[0].startswith("line 0")  # kept in order
+        assert wire.observations[-1].startswith(f"… {11 - len(wire.observations)} observations omitted")
+        assert len(record.for_analyst(1).findings[0].observations) == 2  # one line and its note
+        assert len(record.for_analyst().findings[0].observations) == 10  # None sends all
 
     def test_a_domain_narrative_carries_nothing_else(self):
         """The field set is pinned deliberately.
@@ -202,8 +198,8 @@ class TestTheAnalystPayloadIsAProjectionNotTheRecord:
         test failing is the intended prompt to decide, not a chore to silence.
         """
         fields = set(type(self._findings().for_analyst().findings[0]).model_fields)
-        # `facts` decided 2026-10-09 (B14): the code footers, out of the narrative.
-        assert fields == {"domain", "narrative", "observations", "summaries", "facts"}
+        # B14 (2026-11-04): the explanation only; summaries and facts stay in the record.
+        assert fields == {"domain", "observations"}
 
     def test_the_envelope_carries_no_retrieval_summary(self):
         """What this costs, recorded where it will be found.

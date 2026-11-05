@@ -87,7 +87,12 @@ class DomainSlice:
     untagged_sets: list[ResultSet] = field(default_factory=list)
 
     def has_evidence(self) -> bool:
-        return bool(self.siem_sets or self.vt_verdicts or self.untagged_sets)
+        """Rows to translate. An empty set does not count: shown without its query (which
+        leaks the hypothesis), it reads as "nothing anywhere" (300464d7 T3: "No network
+        connections were recorded" from searches filtered to one process)."""
+        return bool(self.vt_verdicts
+                    or any(rs.row_count for _, rs in self.siem_sets)
+                    or any(rs.row_count for rs in self.untagged_sets))
 
 
 @dataclass

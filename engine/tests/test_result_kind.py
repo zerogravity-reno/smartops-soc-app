@@ -102,7 +102,8 @@ def test_item_8_a_repeated_search_counts_once():
     first = evaluate_step(step, _result(_project(call)))
     assert first.facts_met is False
     again = evaluate_step(step, _result(_project(call, call)), prior=first)
-    # Two rows, not four; the row gate of 3 is exhausted after the second dispatch.
+    again = evaluate_step(step, _result(_project(call)), prior=again)
+    # Two rows, not six; the row gate of 3 is exhausted after the last dispatch.
     assert (again.event_rows, again.facts_met) == (2, True)
 
 

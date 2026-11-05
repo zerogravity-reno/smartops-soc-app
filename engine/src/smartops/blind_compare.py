@@ -852,7 +852,7 @@ def _to_sample(
         model_called=model_called,
         stance=None,
         confidence=None,
-        rationale=result.narrative,
+        rationale=result.narrative or " ".join(result.observations),  # B14: observations are the translation
         observations=list(result.observations),
         citations=list(result.citations),
         reasoning_trace=result.reasoning_trace,

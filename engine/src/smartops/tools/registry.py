@@ -31,15 +31,22 @@ import os
 import threading
 import uuid
 from collections.abc import Callable, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from strands.tools.mcp import MCPClient
+from strands.tools.mcp import MCPAgentTool, MCPClient
 
 from contracts import ToolFamily
 from smartops.domains import DOMAINS
 
 logger = logging.getLogger(__name__)
+
+MCP_CALL_TIMEOUT_SECONDS = 300
+"""Bound on one MCP tool call (issue #22 2.3). Strands builds MCP tools with no
+timeout and the MCP session has none, so a response that never came ran to the
+900 s mission cap and lost the loop (4b95662c L2, c9611aa4 L3). Now the subagent
+gets a tool error and keeps going. Same as the httpx read timeout below."""
 
 DEFAULT_CONFIG_FILENAME = "mcp_servers.json"
 CONFIG_PATH_ENV_VAR = "SMARTOPS_MCP_CONFIG"
@@ -641,7 +648,10 @@ async def tools_for(family: ToolFamily) -> list:
     for client in _clients_by_family.get(family, []):
         # `continue_on_error` makes a connection failure yield [] here rather
         # than raise, so one dead vendor cannot abort resolution for the others.
-        tools.extend(await _load_tools_off_loop(client))
+        for tool in await _load_tools_off_loop(client):
+            if isinstance(tool, MCPAgentTool):
+                tool.timeout = timedelta(seconds=MCP_CALL_TIMEOUT_SECONDS)
+            tools.append(tool)
     return tools
 
 

@@ -708,18 +708,23 @@ class DomainNarrative(BaseModel):
     round 2 that kept T7's `processes#1` (powershell's parents: Desktop and
     Public `splunkd.exe`) and dropped 11 of its 12 other sets.
 
-    `facts` crosses too (2026-10-09, B14): the code-written lines that used to
-    be appended to `narrative`. Kept separate so the packer can trim them by
-    priority instead of cutting every observation to let them through.
+    `facts` crossed too (2026-10-09), and between them code evidence grew to 60-64%
+    of a round while the explanations were what got cut: on 3e7613cf all 8 tasks
+    reached the Analyst with no observation at all (B14).
+
+    **Restored on 2026-11-04 (B14), Mohammed's call:** the Analyst is sent the
+    explanation and nothing else, because explaining the rows is what the
+    sub-analyst tier is for. `summaries` and `facts` stay on `DomainRecord`
+    (findings.json) for the audit and for the Broker, which now reviews each
+    translation against them inside its loop and re-asks a domain that leaves
+    something out. The narrative went from the sub-analyst's answer; the
+    observations are the whole translation.
 
     **What this costs, so a future reader is not surprised by it.** Dropping
     `citations` removes the handle for checking a claim against the rows behind
     it; the ids still exist in `findings.json`, but a consumer holding only this
-    message cannot resolve one. Dropping the envelope's `retrieval` removes the
-    only signal separating "we looked and found nothing" from "we never looked":
-    both arrive as an empty `narrative` with no `observations`, and on
-    2026-09-01, with Splunk unreachable, that is exactly what two of three
-    domains produced.
+    message cannot resolve one. "We looked and found nothing" and "we never
+    looked" are told apart by the payload's `no_rows` and `not_searched` lines.
 
     Deliberately named for what it carries, unlike `DomainRecord`, which was
     left misnamed in v2 to avoid churning the published schema and every test
@@ -727,34 +732,11 @@ class DomainNarrative(BaseModel):
     """
 
     domain: AnalystDomain
-    narrative: str = Field(
-        default="",
-        description=(
-            "Plain English: what these rows show, in order, naming the hosts, "
-            "accounts, addresses and times. What happened -- NOT a reading of "
-            "what it means."
-        ),
-    )
     observations: list[str] = Field(
         default_factory=list,
-        description="One line per distinct thing the rows state.",
-    )
-    summaries: list[str] = Field(
-        default_factory=list,
         description=(
-            "One computed account per non-empty set routed to this domain, cited "
-            "or not: totals, distinct counts, top and rarest values and the time "
-            "range, calculated in code over every row. Not model-authored, so it "
-            "holds what the narrative may have left out."
-        ),
-    )
-    facts: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Lines computed in code over every routed row, never written by a model: "
-            "the full paths behind each name the narrative uses, decoded encoded "
-            "commands, interpreter and LOLBin command lines, and searches that "
-            "returned no rows. Each block opens with its own header line."
+            "The sub-analyst's translation, one line per distinct thing the rows show, "
+            "each naming what it does and citing its sets. Reviewed by the Broker."
         ),
     )
 
@@ -846,16 +828,9 @@ NO_ROWS_FOOTER = "Searches that returned no rows:"
 HASHES_FOOTER = "File hashes in these rows, rarest first:"
 # Not "VirusTotal holds no reputation": aab8e000 and 204888fd read that aside as a VirusTotal result (B43).
 ADDRESSES_FOOTER = "Private addresses in these rows and this task (not internet-routable):"
-_FACT_HEADERS = (NAMES_FOOTER, ENCODED_FOOTER, COMMANDS_FOOTER, NO_ROWS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
 # Between a command line's count and parent and its text, which the packer shortens.
 COMMAND_MARK = "; command: "
-NARRATIVE_OMITTED = "narrative omitted for size (full in findings.json)"
-# A fact line, not narrative text: an empty narrative must not read as "looked, nothing there".
-NARRATIVE_WITHHELD = "narrative withheld: the check of it against the rows did not run (full in traces.json)"
-# Still holds win-agent, svcupdate, Invoke-WebRequest and -OutFile on d6b48ef0 (offsets 80-181).
-_SHORT_COMMAND = 200
-_CONTRIBUTIONS = re.compile(r"^~ (\d+) row contributions")
-_OMITTED = re.compile(r"^(?:~ )?… (\d+) .* omitted for size \(full in findings\.json\)$")
+_OMITTED = re.compile(r"^… (\d+) .* omitted for size \(full in findings\.json\)$")
 
 
 def rendered_len(payloads: list[AnalystPayload]) -> int:
@@ -881,131 +856,57 @@ def _drop(lines: list[str], i: int, label: str, prefix: str = "") -> None:
     lines.append(f"{prefix}… {n} {label} omitted for size (full in findings.json)")
 
 
-def _block(facts: list[str], header: str) -> slice | None:
-    """Where the lines under `header` sit in `facts`."""
-    if header not in facts:
-        return None
-    start = facts.index(header) + 1
-    return slice(start, next((i for i in range(start, len(facts)) if facts[i] in _FACT_HEADERS), len(facts)))
-
-
-def _drop_fact(narrative: DomainNarrative, header: str, pick, label: str) -> bool:
-    """Drop the line `pick` chooses under `header`; False when it holds none."""
-    where = _block(narrative.facts, header)
-    lines = narrative.facts[where] if where else []
-    if not _real(lines):
-        return False
-    _drop(lines, pick(lines), label, "~ ")
-    narrative.facts[where] = lines
-    return True
-
-
 def _weight(lines: list[str]) -> int:
     return sum(len(json.dumps(lines[i])) for i in _real(lines))
 
 
 def _trim(payloads: list[AnalystPayload], budget: int) -> None:
-    """Cut until the batch fits, model prose first and code evidence last (B51).
+    """Cut observations until the batch fits, never a domain's last line (B14).
 
-    d6b48ef0: the narratives crossed whole while the code facts holding the
-    `Invoke-WebRequest … -OutFile svcupdate.dat` download were cut, and the
-    verdict was BENIGN 95%. Re-measured after every cut, so counts are exact."""
+    From the tail of the domain holding the most, so the smallest explanation stays
+    whole. Each cut is counted in one note per domain. Re-measured after every cut."""
     domains = [n for p in payloads for n in p.findings]
 
     def fits() -> bool:
         return rendered_len(payloads) <= budget
 
-    # 0. Summaries, from the tail of the domain holding the most: they only ever had
-    # the room left over, and cutting the biggest first meets the smallest need whole.
-    while not fits() and (held := [n for n in domains if _real(n.summaries)]):
-        n = max(held, key=lambda n: _weight(n.summaries))
-        _drop(n.summaries, _real(n.summaries)[-1], "set summaries")
-    # 1. Whole narratives, longest first.
-    for n in sorted(domains, key=lambda n: len(n.narrative), reverse=True):
-        if fits():
-            return
-        if len(n.narrative) > len(NARRATIVE_OMITTED):
-            n.narrative = NARRATIVE_OMITTED
-    # 2. Observations, from the tail of the domain holding the most.
-    while not fits() and (held := [n for n in domains if _real(n.observations)]):
+    while not fits() and (held := [n for n in domains if len(_real(n.observations)) > 1]):
         n = max(held, key=lambda n: _weight(n.observations))
         _drop(n.observations, _real(n.observations)[-1], "observations")
-    # 3. Empty searches, then 4. command lines: shortened all at once; then the lesser
-    # copy of a command another task also holds, so each is said once; then one at a
-    # time from the domain holding the most, the least-repeated line first. A beacon
-    # repeats by design: d6b48ef0's download ran 16 times in T3 and went first.
-    def lesser_copy() -> tuple[int, DomainNarrative, int] | None:
-        held: dict[str, list[tuple[int, DomainNarrative, int]]] = {}
-        for n in domains:
-            if w := _block(n.facts, COMMANDS_FOOTER):
-                lines = n.facts[w]
-                for i in _real(lines):
-                    if cmd := lines[i].partition(COMMAND_MARK)[2]:
-                        held.setdefault(cmd, []).append((_contributions(lines[i]), n, i))
-        return min((c for cs in held.values() if len(cs) > 1 for c in cs), key=lambda c: c[0], default=None)
-
-    def heaviest(header: str) -> DomainNarrative | None:
-        held = [n for n in domains if (w := _block(n.facts, header)) and _real(n.facts[w])]
-        return max(held, key=lambda n: (len(_real(n.facts[_block(n.facts, header)])), _weight(n.facts)), default=None)
-
-    while not fits() and (n := heaviest(NO_ROWS_FOOTER)):
-        _drop_fact(n, NO_ROWS_FOOTER, lambda lines: _real(lines)[-1], "lines")
     if not fits():
-        for n in domains:
-            n.facts = [_shorten(line) for line in n.facts]
-    while not fits() and (copy := lesser_copy()):
-        _, n, i = copy
-        _drop_fact(n, COMMANDS_FOOTER, lambda lines: i, "command lines")
-        if not _real(n.facts[where := _block(n.facts, COMMANDS_FOOTER)]):
-            # Every line was another task's, and the batch says them there: no header, no note.
-            del n.facts[where.start - 1:where.stop]
-    while not fits() and (n := heaviest(COMMANDS_FOOTER)):
-        _drop_fact(n, COMMANDS_FOOTER, lambda lines: min(_real(lines), key=lambda i: _contributions(lines[i])),
-                   "command lines")
-    # 5. Last resort: the names, decoded commands, hashes and addresses, tail first
-    # from the heaviest block, rather than shipping over budget.
-    while not fits():
-        blocks = [(n, h) for n in domains for h in _FACT_HEADERS
-                  if (w := _block(n.facts, h)) and _real(n.facts[w])]
-        if not blocks:
-            break
-        n, header = max(blocks, key=lambda nh: _weight(nh[0].facts[_block(nh[0].facts, nh[1])]))
-        _drop_fact(n, header, lambda lines: _real(lines)[-1], "lines")
-    if not fits():
-        logger.error("analyst payload: its structure alone exceeds the %d-character budget", budget)
+        # ponytail: shipped over budget, as before, rather than failing a paid round;
+        # one explanation line per domain is the floor (Codex's "raise" left for later).
+        logger.error("analyst payload: one explanation per domain exceeds the %d-character budget", budget)
 
 
-def _contributions(line: str) -> int:
-    return int(m.group(1)) if (m := _CONTRIBUTIONS.match(line)) else 0
-
-
-def _shorten(line: str) -> str:
-    head, mark, cmd = line.partition(COMMAND_MARK)
-    return head + mark + cmd[:_SHORT_COMMAND] + "…" if mark and len(cmd) > _SHORT_COMMAND + 1 else line
-
-
-def _says_something(f: DomainRecord) -> bool:
-    return bool(f.narrative or f.observations or f.summaries or f.facts)
+def _has_rows(f: DomainRecord) -> bool:
+    """Rows reached this domain: code summarises every set with rows, and keeps the
+    exhibits it cited. Not `facts`: they name empty searches too, and a domain whose
+    searches all came back empty read as untranslated, not as no rows (300464d7 T3)."""
+    return bool(f.summaries or any(e.row_count for e in f.exhibits))
 
 
 def _no_rows(h: HypothesisFindings) -> list[str]:
-    """One line for the domains left out as empty, bar those a not_searched line already explains."""
+    """One line for the domains no row reached, bar those a not_searched line already
+    explains. From the rows, not the prose: a failed translation is not "no rows"."""
     explained = {d for g in (h.retrieval.gaps if h.retrieval else []) for d in g.unanswered_domains}
-    empty = [f.domain for f in h.findings if not _says_something(f) and f.domain not in explained]
+    empty = [f.domain for f in h.findings if not f.observations and not _has_rows(f) and f.domain not in explained]
     return [f"No rows in this task's results belong to {', '.join(empty)}."] if empty else []
+
+
+# B14: a domain whose rows have no account says so (`analyze.UNTRANSLATED`, same words).
+_UNTRANSLATED = "Explanation incomplete for {domain}: evidence remains untranslated."
 
 
 def pack_for_analyst(
     findings: list[HypothesisFindings], max_chars: int | None = None
 ) -> list[AnalystPayload]:
-    """Project several tasks onto the wire under ONE size budget (B1, B9, B51).
+    """Project several tasks onto the wire under ONE size budget (B1, B9, B14).
 
-    Over budget (`_trim`): summaries go first, from the tail of the domain holding
-    the most, so the smallest need stays whole; then whole narratives, then
-    observations, then empty searches, then command lines. The model's prose
-    gives way before code's evidence. The size is measured as the Analyst reads
-    it (`rendered_len`), and the batch never ships over it. Every cut is counted
-    in a note. `None` sends everything.
+    Only the explanation crosses: each domain's observations (B14). Over budget
+    (`_trim`), observations go from the tail of the domain holding the most, and no
+    domain loses its last line. The size is measured as the Analyst reads it
+    (`rendered_len`). Every cut is counted in a note. `None` sends everything.
 
     One budget for the batch, not an even split per task and then per domain:
     on `ded5cac1` that split left T3 2.3k characters it never used while T5,
@@ -1025,11 +926,12 @@ def pack_for_analyst(
             not_searched=[
                 _not_searched(g) for g in (h.retrieval.gaps if h.retrieval else []) if g.unanswered_domains
             ],
-            # A domain with nothing to say is not sent; one line names it (B51).
+            # A domain no row reached is not sent; one line names it (B51). One with
+            # rows and no account says so rather than arriving silent (B14, 3e7613cf).
             findings=[
-                DomainNarrative(domain=f.domain, narrative=f.narrative, observations=list(f.observations),
-                                summaries=list(f.summaries), facts=list(f.facts))
-                for f in h.findings if _says_something(f)
+                DomainNarrative(domain=f.domain,
+                                observations=list(f.observations) or [_UNTRANSLATED.format(domain=f.domain)])
+                for f in h.findings if f.observations or _has_rows(f)
             ],
             no_rows=_no_rows(h),
         )

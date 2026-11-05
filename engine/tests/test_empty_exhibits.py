@@ -38,10 +38,16 @@ def test_an_uncited_empty_search_is_named_too():
     assert "~ EventCode=1 ProcessId=220" in judged.facts
 
 
-def test_only_empty_exhibits_are_kept_as_negative_evidence():
+def test_only_empty_sets_leave_no_exhibit_and_read_as_no_rows():
+    # 300464d7 T3: an all-empty domain crossed as "untranslated", not "no rows".
+    from contracts import HypothesisFindings
+    from contracts.reasoning import _no_rows
+
     judged = _judge([_empty("file_events"), _empty("auth_events")])
 
-    assert len(judged.exhibits) == 2
+    assert judged.exhibits == [] and NO_ROWS_FOOTER in judged.facts
+    h = HypothesisFindings(task_id="t", hypothesis_id="h", findings=[judged])
+    assert _no_rows(h) == ["No rows in this task's results belong to endpoint."]
 
 
 def test_the_footer_is_a_count_and_the_searches_naming_the_tasks_entities_first():

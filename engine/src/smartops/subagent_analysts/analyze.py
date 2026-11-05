@@ -85,7 +85,7 @@ from smartops.telemetry import analyst_span, record_analyst_finding
 
 from .model import AnalystModel, AnalystResponse
 from smartops.tools.native.virustotal import is_private_ip
-from smartops.tools.native.decoder import commands_in, encoded_in, hashes_in, private_addresses_in
+from smartops.tools.native.decoder import FETCHES, commands_in, encoded_in, hashes_in, private_addresses_in
 
 from contracts.reasoning import (
     ADDRESSES_FOOTER,
@@ -94,7 +94,6 @@ from contracts.reasoning import (
     ENCODED_FOOTER,
     HASHES_FOOTER,
     NAMES_FOOTER,
-    NARRATIVE_WITHHELD,
     NO_ROWS_FOOTER,
 )
 
@@ -106,6 +105,7 @@ NO_ROWS_LINE_CAP = 3
 HASH_LINE_CAP = 8
 ADDRESS_LINE_CAP = 8
 from .packing import (
+    _CHARS_PER_TOKEN,
     _CONTEXT_WINDOW,
     _GENERATION_RESERVE,
     _PACK_TOKEN_BUDGET,
@@ -119,10 +119,10 @@ from .prompts import (
     CLAIM_REASK,
     claim_reask_system_prompt,
     _ANSWER_RULES,
-    _NARRATIVE_ANSWER_BLOCK,
+    _ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
-    narrative_feedback,
+    translation_feedback,
 )
 from .routing import DomainSlice, domains_for_family, route
 from .verify import ClaimVerifier, Verdict
@@ -560,9 +560,9 @@ _FINDING_REASK = (
     "ending with exactly the block below.\n\n"
     + _ANSWER_RULES
     + "\n\n"
-    + _NARRATIVE_ANSWER_BLOCK
+    + _ANSWER_BLOCK
 )
-"""Built from `prompts._NARRATIVE_ANSWER_BLOCK`, not a second hand-written copy.
+"""Built from `prompts._ANSWER_BLOCK`, not a second hand-written copy.
 
 This is appended to the user turn (`model.invoke(system, user + reask)`), so it
 is the LAST and most explicit instruction the model reads on a re-ask -- a
@@ -582,8 +582,9 @@ def gather_finding(
 ) -> DomainFinding:
     """One hypothesis-blind domain analyst, invoked synchronously.
 
-    `feedback` (B51) is the narrative check's comment on a previous attempt, added to
-    the user turn on a rerun; empty on the first call.
+    `feedback` (B14) is the Broker's review of a previous attempt
+    (`prompts.translation_feedback`), added to the user turn on a rerun; empty on
+    the first call.
 
     Same empty-slice short-circuit, one-bounded-re-ask, and citation-validation
     discipline as `run_one`, but this call never receives the hypothesis: its
@@ -628,14 +629,18 @@ def _gather_finding_traced(
     `record_analyst_finding` call or assigning to a variable declared before the
     context manager. Neither reads as well as a body that just returns.
     """
-    evidence_text, valid_ids, _, _ = pack_evidence(slice_)
+    computed = translator_lines(slice_, scope)
+    # The computed block comes out of the rows' share of the window, not on top of it.
+    evidence_text, valid_ids, _, _ = pack_evidence(
+        slice_, token_budget=_PACK_TOKEN_BUDGET - int(sum(len(c) + 1 for c in computed) / _CHARS_PER_TOKEN)
+    )
     attempt = _invoke_with_one_reask(
         model,
         domain=domain,
         system=facts_system_prompt(domain),
         # `build_facts_user_turn` takes no context, and the finished string is all
         # that reaches the shared helper -- there is no parameter to leak through.
-        user=build_facts_user_turn(scope, evidence_text) + feedback,
+        user=build_facts_user_turn(scope, evidence_text, computed, list(valid_ids)) + feedback,
         reask=_FINDING_REASK,
         parse=parse_finding,
         parse_error=FindingParseError,
@@ -903,46 +908,9 @@ def _finalize_finding(
         # Identical lines once: 148b0e69's T1 carried one observation eight times.
         list(dict.fromkeys(grounded.observations)), slice_, grounded.domain
     )
-    # The narrative keeps every sentence but those asserting a figure or time the
-    # code-computed summaries do not print; the rest is the record of what the
-    # model claimed, and each dropped sentence is logged whole.
-    narrative = _drop_unsupported_sentences(grounded.narrative, slice_, grounded.domain)
-    if len(survivors) == len(grounded.observations) and narrative == grounded.narrative:
+    if len(survivors) == len(grounded.observations):
         return grounded
-    return grounded.model_copy(update={"observations": survivors, "narrative": narrative})
-
-
-def _drop_unsupported_sentences(narrative: str, slice_: DomainSlice, domain: str) -> str:
-    """The narrative less each sentence stating a figure or a clock time that
-    appears nowhere in the evidence the analyst read.
-
-    The prompt asks for no figures; c7dbf51d's narratives carried them anyway,
-    and T5's contradicted itself ("four times", then "11 under SYSTEM" where no
-    block prints 11). The same rule as `_drop_unsupported_figures`, over every
-    block rather than the cited ones, since narrative sentences cite nothing.
-    Summaries alone were tried and dropped true sentences naming event codes.
-
-    ponytail: spelled-out counts ("twice", "four times") pass, and so does a
-    figure that happens to occur elsewhere in the rows; a word-number list if
-    the first keeps turning up.
-    """
-    shown = " ".join(b.text for b in blocks(slice_))
-    shown_figures = _figures(shown)
-    parts = re.split(r"(?<=[.!?])(\s+)", narrative)
-    kept: list[str] = []
-    for sentence, gap in zip(parts[::2], [*parts[1::2], ""]):
-        bare = _CITATION_DIGITS_RE.sub(" ", sentence)
-        unsupported = sorted(_figures(sentence) - shown_figures) + [
-            t for t in _TIME_CLAIM_RE.findall(bare) if t not in shown
-        ] + _unsupported_protocols(sentence, shown)
-        if unsupported:
-            logger.warning(
-                "domain=%s | dropped a narrative sentence asserting %s, which no "
-                "computed summary prints: %s", domain, ", ".join(unsupported), sentence,
-            )
-            continue
-        kept.append(sentence + gap)
-    return narrative if len(kept) * 2 >= len(parts) + 1 else "".join(kept).rstrip()
+    return grounded.model_copy(update={"observations": survivors})
 
 
 def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None = None) -> DomainRecord:
@@ -970,45 +938,38 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
         for block in exhibits_for(slice_, finding.citations)
     ]
 
-    # Observations whose every cited block is EMPTY. Warned about, not removed,
-    # and the distinction is the point: an empty result set is legitimate
-    # negative evidence -- "no failed logons in the window" is a true and useful
-    # thing to report -- so penalising it would punish a correct account of an
-    # absence. What it cannot support is a claim that something WAS observed, and
-    # telling those two apart requires reading the claim against the rows, which
-    # is defect (c) and is not decidable here. So this surfaces the case rather
-    # than judging it; `Exhibit.row_count` carries it to the consumer, which now
-    # has the rows and can.
-    #
-    # The test used to be `finding.disposition != "inconclusive"` -- "the analyst
-    # committed to something". With the disposition gone, the same defect is
-    # stated directly: this tier commits to something by writing an observation,
-    # so an observation standing on nothing but zero-row blocks is the case.
-    if finding.observations and exhibits and all(e.row_count == 0 for e in exhibits):
-        logger.warning(
-            "domain=%s | %d observation(s) rest entirely on cited block(s) with "
-            "zero rows: %s",
-            finding.domain,
-            len(finding.observations),
-            ", ".join(e.citation for e in exhibits),
-        )
-    # Beside real rows, empty exhibits are noise: T1 on c7dbf51d cited 26 zero-row
-    # sets and each crossed to the Analyst (F8). The no-rows footer below names
-    # them instead. Kept whole when every exhibit is empty -- that IS the negative
-    # evidence. `citations` is untouched, so the verdict gate sees the same ids.
-    if any(e.row_count for e in exhibits):
-        exhibits = [e for e in exhibits if e.row_count]
+    # No exhibit is empty: `blocks()` renders no empty set, so none can be cited.
+    # Empty searches are named in the record's footer (`code_facts`).
 
-    # Code-written lines go in `facts`, not the narrative (B14): as narrative footers
-    # they were 62-73% of 874ab334's narratives, and since narratives always cross,
-    # every observation was cut. `pack_for_analyst` trims facts by priority instead.
+    return DomainRecord(
+        domain=finding.domain,
+        narrative=finding.narrative,
+        observations=list(finding.observations),
+        citations=list(finding.citations),
+        facts=code_facts(slice_, scope, " ".join(finding.observations)),
+        exhibits=exhibits,
+        # Every routed set, cited or not, cited first: the record and the Broker's
+        # review card read them; since B14 they no longer cross to the Analyst.
+        summaries=[
+            b.summary
+            for b in sorted(blocks(slice_), key=lambda b: b.header_id not in finding.citations)
+            if b.summary
+        ],
+    )
+
+
+def code_facts(slice_: DomainSlice, scope: Scope | None = None, text: str = "") -> list[str]:
+    """Lines computed in code over every routed row: the full paths behind each name
+    `text` uses, decoded encoded commands, interpreter and LOLBin command lines, file
+    hashes, private addresses and empty searches. Each block opens with its header.
+
+    One source for three readers (B14): the translator reads them before it writes
+    (`translator_lines`), the record keeps them (`DomainRecord.facts`), and the
+    Broker reviews the observations against them."""
     facts: list[str] = []
-    # B51: an empty narrative after a check that dropped or withheld it is not "nothing seen".
-    if finding.narrative_original and not finding.narrative:
-        facts.append(NARRATIVE_WITHHELD)
-    # A name in the narrative can stand for several files (B1c).
+    # A name in the observations can stand for several files (B1c).
     sets = [*slice_.siem_sets, *(("uncategorised", rs) for rs in slice_.untagged_sets)]
-    names = name_expansions(finding.narrative, sets)
+    names = name_expansions(text, sets) if text else []
     if names:
         facts += [NAMES_FOOTER, *names]
     # Each encoded command these rows hold, with what it decodes to (B10). Facts
@@ -1075,23 +1036,36 @@ def _as_record(finding: DomainFinding, slice_: DomainSlice, scope: Scope | None 
         facts.append(NO_ROWS_FOOTER)
         facts.append(f"~ {len(empty)} search{'es' if len(empty) != 1 else ''} returned no rows, including:")
         facts += [f"~ {_truncate(q, COMMAND_CHAR_CAP)}" for q in empty[:NO_ROWS_LINE_CAP]]
+    return facts
 
-    return DomainRecord(
-        domain=finding.domain,
-        narrative=finding.narrative,
-        observations=list(finding.observations),
-        citations=list(finding.citations),
-        facts=facts,
-        exhibits=exhibits,
-        # Every routed set, cited or not: a narrative that drops a set's rare rows
-        # otherwise leaves the Analyst Agent no way to recover them (B1). Cited sets
-        # first, so `for_analyst`'s size cap drops uncited ones first.
-        summaries=[
-            b.summary
-            for b in sorted(blocks(slice_), key=lambda b: b.header_id not in finding.citations)
-            if b.summary
-        ],
-    )
+
+# The translator's share of `code_facts`. Never the empty searches: they carry the
+# query, which leaks the hypothesis to a blind analyst (`formatting.format_result_set`).
+# Never the names block either: it expands names the observations use, which do not
+# exist yet.
+_TRANSLATOR_BLOCKS = (ENCODED_FOOTER, COMMANDS_FOOTER, HASHES_FOOTER, ADDRESSES_FOOTER)
+TRANSLATOR_CHAR_CAP = 6_000
+
+
+def translator_lines(slice_: DomainSlice, scope: Scope | None = None) -> list[str]:
+    """`code_facts` for the translator to read before it writes: downloads first, then
+    the rest in order, cut at `TRANSLATOR_CHAR_CAP` (B14)."""
+    header, keep = None, []
+    for line in code_facts(slice_, scope):
+        if line in (NAMES_FOOTER, NO_ROWS_FOOTER, *_TRANSLATOR_BLOCKS):
+            header = line
+        elif header in _TRANSLATOR_BLOCKS:
+            keep.append((header, line))
+    # ponytail: a fixed char cap with downloads first; a token-measured share if prompts overflow.
+    keep.sort(key=lambda hl: not FETCHES.search(hl[1]))
+    out, size, last = [], 0, None
+    for h, line in keep:
+        size += len(line) + (len(h) if h != last else 0)
+        if size > TRANSLATOR_CHAR_CAP:
+            break
+        out += [h, line] if h != last else [line]
+        last = h
+    return out
 
 
 @dataclass
@@ -1113,14 +1087,22 @@ def _shown_rows(ids: set[str], slice_: DomainSlice) -> tuple[str, set[str]]:
     return "\n".join(b.text for b in shown), {b.header_id.lower() for b in shown}
 
 
-def _presence_claims(observations: list[str], slice_: DomainSlice) -> list[_Claim]:
+def _with_computed(rows: str, computed: list[str]) -> str:
+    """Issue #22: the verifier reads what the translator read. The <computed> block
+    (decoded commands, hashes) was the translator's and not the verifier's, so
+    "decodes to $env:username" was dropped five times on 1bcbf51c."""
+    # ponytail: the whole block per claim (<= TRANSLATOR_CHAR_CAP); filter to the cited rows if verify cost grows.
+    return rows + ("\n<computed>\n" + "\n".join(computed) + "\n</computed>" if computed else "")
+
+
+def _presence_claims(observations: list[str], slice_: DomainSlice, computed: list[str]) -> list[_Claim]:
     """Observations citing at least one set with rows. A line citing only empty
     sets is an absence claim, which code already checks against the empty blocks."""
     claims = []
     for pos, line in enumerate(observations):
         rows, shown = _shown_rows(_cited(line), slice_)
         if shown:
-            claims.append(_Claim(pos, line, rows, shown))
+            claims.append(_Claim(pos, line, _with_computed(rows, computed), shown))
     return claims
 
 
@@ -1164,7 +1146,8 @@ def _reask_claims(model: AnalystModel, domain: AnalystDomain, slice_: DomainSlic
 
 
 async def _check_claims(
-    finding: DomainFinding, slice_: DomainSlice, model: AnalystModel, verify: ClaimVerifier
+    finding: DomainFinding, slice_: DomainSlice, model: AnalystModel, verify: ClaimVerifier,
+    scope: Scope | None = None,
 ) -> DomainFinding:
     """B52 E: each presence line checked against the rows it cites.
 
@@ -1173,7 +1156,8 @@ async def _check_claims(
     sub-analyst once; its fix is checked against the rows IT cites, and a line not
     shown to hold leaves `observations` for `unsupported` (traces.json). A skipped
     first check changes nothing but the audit mark."""
-    claims = _presence_claims(finding.observations, slice_)
+    computed = translator_lines(slice_, scope)
+    claims = _presence_claims(finding.observations, slice_, computed)
     if not claims:
         return finding
     verdicts = await _judge(verify, [(c.line, c.rows) for c in claims])
@@ -1188,7 +1172,8 @@ async def _check_claims(
     check = "checked"
     if bad:
         fixes = await asyncio.to_thread(_reask_claims, model, finding.domain, slice_, bad)
-        retry = [(c, fix, _shown_rows(_cited(fix), slice_)[0]) for c, fix in zip(bad, fixes) if fix]
+        retry = [(c, fix, _with_computed(_shown_rows(_cited(fix), slice_)[0], computed))
+                 for c, fix in zip(bad, fixes) if fix]
         again = await _judge(verify, [(fix, rows) for _, fix, rows in retry]) if retry else {}
         if again is None:
             # The line was found unsupported and its fix is unchecked: neither crosses.
@@ -1208,79 +1193,44 @@ async def _check_claims(
     })
 
 
-MAX_NARRATIVE_RERUNS = 3
+# B14: the one code-worded observation. A domain with rows the Analyst gets no account
+# of (a failed translation, a Broker limitation) says so instead of arriving silent.
+UNTRANSLATED = "Explanation incomplete for {domain}: evidence remains untranslated."
 
 
-def _narrative_claims(narrative: str, slice_: DomainSlice) -> list[_Claim]:
-    """B51: each narrative sentence beside the rows to check it against: the sets it
-    names, else everything the sub-analyst read (`pack_evidence`). `pos` indexes the
-    sentence in the narrative's split."""
-    evidence = pack_evidence(slice_)[0]
-    claims = []
-    for pos, sentence in enumerate(re.split(r"(?<=[.!?])(\s+)", narrative)[::2]):
-        if sentence.strip():
-            rows, shown = _shown_rows(_cited(sentence), slice_)
-            claims.append(_Claim(pos, sentence, rows or evidence, shown))
-    return claims
+def _said(finding: DomainFinding, slice_: DomainSlice) -> DomainFinding:
+    if slice_.has_evidence() and not finding.observations:
+        return finding.model_copy(update={"observations": [UNTRANSLATED.format(domain=finding.domain)]})
+    return finding
 
 
-async def _check_narrative(
-    finding: DomainFinding, slice_: DomainSlice, scope: Scope, model: AnalystModel, verify: ClaimVerifier
+async def translate(
+    report: BrokerReport, scope: Scope, model: AnalystModel, verifier: ClaimVerifier | None = None
+) -> list[DomainFinding]:
+    """One finding per routed slice, in `route`'s fixed order: each sub-analyst run,
+    then B52 E's check of its presence lines against their rows."""
+    slices = route(report, scope).slices()
+    findings = await asyncio.gather(*(asyncio.to_thread(gather_finding, model, scope, s) for s in slices))
+    if verifier is not None:  # B52 E
+        findings = await asyncio.gather(*(_check_claims(f, s, model, verifier, scope) for f, s in zip(findings, slices, strict=True)))
+    return list(findings)
+
+
+async def retranslate(
+    finding: DomainFinding, slice_: DomainSlice, scope: Scope, model: AnalystModel,
+    verifier: ClaimVerifier | None, reason: str,
 ) -> DomainFinding:
-    """B51: the narrative checked against the rows, the sub-analyst sent back with the
-    checker's reasons when a sentence is unsupported (up to MAX_NARRATIVE_RERUNS), and
-    what is still unsupported after that dropped. A check that cannot run withholds the
-    narrative. The original is kept in `narrative_original` (traces.json), never sent on."""
-    first, unsupported = finding.narrative, []
-    if not first.strip():
-        return finding
-    for rnd in range(MAX_NARRATIVE_RERUNS + 1):
-        if not finding.narrative.strip():
-            break
-        claims = _narrative_claims(finding.narrative, slice_)
-        verdicts = await _judge(verify, [(c.line, c.rows) for c in claims])
-        if verdicts is None:
-            return finding.model_copy(update={
-                "narrative": "", "narrative_original": first,
-                "narrative_check": "skipped: verifier unavailable or incomplete; narrative withheld",
-                "narrative_unsupported": unsupported,
-            })
-        bad = [c for i, c in enumerate(claims) if not verdicts[i].supported]
-        for i, c in enumerate(claims):
-            c.reason = verdicts[i].reason
-        unsupported += [f"round {rnd}: {c.line} -- {c.reason}" for c in bad]
-        if not bad:
-            break
-        if rnd == MAX_NARRATIVE_RERUNS:
-            drop = {c.pos for c in bad}
-            parts = re.split(r"(?<=[.!?])(\s+)", finding.narrative)
-            kept = "".join(s + g for k, (s, g) in enumerate(zip(parts[::2], [*parts[1::2], ""])) if k not in drop)
-            logger.warning("domain=%s | narrative check dropped %d sentence(s) its rows do not state",
-                           finding.domain, len(drop))
-            return finding.model_copy(update={
-                "narrative": kept.rstrip(), "narrative_original": first,
-                "narrative_check": f"checked; {len(drop)} sentence(s) dropped",
-                "narrative_unsupported": unsupported,
-            })
-        logger.warning("domain=%s | narrative check round %d: %d sentence(s) unsupported, rerunning the analyst",
-                       finding.domain, rnd, len(bad))
-        rerun = await asyncio.to_thread(
-            gather_finding, model, scope, slice_, narrative_feedback([(c.line, c.reason) for c in bad])
-        )
-        finding = rerun.model_copy(update={
-            "prompt_tokens": finding.prompt_tokens + rerun.prompt_tokens,
-            "generation_tokens": finding.generation_tokens + rerun.generation_tokens,
-        })
-    return finding.model_copy(update={"narrative_check": "checked", "narrative_unsupported": unsupported,
-                                      "narrative_original": first if first != finding.narrative else ""})
-
-
-async def _check_finding(
-    finding: DomainFinding, slice_: DomainSlice, scope: Scope, model: AnalystModel, verify: ClaimVerifier
-) -> DomainFinding:
-    """The narrative first, since a rerun replaces the observations too, then each presence line once."""
-    finding = await _check_narrative(finding, slice_, scope, model, verify)
-    return await _check_claims(finding, slice_, model, verify)
+    """B14: the one repair the Broker's review allows. The sub-analyst writes again with
+    the reviewer's reason; B52 E checks the new lines. Token counts add up."""
+    rerun = await asyncio.to_thread(
+        gather_finding, model, scope, slice_, translation_feedback(list(finding.observations), reason)
+    )
+    if verifier is not None:
+        rerun = await _check_claims(rerun, slice_, model, verifier, scope)
+    return rerun.model_copy(update={
+        "prompt_tokens": finding.prompt_tokens + rerun.prompt_tokens,
+        "generation_tokens": finding.generation_tokens + rerun.generation_tokens,
+    })
 
 
 async def gather(
@@ -1293,6 +1243,7 @@ async def gather(
     hypothesis: str | None = None,
     trace_sink: Callable[[list[DomainFinding]], None] | None = None,
     verifier: ClaimVerifier | None = None,
+    translated: list[DomainFinding] | None = None,
 ) -> HypothesisFindings:
     """Run the three blind analysts and attach their findings to the hypothesis.
 
@@ -1336,16 +1287,15 @@ async def gather(
 
     **`verifier`** (B52 E) checks each finding's presence lines against their
     cited rows (`_check_claims`); `None` skips the check.
+
+    **`translated`** (B14): findings the Broker already translated and reviewed
+    (`translate`, `retranslate`), one per routed slice in `route`'s order. When
+    given, no model is called here.
     """
-    routed = route(report, scope)
-    slices = routed.slices()
-    findings = await asyncio.gather(
-        *(asyncio.to_thread(gather_finding, model, scope, slice_) for slice_ in slices)
-    )
-    if verifier is not None:  # B52 E, and B51 for the narrative
-        findings = await asyncio.gather(
-            *(_check_finding(f, s, scope, model, verifier) for f, s in zip(findings, slices, strict=True))
-        )
+    slices = route(report, scope).slices()
+    # B14: the Broker translated and reviewed these inside its loop; reuse them.
+    findings = translated if translated is not None else await translate(report, scope, model, verifier)
+    findings = [_said(f, s) for f, s in zip(findings, slices, strict=True)]
     # Before `_as_record` below drops `reasoning_trace`, which is the last
     # point at which anything can.
     if trace_sink is not None:

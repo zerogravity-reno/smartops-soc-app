@@ -194,14 +194,12 @@ class TestParseFinding:
         with pytest.raises(FindingParseError):
             parse_finding("</think>I looked at the evidence and it seems fine.", domain="endpoint")
 
-    def test_citations_alone_are_enough_to_parse(self):
-        # No OBSERVATIONS block, but a NARRATIVE and a CITATIONS line are still a
-        # recognisable finding. Still an OR between those two, deliberately laxer
-        # than `parse_verdict`.
+    def test_citations_alone_no_longer_parse(self):
+        # B14: the observations are the whole translation, so a reply carrying
+        # only a narrative and a CITATIONS line is an empty finding.
         out = "</think>NARRATIVE: nothing notable in the rows.\nCITATIONS: auth_events#1"
-        f = parse_finding(out, domain="identity")
-        assert f.citations == ["auth_events#1"]
-        assert f.observations == []
+        with pytest.raises(FindingParseError, match="OBSERVATIONS"):
+            parse_finding(out, domain="identity")
 
     def test_observations_alone_are_enough_to_parse(self):
         out = "</think>NARRATIVE: one logon.\nOBSERVATIONS:\n- x [auth_events#1]"
@@ -256,50 +254,19 @@ class TestParseFinding:
                 ]
 
 
-class TestTheNarrativeIsRequired:
-    """A missing NARRATIVE raises rather than defaulting to `""`.
+class TestTheNarrativeIsOptional:
+    """B14: NARRATIVE is no longer asked for. A stray one is kept for audit, and an
+    empty `NARRATIVE:` line never captures the label after it."""
 
-    The narrative is what this tier produces. `parse_finding` used to default an
-    absent `DISPOSITION` to `inconclusive`, which on the 2026-08-30 live run put
-    a verdict no model had formed onto the wire; a silent `""` here would put a
-    silence no model had produced there instead, and `HypothesisFindings` cannot
-    tell that apart from a domain that genuinely had nothing to say.
+    def test_observations_without_a_narrative_parse(self):
+        out = "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\nCITATIONS: auth_events#1"
+        f = parse_finding(out, domain="identity")
+        assert f.narrative == "" and f.observations == ["one clean logon [auth_events#1]"]
 
-    Raising is not discarding: `analyze._invoke_with_one_reask` turns this into
-    one bounded re-ask whose last instruction is the required block itself.
-    """
-
-    def test_observations_and_citations_without_a_narrative_raise(self):
-        out = (
-            "</think>OBSERVATIONS:\n- one clean logon [auth_events#1]\n"
-            "CITATIONS: auth_events#1"
-        )
-        with pytest.raises(FindingParseError, match="NARRATIVE"):
-            parse_finding(out, domain="identity")
-
-    def test_an_empty_narrative_line_raises_rather_than_capturing_the_next_label(self):
-        """The one hole `_LABEL` cannot close on its own.
-
-        Every terminator is anchored to a NEWLINE, so a label that is the very
-        first thing after `NARRATIVE:` is not terminated but captured: the `\\s*`
-        after the colon gives the newline back and `OBSERVATIONS:\\n- x` becomes
-        the narrative. Without `_LABEL_AT_START_RE` this parses "successfully"
-        and ships the label block as prose.
-        """
-        out = (
-            "</think>NARRATIVE:\nOBSERVATIONS:\n- one clean logon [auth_events#1]\n"
-            "CITATIONS: auth_events#1"
-        )
-        with pytest.raises(FindingParseError, match="NARRATIVE"):
-            parse_finding(out, domain="identity")
-
-    def test_a_whitespace_only_narrative_raises(self):
-        out = (
-            "</think>NARRATIVE:    \nOBSERVATIONS:\n- x [auth_events#1]\n"
-            "CITATIONS: auth_events#1"
-        )
-        with pytest.raises(FindingParseError, match="NARRATIVE"):
-            parse_finding(out, domain="identity")
+    def test_an_empty_narrative_line_does_not_capture_the_next_label(self):
+        out = "</think>NARRATIVE:\nOBSERVATIONS:\n- one clean logon [auth_events#1]\nCITATIONS: auth_events#1"
+        f = parse_finding(out, domain="identity")
+        assert f.narrative == "" and f.observations == ["one clean logon [auth_events#1]"]
 
 
 class TestTheNarrativeLabelTerminates:
@@ -656,11 +623,3 @@ class TestTheNarrativeAnchorRuleIsAskedForButNotEnforced:
         f = parse_finding(self._reply(narrative), domain="identity")
         assert f.narrative.startswith("Two distinct accounts")
 
-    def test_the_prompt_still_asks_for_it(self):
-        # Withdrawing the CHECK must not silently withdraw the REQUEST: the rule
-        # is still what a checkable narrative looks like, and the day the model
-        # complies is the day enforcement becomes affordable again.
-        from smartops.subagent_analysts.prompts import _ANSWER_RULES
-
-        flat = " ".join(_ANSWER_RULES.split()).lower()
-        assert "name the sets you describe by their header id" in flat

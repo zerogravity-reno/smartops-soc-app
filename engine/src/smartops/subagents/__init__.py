@@ -127,6 +127,14 @@ module source: 4104 rows ran ~12 KB each, 57 of them 696 KB in one result."""
 SESSION_LOST = "the client session is not running"
 """Strands' error text once an MCP session has died (`mcp_client.py:911`)."""
 
+SESSION_LOST_REASON = "MCP session lost"
+"""How a mission's `reason` starts when `_SessionWatch` ended it."""
+
+SESSION_RETRIES = 3
+"""Reruns of a mission whose MCP session died (issue #22, Mohammed 11-05). Each rerun
+resolves tools again, which resets the dead client, so a dropped session costs a
+reconnect rather than the Broker's step. Not a Broker dispatch."""
+
 # Same generous input floor the Broker uses, for the same reason: a reservation
 # is a ceiling and `settle()` credits back the difference, so over-estimating is
 # free while under-estimating disables the gate.
@@ -173,6 +181,7 @@ _FAMILY_SPECIALIZATIONS: dict[str, str] = {
         "- Only if `summariesonly=f` also returns 0 rows, query specific sourcetypes directly (`sourcetype=stream:dns`, `sourcetype=stream:tcp`, `sourcetype=XmlWinEventLog EventCode=1`, `sourcetype=WinEventLog EventCode=4688`, `sourcetype=WinEventLog EventCode=4624`).\n"
         "- Sourcetype names differ between deployments. If a raw sourcetype search returns 0 rows, list the sourcetypes that actually hold this host's events (`| tstats count where index=<allowed index> host=<host> by sourcetype`) and retry with the real name before concluding the data is absent.\n"
         "- When grouping process events, always include the parent's path (`Processes.parent_process_path`, or `ParentImage` on raw Sysmon) beside its name: two binaries can share a name and differ only by path.\n"
+        "- Keep every entity field the mission filters on (host or `dest`, user, src) in the `by` clause of a `stats`/`tstats`, so each row names whose activity it is. A grouped row without it cannot be attributed to the host.\n"
         "- A file's hash: an executed image's is in Sysmon 1 `Hashes` (that row's `Image`, not a file it wrote); a written file's only in Sysmon 15 (FileCreateStreamHash) or 29 (FileExecutableDetected) `Hash`, matched on `TargetFilename`. When neither names the file, say so: no hash was recorded.\n"
         "- Do NOT use wildcard `index=*` as unconstrained wildcard searches across all system indexes are forbidden.\n"
         "- Retrieve data into CIM categories (Network Resolution -> dns_resolutions, Network Traffic -> connections, Endpoint Processes -> processes, Authentication -> auth_events, Endpoint Filesystem or Sysmon 11/23/26 -> file_events, Endpoint Registry or Sysmon 12/13/14 -> registry_events, PowerShell 4104 -> script_blocks).\n"
@@ -438,8 +447,8 @@ class _SessionWatch:
     Strands returns that refusal as an ordinary error result, so the model kept
     calling: 60 refusals on `89674d75` L5-FU2 before the round hung. Halting after
     the batch lets the recovery call report what was already collected, and
-    `investigate()` marks the step ERROR, so a re-dispatch goes back through
-    `tools_for()`, which reconnects the client.
+    `investigate()` marks the step ERROR, and `domain_runner` reruns it through
+    `tools_for()`, which reconnects the client (`SESSION_RETRIES`).
     """
 
     def __init__(self) -> None:
@@ -1031,7 +1040,7 @@ async def investigate(
             "collected and retained"
         )
         if watch.refused:
-            reason = f"MCP session lost ({watch.refused} call(s) refused); {reason}"
+            reason = f"{SESSION_LOST_REASON} ({watch.refused} call(s) refused); {reason}"
         # ERROR even with evidence: a lost answer is a failure, not "nothing
         # there". As NO_DATA it read as a negative finding while carrying rows
         # (F7: 74 fallback-scan rows on c7dbf51d T1). The rows are still kept.
@@ -1077,7 +1086,7 @@ async def investigate(
     if watch.refused:
         # The answer covers only what ran before the session died: ERROR, so the
         # Broker sees an incomplete step, not a clean "ok" or "no_data".
-        reason = f"MCP session lost ({watch.refused} call(s) refused); answer covers only the queries before it"
+        reason = f"{SESSION_LOST_REASON} ({watch.refused} call(s) refused); answer covers only the queries before it"
         logger.error("task_id=%s family=%s | %s", mission.task_id, family, reason)
         update |= {"status": SubtaskStatus.ERROR, "reason": reason, "error": reason}
     return result.model_copy(update=update)
@@ -1306,6 +1315,18 @@ def domain_runner(
     """
 
     async def run(mission: SubagentMission) -> SubtaskResult:
+        # ponytail: a rerun starts the mission over; rows an attempt fetched before its
+        # session died are not carried into the next. Merge collectors if that costs evidence.
+        result = await run_once(mission)
+        for retry in range(1, SESSION_RETRIES + 1):
+            if not (result.status == SubtaskStatus.ERROR and (result.reason or "").startswith(SESSION_LOST_REASON)):
+                break
+            logger.warning("task_id=%s family=%s | %s; reconnecting, retry %d of %d",
+                           mission.task_id, mission.tool_family, result.reason, retry, SESSION_RETRIES)
+            result = await run_once(mission)
+        return result
+
+    async def run_once(mission: SubagentMission) -> SubtaskResult:
         family = mission.tool_family
         # Precondition, not judgement: VirusTotal cannot be queried without a
         # hash, address, domain, or URL regardless of what any model decides.

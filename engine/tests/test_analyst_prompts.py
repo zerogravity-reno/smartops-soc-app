@@ -18,7 +18,7 @@ from smartops.subagent_analysts.packing import (
 from smartops.subagent_analysts.prompts import (
     _ANSWER_RULES,
     _DESCRIBE_ONLY_BLOCK,
-    _NARRATIVE_ANSWER_BLOCK,
+    _ANSWER_BLOCK,
     build_facts_user_turn,
     facts_system_prompt,
 )
@@ -91,7 +91,7 @@ class TestFactsSystemPrompt:
 
     def test_states_the_answer_format_and_untrusted_regions(self):
         p = facts_system_prompt("identity")
-        assert "NARRATIVE:" in p and "OBSERVATIONS:" in p and "CITATIONS:" in p
+        assert "NARRATIVE:" not in p and "OBSERVATIONS:" in p and "CITATIONS:" in p
         assert "UNTRUSTED" in p
 
     # Every word this tier must never be handed, with the reason it is banned.
@@ -200,7 +200,7 @@ class TestFactsPromptSteadiesTheReport:
             flat = _flat(facts_system_prompt(domain))
 
             assert "HOW MUCH TO REPORT:" in flat
-            assert "Every set with rows must appear in it" in flat
+            assert "Every set with rows must appear in some line" in flat
             assert "Never drop a set because it looks uninteresting" in flat
 
     def test_category_matched_evidence_is_preferred_over_uncategorised(self):
@@ -237,16 +237,13 @@ class TestFactsPromptFixesLiveRunRegressions:
     here against the fields the block now carries.
     """
 
-    def test_required_block_orders_the_narrative_before_observations(self):
-        """Defect 2a: OBSERVATIONS used to come first, so a model that
-        over-produced observations lost the fields after it to `max_gen_len` --
-        exactly the ones that matter. The payload is now the NARRATIVE, so it
-        leads, and the list that can run long comes after it. `parse_finding` is
-        proven order-independent in `test_analyst_parse.py`."""
+    def test_required_block_asks_for_observations_and_no_narrative(self):
+        """B14: the observations are the whole translation; the NARRATIVE field went."""
         for domain in ("identity", "network", "endpoint"):
             p = facts_system_prompt(domain)
 
-            assert p.index("NARRATIVE:") < p.index("OBSERVATIONS:") < p.index("CITATIONS:")
+            assert "NARRATIVE:" not in p
+            assert p.index("OBSERVATIONS:") < p.index("CITATIONS:")
 
     def test_the_reporting_floor_has_a_concrete_ceiling(self):
         """Defect 2b: the floor's own worst-case failure was 82 observations
@@ -313,9 +310,8 @@ class TestTheReaskCannotDivergeFromTheFooter:
         return re.findall(r"^([A-Z]+):", text, re.MULTILINE)
 
     def test_the_blind_reask_matches_the_blind_footer(self):
-        assert self._fields(_FINDING_REASK) == self._fields(_NARRATIVE_ANSWER_BLOCK)
+        assert self._fields(_FINDING_REASK) == self._fields(_ANSWER_BLOCK)
         assert self._fields(_FINDING_REASK) == [
-            "NARRATIVE",
             "OBSERVATIONS",
             "CITATIONS",
         ]
@@ -324,7 +320,7 @@ class TestTheReaskCannotDivergeFromTheFooter:
         """Guards the FIX, not just the symptom: a hand-patched field line with
         no shared constant would pass the assertion above and still be able to
         drift again the next time either string is edited alone."""
-        assert _NARRATIVE_ANSWER_BLOCK in _FINDING_REASK
+        assert _ANSWER_BLOCK in _FINDING_REASK
 
     def test_the_shown_arms_reask_already_agreed_with_its_footer(self):
         """Regression guard for the sibling this finding asked us to check.
@@ -633,8 +629,8 @@ def test_valid_citation_ids_maps_each_header_to_its_evidence():
     slice_ = DomainSlice(
         domain="network",
         siem_sets=[
-            ("connections", ResultSet(query="a", row_count=0, evidence_id="t:siem:x:0")),
-            ("connections", ResultSet(query="b", row_count=0, evidence_id="t:siem:x:1")),
+            ("connections", ResultSet(query="a", row_count=1, rows=[{"dest": "10.0.0.9"}], evidence_id="t:siem:x:0")),
+            ("connections", ResultSet(query="b", row_count=1, rows=[{"dest": "10.0.0.9"}], evidence_id="t:siem:x:1")),
         ],
         vt_verdicts=[VtVerdict(kind="domain", value="x.com", found=True,
                                evidence_id="t:vt:y:0")],
@@ -654,7 +650,7 @@ class TestCitationNumberingIsPerCategory:
     numbered by position: the network slice of `cli-20260825T100434` emitted
     `connections#1..#9` and then `dns_resolutions#10..`, with no
     `dns_resolutions#1` -- which is the exact worked example
-    `prompts._NARRATIVE_FOOTER` hands the model. A model citing it failed
+    `prompts._ANSWER_FOOTER` hands the model. A model citing it failed
     `valid_citation_ids`, lost the observation to
     `_resolve_observation_citations`, and had its disposition downgraded to
     `inconclusive`. That reads as a cautious analyst, not a bug, which is what
@@ -668,9 +664,9 @@ class TestCitationNumberingIsPerCategory:
             vt_verdicts=[VtVerdict(kind="domain", value="bad.com", found=True, malicious=9)],
             siem_sets=[
                 ("connections", ResultSet(query="c1", row_count=1, rows=[{"src_ip": "1.1.1.1"}])),
-                ("connections", ResultSet(query="c2", row_count=0, rows=[])),
+                ("connections", ResultSet(query="c2", row_count=1, rows=[{"dest": "10.0.0.9"}])),
                 ("dns_resolutions", ResultSet(query="d1", row_count=1, rows=[{"query": "bad.com"}])),
-                ("dns_resolutions", ResultSet(query="d2", row_count=0, rows=[])),
+                ("dns_resolutions", ResultSet(query="d2", row_count=1, rows=[{"query": "x.com"}])),
             ],
         )
 
@@ -693,7 +689,7 @@ class TestCitationNumberingIsPerCategory:
 
         ids = valid_citation_ids(self._multi_category_slice())
 
-        # `_NARRATIVE_FOOTER` names these verbatim.
+        # `_ANSWER_FOOTER` names these verbatim.
         assert "connections#1" in ids
         assert "dns_resolutions#1" in ids
 
@@ -702,10 +698,10 @@ class TestCitationNumberingIsPerCategory:
 
         slice_ = DomainSlice(
             domain="endpoint",
-            siem_sets=[("processes", ResultSet(query="p", row_count=0, rows=[]))],
+            siem_sets=[("processes", ResultSet(query="p", row_count=1, rows=[{"dest": "10.0.0.9"}]))],
             untagged_sets=[
-                ResultSet(query="u1", row_count=0, rows=[]),
-                ResultSet(query="u2", row_count=0, rows=[]),
+                ResultSet(query="u1", row_count=1, rows=[{"dest": "10.0.0.9"}]),
+                ResultSet(query="u2", row_count=1, rows=[{"dest": "10.0.0.9"}]),
             ],
         )
 
@@ -729,13 +725,13 @@ class TestTheBlindPromptCarriesNoQuery:
                     "dns_resolutions",
                     ResultSet(
                         query='index=botsv3 sourcetype=stream:dns query="*coinhive*"',
-                        row_count=0,
-                        rows=[],
+                        row_count=1,
+                        rows=[{"query": "x.com"}],
                     ),
                 )
             ],
             untagged_sets=[
-                ResultSet(query='index=botsv3 "*coinhive*" | stats count', row_count=0, rows=[])
+                ResultSet(query='index=botsv3 "*coinhive*" | stats count', row_count=1, rows=[{"count": "3"}])
             ],
         )
 
@@ -749,17 +745,26 @@ class TestTheBlindPromptCarriesNoQuery:
         assert headers
         assert not any("query=" in h for h in headers)
         assert not any("coinhive" in h for h in headers)
-        # Two sets were asked for and both came back empty. That must survive.
-        assert text.count("rows=0") == 2
+        assert len(headers) == 2
+
+    def test_an_empty_set_is_not_shown_to_the_translator(self):
+        """Without its query an empty set reads as "nothing anywhere" (300464d7 T3)."""
+        slice_ = DomainSlice(domain="network", siem_sets=[
+            ("connections", ResultSet(query="q", row_count=0, rows=[])),
+            ("connections", ResultSet(query="q2", row_count=1, rows=[{"dest": "10.0.0.9"}])),
+        ])
+        text, ids, _truncated, _cap = pack_evidence(slice_)
+        assert "rows=0" not in text and list(ids) == ["connections#1"]
+        assert not DomainSlice(domain="network", siem_sets=[slice_.siem_sets[0]]).has_evidence()
 
     def test_the_query_still_reaches_the_analyst_agent(self):
-        """Big A is not blind, and cannot weigh a rows=0 exhibit without it."""
+        """Big A is not blind; the exhibit keeps the query the prompt leaves out."""
         from smartops.subagent_analysts.packing import exhibits_for
 
         query = 'index=botsv3 sourcetype=stream:dns query="*coinhive*"'
         slice_ = DomainSlice(
             domain="network",
-            siem_sets=[("dns_resolutions", ResultSet(query=query, row_count=0, rows=[]))],
+            siem_sets=[("dns_resolutions", ResultSet(query=query, row_count=1, rows=[{"query": "x.com"}]))],
         )
 
         blocks = exhibits_for(slice_, ["dns_resolutions#1"])
@@ -954,7 +959,7 @@ class TestTheAnswerRulesReachBothConsumers:
     """T11. Five rules, each fixing a measured defect from the 2026-09-05 replay.
 
     They live in `_ANSWER_RULES` rather than being written into the footer, for the
-    reason `_NARRATIVE_ANSWER_BLOCK`'s docstring already records about the field
+    reason `_ANSWER_BLOCK`'s docstring already records about the field
     list: the re-ask is the LAST thing the model reads, so a second hand-written
     copy there silently overrides the first ask. That drifted once and cost a live
     run its answer.
@@ -968,14 +973,13 @@ class TestTheAnswerRulesReachBothConsumers:
         assert _ANSWER_RULES in _FINDING_REASK
 
     def test_the_reask_still_carries_the_block(self):
-        assert _NARRATIVE_ANSWER_BLOCK in _FINDING_REASK
+        assert _ANSWER_BLOCK in _FINDING_REASK
 
-    def test_narrative_paragraphs_must_name_their_set(self):
-        # identity wrote three paragraphs naming none, so a reader could not tell
-        # which rows any sentence rested on. `parse._check_narrative_is_anchored`
-        # enforces it; this pins that the model is told.
+    def test_a_command_is_described_by_what_it_does(self):
+        # B14, d6b48ef0: "update downloads" named no URL and no file.
         flat = _flat(_ANSWER_RULES).lower()
-        assert "name the sets you describe by their header id" in flat
+        assert "your observations are the whole account" in flat
+        assert "any url or address it contacts and any file it writes" in flat
 
     def test_times_are_copied_not_converted(self):
         # identity rendered the row value `15:35:34+02:00` as `11:35:34 AM UTC`.

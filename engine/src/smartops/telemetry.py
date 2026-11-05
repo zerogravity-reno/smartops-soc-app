@@ -229,7 +229,7 @@ def record_analyst_finding(finding: Any) -> None:
     What a reader wants from an analyst span is what the finding contains and
     what it cost, so both go on. This tier carries no verdict -- see
     `DomainFinding`'s docstring -- so there is no `disposition`/`confidence` to
-    stamp any more; `narrative_chars` replaces them as the cheapest signal of
+    stamp any more; `observation_chars` replaces them as the cheapest signal of
     whether a translation actually happened, alongside the observation and
     citation counts. `reasoning_trace` deliberately does NOT go on: it is the
     model's private chain of thought, kept for audit and never re-fed, and a
@@ -245,7 +245,7 @@ def record_analyst_finding(finding: Any) -> None:
         return
     span.set_attribute("analyst.observation_count", len(finding.observations))
     span.set_attribute("analyst.citation_count", len(finding.citations))
-    span.set_attribute("analyst.narrative_chars", len(finding.narrative))
+    span.set_attribute("analyst.observation_chars", sum(map(len, finding.observations)))  # B14: no narrative
     span.set_attribute("gen_ai.usage.input_tokens", finding.prompt_tokens)
     span.set_attribute("gen_ai.usage.output_tokens", finding.generation_tokens)
 

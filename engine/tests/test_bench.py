@@ -254,7 +254,7 @@ class TestBenchMetricsCollection:
             run_index=0,
             expected_families=expected,
             model=_PLACEHOLDER_MODEL,
-            budget_usd=1.0,
+            budget_usd=2.0,
             scripted=True,
         )
 
