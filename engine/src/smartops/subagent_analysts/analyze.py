@@ -640,7 +640,7 @@ def _gather_finding_traced(
         system=facts_system_prompt(domain),
         # `build_facts_user_turn` takes no context, and the finished string is all
         # that reaches the shared helper -- there is no parameter to leak through.
-        user=build_facts_user_turn(scope, evidence_text, computed) + feedback,
+        user=build_facts_user_turn(scope, evidence_text, computed, list(valid_ids)) + feedback,
         reask=_FINDING_REASK,
         parse=parse_finding,
         parse_error=FindingParseError,
@@ -1087,14 +1087,22 @@ def _shown_rows(ids: set[str], slice_: DomainSlice) -> tuple[str, set[str]]:
     return "\n".join(b.text for b in shown), {b.header_id.lower() for b in shown}
 
 
-def _presence_claims(observations: list[str], slice_: DomainSlice) -> list[_Claim]:
+def _with_computed(rows: str, computed: list[str]) -> str:
+    """Issue #22: the verifier reads what the translator read. The <computed> block
+    (decoded commands, hashes) was the translator's and not the verifier's, so
+    "decodes to $env:username" was dropped five times on 1bcbf51c."""
+    # ponytail: the whole block per claim (<= TRANSLATOR_CHAR_CAP); filter to the cited rows if verify cost grows.
+    return rows + ("\n<computed>\n" + "\n".join(computed) + "\n</computed>" if computed else "")
+
+
+def _presence_claims(observations: list[str], slice_: DomainSlice, computed: list[str]) -> list[_Claim]:
     """Observations citing at least one set with rows. A line citing only empty
     sets is an absence claim, which code already checks against the empty blocks."""
     claims = []
     for pos, line in enumerate(observations):
         rows, shown = _shown_rows(_cited(line), slice_)
         if shown:
-            claims.append(_Claim(pos, line, rows, shown))
+            claims.append(_Claim(pos, line, _with_computed(rows, computed), shown))
     return claims
 
 
@@ -1138,7 +1146,8 @@ def _reask_claims(model: AnalystModel, domain: AnalystDomain, slice_: DomainSlic
 
 
 async def _check_claims(
-    finding: DomainFinding, slice_: DomainSlice, model: AnalystModel, verify: ClaimVerifier
+    finding: DomainFinding, slice_: DomainSlice, model: AnalystModel, verify: ClaimVerifier,
+    scope: Scope | None = None,
 ) -> DomainFinding:
     """B52 E: each presence line checked against the rows it cites.
 
@@ -1147,7 +1156,8 @@ async def _check_claims(
     sub-analyst once; its fix is checked against the rows IT cites, and a line not
     shown to hold leaves `observations` for `unsupported` (traces.json). A skipped
     first check changes nothing but the audit mark."""
-    claims = _presence_claims(finding.observations, slice_)
+    computed = translator_lines(slice_, scope)
+    claims = _presence_claims(finding.observations, slice_, computed)
     if not claims:
         return finding
     verdicts = await _judge(verify, [(c.line, c.rows) for c in claims])
@@ -1162,7 +1172,8 @@ async def _check_claims(
     check = "checked"
     if bad:
         fixes = await asyncio.to_thread(_reask_claims, model, finding.domain, slice_, bad)
-        retry = [(c, fix, _shown_rows(_cited(fix), slice_)[0]) for c, fix in zip(bad, fixes) if fix]
+        retry = [(c, fix, _with_computed(_shown_rows(_cited(fix), slice_)[0], computed))
+                 for c, fix in zip(bad, fixes) if fix]
         again = await _judge(verify, [(fix, rows) for _, fix, rows in retry]) if retry else {}
         if again is None:
             # The line was found unsupported and its fix is unchecked: neither crosses.
@@ -1201,7 +1212,7 @@ async def translate(
     slices = route(report, scope).slices()
     findings = await asyncio.gather(*(asyncio.to_thread(gather_finding, model, scope, s) for s in slices))
     if verifier is not None:  # B52 E
-        findings = await asyncio.gather(*(_check_claims(f, s, model, verifier) for f, s in zip(findings, slices, strict=True)))
+        findings = await asyncio.gather(*(_check_claims(f, s, model, verifier, scope) for f, s in zip(findings, slices, strict=True)))
     return list(findings)
 
 
@@ -1215,7 +1226,7 @@ async def retranslate(
         gather_finding, model, scope, slice_, translation_feedback(list(finding.observations), reason)
     )
     if verifier is not None:
-        rerun = await _check_claims(rerun, slice_, model, verifier)
+        rerun = await _check_claims(rerun, slice_, model, verifier, scope)
     return rerun.model_copy(update={
         "prompt_tokens": finding.prompt_tokens + rerun.prompt_tokens,
         "generation_tokens": finding.generation_tokens + rerun.generation_tokens,

@@ -167,9 +167,8 @@ no sanctioned way to say so."""
 
 _ANSWER_FOOTER = f"""\
 CITING EVIDENCE: cite by copying, verbatim, the full header id printed above the rows you
-used (the text right after `# `). It may read `auth_events#1`, `connections#1`,
-`dns_resolutions#1`, `processes#1`, `file_events#1`, `reputation#1`, or `uncategorised#3` — cite
-whatever is actually shown, including `uncategorised#N` rows.
+used (the text right after `# `). The user turn lists every id this evidence holds;
+cite only those, including `uncategorised#N` ones.
 CRITICAL CITATION RULES:
 - Always include the full category prefix with the number (e.g. `dns_resolutions#1` or `connections#2` or `auth_events#1`).
 - NEVER strip the category name to write `#1` or `#4` — doing so will cause your citations to be discarded.
@@ -326,7 +325,7 @@ name a source for it. Never name a protocol that no `proto=` field shows.
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
-- Cite the exact header id of each row you use, e.g. [connections#1], [reputation#1].
+- Cite the exact header id of each row you use, in brackets.
   Only cite ids that appear in the evidence — never invent one.
 - A reputation line describes the indicator itself, not proof our host reached it —
   pair it with a dns or connection row before describing it as activity.
@@ -358,7 +357,7 @@ EVIDENCE YOU RECEIVE — under headers like these:
 
 GROUNDING RULES (do not hallucinate)
 - Base every statement on specific rows shown, and quote their values.
-- Cite the exact header id of each row you use, e.g. [processes#1], [reputation#1].
+- Cite the exact header id of each row you use, in brackets.
   Only cite ids that appear in the evidence — never invent one.
 - Do NOT infer network volume or authentication history; you cannot see it here.
 - Every set shown has rows. One whose rows look routine is still part of what happened:
@@ -417,7 +416,9 @@ def translation_feedback(previous: list[str], reason: str) -> str:
     )
 
 
-def build_facts_user_turn(scope: Scope, evidence_text: str, computed: list[str] | None = None) -> str:
+def build_facts_user_turn(
+    scope: Scope, evidence_text: str, computed: list[str] | None = None, ids: list[str] | None = None
+) -> str:
     """Assemble the hypothesis-blind user turn: fenced scope, evidence and computed lines.
 
     No hypothesis is included anywhere in this turn -- that is the entire point
@@ -427,7 +428,12 @@ def build_facts_user_turn(scope: Scope, evidence_text: str, computed: list[str] 
     `computed` (B14) is what code worked out over every row: decoded commands, full
     command lines, file hashes and private addresses. The observations are the Analyst's
     only account, so the translator reads these before it writes, not after.
+
+    `ids` (issue #22) are the header ids the evidence holds. The prompt used to give
+    example ids instead, and 1bcbf51c cited `reputation#1`, `connections#1` and
+    `uncategorised#1` from that list when its evidence had none of them.
     """
+    cite = f"\n\nHeader ids in this evidence, the only ones you may cite: {', '.join(ids)}" if ids else ""
     block = (
         "\n\nComputed by code over every row of the evidence above (decoded, counted and "
         "complete where the rows are cut short):\n" + fenced("computed", "\n".join(computed))
@@ -438,6 +444,7 @@ def build_facts_user_turn(scope: Scope, evidence_text: str, computed: list[str] 
         + "\n\n"
         + fenced("evidence", evidence_text)
         + block
+        + cite
         + "\n\nDescribe what the evidence above shows, grouping like rows. "
         "Give your reasoning, then the required block."
     )

@@ -313,8 +313,8 @@ def blocks(slice_: DomainSlice, *, row_cap: int = _ROW_CAP_LADDER[0]) -> list[Bl
     **Numbering is per category, not per slice.** One counter over `siem_sets`
     numbered by position instead, so the network slice of
     `cli-20260825T100434` emitted `connections#1..#9` and then
-    `dns_resolutions#10..` -- with no `dns_resolutions#1`, which is the exact
-    worked example `prompts._ANSWER_FOOTER` hands the model. A model citing it
+    `dns_resolutions#10..` -- with no `dns_resolutions#1`, which was a worked
+    example `prompts._ANSWER_FOOTER` handed the model (until issue #22). A model citing it
     failed `valid_citation_ids`, lost the observation to
     `_resolve_observation_citations`, and -- as `_finalize_finding` behaved at the
     time -- had its disposition downgraded to `inconclusive`. That read as a

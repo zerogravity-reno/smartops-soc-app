@@ -33,6 +33,8 @@ For each claim, decide only this: do the rows state what the claim says? A claim
 names a value, process, account, address, command or action the rows do not contain is
 unsupported. Do not judge whether the activity is good or bad, and do not weigh what it
 means; wording and order do not matter, only whether the rows say it.
+A <computed> block after the rows was worked out by code from those rows (decoded
+commands, hashes, addresses): what it states, the rows state.
 For an unsupported claim, the reason quotes the part of the row that differs.
 For a supported claim, leave the reason empty."""
 
