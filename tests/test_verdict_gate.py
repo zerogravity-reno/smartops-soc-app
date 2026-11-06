@@ -89,6 +89,27 @@ def test_gate_rejects_unanswerable_source_claims():
     assert len(out["follow_up_tasks"]) >= 1
 
 
+def test_gate_g4_follow_up_names_the_specific_unanswerable_claim():
+    # G4: The injected follow-up must name the specific claim, not a generic message,
+    # so the analyst knows which source to verify rather than re-asking blindly every round.
+    claim = "No connected source holds this: Is 192.168.40.211 registered? (asset inventory)"
+    out = verdict_gate(
+        {"hypothesis_scores": {"H1": 95, "H2": 10},
+         "verdict": "TRUE_POSITIVE",
+         "status": "VERDICT_REACHED",
+         "verdict_reasoning": "Asset inventory lacks any update-server registration for 192.168.40.211.",
+         "follow_up_tasks": []},
+        PLAN,
+        [{"unanswerable": [claim]}],
+    )
+    assert out["status"] == "REQUIRES_INVESTIGATION"
+    fu_question = out["follow_up_tasks"][0]["question"]
+    # The follow-up must reference the specific claim text
+    assert "asset inventory" in fu_question.lower(), (
+        f"Expected claim name in follow-up, got: {fu_question!r}"
+    )
+
+
 def test_gate_handles_g8_percentage_and_float_scores():
     # G8: Scores like "85%" or "85.5" or float values are parsed cleanly
     out1 = verdict_gate(
