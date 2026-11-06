@@ -7,6 +7,7 @@ here by code (`verdict_gate`), not taken from the model.
 
 import asyncio
 import json
+import math
 import re
 from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
@@ -119,6 +120,7 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
     """
     event = _instant(event_time)
     out, dropped = [], []
+    seen_tids = set()
     for n, task in enumerate(tasks, 1):
         if not isinstance(task, dict):
             dropped.append({"task_id": None, "why": "not a task object", "task": task})
@@ -192,7 +194,21 @@ def to_task_file(tasks: list, run_id: str, loop: int, alert_scope: list | None =
             # Sent without them, and said so -- a silently narrowed task reads as the one asked.
             dropped.append({"task_id": task.get("task_id"), "question": task.get("question"), "sent": True,
                             "why": f"sent without entities the broker cannot search on: {', '.join(map(str, unusable))}"})
-        task_id = f"{run_id}-L{loop}-{task.get('task_id') or f'T{n}'}"
+        raw_tid = str(task.get('task_id') or f'T{n}').strip()
+        safe_tid = re.sub(r'[^A-Za-z0-9_\-]', '_', raw_tid)
+        # T30: bound safe_tid so the full id stays within 128 chars after
+        # the "{run_id}-L{loop}-" prefix (~12 chars) and a "_N" dedup suffix (3 chars).
+        _prefix = f"{run_id}-L{loop}-"
+        _max_safe = 128 - len(_prefix) - 3  # 3 reserved for "_NN" suffix
+        safe_tid = safe_tid[:_max_safe]
+        candidate_tid = f"{_prefix}{safe_tid}"
+        final_tid = candidate_tid
+        counter = 1
+        while final_tid in seen_tids:
+            counter += 1
+            final_tid = f"{candidate_tid}_{counter}"
+        seen_tids.add(final_tid)
+        task_id = final_tid
         out.append({
             "task_id": task_id,
             # Unique per task, as `TaskInputFile` requires; the plan decouples
@@ -277,6 +293,8 @@ def follow_up_tasks(follow_ups: list, sent: list, gaps: list | None = None, aske
     if not sent:
         return []
     if not any(isinstance(f, dict) and f.get("question") for f in follow_ups or []):
+        if isinstance(gaps, str):
+            gaps = [gaps]
         follow_ups = [{"task_id": f"G{n}", "question": g}
                       for n, g in enumerate((g for g in gaps or [] if isinstance(g, str) and g.strip()), 1)]
 
@@ -411,11 +429,33 @@ def verdict_gate(synth: dict, plan: dict, payloads: list | None = None, runs: li
     """
     out = dict(synth)
 
-    # 1. Parse and rank scores dynamically
+    # G4: Reject verdicts that cite unanswerable sources as negative evidence
+    bad_claims = unsupported_unanswerable_claims(synth, payloads)
+    if bad_claims:
+        out["status"] = "REQUIRES_INVESTIGATION"
+        out["verdict"] = "REQUIRES_INVESTIGATION"
+        has_follow_ups = any(isinstance(f, dict) and f.get("question") for f in out.get("follow_up_tasks") or [])
+        if not has_follow_ups:
+            _claim_summary = "; ".join(bad_claims[:3])  # name the specific unanswerable claims
+            out["follow_up_tasks"] = [{
+                "task_id": "FU1",
+                "question": (
+                    f"The following source(s) returned unanswerable: {_claim_summary}. "
+                    "Verify connectivity to these sources and gather corroborating evidence "
+                    "from reachable sources before drawing absence conclusions."
+                )
+            }]
+        return out
+
+    # 1. Parse and rank scores dynamically (G8: clean strings like '85%' or '85.5' safely)
     scores = {}
     for h, s in (synth.get("hypothesis_scores") or {}).items():
         try:
-            scores[h] = int(s)
+            cleaned = str(s).replace("%", "").strip()
+            val = float(cleaned)
+            if math.isnan(val) or math.isinf(val):
+                val = 0
+            scores[h] = int(round(val))
         except (TypeError, ValueError):
             scores[h] = 0
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
@@ -655,8 +695,18 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
             plan_slim = {"hypotheses": plan.get("hypotheses", []), "tasks": tasks[:6],
                          "semantic_alignment": plan.get("semantic_alignment", "")}
             hyp_ids = [h.get("id", "") for h in plan_slim["hypotheses"]] or ["H1", "H2", "H3"]
+            _raw_event_time = (alert_context.get("normalized_seed") or {}).get("event_time")
+            if _raw_event_time:
+                _parsed_et = _instant(_raw_event_time)
+                event_time_str = (
+                    _parsed_et.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if _parsed_et else "UNKNOWN (unparseable)"
+                )
+            else:
+                event_time_str = "UNKNOWN"
             eval_header = (
                 "YOU ARE NOW IN EVALUATION MODE.\n"
+                f"Incident Event Time: {event_time_str} (UTC)\n"
                 f"The investigation has {len(hyp_ids)} hypotheses with IDs: {', '.join(hyp_ids)}.\n"
                 "Output ONLY the EVALUATION JSON schema. Required fields:\n"
                 "  hypothesis_scores: {" + ", ".join(f'"{h}": <0-100>' for h in hyp_ids) + "}\n"
@@ -706,8 +756,15 @@ def investigate(run_id: str, alert_context: dict, max_loops: int, q, checkpoint,
                 emit(q, "verdict", {**synth, "verdict": verdict or "REQUIRES_INVESTIGATION"}, message="Max loops reached")
                 break
             asked += link["tasks"]
+            # Issue 1.2: treat broker-marked unanswerable items as "already asked" so the
+            # analyst does not re-submit the same question that the broker cannot answer.
+            _unanswerable_as_tasks = [
+                {"question": str(item), "entity": [], "time_window": None}
+                for _findings in all_findings.values()
+                for item in _findings.get("unanswerable", [])
+            ]
             tasks = follow_up_tasks(synth.get("follow_up_tasks", []), link["tasks"],
-                                    synth.get("evidence_gaps"), asked,
+                                    synth.get("evidence_gaps"), asked + _unanswerable_as_tasks,
                                     event_time=(alert_context.get("normalized_seed") or {}).get("event_time"),
                                     alert_scope=alert_entities(alert_context))
             if not tasks:
